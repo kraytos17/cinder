@@ -29,6 +29,9 @@ option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF
 option(CINDER_UNITY_BUILD           "Enable unity/jumbo builds"              OFF)
 option(CINDER_ENABLE_CLANG_TIDY     "Run clang-tidy during compilation"      OFF)
 option(CINDER_USE_FAST_LINKER       "Use mold/lld linker if available"       ON)
+option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"   ON)
+option(CINDER_USE_PIPE              "Use -pipe (pipes over temp files)"      ON)
+option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
 
 # ---------------------------------------------------------------------------
 # ccache
@@ -72,6 +75,26 @@ endif()
 if(CINDER_ENABLE_LTO)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
     message(STATUS "Cinder: LTO enabled")
+endif()
+
+# ---------------------------------------------------------------------------
+# Compile-time optimizations
+# ---------------------------------------------------------------------------
+if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+    add_compile_options(-gsplit-dwarf)
+    if(CINDER_USE_FAST_LINKER)
+        add_link_options(-Wl,--gdb-index)
+    endif()
+    message(STATUS "Cinder: split-dwarf enabled")
+endif()
+
+if(CINDER_USE_PIPE)
+    add_compile_options(-pipe)
+endif()
+
+if(CINDER_UNITY_BUILD)
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE 16 CACHE STRING
+        "Number of TUs merged per unity batch")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -232,6 +255,10 @@ if(CINDER_BUILD_BENCHMARKS)
     add_subdirectory(benchmarks)
 endif()
 
+if(CINDER_TEST_BUILD_DEPS AND CMAKE_GENERATOR MATCHES "Ninja")
+    set(CMAKE_TEST_BUILD_DEPENDS ON)
+endif()
+
 # ---------------------------------------------------------------------------
 # Format / lint targets
 # ---------------------------------------------------------------------------
@@ -250,11 +277,10 @@ if(CLANG_FORMAT_PROGRAM)
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Formatting all source files with clang-format"
     )
-    add_custom_target(check-format
-        COMMAND ${CLANG_FORMAT_PROGRAM} --dry-run --Werror -style=file ${CINDER_FORMAT_SOURCES}
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        COMMENT "Checking formatting with clang-format"
-    )
+    add_custom_target(check-format COMMAND ${CLANG_FORMAT_PROGRAM} --dry-run
+                      --Werror -style=file ${CINDER_FORMAT_SOURCES}
+                      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} COMMENT
+                      "Checking formatting with clang-format")
 endif()
 
 # ---------------------------------------------------------------------------

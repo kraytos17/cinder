@@ -1,0 +1,49 @@
+* text=auto eol=lf
+
+# C/C++
+*.c             text diff=c
+*.h             text diff=c
+*.cpp           text diff=cpp
+*.hpp           text diff=cpp
+*.cxx           text diff=cpp
+*.cc            text diff=cpp
+*.hh            text diff=cpp
+
+# CMake
+*.cmake         text
+CMakeLists.txt  text
+
+# Build
+*.ninja         text
+*.mk            text
+
+# Config
+*.json          text
+*.yaml          text
+*.yml           text
+*.toml          text
+*.cfg           text
+*.ini           text
+
+# Scripts
+*.sh            text eol=lf
+*.py            text diff=python
+*.bash          text eol=lf
+
+# Docs
+*.md            text diff=markdown
+*.rst           text
+*.txt           text
+
+# Git
+.gitignore      text
+.gitattributes  text
+.gitmodules     text
+
+# Binaries
+*.o             binary
+*.so            binary
+*.a             binary
+*.dylib         binary
+*.dll           binary
+*.exe           binary

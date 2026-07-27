@@ -1,4 +1,4 @@
-add_library(cinder_core OBJECT
+set(CINDER_CORE_SOURCES
     common/logger.cpp
     store/lru_store.cpp
     store/lfu_store.cpp
@@ -16,4 +16,12 @@ add_library(cinder_core OBJECT
     net/tcp_connection.cpp
     client/cache_client.cpp
     client/connection_pool.cpp
+)
+
+add_library(cinder_core OBJECT ${CINDER_CORE_SOURCES})
+
+list(TRANSFORM CINDER_CORE_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR}
+    PREFIX src
+    FILES ${CINDER_CORE_SOURCES}
 )

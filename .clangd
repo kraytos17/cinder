@@ -1,0 +1,22 @@
+CompileFlags:
+  Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
+  Compiler: clang++
+  Remove: [-m*, -f*]
+
+Diagnostics:
+  ClangTidy: true
+  UnusedIncludes: Strict
+
+Index:
+  Background: Build
+  BlockList: [build]
+
+InlayHints:
+  DeducedTypes: true
+  Designators: true
+  Enabled: true
+  ParameterNames: true
+  Qualifiers: true
+
+Rename:
+  ClangTidy: true
