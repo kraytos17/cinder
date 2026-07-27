@@ -2,21 +2,21 @@ CompileFlags:
   Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
   Compiler: clang++
   Remove: [-m*, -f*]
+  CompilationDatabase: build/fast
 
 Diagnostics:
-  ClangTidy: true
+  ClangTidy:
+    FastCheckFilter: Loose
+    Add: []
+    Remove: []
+    CheckOptions: {}
   UnusedIncludes: Strict
 
 Index:
   Background: Build
-  BlockList: [build]
 
 InlayHints:
   DeducedTypes: true
   Designators: true
   Enabled: true
   ParameterNames: true
-  Qualifiers: true
-
-Rename:
-  ClangTidy: true

@@ -4,28 +4,16 @@ Checks: >
     clang-analyzer-*,
     modernize-*,
     performance-*,
-    readability-*,
+    -bugprone-easily-swappable-parameters,
+    -bugprone-reserved-identifier,
     -modernize-use-trailing-return-type,
-    -readability-identifier-length,
-    -readability-magic-numbers,
-    -readability-named-parameter,
-    -readability-avoid-const-params-in-decls,
-    -readability-function-cognitive-complexity,
+    -modernize-use-auto,
+    -performance-no-int-to-ptr,
 
-CheckOptions:
-    readability-identifier-naming.ClassCase: CamelCase
-    readability-identifier-naming.EnumCase: CamelCase
-    readability-identifier-naming.FunctionCase: camelBack
-    readability-identifier-naming.MemberCase: camelBack
-    readability-identifier-naming.MethodCase: camelBack
-    readability-identifier-naming.NamespaceCase: lower_case
-    readability-identifier-naming.ParameterCase: camelBack
-    readability-identifier-naming.PrivateMemberSuffix: '_'
-    readability-identifier-naming.ProtectedMemberSuffix: '_'
-    readability-identifier-naming.PublicMemberCase: camelBack
-    readability-identifier-naming.StructCase: CamelCase
-    readability-identifier-naming.VariableCase: camelBack
+WarningsAsErrors: >
+    bugprone-*,
+    clang-analyzer-*,
+    performance-*,
 
-WarningsAsErrors: '*'
-HeaderFilterRegex: '.*'
+HeaderFilterRegex: 'include/'
 FormatStyle: file

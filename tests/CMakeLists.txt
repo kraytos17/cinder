@@ -13,6 +13,7 @@ cinder_add_test(cinder_unit_tests
     unit/ttl_wheel_test.cpp
     unit/consistent_hash_ring_test.cpp
     unit/protocol_framing_test.cpp
+    unit/status_test.cpp
 )
 set_target_properties(cinder_unit_tests PROPERTIES UNITY_BUILD ON)
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
