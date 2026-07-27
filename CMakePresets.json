@@ -1,0 +1,91 @@
+{
+   "version":6,
+   "configurePresets":[
+      {
+         "name":"debug",
+         "displayName":"Debug",
+         "description":"Debug build with Ninja",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/debug",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug"
+         }
+      },
+      {
+         "name":"release",
+         "displayName":"Release",
+         "description":"Optimized release build with LTO",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/release",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Release",
+            "CINDER_ENABLE_LTO":"ON"
+         }
+      },
+      {
+         "name":"sanitized",
+         "displayName":"Sanitized",
+         "description":"Debug build with ASan+UBSan",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/sanitized",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_SANITIZE":"ON"
+         }
+      },
+      {
+         "name":"ci",
+         "displayName":"CI",
+         "description":"CI build with tests, benchmarks, sanitizers",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/ci",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+            "CINDER_SANITIZE":"ON"
+         }
+      },
+      {
+         "name":"fast",
+         "displayName":"Fast (unity + lld)",
+         "description":"Debug build with unity/jumbo merging and lld",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/fast",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_UNITY_BUILD":"ON"
+         }
+      }
+   ],
+   "buildPresets":[
+      {
+         "name":"debug",
+         "configurePreset":"debug"
+      },
+      {
+         "name":"release",
+         "configurePreset":"release"
+      },
+      {
+         "name":"sanitized",
+         "configurePreset":"sanitized"
+      },
+      {
+         "name":"ci",
+         "configurePreset":"ci"
+      },
+      {
+         "name":"fast",
+         "configurePreset":"fast"
+      }
+   ],
+   "testPresets":[
+      {
+         "name":"debug",
+         "configurePreset":"debug"
+      },
+      {
+         "name":"ci",
+         "configurePreset":"ci"
+      }
+   ]
+}

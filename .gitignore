@@ -67,3 +67,5 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+cinder_plan.md
+distributed_caching_cpp_improvement_plan.md
