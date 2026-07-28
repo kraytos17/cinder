@@ -1,9 +1,8 @@
-#include "cinder/store/lru_store.hpp"
-
-#include <gtest/gtest.h>
-
 #include <chrono>
+#include <gtest/gtest.h>
 #include <thread>
+
+#include "cinder/store/lru_store.hpp"
 
 namespace cinder {
 namespace {

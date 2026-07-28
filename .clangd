@@ -2,7 +2,6 @@ CompileFlags:
   Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
   Compiler: clang++
   Remove: [-m*, -f*]
-  CompilationDatabase: build/fast
 
 Diagnostics:
   ClangTidy:

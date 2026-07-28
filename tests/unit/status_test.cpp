@@ -1,6 +1,6 @@
-#include "cinder/common/status.hpp"
-
 #include <gtest/gtest.h>
+
+#include "cinder/common/status.hpp"
 
 namespace cinder {
 namespace {

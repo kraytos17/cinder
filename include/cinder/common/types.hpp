@@ -13,8 +13,16 @@ using Key = std::string;
 using NodeId = std::string;
 using Version = uint64_t;
 
-enum class EvictionPolicy : uint8_t { LRU, LFU, TTL };
-enum class ConsistencyMode : uint8_t{ Async, Quorum };
+enum class EvictionPolicy : uint8_t {
+    LRU,
+    LFU,
+    TTL
+};
+
+enum class ConsistencyMode : uint8_t {
+    Async,
+    Quorum
+};
 
 struct CacheEntry {
     std::string value;

@@ -8,8 +8,9 @@ namespace cinder {
 LruStore::LruStore(size_t capacity_bytes)
     : capacity_bytes_(capacity_bytes) {}
 
-auto LruStore::put(const std::string& key, std::string value,
-                   std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
+auto
+LruStore::put(const std::string& key, std::string value,
+              std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
     std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
@@ -42,14 +43,15 @@ auto LruStore::put(const std::string& key, std::string value,
         return err(Error(Errc::CapacityExceeded, "value exceeds capacity"));
     }
 
-    lru_list_.push_front({.key=key, .entry=std::move(entry)});
+    lru_list_.push_front({.key = key, .entry = std::move(entry)});
     index_[key] = lru_list_.begin();
     current_bytes_ += entry_size;
     evict_if_needed();
     return ok();
 }
 
-auto LruStore::get(const std::string& key) -> std::optional<std::string> {
+auto
+LruStore::get(const std::string& key) -> std::optional<std::string> {
     std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
@@ -58,8 +60,7 @@ auto LruStore::get(const std::string& key) -> std::optional<std::string> {
     }
 
     auto& node = it->second;
-    if (node->entry.has_ttl &&
-        node->entry.expires_at <= std::chrono::steady_clock::now()) {
+    if (node->entry.has_ttl && node->entry.expires_at <= std::chrono::steady_clock::now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
         lru_list_.erase(node);
         index_.erase(it);
@@ -70,7 +71,8 @@ auto LruStore::get(const std::string& key) -> std::optional<std::string> {
     return node->entry.value;
 }
 
-auto LruStore::remove(const std::string& key) -> bool {
+auto
+LruStore::remove(const std::string& key) -> bool {
     std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
@@ -85,12 +87,14 @@ auto LruStore::remove(const std::string& key) -> bool {
     return true;
 }
 
-auto LruStore::size() const -> size_t {
+auto
+LruStore::size() const -> size_t {
     std::scoped_lock lock(mutex_);
     return index_.size();
 }
 
-auto LruStore::evict_expired() -> size_t {
+auto
+LruStore::evict_expired() -> size_t {
     std::scoped_lock lock(mutex_);
 
     auto now = std::chrono::steady_clock::now();
@@ -108,17 +112,20 @@ auto LruStore::evict_expired() -> size_t {
     return evicted;
 }
 
-void LruStore::touch(ListIt it) {
+void
+LruStore::touch(ListIt it) {
     lru_list_.splice(lru_list_.begin(), lru_list_, it);
 }
 
-void LruStore::evict_if_needed() {
+void
+LruStore::evict_if_needed() {
     while (current_bytes_ > capacity_bytes_ && !lru_list_.empty()) {
         evict_one();
     }
 }
 
-void LruStore::evict_one() {
+void
+LruStore::evict_one() {
     auto& node = lru_list_.back();
     current_bytes_ -= node.key.size() + node.entry.value.size() + sizeof(Node);
     index_.erase(node.key);

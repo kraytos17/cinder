@@ -5,10 +5,17 @@
 
 namespace cinder {
 
-enum class LogLevel : uint8_t { Trace, Debug, Info, Warn, Error };
+enum class LogLevel : uint8_t {
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error
+};
 
 class Logger {
-public:
+  public:
+
     static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Info);
     static void shutdown();
 
