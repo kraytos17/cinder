@@ -4,7 +4,6 @@ set(CINDER_CORE_SOURCES
     store/lfu_store.cpp
     store/ttl_wheel.cpp
     hashing/consistent_hash_ring.cpp
-    hashing/hash_functions.cpp
     node/cache_node_server.cpp
     node/shard_manager.cpp
     node/replication_manager.cpp
