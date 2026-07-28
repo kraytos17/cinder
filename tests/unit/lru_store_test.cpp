@@ -8,7 +8,7 @@ namespace cinder {
 namespace {
 
 TEST(LruStoreTest, PutAndGet) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_TRUE(store.put("key", "value").has_value());
     auto result = store.get("key");
     ASSERT_TRUE(result.has_value());
@@ -16,13 +16,13 @@ TEST(LruStoreTest, PutAndGet) {
 }
 
 TEST(LruStoreTest, GetMissing) {
-    LruStore store(1024);
+    LruStore store(1'024);
     auto result = store.get("missing");
     EXPECT_FALSE(result.has_value());
 }
 
 TEST(LruStoreTest, Overwrite) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_TRUE(store.put("key", "value1").has_value());
     EXPECT_TRUE(store.put("key", "value2").has_value());
     auto result = store.get("key");
@@ -31,7 +31,7 @@ TEST(LruStoreTest, Overwrite) {
 }
 
 TEST(LruStoreTest, Remove) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_TRUE(store.put("key", "value").has_value());
     EXPECT_TRUE(store.remove("key"));
     EXPECT_FALSE(store.get("key").has_value());
@@ -39,7 +39,7 @@ TEST(LruStoreTest, Remove) {
 }
 
 TEST(LruStoreTest, Size) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_EQ(store.size(), 0);
     EXPECT_TRUE(store.put("a", "1").has_value());
     EXPECT_EQ(store.size(), 1);
@@ -58,7 +58,7 @@ TEST(LruStoreTest, EvictionOnCapacity) {
 }
 
 TEST(LruStoreTest, TtlExpiry) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_TRUE(store.put("key", "value", std::chrono::milliseconds(10)).has_value());
     EXPECT_TRUE(store.get("key").has_value());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -73,10 +73,11 @@ TEST(LruStoreTest, ValueLargerThanCapacity) {
 }
 
 TEST(LruStoreTest, EvictExpired) {
-    LruStore store(1024);
+    LruStore store(1'024);
     EXPECT_TRUE(store.put("a", "1", std::chrono::milliseconds(10)).has_value());
     EXPECT_TRUE(store.put("b", "2").has_value());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    
     EXPECT_EQ(store.evict_expired(), 1);
     EXPECT_EQ(store.size(), 1);
     EXPECT_FALSE(store.get("a").has_value());
@@ -84,12 +85,13 @@ TEST(LruStoreTest, EvictExpired) {
 }
 
 TEST(LruStoreTest, LruOrder) {
-    LruStore store(3500);
-    EXPECT_TRUE(store.put("a", std::string(1000, 'x')).has_value());
-    EXPECT_TRUE(store.put("b", std::string(1000, 'x')).has_value());
-    EXPECT_TRUE(store.put("c", std::string(1000, 'x')).has_value());
+    LruStore store(3'500);
+    EXPECT_TRUE(store.put("a", std::string(1'000, 'x')).has_value());
+    EXPECT_TRUE(store.put("b", std::string(1'000, 'x')).has_value());
+    EXPECT_TRUE(store.put("c", std::string(1'000, 'x')).has_value());
     store.get("a");
-    store.put("d", std::string(1000, 'x'));
+    store.put("d", std::string(1'000, 'x'));
+    
     EXPECT_TRUE(store.get("a").has_value());
     EXPECT_TRUE(store.get("d").has_value());
     EXPECT_FALSE(store.get("b").has_value());

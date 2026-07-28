@@ -8,7 +8,7 @@ namespace cinder {
 namespace {
 
 TEST(LfuStoreTest, PutAndGet) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_TRUE(store.put("key", "value").has_value());
     auto result = store.get("key");
     ASSERT_TRUE(result.has_value());
@@ -16,13 +16,13 @@ TEST(LfuStoreTest, PutAndGet) {
 }
 
 TEST(LfuStoreTest, GetMissing) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     auto result = store.get("missing");
     EXPECT_FALSE(result.has_value());
 }
 
 TEST(LfuStoreTest, Overwrite) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_TRUE(store.put("key", "value1").has_value());
     EXPECT_TRUE(store.put("key", "value2").has_value());
     auto result = store.get("key");
@@ -31,7 +31,7 @@ TEST(LfuStoreTest, Overwrite) {
 }
 
 TEST(LfuStoreTest, Remove) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_TRUE(store.put("key", "value").has_value());
     EXPECT_TRUE(store.remove("key"));
     EXPECT_FALSE(store.get("key").has_value());
@@ -39,7 +39,7 @@ TEST(LfuStoreTest, Remove) {
 }
 
 TEST(LfuStoreTest, Size) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_EQ(store.size(), 0);
     EXPECT_TRUE(store.put("a", "1").has_value());
     EXPECT_EQ(store.size(), 1);
@@ -58,8 +58,8 @@ TEST(LfuStoreTest, EvictionOnCapacity) {
 }
 
 TEST(LfuStoreTest, FrequencyOrder) {
-    LfuStore store(10000);
-    auto val = std::string(3000, 'x');
+    LfuStore store(10'000);
+    auto val = std::string(3'000, 'x');
     EXPECT_TRUE(store.put("a", val).has_value());
     EXPECT_TRUE(store.put("b", val).has_value());
     EXPECT_TRUE(store.put("c", val).has_value());
@@ -80,7 +80,7 @@ TEST(LfuStoreTest, FrequencyOrder) {
 }
 
 TEST(LfuStoreTest, TtlExpiry) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_TRUE(store.put("key", "value", std::chrono::milliseconds(10)).has_value());
     EXPECT_TRUE(store.get("key").has_value());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -95,7 +95,7 @@ TEST(LfuStoreTest, ValueLargerThanCapacity) {
 }
 
 TEST(LfuStoreTest, EvictExpired) {
-    LfuStore store(1024);
+    LfuStore store(1'024);
     EXPECT_TRUE(store.put("a", "1", std::chrono::milliseconds(10)).has_value());
     EXPECT_TRUE(store.put("b", "2").has_value());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));

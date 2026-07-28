@@ -13,18 +13,20 @@
 
 namespace cinder {
 
-class LfuStore final : public CacheStore {
+class LfuStore : public CacheStore {
   public:
+
     explicit LfuStore(size_t capacity_bytes);
 
     auto put(const std::string& key, std::string value,
-             std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
+        std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
     auto get(const std::string& key) -> std::optional<std::string> override;
     auto remove(const std::string& key) -> bool override;
     auto size() const -> size_t override;
     auto evict_expired() -> size_t override;
 
   private:
+
     struct Node {
         std::string key;
         CacheEntry entry;

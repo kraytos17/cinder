@@ -1,10 +1,17 @@
 BasedOnStyle: LLVM
 AccessModifierOffset: -2
+AlignAfterOpenBracket: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
 AllowShortEnumsOnASingleLine: false
 AllowShortFunctionsOnASingleLine: Inline
 AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: Inline
 AllowShortLoopsOnASingleLine: false
+BinPackArguments: false
 BreakAfterReturnType: TopLevel
+BreakBeforeBinaryOperators: NonAssignment
 BreakTemplateDeclarations: MultiLine
 ColumnLimit: 100
 ConstructorInitializerIndentWidth: 4
@@ -13,7 +20,6 @@ EmptyLineAfterAccessModifier: Always
 EmptyLineBeforeAccessModifier: Always
 FixNamespaceComments: true
 IncludeBlocks: Regroup
-InsertBraces: true
 IncludeCategories:
   - Regex: '^<.*>'
     Priority: 1
@@ -21,11 +27,19 @@ IncludeCategories:
     Priority: 2
 IndentCaseLabels: true
 IndentWidth: 4
+IntegerLiteralSeparator:
+  Binary: 0
+  Decimal: 3
+  Hex: 0
+LambdaBodyIndentation: OuterScope
+LineEnding: LF
+MaxEmptyLinesToKeep: 1
 NamespaceIndentation: None
 PackConstructorInitializers: Never
 PointerAlignment: Left
 SeparateDefinitionBlocks: Always
 SortIncludes: CaseInsensitive
+SpaceBeforeParens: ControlStatements
 Standard: Latest
 TabWidth: 4
 UseTab: Never

@@ -10,7 +10,7 @@ LfuStore::LfuStore(size_t capacity_bytes)
 
 auto
 LfuStore::put(const std::string& key, std::string value,
-              std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
+    std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
     std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);

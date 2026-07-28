@@ -13,13 +13,13 @@
 
 namespace cinder {
 
-class LruStore final : public CacheStore {
+class LruStore : public CacheStore {
   public:
 
     explicit LruStore(size_t capacity_bytes);
 
     auto put(const std::string& key, std::string value,
-             std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
+        std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
     auto get(const std::string& key) -> std::optional<std::string> override;
     auto remove(const std::string& key) -> bool override;
     auto size() const -> size_t override;

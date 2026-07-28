@@ -1,10 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
-#include <variant>
 
 namespace cinder {
 
@@ -43,26 +43,24 @@ template <typename T> class Result {
     using value_type = T;
 
     Result(T value)
-        : storage_(std::move(value)) {}
+        : value_(std::move(value)) {}
 
     Result(Error error)
-        : storage_(std::move(error)) {}
+        : error_(std::move(error)) {}
 
     static auto ok(T value) -> Result { return Result(std::move(value)); }
 
     static auto err(Error error) -> Result { return Result(std::move(error)); }
 
-    [[nodiscard]] auto has_value() const noexcept -> bool {
-        return std::holds_alternative<T>(storage_);
-    }
+    [[nodiscard]] auto has_value() const noexcept -> bool { return value_.has_value(); }
 
-    auto value() & -> T& { return std::get<T>(storage_); }
+    auto value() & -> T& { return *value_; }
 
-    auto value() const& -> const T& { return std::get<T>(storage_); }
+    auto value() const& -> const T& { return *value_; }
 
-    auto value() && -> T { return std::get<T>(std::move(storage_)); }
+    auto value() && -> T { return std::move(*value_); }
 
-    [[nodiscard]] auto error() const -> Error { return std::get<Error>(storage_); }
+    [[nodiscard]] auto error() const -> const Error& { return error_; }
 
     auto value_or(T fallback) const& -> T { return has_value() ? value() : fallback; }
 
@@ -70,7 +68,8 @@ template <typename T> class Result {
 
   private:
 
-    std::variant<T, Error> storage_;
+    std::optional<T> value_;
+    Error error_{Errc::OK, {}};
 };
 
 template <> class Result<void> {
@@ -89,12 +88,12 @@ template <> class Result<void> {
 
     [[nodiscard]] auto has_value() const noexcept -> bool { return has_value_; }
 
-    [[nodiscard]] auto error() const -> Error { return error_; }
+    [[nodiscard]] auto error() const -> const Error& { return error_; }
 
   private:
 
     bool has_value_;
-    Error error_{Errc::OK};
+    Error error_{Errc::OK, {}};
 };
 
 template <typename T>
