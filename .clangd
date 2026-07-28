@@ -1,20 +1,17 @@
 CompileFlags:
   Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
   Compiler: clang++
+  CompilationDatabase: build/fast
   Remove: [-m*, -f*]
 
 Diagnostics:
-  ClangTidy:
-    FastCheckFilter: Loose
-    Add: []
-    Remove: []
-    CheckOptions: {}
   UnusedIncludes: Strict
 
 Index:
   Background: Build
 
 InlayHints:
+  BlockEnd: false
   DeducedTypes: true
   Designators: true
   Enabled: true

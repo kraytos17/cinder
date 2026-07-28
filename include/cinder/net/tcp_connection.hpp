@@ -1,20 +1,21 @@
 #pragma once
 
-#include "cinder/net/protocol.hpp"
-#include "cinder/store/cache_store.hpp"
-
-#include <asio.hpp>
 #include <array>
+#include <asio.hpp>
 #include <cstddef>
 #include <deque>
 #include <memory>
 #include <vector>
 
+#include "cinder/net/protocol.hpp"
+#include "cinder/store/cache_store.hpp"
+
 namespace cinder::net {
 
 class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
-public:
-    static constexpr size_t kBufferSize = 65536;
+  public:
+
+    static constexpr size_t kBufferSize = 65'536;
     static constexpr size_t kMaxWriteQueue = 64;
 
     TcpConnection(asio::ip::tcp::socket socket, CacheStore& store);
@@ -22,7 +23,8 @@ public:
 
     void start();
 
-private:
+  private:
+
     void do_read_header();
     void on_header(std::error_code ec, size_t bytes);
     void do_read_payload(size_t len);

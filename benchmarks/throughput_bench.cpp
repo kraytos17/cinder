@@ -25,7 +25,7 @@ BM_LruStore_Get(benchmark::State& state) {
     for (int i = 0; i < 1'000; i++) {
         store.put(std::to_string(i), std::string(256, 'x'));
     }
-    
+
     int i = 0;
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));
@@ -53,7 +53,7 @@ BM_LfuStore_Get(benchmark::State& state) {
     for (int i = 0; i < 1'000; i++) {
         store.put(std::to_string(i), std::string(256, 'x'));
     }
-    
+
     int i = 0;
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));

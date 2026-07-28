@@ -77,7 +77,7 @@ TEST(LruStoreTest, EvictExpired) {
     EXPECT_TRUE(store.put("a", "1", std::chrono::milliseconds(10)).has_value());
     EXPECT_TRUE(store.put("b", "2").has_value());
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    
+
     EXPECT_EQ(store.evict_expired(), 1);
     EXPECT_EQ(store.size(), 1);
     EXPECT_FALSE(store.get("a").has_value());
@@ -91,7 +91,7 @@ TEST(LruStoreTest, LruOrder) {
     EXPECT_TRUE(store.put("c", std::string(1'000, 'x')).has_value());
     store.get("a");
     store.put("d", std::string(1'000, 'x'));
-    
+
     EXPECT_TRUE(store.get("a").has_value());
     EXPECT_TRUE(store.get("d").has_value());
     EXPECT_FALSE(store.get("b").has_value());

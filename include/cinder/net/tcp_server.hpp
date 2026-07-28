@@ -1,24 +1,26 @@
 #pragma once
 
-#include "cinder/common/status.hpp"
-#include "cinder/net/tcp_connection.hpp"
-
 #include <asio.hpp>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
+#include "cinder/common/status.hpp"
+#include "cinder/net/tcp_connection.hpp"
+
 namespace cinder::net {
 
 class TcpServer {
-public:
+  public:
+
     TcpServer(asio::io_context& io, uint16_t port, CacheStore& store);
     ~TcpServer();
 
     auto start() -> Result<void>;
     void shutdown();
 
-private:
+  private:
+
     void do_accept();
 
     asio::io_context& io_;

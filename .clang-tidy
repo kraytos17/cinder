@@ -1,19 +1,31 @@
 Checks: >
     -*,
     bugprone-*,
+    cert-*,
     clang-analyzer-*,
+    concurrency-*,
+    misc-*,
     modernize-*,
     performance-*,
+    portability-*,
     -bugprone-easily-swappable-parameters,
     -bugprone-reserved-identifier,
-    -modernize-use-trailing-return-type,
+    -cert-err58-cpp,
+    -misc-non-private-member-variables-in-classes,
+    -misc-use-anonymous-namespace,
     -modernize-use-auto,
+    -modernize-use-trailing-return-type,
     -performance-no-int-to-ptr,
+    -readability-*,
 
 WarningsAsErrors: >
     bugprone-*,
+    cert-*,
     clang-analyzer-*,
+    concurrency-*,
+    misc-*,
     performance-*,
+    portability-*,
 
 HeaderFilterRegex: 'include/'
 FormatStyle: file

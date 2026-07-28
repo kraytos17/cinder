@@ -24,7 +24,6 @@ build:
 	fi
 	@echo "==> Building $(PRESET)..."
 	cmake --build --preset $(PRESET) -j$(JOBS)
-	@ln -sf "$(BUILD_DIR)/compile_commands.json" compile_commands.json
 
 debug:     PRESET=debug
 release:   PRESET=release
