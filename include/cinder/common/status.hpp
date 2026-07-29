@@ -54,11 +54,11 @@ template <typename T> class Result {
 
     [[nodiscard]] auto has_value() const noexcept -> bool { return value_.has_value(); }
 
-    auto value() & -> T& { return *value_; }
+    auto value() & -> T& { return value_.value(); }
 
-    auto value() const& -> const T& { return *value_; }
+    auto value() const& -> const T& { return value_.value(); }
 
-    auto value() && -> T { return std::move(*value_); }
+    auto value() && -> T { return std::move(value_.value()); }
 
     [[nodiscard]] auto error() const -> const Error& { return error_; }
 

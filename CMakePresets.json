@@ -4,7 +4,7 @@
       {
          "name":"debug",
          "displayName":"Debug",
-         "description":"Debug build with Ninja",
+         "description":"Debug build with Ninja (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/debug",
          "cacheVariables":{
@@ -12,9 +12,21 @@
          }
       },
       {
+         "name":"debug-clang",
+         "displayName":"Debug (Clang)",
+         "description":"Debug build with Clang",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/debug-clang",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang"
+         }
+      },
+      {
          "name":"release",
          "displayName":"Release",
-         "description":"Optimized release build with LTO",
+         "description":"Optimized release build with LTO (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/release",
          "cacheVariables":{
@@ -25,7 +37,7 @@
       {
          "name":"sanitized",
          "displayName":"Sanitized",
-         "description":"Debug build with ASan+UBSan",
+         "description":"Debug build with ASan+UBSan (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/sanitized",
          "cacheVariables":{
@@ -36,18 +48,31 @@
       {
          "name":"ci",
          "displayName":"CI",
-         "description":"CI build with tests, benchmarks, sanitizers",
+         "description":"CI build with clang-tidy (Clang, no ASan — use ci-gcc for sanitizers)",
          "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/ci",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-            "CINDER_SANITIZE":"ON"
-         }
-      },
+          "binaryDir":"${sourceDir}/build/ci",
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_CLANG_TIDY":"ON"
+          }
+       },
+       {
+         "name":"ci-gcc",
+         "displayName":"CI (GCC)",
+         "description":"CI build with GCC, sanitizers, no clang-tidy",
+         "generator":"Ninja",
+          "binaryDir":"${sourceDir}/build/ci-gcc",
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CINDER_SANITIZE":"ON"
+          }
+       },
       {
          "name":"fast",
          "displayName":"Fast (unity + lld)",
-         "description":"Debug build with unity/jumbo merging and lld",
+         "description":"Debug build with unity/jumbo merging and lld (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/fast",
          "cacheVariables":{
@@ -62,6 +87,10 @@
          "configurePreset":"debug"
       },
       {
+         "name":"debug-clang",
+         "configurePreset":"debug-clang"
+      },
+      {
          "name":"release",
          "configurePreset":"release"
       },
@@ -72,6 +101,10 @@
       {
          "name":"ci",
          "configurePreset":"ci"
+      },
+      {
+         "name":"ci-gcc",
+         "configurePreset":"ci-gcc"
       },
       {
          "name":"fast",
@@ -86,6 +119,10 @@
       {
          "name":"ci",
          "configurePreset":"ci"
+      },
+      {
+         "name":"ci-gcc",
+         "configurePreset":"ci-gcc"
       }
    ]
 }

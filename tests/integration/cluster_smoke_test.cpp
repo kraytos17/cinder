@@ -14,11 +14,11 @@ using asio::ip::tcp;
 namespace cinder::net {
 namespace {
 
-static auto
+auto
 read_response(tcp::socket& socket) -> Result<Response> {
     std::array<std::byte, 4'096> buf;
     asio::error_code ec;
-    asio::read(socket, asio::buffer(buf.data(), kFrameHeaderSize), ec);
+    (void)asio::read(socket, asio::buffer(buf.data(), kFrameHeaderSize), ec);
     if (ec) {
         return err<Response>(Error(Errc::InternalError, "read header failed"));
     }
@@ -30,7 +30,7 @@ read_response(tcp::socket& socket) -> Result<Response> {
         return err<Response>(Error(Errc::InvalidArgument, "response too large"));
     }
     if (payload_len > 0) {
-        asio::read(socket, asio::buffer(buf.data() + kFrameHeaderSize, payload_len), ec);
+        (void)asio::read(socket, asio::buffer(buf.data() + kFrameHeaderSize, payload_len), ec);
         if (ec) {
             return err<Response>(Error(Errc::InternalError, "read payload failed"));
         }
@@ -38,7 +38,7 @@ read_response(tcp::socket& socket) -> Result<Response> {
     return decode_response(std::span<const std::byte>(buf.data(), kFrameHeaderSize + payload_len));
 }
 
-static auto
+auto
 wait_for_port(int port, int max_retries = 50) -> bool {
     asio::io_context io;
     for (int i = 0; i < max_retries; i++) {
@@ -61,7 +61,6 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
 
     pid_t pid = fork();
     ASSERT_NE(pid, -1) << "fork failed";
-
     if (pid == 0) {
         execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.data(), nullptr);
         _exit(1);
@@ -79,7 +78,8 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Set, .key = "k", .value = "v", .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        asio::write(socket, asio::buffer(encoded.value()));
+
+        (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = read_response(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -90,12 +90,13 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        asio::write(socket, asio::buffer(encoded.value()));
+
+        (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = read_response(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
-        EXPECT_EQ(*resp.value().value, "v");
+        EXPECT_EQ(*resp.value().value, "v"); // NOLINT
     }
 
     // DEL
@@ -103,7 +104,8 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Del, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        asio::write(socket, asio::buffer(encoded.value()));
+
+        (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = read_response(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -114,7 +116,8 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        asio::write(socket, asio::buffer(encoded.value()));
+
+        (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = read_response(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
@@ -125,14 +128,15 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Ping, .key = {}, .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        asio::write(socket, asio::buffer(encoded.value()));
+
+        (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = read_response(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
     socket.close();
-    kill(pid, SIGTERM);
+    (void)kill(pid, SIGTERM);
     (void)waitpid(pid, nullptr, 0);
 }
 } // namespace

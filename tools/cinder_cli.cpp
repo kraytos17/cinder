@@ -46,7 +46,7 @@ connect(asio::io_context& io, const std::string& host, uint16_t port)
             cinder::Error(cinder::Errc::InternalError, "resolve failed"));
     }
 
-    asio::connect(socket, endpoints, ec);
+    (void)asio::connect(socket, endpoints, ec);
     if (ec) {
         return cinder::err<tcp::socket>(
             cinder::Error(cinder::Errc::InternalError, "connect failed"));
@@ -65,14 +65,14 @@ send_request(tcp::socket& socket, const cinder::net::Request& req)
     }
 
     asio::error_code ec;
-    asio::write(socket, asio::buffer(encoded.value()), ec);
+    (void)asio::write(socket, asio::buffer(encoded.value()), ec);
     if (ec) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InternalError, "write failed"));
     }
 
     std::array<std::byte, 65'536> buf;
-    asio::read(socket, asio::buffer(buf.data(), cinder::net::kFrameHeaderSize), ec);
+    (void)asio::read(socket, asio::buffer(buf.data(), cinder::net::kFrameHeaderSize), ec);
     if (ec) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InternalError, "read header failed"));
@@ -86,7 +86,7 @@ send_request(tcp::socket& socket, const cinder::net::Request& req)
             cinder::Error(cinder::Errc::InvalidArgument, "response too large"));
     }
     if (payload_len > 0) {
-        asio::read(
+        (void)asio::read(
             socket, asio::buffer(buf.data() + cinder::net::kFrameHeaderSize, payload_len), ec);
         if (ec) {
             return cinder::err<cinder::net::Response>(

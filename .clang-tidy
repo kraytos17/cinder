@@ -1,22 +1,101 @@
-Checks: >
-    -*,
-    bugprone-*,
-    cert-*,
-    clang-analyzer-*,
-    concurrency-*,
-    misc-*,
-    modernize-*,
-    performance-*,
-    portability-*,
-    -bugprone-easily-swappable-parameters,
-    -bugprone-reserved-identifier,
-    -cert-err58-cpp,
-    -misc-non-private-member-variables-in-classes,
-    -misc-use-anonymous-namespace,
-    -modernize-use-auto,
-    -modernize-use-trailing-return-type,
-    -performance-no-int-to-ptr,
-    -readability-*,
+Checks: [
+  '*',
+
+  '-abseil-*',
+  '-altera-*',
+  '-android-*',
+  '-darwin-*',
+  '-fuchsia-*',
+  '-google-*',
+  '-llvm-*',
+  '-llvmlibc-*',
+  '-mpi-*',
+  '-objc-*',
+  '-zircon-*',
+
+  '-cppcoreguidelines-*',
+  'cppcoreguidelines-init-variables',
+  'cppcoreguidelines-pro-type-member-init',
+
+  # --- bugprone ---
+  '-bugprone-easily-swappable-parameters',
+  '-bugprone-reserved-identifier',
+  '-bugprone-branch-clone',
+  '-bugprone-assignment-in-if-condition',
+  '-bugprone-exception-escape',
+  '-bugprone-implicit-widening-of-multiplication-result',
+  '-bugprone-multi-level-implicit-pointer-conversion',
+  '-bugprone-narrowing-conversions',            # very noisy in numeric/perf code
+  '-bugprone-unchecked-optional-access',
+  '-bugprone-crtp-constructor-accessibility',
+  '-bugprone-not-null-terminated-result',
+  '-bugprone-forward-declaration-namespace',
+  '-bugprone-nondeterministic-pointer-iteration-order',
+  '-bugprone-sizeof-expression',                # too aggressive
+
+  # --- cert ---
+  '-cert-dcl16-c',
+  '-cert-arr39-c',                              # alias of bugprone-sizeof-expression
+  '-cert-err58-cpp',                            # noisy for static/global objects that can throw
+
+  # --- misc ---
+  '-misc-const-correctness',                    # false-positive prone
+  '-misc-include-cleaner',                      # useful in theory, far too many hits in practice
+  '-misc-no-recursion',
+  '-misc-non-private-member-variables-in-classes',
+  '-misc-use-anonymous-namespace',
+  '-misc-use-internal-linkage',
+
+  # --- modernize ---
+  '-modernize-avoid-c-arrays',
+  '-modernize-concat-nested-namespaces',
+  '-modernize-pass-by-value',
+  '-modernize-return-braced-init-list',
+  '-modernize-use-auto',                        # explicit types can aid readability; team preference
+  '-modernize-use-default-member-init',
+  '-modernize-use-emplace',
+  '-modernize-use-nodiscard',                   # opinionated, adds [[nodiscard]] almost everywhere
+  '-modernize-use-ranges',
+  '-modernize-use-trailing-return-type',
+  '-modernize-use-designated-initializers',
+  '-modernize-use-scoped-lock',
+  '-modernize-use-integer-sign-comparison',
+
+  # --- performance ---
+  '-performance-avoid-endl',
+  '-performance-enum-size',
+  '-performance-inefficient-string-concatenation',
+  '-performance-inefficient-vector-operation',
+  '-performance-no-int-to-ptr',
+  '-performance-unnecessary-value-param',
+
+  # --- portability ---
+  '-portability-simd-intrinsics',
+  '-portability-avoid-pragma-once',
+  '-portability-template-virtual-member-function',
+
+  # --- readability ---
+  '-readability-avoid-nested-conditional-operator',
+  '-readability-avoid-unconditional-preprocessor-if',
+  '-readability-braces-around-statements',
+  '-readability-convert-member-functions-to-static',
+  '-readability-else-after-return',
+  '-readability-function-cognitive-complexity',
+  '-readability-function-size',
+  '-readability-identifier-length',
+  '-readability-implicit-bool-conversion',
+  '-readability-magic-numbers',
+  '-readability-named-parameter',
+  '-readability-redundant-declaration',
+  '-readability-redundant-inline-specifier',    # breaks on ALWAYS_INLINE-style macros combined with `inline`
+  '-readability-redundant-member-init',         # conflicts with -Wmissing-field-initializers on designated init
+  '-readability-simplify-boolean-expr',
+  '-readability-suspicious-call-argument',
+  '-readability-uppercase-literal-suffix',
+  '-readability-use-anyofallof',
+  '-readability-math-missing-parentheses',
+  '-readability-use-concise-preprocessor-directives',
+]
 
 WarningsAsErrors: >
     bugprone-*,
@@ -27,5 +106,33 @@ WarningsAsErrors: >
     performance-*,
     portability-*,
 
-HeaderFilterRegex: 'include/'
+CheckOptions:
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: '_'
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: UPPER_CASE
+
+  - key: modernize-loop-convert.UseCxx20ReverseRanges
+    value: 'true'
+
+  - key: performance-move-const-arg.CheckTriviallyCopyableMove
+    value: 'true'
+
+  - key: bugprone-suspicious-include.HeaderFileExtensions
+    value: 'h,hh,hpp,hxx'
+
+HeaderFilterRegex: '(^|/)(src|include)/cinder/.*'
+ExcludeHeaderFilterRegex: '(^|/)(build|_deps|third[-_]?party|external)/'
 FormatStyle: file

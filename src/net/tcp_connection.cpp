@@ -5,9 +5,12 @@
 
 namespace cinder::net {
 
-TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store)
+TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
+    const ConsistentHashRing& ring, std::string node_id)
     : socket_(std::move(socket)),
-      store_(store) {}
+      store_(store),
+      ring_(ring),
+      node_id_(std::move(node_id)) {}
 
 TcpConnection::~TcpConnection() {
     if (socket_.is_open()) {
@@ -86,6 +89,15 @@ TcpConnection::on_payload(std::error_code ec, size_t len) {
 
 void
 TcpConnection::handle_request(const Request& req) {
+    if (req.opcode != Opcode::Ping) {
+        auto owner = ring_.get_node(req.key);
+        if (owner != node_id_) {
+            send_response({.status = Errc::NotReady, .value = "moved to " + owner});
+            maybe_read();
+            return;
+        }
+    }
+
     Response res;
     switch (req.opcode) {
         case Opcode::Get: {

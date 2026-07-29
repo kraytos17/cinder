@@ -16,7 +16,7 @@ configure:
 	@echo "==> Configuring $(PRESET)..."
 	cmake --preset $(PRESET)
 
-.PHONY: build debug release sanitized ci fast
+.PHONY: build debug release sanitized ci fast debug-clang ci-clang
 build:
 	@if [ ! -f "$(BUILD_DIR)/CMakeCache.txt" ]; then \
 		echo "==> Configuring $(PRESET)..."; \
@@ -25,13 +25,16 @@ build:
 	@echo "==> Building $(PRESET)..."
 	cmake --build --preset $(PRESET) -j$(JOBS)
 
-debug:     PRESET=debug
-release:   PRESET=release
-sanitized: PRESET=sanitized
-ci:        PRESET=ci
-fast:      PRESET=fast
+debug:       PRESET=debug
+release:     PRESET=release
+sanitized:   PRESET=sanitized
+ci:          PRESET=ci
+fast:        PRESET=fast
+debug-clang: PRESET=debug-clang
+ci-clang:    PRESET=ci
+ci-gcc:      PRESET=ci-gcc
 
-debug release sanitized ci fast: build
+debug release sanitized ci fast debug-clang ci-clang ci-gcc: build
 
 .PHONY: run run-cli
 run: build
@@ -85,9 +88,9 @@ install: build
 
 .PHONY: help
 help:
-	@echo 'Usage: make <target> [PRESET=debug|release|sanitized|ci|fast] [ARGS=...]'
+	@echo 'Usage: make <target> [PRESET=debug|release|sanitized|ci|fast|debug-clang|ci-clang] [ARGS=...]'
 	@echo ''
-	@echo 'Build:      make / make debug / release / sanitized / ci / fast'
+	@echo 'Build:      make / make debug / release / sanitized / ci / fast / debug-clang / ci-clang'
 	@echo 'Run:        make run ARGS="--port 7000"'
 	@echo '            make run-cli ARGS="get foo"'
 	@echo 'Test:       make test / test-unit / test-integration / test-sim'

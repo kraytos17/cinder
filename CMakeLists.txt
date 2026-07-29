@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
@@ -98,19 +99,6 @@ if(CINDER_UNITY_BUILD)
 endif()
 
 # ---------------------------------------------------------------------------
-# clang-tidy
-# ---------------------------------------------------------------------------
-if(CINDER_ENABLE_CLANG_TIDY)
-    find_program(CLANG_TIDY_PROGRAM clang-tidy)
-    if(CLANG_TIDY_PROGRAM)
-        set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_PROGRAM}")
-        message(STATUS "Cinder: clang-tidy enabled (${CLANG_TIDY_PROGRAM})")
-    else()
-        message(WARNING "CINDER_ENABLE_CLANG_TIDY is ON but clang-tidy not found")
-    endif()
-endif()
-
-# ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
@@ -186,6 +174,19 @@ if(CINDER_BUILD_BENCHMARKS)
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(benchmark)
+endif()
+
+# ---------------------------------------------------------------------------
+# clang-tidy (after deps, so only applies to our targets)
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_CLANG_TIDY)
+    find_program(CLANG_TIDY_PROGRAM clang-tidy)
+    if(CLANG_TIDY_PROGRAM)
+        set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_PROGRAM}")
+        message(STATUS "Cinder: clang-tidy enabled (${CLANG_TIDY_PROGRAM})")
+    else()
+        message(WARNING "CINDER_ENABLE_CLANG_TIDY is ON but clang-tidy not found")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -9,12 +9,10 @@
 
 namespace cinder {
 
-namespace {
-auto
+static auto
 hash_64(std::string_view data) -> uint64_t {
     return XXH3_64bits(data.data(), data.size());
 }
-} // namespace
 
 ConsistentHashRing::ConsistentHashRing(int vnodes_per_node)
     : vnodes_per_node_(vnodes_per_node) {
