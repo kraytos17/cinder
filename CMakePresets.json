@@ -14,7 +14,7 @@
       {
          "name":"debug-clang",
          "displayName":"Debug (Clang)",
-         "description":"Debug build with Clang",
+         "description":"Debug build with Ninja and Clang",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/debug-clang",
          "cacheVariables":{
@@ -35,40 +35,122 @@
          }
       },
       {
+         "name":"release-clang",
+         "displayName":"Release (Clang)",
+         "description":"Optimized release build with LTO (Clang)",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/release-clang",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Release",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_LTO":"ON"
+         }
+      },
+      {
          "name":"sanitized",
          "displayName":"Sanitized",
-         "description":"Debug build with ASan+UBSan (GCC)",
+         "description":"Debug build with ASan+UBSan, no mimalloc (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/sanitized",
          "cacheVariables":{
             "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_SANITIZE":"ON"
+            "CINDER_ENABLE_ASAN":"ON",
+            "CINDER_ENABLE_UBSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
+      {
+         "name":"asan",
+         "displayName":"ASan+UBSan",
+         "description":"Debug build with ASan+UBSan, no mimalloc",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/asan",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_ASAN":"ON",
+            "CINDER_ENABLE_UBSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
+      {
+         "name":"asan-clang",
+         "displayName":"ASan+UBSan (Clang)",
+         "description":"Clang debug with ASan+UBSan + use-after-scope/return + ignorelist",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/asan-clang",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_ASAN":"ON",
+            "CINDER_ENABLE_UBSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
+      {
+         "name":"msan",
+         "displayName":"MSan (Clang)",
+         "description":"Clang with MemorySanitizer (experimental, needs instrumented libc++)",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/msan",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_MSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
+      {
+         "name":"tsan",
+         "displayName":"TSan",
+         "description":"Debug build with ThreadSanitizer, no mimalloc",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/tsan",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_TSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
+      {
+         "name":"ubsan",
+         "displayName":"UBSan",
+         "description":"Debug build with UBSan only (safe with mimalloc)",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/ubsan",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_UBSAN":"ON"
          }
       },
       {
          "name":"ci",
-         "displayName":"CI",
-         "description":"CI build with clang-tidy (Clang, no ASan — use ci-gcc for sanitizers)",
+         "displayName":"CI (Clang + tidy)",
+         "description":"CI build with clang-tidy (Clang, no ASan)",
          "generator":"Ninja",
-          "binaryDir":"${sourceDir}/build/ci",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_CLANG_TIDY":"ON"
-          }
-       },
-       {
+         "binaryDir":"${sourceDir}/build/ci",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_CLANG_TIDY":"ON"
+         }
+      },
+      {
          "name":"ci-gcc",
-         "displayName":"CI (GCC)",
-         "description":"CI build with GCC, sanitizers, no clang-tidy",
+         "displayName":"CI (GCC + sanitizers)",
+         "description":"CI build with GCC, ASan+UBSan, no mimalloc",
          "generator":"Ninja",
-          "binaryDir":"${sourceDir}/build/ci-gcc",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-             "CINDER_SANITIZE":"ON"
-          }
-       },
+         "binaryDir":"${sourceDir}/build/ci-gcc",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+            "CINDER_ENABLE_ASAN":"ON",
+            "CINDER_ENABLE_UBSAN":"ON",
+            "CINDER_USE_MIMALLOC":"OFF"
+         }
+      },
       {
          "name":"fast",
          "displayName":"Fast (unity + lld)",
@@ -95,8 +177,32 @@
          "configurePreset":"release"
       },
       {
+         "name":"release-clang",
+         "configurePreset":"release-clang"
+      },
+      {
          "name":"sanitized",
          "configurePreset":"sanitized"
+      },
+      {
+         "name":"asan",
+         "configurePreset":"asan"
+      },
+      {
+         "name":"asan-clang",
+         "configurePreset":"asan-clang"
+      },
+      {
+         "name":"msan",
+         "configurePreset":"msan"
+      },
+      {
+         "name":"tsan",
+         "configurePreset":"tsan"
+      },
+      {
+         "name":"ubsan",
+         "configurePreset":"ubsan"
       },
       {
          "name":"ci",
@@ -115,6 +221,46 @@
       {
          "name":"debug",
          "configurePreset":"debug"
+      },
+      {
+         "name":"debug-clang",
+         "configurePreset":"debug-clang"
+      },
+      {
+         "name":"release",
+         "configurePreset":"release"
+      },
+      {
+         "name":"release-clang",
+         "configurePreset":"release-clang"
+      },
+      {
+         "name":"sanitized",
+         "configurePreset":"sanitized"
+      },
+      {
+         "name":"asan",
+         "configurePreset":"asan"
+      },
+      {
+         "name":"asan-clang",
+         "configurePreset":"asan-clang"
+      },
+      {
+         "name":"tsan",
+         "configurePreset":"tsan"
+      },
+      {
+         "name":"ubsan",
+         "configurePreset":"ubsan"
+      },
+      {
+         "name":"msan",
+         "configurePreset":"msan"
+      },
+      {
+         "name":"fast",
+         "configurePreset":"fast"
       },
       {
          "name":"ci",

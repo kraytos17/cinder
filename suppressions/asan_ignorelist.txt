@@ -1,0 +1,16 @@
+# Compile-time ignorelist for AddressSanitizer
+# Suppresses ASan instrumentation/checks for specific functions, files, or globals.
+# Loaded via: -fsanitize-ignorelist=$PWD/suppressions/asan_ignorelist.txt
+#
+# Format:
+#   fun:<glob>    — skip instrumentation for a function
+#   src:<glob>    — skip instrumentation for a source file
+#   global:<glob> — skip redzone checks for a global variable
+#   type:<glob>   — skip checks for a struct/class type
+#
+# Append =init to suppress initialization-order checks:
+#   global:foo=init
+
+# xxHash — large constant lookup tables (intentional, static)
+global:XXH*
+global:xxh*

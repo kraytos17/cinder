@@ -1,0 +1,26 @@
+# LeakSanitizer suppressions
+# Suppresses known false-positive leak reports from third-party libraries.
+# Loaded via: LSAN_OPTIONS=suppressions=$PWD/suppressions/lsan.supp
+#
+# Format: leak:<pattern>
+# Pattern is matched against function name, source file, or binary file name
+# in the symbolized stack trace of the leak report.
+# Use ^ and $ to anchor to start/end of string.
+#
+# IMPORTANT: Only add entries here after confirming the leak is a known
+# false positive (e.g., static caches freed at process exit).
+
+# spdlog — small static pattern caches not freed at exit
+leak:spdlog
+
+# xxHash — constant global lookup tables
+leak:XXH*
+
+# mimalloc — internal per-thread caches (freed on thread exit, not process exit)
+leak:mi_
+
+# GoogleTest — static test registration records
+leak:testing::
+
+# Google Benchmark — static benchmark registration records
+leak:benchmark::

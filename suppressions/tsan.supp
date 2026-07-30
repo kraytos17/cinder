@@ -1,0 +1,28 @@
+# ThreadSanitizer suppressions
+# Suppresses known data-race false positives in third-party libraries.
+# Loaded via: TSAN_OPTIONS=suppressions=$PWD/suppressions/tsan.supp
+#
+# Format:
+#   race:<pattern>    — suppress data race (matched against func/source/global name)
+#   thread:<pattern>  — suppress thread leak
+#
+# * matches any substring. ^ and $ anchor to start/end.
+#
+# IMPORTANT: Suppressions mask real bugs. Review with the library maintainer
+# before adding. When in doubt, run without suppressions and triage.
+
+# spdlog — uses relaxed atomics for hot-pattern formatters (intentional)
+race:spdlog::*
+
+# Asio — reactor pattern with intentional concurrent socket access
+race:asio::detail::*
+
+# mimalloc — allocator fast paths using relaxed ordering (intentional)
+race:mi_
+race:_mi_
+
+# GoogleTest — static test registration globals
+race:testing::*
+
+# Google Benchmark — static benchmark registration globals
+race:benchmark::*

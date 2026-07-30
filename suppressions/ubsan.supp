@@ -1,0 +1,10 @@
+# UndefinedBehaviorSanitizer suppressions
+# Suppresses UBSan reports for known intentional patterns in third-party code.
+# Loaded via: UBSAN_OPTIONS=suppressions=$PWD/suppressions/ubsan.supp
+#
+# Format: <check_name>:<file_or_function_pattern>
+# Only works for RECOVERABLE checks (must pass -fsanitize-recover=...).
+# Check groups like "undefined" can't be used — only fine-grained checks.
+#
+# IMPORTANT: UBSan rarely produces false positives. Only add entries here
+# after confirming the UB is intentional and unavoidable.

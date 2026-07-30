@@ -1,0 +1,11 @@
+# AddressSanitizer runtime suppressions
+# Suppresses errors in external (non-recompiled) shared libraries only.
+# Loaded via: ASAN_OPTIONS=suppressions=$PWD/suppressions/asan.supp
+#
+# This does NOT affect code we compile ourselves with ASan.
+# If you need to suppress a false positive in our own code, use the
+# compile-time ignorelist (asan_ignorelist.txt) or __attribute__((no_sanitize)).
+#
+# Format:
+#   interceptor_via_fun:NameOfCFunction
+#   interceptor_via_lib:NameOfTheLibrary
