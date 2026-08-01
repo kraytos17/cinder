@@ -8,6 +8,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "cinder/cluster/clock.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
 
@@ -16,7 +17,7 @@ namespace cinder {
 class LfuStore : public CacheStore {
   public:
 
-    explicit LfuStore(size_t capacity_bytes);
+    explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
     auto put(const std::string& key, std::string value,
         std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
@@ -24,12 +25,14 @@ class LfuStore : public CacheStore {
     auto remove(const std::string& key) -> bool override;
     auto size() const -> size_t override;
     auto evictExpired() -> size_t override;
+    auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> override;
+    auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> override;
 
   private:
 
     struct Node {
         std::string key;
-        CacheEntry entry;
+        VersionedEntry entry;
         size_t freq = 1;
     };
 
@@ -48,5 +51,6 @@ class LfuStore : public CacheStore {
     size_t min_freq_ = 1;
     size_t capacity_bytes_;
     size_t current_bytes_ = 0;
+    Version next_version_ = 1;
 };
 } // namespace cinder

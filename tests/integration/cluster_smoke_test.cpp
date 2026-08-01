@@ -43,10 +43,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Set, .key = "k", .value = "v", .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -54,10 +54,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
         EXPECT_EQ(*resp.value().value, "v");
@@ -67,10 +67,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Del, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -78,10 +78,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
     }
 
@@ -89,10 +89,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Ping, .key = {}, .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -128,11 +128,12 @@ TEST(ClusterSmokeTest, TTLExpiry) {
             .value = "ephemeral",
             .ttl = std::chrono::milliseconds(200),
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -144,11 +145,12 @@ TEST(ClusterSmokeTest, TTLExpiry) {
             .value = {},
             .ttl = std::nullopt,
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -163,11 +165,12 @@ TEST(ClusterSmokeTest, TTLExpiry) {
             .value = {},
             .ttl = std::nullopt,
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
     }
 
@@ -207,10 +210,10 @@ TEST(ClusterSmokeTest, CapacityEviction) {
     {
         Request req{.opcode = Opcode::Set, .key = "k1", .value = val};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -218,10 +221,10 @@ TEST(ClusterSmokeTest, CapacityEviction) {
     {
         Request req{.opcode = Opcode::Set, .key = "k2", .value = val};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -229,10 +232,10 @@ TEST(ClusterSmokeTest, CapacityEviction) {
     {
         Request req{.opcode = Opcode::Set, .key = "k3", .value = val};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -244,11 +247,12 @@ TEST(ClusterSmokeTest, CapacityEviction) {
             .value = {},
             .ttl = std::nullopt,
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
     }
 
@@ -260,11 +264,12 @@ TEST(ClusterSmokeTest, CapacityEviction) {
             .value = {},
             .ttl = std::nullopt,
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
         EXPECT_EQ(*resp.value().value, val);
@@ -304,10 +309,10 @@ TEST(ClusterSmokeTest, LargeValue) {
         };
 
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -319,11 +324,12 @@ TEST(ClusterSmokeTest, LargeValue) {
             .value = {},
             .ttl = std::nullopt,
         };
+
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.hasValue());
+        ASSERT_TRUE(encoded.has_value());
         (void)asio::write(socket, asio::buffer(encoded.value()));
         auto resp = readResponse(socket);
-        ASSERT_TRUE(resp.hasValue());
+        ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
         EXPECT_EQ(resp.value().value->size(), big_val.size());

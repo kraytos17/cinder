@@ -16,6 +16,7 @@ cinder_add_test(cinder_unit_tests
     unit/protocol_framing_test.cpp
     unit/status_test.cpp
     unit/client_routing_test.cpp
+    unit/versioned_store_test.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
 

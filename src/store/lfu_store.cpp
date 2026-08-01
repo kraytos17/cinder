@@ -5,37 +5,45 @@
 
 namespace cinder {
 
-LfuStore::LfuStore(size_t capacity_bytes)
-    : capacity_bytes_(capacity_bytes) {}
+LfuStore::LfuStore(size_t capacity_bytes, Clock* clock)
+    : CacheStore(clock),
+      capacity_bytes_(capacity_bytes) {}
 
 auto
 LfuStore::put(const std::string& key, std::string value,
     std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
+    VersionedEntry entry;
+    entry.value = std::move(value);
+    entry.version = next_version_++;
+    if (ttl.has_value()) {
+        entry.expires_at = now() + *ttl;
+        entry.has_ttl = true;
+    }
+    return putVersioned(key, std::move(entry));
+}
+
+auto
+LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> {
     std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it != index_.end()) {
         auto& node = it->second;
-        current_bytes_ -= node->entry.value.size();
-        node->entry.value = std::move(value);
-        if (ttl.has_value()) {
-            node->entry.expires_at = std::chrono::steady_clock::now() + *ttl;
-            node->entry.has_ttl = true;
-        } else {
-            node->entry.has_ttl = false;
+        // Idempotent apply: reject stale/equal-lower writes (replay-safe).
+        if (entry.version < node->entry.version) {
+            return ok();
+        }
+        if (entry.version == node->entry.version
+            && entry.writer_node_hash < node->entry.writer_node_hash) {
+            return ok();
         }
 
+        current_bytes_ -= node->entry.value.size();
+        node->entry = std::move(entry);
         current_bytes_ += node->entry.value.size();
         incrementFreq(node);
         evictIfNeeded();
         return ok();
-    }
-
-    CacheEntry entry;
-    entry.value = std::move(value);
-    if (ttl.has_value()) {
-        entry.expires_at = std::chrono::steady_clock::now() + *ttl;
-        entry.has_ttl = true;
     }
 
     size_t entry_size = key.size() + entry.value.size() + sizeof(Node);
@@ -62,7 +70,7 @@ LfuStore::get(const std::string& key) -> std::optional<std::string> {
     }
 
     auto& node = it->second;
-    if (node->entry.has_ttl && node->entry.expires_at <= std::chrono::steady_clock::now()) {
+    if (node->entry.has_ttl && node->entry.expires_at <= now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
         removeFromFreqBucket(node);
         lfu_list_.erase(node);
@@ -72,6 +80,26 @@ LfuStore::get(const std::string& key) -> std::optional<std::string> {
 
     incrementFreq(node);
     return node->entry.value;
+}
+
+auto
+LfuStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
+    std::scoped_lock lock(mutex_);
+
+    auto it = index_.find(key);
+    if (it == index_.end()) {
+        return std::nullopt;
+    }
+
+    auto& node = it->second;
+    if (node->entry.has_ttl && node->entry.expires_at <= now()) {
+        current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+        removeFromFreqBucket(node);
+        lfu_list_.erase(node);
+        index_.erase(it);
+        return std::nullopt;
+    }
+    return node->entry;
 }
 
 auto
@@ -101,10 +129,10 @@ auto
 LfuStore::evictExpired() -> size_t {
     std::scoped_lock lock(mutex_);
 
-    auto now = std::chrono::steady_clock::now();
+    auto current = now();
     size_t evicted = 0;
     for (auto it = lfu_list_.begin(); it != lfu_list_.end();) {
-        if (it->entry.has_ttl && it->entry.expires_at <= now) {
+        if (it->entry.has_ttl && it->entry.expires_at <= current) {
             current_bytes_ -= it->key.size() + it->entry.value.size() + sizeof(Node);
             removeFromFreqBucket(it);
             index_.erase(it->key);

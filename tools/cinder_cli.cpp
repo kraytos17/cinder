@@ -1,8 +1,12 @@
+#include <array>
 #include <asio.hpp>
+#include <charconv>
 #include <CLI/CLI.hpp>
 #include <cstring>
 #include <iostream>
+#include <print>
 #include <string>
+#include <string_view>
 
 #include "cinder/net/protocol.hpp"
 
@@ -39,8 +43,10 @@ connect(asio::io_context& io, const std::string& host, uint16_t port)
     tcp::socket socket(io);
     tcp::resolver resolver(io);
     asio::error_code ec;
-
-    auto endpoints = resolver.resolve(host, std::to_string(port), ec);
+    std::array<char, 6> port_buf{};
+    auto [end, _] = std::to_chars(port_buf.data(), port_buf.data() + port_buf.size(), port);
+    auto endpoints =
+        resolver.resolve(host, std::string_view(port_buf.data(), end - port_buf.data()), ec);
     if (ec) {
         return cinder::err<tcp::socket>(
             cinder::Error(cinder::Errc::InternalError, "resolve failed"));
@@ -57,9 +63,8 @@ connect(asio::io_context& io, const std::string& host, uint16_t port)
 static auto
 sendRequest(tcp::socket& socket, const cinder::net::Request& req)
     -> cinder::Result<cinder::net::Response> {
-
     auto encoded = cinder::net::encode(req);
-    if (!encoded.hasValue()) {
+    if (!encoded.has_value()) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InvalidArgument, "encode failed"));
     }
@@ -120,12 +125,12 @@ main(int argc, char* argv[]) -> int {
 
     asio::io_context io;
     auto sock_result = connect(io, host, port);
-    if (!sock_result.hasValue()) {
-        std::cerr << "connect failed\n";
+    if (!sock_result.has_value()) {
+        std::println(std::cerr, "connect failed");
         return 1;
     }
-    auto& socket = sock_result.value();
 
+    auto& socket = sock_result.value();
     cinder::net::Request req;
     if (cmd == "get") {
         req.opcode = cinder::net::Opcode::Get;
@@ -143,23 +148,23 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "ping") {
         req.opcode = cinder::net::Opcode::Ping;
     } else {
-        std::cerr << "unknown command: " << cmd << "\n";
+        std::println(std::cerr, "unknown command: {}", cmd);
         return 1;
     }
 
     auto res = sendRequest(socket, req);
-    if (!res.hasValue()) {
-        std::cerr << "request failed: " << res.error().message() << "\n";
+    if (!res.has_value()) {
+        std::println(std::cerr, "request failed: {}", res.error().message());
         return 1;
     }
 
     auto& response = res.value();
     if (cmd == "ping") {
-        std::cout << "pong\n";
+        std::println("pong");
     } else if (response.value.has_value()) {
-        std::cout << response.value.value() << "\n";
+        std::println("{}", response.value.value());
     } else {
-        std::cout << statusString(response.status) << "\n";
+        std::println("{}", statusString(response.status));
     }
     return 0;
 }

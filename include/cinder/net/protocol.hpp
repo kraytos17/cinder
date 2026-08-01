@@ -9,11 +9,12 @@
 #include <vector>
 
 #include "cinder/common/status.hpp"
+#include "cinder/common/types.hpp"
 
 namespace cinder::net {
 
 constexpr uint8_t K_MAGIC = 0xC1;
-constexpr uint8_t K_VERSION = 1;
+constexpr uint8_t K_VERSION = 2;
 constexpr size_t K_MAX_MESSAGE_SIZE = 67'108'864;
 constexpr size_t K_FRAME_HEADER_SIZE = 7;
 
@@ -23,6 +24,8 @@ enum class Opcode : uint8_t {
     Del = 3,
     Ping = 4,
     Gossip = 5,
+    Replicate = 6,
+    Hint = 7,
 };
 
 struct Request {
@@ -30,6 +33,9 @@ struct Request {
     std::string key;
     std::string value;
     std::optional<std::chrono::milliseconds> ttl = std::nullopt;
+    // Replication metadata — present on Set/Replicate/Hint writes.
+    Version version = 0;
+    uint64_t writer_node_hash = 0;
 };
 
 struct Response {

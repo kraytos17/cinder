@@ -82,7 +82,7 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     }
 
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
-    if (!result.hasValue()) {
+    if (!result.has_value()) {
         Response res{.status = Errc::InvalidArgument, .value = std::nullopt};
         sendResponse(res);
         return;
@@ -115,7 +115,7 @@ TcpConnection::handleRequest(const Request& req) {
         }
         case Opcode::Set: {
             auto result = store_.put(req.key, req.value, req.ttl);
-            res.status = result.hasValue() ? Errc::OK : result.error().code();
+            res.status = result.has_value() ? Errc::OK : result.error().code();
             break;
         }
         case Opcode::Del: {
@@ -127,9 +127,14 @@ TcpConnection::handleRequest(const Request& req) {
             res.status = Errc::OK;
             break;
         }
-        default: {
+        case Opcode::Gossip:
+        case Opcode::Replicate:
+        case Opcode::Hint: {
             res.status = Errc::NotSupported;
             break;
+        }
+        default: {
+            std::unreachable();
         }
     }
 
@@ -140,7 +145,7 @@ TcpConnection::handleRequest(const Request& req) {
 void
 TcpConnection::sendResponse(const Response& res) {
     auto result = encode(res);
-    if (!result.hasValue()) {
+    if (!result.has_value()) {
         return;
     }
 

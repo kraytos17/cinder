@@ -36,27 +36,23 @@ Logger::shutdown() {
 }
 
 void
-Logger::trace(std::string_view msg) {
-    spdlog::trace("{}", msg);
-}
-
-void
-Logger::debug(std::string_view msg) {
-    spdlog::debug("{}", msg);
-}
-
-void
-Logger::info(std::string_view msg) {
-    spdlog::info("{}", msg);
-}
-
-void
-Logger::warn(std::string_view msg) {
-    spdlog::warn("{}", msg);
-}
-
-void
-Logger::error(std::string_view msg) {
-    spdlog::error("{}", msg);
+Logger::emit(LogLevel level, std::string_view msg) {
+    switch (level) {
+        case LogLevel::Trace:
+            spdlog::trace("{}", msg);
+            break;
+        case LogLevel::Debug:
+            spdlog::debug("{}", msg);
+            break;
+        case LogLevel::Info:
+            spdlog::info("{}", msg);
+            break;
+        case LogLevel::Warn:
+            spdlog::warn("{}", msg);
+            break;
+        case LogLevel::Error:
+            spdlog::error("{}", msg);
+            break;
+    }
 }
 } // namespace cinder

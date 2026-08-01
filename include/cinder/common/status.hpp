@@ -1,7 +1,8 @@
 #pragma once
 
 #include <cstdint>
-#include <optional>
+#include <expected>
+#include <source_location>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -23,98 +24,48 @@ enum class Errc : uint8_t {
 class Error {
   public:
 
-    explicit Error(Errc code, std::string message = {})
+    explicit Error(Errc code, std::string message = {},
+        std::source_location loc = std::source_location::current())
         : code_(code),
-          message_(std::move(message)) {}
+          message_(std::move(message)),
+          location_(loc) {}
 
     [[nodiscard]] auto code() const noexcept -> Errc { return code_; }
 
     [[nodiscard]] auto message() const noexcept -> std::string_view { return message_; }
 
+    [[nodiscard]] auto location() const noexcept -> const std::source_location& {
+        return location_;
+    }
+
   private:
 
     Errc code_;
     std::string message_;
+    std::source_location location_;
 };
 
-template <typename T> class Result {
-  public:
-
-    using value_type = T;
-
-    explicit Result(T value)
-        : value_(std::move(value)) {}
-
-    explicit Result(Error error)
-        : error_(std::move(error)) {}
-
-    static auto ok(T value) -> Result { return Result(std::move(value)); }
-
-    static auto err(Error error) -> Result { return Result(std::move(error)); }
-
-    [[nodiscard]] auto hasValue() const noexcept -> bool { return value_.has_value(); }
-
-    auto value() & -> T& { return value_.value(); }
-
-    auto value() const& -> const T& { return value_.value(); }
-
-    auto value() && -> T { return std::move(value_.value()); }
-
-    [[nodiscard]] auto error() const -> const Error& { return error_; }
-
-    auto valueOr(T fallback) const& -> T { return hasValue() ? value() : fallback; }
-
-    auto valueOr(T fallback) && -> T { return hasValue() ? std::move(*this).value() : fallback; }
-
-  private:
-
-    std::optional<T> value_;
-    Error error_{Errc::OK, {}};
-};
-
-template <> class Result<void> {
-  public:
-
-    Result()
-        : has_value_(true) {}
-
-    explicit Result(Error error)
-        : has_value_(false),
-          error_(std::move(error)) {}
-
-    static auto ok() -> Result { return {}; }
-
-    static auto err(Error error) -> Result { return Result(std::move(error)); }
-
-    [[nodiscard]] auto hasValue() const noexcept -> bool { return has_value_; }
-
-    [[nodiscard]] auto error() const -> const Error& { return error_; }
-
-  private:
-
-    bool has_value_;
-    Error error_{Errc::OK, {}};
-};
+template <typename T> using Result = std::expected<T, Error>;
 
 template <typename T>
 auto
 ok(T value) -> Result<T> {
-    return Result<T>::ok(std::move(value));
+    return std::move(value);
 }
 
 inline auto
 ok() -> Result<void> {
-    return Result<void>::ok();
-}
-
-inline auto
-err(Error error) -> Result<void> {
-    return Result<void>::err(std::move(error));
+    return {};
 }
 
 template <typename T>
 auto
 err(Error error) -> Result<T> {
-    return Result<T>::err(std::move(error));
+    return std::unexpected(std::move(error));
+}
+
+inline auto
+err(Error error) -> Result<void> {
+    return std::unexpected(std::move(error));
 }
 } // namespace cinder

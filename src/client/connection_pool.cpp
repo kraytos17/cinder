@@ -1,6 +1,9 @@
 #include "cinder/client/connection_pool.hpp"
 
+#include <array>
 #include <asio.hpp>
+#include <charconv>
+#include <string_view>
 
 #include "cinder/net/protocol.hpp"
 
@@ -22,21 +25,21 @@ ConnectionPool::~ConnectionPool() {
 auto
 ConnectionPool::send(const NodeId& node_id, const net::Request& req) -> Result<net::Response> {
     auto entry_res = getOrConnect(node_id);
-    if (!entry_res.hasValue()) {
-        return Result<net::Response>::err(entry_res.error());
+    if (!entry_res.has_value()) {
+        return err<net::Response>(entry_res.error());
     }
 
     auto& socket = entry_res.value()->socket;
     auto send_res = sendFramed(socket, req);
-    if (!send_res.hasValue()) {
+    if (!send_res.has_value()) {
         entry_res.value()->connected = false;
-        return Result<net::Response>::err(send_res.error());
+        return err<net::Response>(send_res.error());
     }
 
     auto recv_res = recvFramed(socket);
-    if (!recv_res.hasValue()) {
+    if (!recv_res.has_value()) {
         entry_res.value()->connected = false;
-        return Result<net::Response>::err(recv_res.error());
+        return err<net::Response>(recv_res.error());
     }
     return ok(std::move(recv_res.value()));
 }
@@ -51,6 +54,7 @@ ConnectionPool::shutdown() {
             entry.connected = false;
         }
     }
+
     connections_.clear();
     node_addrs_.clear();
 }
@@ -59,12 +63,12 @@ auto
 ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
     auto addr_it = node_addrs_.find(node_id);
     if (addr_it == node_addrs_.end()) {
-        return Result<PoolEntry*>::err(Error(Errc::NotFound, "unknown node"));
+        return err<PoolEntry*>(Error(Errc::NotFound, "unknown node"));
     }
 
     auto conn_it = connections_.find(node_id);
     if (conn_it != connections_.end() && conn_it->second.connected) {
-        return Result<PoolEntry*>::ok(&conn_it->second);
+        return ok(&conn_it->second);
     }
     if (conn_it == connections_.end()) {
         auto emplaced = connections_.emplace(node_id, PoolEntry{tcp::socket(io_), false});
@@ -73,24 +77,27 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
 
     auto& entry = conn_it->second;
     if (entry.connected) {
-        return Result<PoolEntry*>::ok(&entry);
+        return ok(&entry);
     }
 
     std::error_code ec;
     auto& addr = addr_it->second;
     tcp::resolver resolver(io_);
-    auto endpoints = resolver.resolve(addr.host, std::to_string(addr.port), ec);
+    std::array<char, 6> port_buf{};
+    auto [end, _] = std::to_chars(port_buf.data(), port_buf.data() + port_buf.size(), addr.port);
+    auto endpoints =
+        resolver.resolve(addr.host, std::string_view(port_buf.data(), end - port_buf.data()), ec);
     if (ec) {
-        return Result<PoolEntry*>::err(Error(Errc::NotReady, "resolve failed: " + ec.message()));
+        return err<PoolEntry*>(Error(Errc::NotReady, "resolve failed: " + ec.message()));
     }
 
     asio::connect(entry.socket, endpoints, ec);
     if (ec) {
-        return Result<PoolEntry*>::err(Error(Errc::NotReady, "connect failed: " + ec.message()));
+        return err<PoolEntry*>(Error(Errc::NotReady, "connect failed: " + ec.message()));
     }
 
     entry.connected = true;
-    return Result<PoolEntry*>::ok(&entry);
+    return ok(&entry);
 }
 
 auto
@@ -107,7 +114,7 @@ ConnectionPool::readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<
 auto
 ConnectionPool::sendFramed(tcp::socket& s, const net::Request& req) -> Result<void> {
     auto encoded = net::encode(req);
-    if (!encoded.hasValue()) {
+    if (!encoded.has_value()) {
         return err(encoded.error());
     }
 
@@ -123,18 +130,18 @@ auto
 ConnectionPool::recvFramed(tcp::socket& s) -> Result<net::Response> {
     std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
     auto header_res = readExactly(s, header);
-    if (!header_res.hasValue()) {
-        return Result<net::Response>::err(header_res.error());
+    if (!header_res.has_value()) {
+        return err<net::Response>(header_res.error());
     }
     if (header[0] != std::byte{net::K_MAGIC}) {
-        return Result<net::Response>::err(Error(Errc::InternalError, "bad magic in response"));
+        return err<net::Response>(Error(Errc::InternalError, "bad magic in response"));
     }
 
     uint32_t payload_len = 0;
     std::memcpy(&payload_len, &header[3], sizeof(payload_len));
     payload_len = std::byteswap(payload_len);
     if (payload_len > net::K_MAX_MESSAGE_SIZE) {
-        return Result<net::Response>::err(Error(Errc::InternalError, "response payload too large"));
+        return err<net::Response>(Error(Errc::InternalError, "response payload too large"));
     }
 
     std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
@@ -142,8 +149,8 @@ ConnectionPool::recvFramed(tcp::socket& s) -> Result<net::Response> {
 
     auto payload_span = std::span(frame).subspan(net::K_FRAME_HEADER_SIZE);
     auto payload_res = readExactly(s, payload_span);
-    if (!payload_res.hasValue()) {
-        return Result<net::Response>::err(payload_res.error());
+    if (!payload_res.has_value()) {
+        return err<net::Response>(payload_res.error());
     }
     return net::decodeResponse(frame);
 }

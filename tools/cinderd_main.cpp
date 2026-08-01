@@ -24,7 +24,7 @@ main(int argc, char* argv[]) -> int {
     CLI11_PARSE(app, argc, argv);
 
     cinder::Logger::init("cinderd", cinder::LogLevel::Info);
-    cinder::Logger::info("starting cinderd on port " + std::to_string(port));
+    cinder::Logger::info("starting cinderd on port {}", port);
 
     cinder::ConsistentHashRing ring(150);
     ring.addNode(node_id);
@@ -48,12 +48,12 @@ main(int argc, char* argv[]) -> int {
     cinder::net::TcpServer server(io, port, store, ring, node_id);
 
     auto result = server.start();
-    if (!result.hasValue()) {
+    if (!result.has_value()) {
         cinder::Logger::error("failed to start server");
         return 1;
     }
 
-    cinder::Logger::info("listening on port " + std::to_string(port));
+    cinder::Logger::info("listening on port {}", port);
     asio::signal_set signals(io, SIGINT, SIGTERM);
     signals.async_wait([&](std::error_code, int) {
         cinder::Logger::info("shutting down...");

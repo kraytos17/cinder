@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <unordered_set>
 #include <xxhash.h>
 
@@ -39,17 +40,9 @@ ConsistentHashRing::addNode(const NodeId& node_id) {
 void
 ConsistentHashRing::removeNode(std::string_view node_id) {
     auto old = snapshot_.load();
-    auto snap = std::make_shared<RingSnapshot>();
-    for (const auto& entry : old->ring) {
-        if (entry.second != node_id) {
-            snap->ring.push_back(entry);
-        }
-    }
-    for (const auto& id : old->physical_nodes) {
-        if (id != node_id) {
-            snap->physical_nodes.push_back(id);
-        }
-    }
+    auto snap = std::make_shared<RingSnapshot>(*old);
+    std::erase_if(snap->ring, [&](const auto& entry) { return entry.second == node_id; });
+    std::erase_if(snap->physical_nodes, [&](const auto& id) { return id == node_id; });
     snapshot_.store(std::move(snap));
 }
 
@@ -102,7 +95,7 @@ ConsistentHashRing::getNodes(std::string_view key, int replica_count) const -> s
 
 auto
 ConsistentHashRing::hashVnode(std::string_view node_id, int vnode_index) -> uint64_t {
-    auto label = std::string(node_id) + "-" + std::to_string(vnode_index);
+    auto label = std::format("{}-{}", node_id, vnode_index);
     return hash64(label);
 }
 

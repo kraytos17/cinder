@@ -7,60 +7,68 @@
 namespace cinder {
 namespace {
 
-static void
-BM_LruStore_Put(benchmark::State& state) {
+void
+bmLruStorePut(benchmark::State& state) {
     LruStore store(static_cast<size_t>(state.range(0)));
     int i = 0;
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     for (auto _ : state) {
-        store.put(std::to_string(i++), std::string(256, 'x'));
+        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        (void)store.put(std::to_string(i++), std::string(256, 'x'));
     }
 }
 
 // NOLINTNEXTLINE
-BENCHMARK(BM_LruStore_Put)->Range(1 << 16, 1 << 20);
+BENCHMARK(bmLruStorePut)->Range(1 << 16, 1 << 20);
 
-static void
-BM_LruStore_Get(benchmark::State& state) {
+void
+bmLruStoreGet(benchmark::State& state) {
     LruStore store(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < 1'000; i++) {
-        store.put(std::to_string(i), std::string(256, 'x'));
+        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        (void)store.put(std::to_string(i), std::string(256, 'x'));
     }
 
     int i = 0;
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));
     }
 }
 
 // NOLINTNEXTLINE
-BENCHMARK(BM_LruStore_Get)->Range(1 << 16, 1 << 20);
+BENCHMARK(bmLruStoreGet)->Range(1 << 16, 1 << 20);
 
-static void
-BM_LfuStore_Put(benchmark::State& state) {
+void
+bmLfuStorePut(benchmark::State& state) {
     LfuStore store(static_cast<size_t>(state.range(0)));
     int i = 0;
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     for (auto _ : state) {
-        store.put(std::to_string(i++), std::string(256, 'x'));
+        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        (void)store.put(std::to_string(i++), std::string(256, 'x'));
     }
 }
 
 // NOLINTNEXTLINE
-BENCHMARK(BM_LfuStore_Put)->Range(1 << 16, 1 << 20);
+BENCHMARK(bmLfuStorePut)->Range(1 << 16, 1 << 20);
 
-static void
-BM_LfuStore_Get(benchmark::State& state) {
+void
+bmLfuStoreGet(benchmark::State& state) {
     LfuStore store(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < 1'000; i++) {
-        store.put(std::to_string(i), std::string(256, 'x'));
+        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        (void)store.put(std::to_string(i), std::string(256, 'x'));
     }
 
     int i = 0;
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));
     }
 }
 
 // NOLINTNEXTLINE
-BENCHMARK(BM_LfuStore_Get)->Range(1 << 16, 1 << 20);
+BENCHMARK(bmLfuStoreGet)->Range(1 << 16, 1 << 20);
 } // namespace
 } // namespace cinder
