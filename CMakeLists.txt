@@ -24,7 +24,6 @@ endif()
 option(CINDER_BUILD_TESTS           "Build unit/integration tests"           ON)
 option(CINDER_BUILD_BENCHMARKS      "Build throughput/latency benchmarks"    ON)
 option(CINDER_ENABLE_TLS            "Build with Asio SSL / OpenSSL support"  OFF)
-option(CINDER_USE_MIMALLOC          "Link mimalloc as the global allocator"  ON)
 option(CINDER_ENABLE_ASAN           "Build with AddressSanitizer"            OFF)
 option(CINDER_ENABLE_UBSAN          "Build with UndefinedBehaviorSanitizer"  OFF)
 option(CINDER_ENABLE_TSAN           "Build with ThreadSanitizer"             OFF)
@@ -32,8 +31,6 @@ option(CINDER_ENABLE_MSAN           "Build with MemorySanitizer (Clang, needs in
 option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF)
 option(CINDER_UNITY_BUILD           "Enable unity/jumbo builds"              OFF)
 option(CINDER_ENABLE_CLANG_TIDY     "Run clang-tidy during compilation"      OFF)
-option(CINDER_USE_FAST_LINKER       "Use mold/lld linker if available"       ON)
-option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"   ON)
 option(CINDER_USE_PIPE              "Use -pipe (pipes over temp files)"      ON)
 option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
 
@@ -48,21 +45,6 @@ if(CCACHE_PROGRAM)
     message(STATUS "Cinder: using ccache (basedir: ${CCACHE_BASEDIR})")
 endif()
 
-if(CINDER_USE_FAST_LINKER)
-    find_program(MOLD_LINKER mold)
-    find_program(LLD_LINKER ld.lld)
-
-    if(MOLD_LINKER)
-        set(CMAKE_EXE_LINKER_FLAGS    "-fuse-ld=mold ${CMAKE_EXE_LINKER_FLAGS}")
-        set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=mold ${CMAKE_SHARED_LINKER_FLAGS}")
-        message(STATUS "Cinder: using mold linker")
-    elseif(LLD_LINKER)
-        set(CMAKE_EXE_LINKER_FLAGS    "-fuse-ld=lld ${CMAKE_EXE_LINKER_FLAGS}")
-        set(CMAKE_SHARED_LINKER_FLAGS "-fuse-ld=lld ${CMAKE_SHARED_LINKER_FLAGS}")
-        message(STATUS "Cinder: using lld linker")
-    endif()
-endif()
-
 # ---------------------------------------------------------------------------
 # Sanitizers
 # ---------------------------------------------------------------------------
@@ -72,13 +54,6 @@ endif()
 
 if(CINDER_ENABLE_MSAN AND (CINDER_ENABLE_ASAN OR CINDER_ENABLE_TSAN))
     message(FATAL_ERROR "MSan, ASan, and TSan each use conflicting shadow-memory layouts — mutual exclusion required")
-endif()
-
-if(CINDER_ENABLE_ASAN OR CINDER_ENABLE_TSAN OR CINDER_ENABLE_MSAN)
-    if(CINDER_USE_MIMALLOC)
-        message(WARNING "mimalloc conflicts with ASan/TSAN/MSan/LSan — forcing CINDER_USE_MIMALLOC=OFF")
-        set(CINDER_USE_MIMALLOC OFF)
-    endif()
 endif()
 
 set(SANITIZER_FLAGS "")
@@ -133,14 +108,6 @@ endif()
 # ---------------------------------------------------------------------------
 # Compile-time optimizations
 # ---------------------------------------------------------------------------
-if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
-    add_compile_options(-gsplit-dwarf)
-    if(CINDER_USE_FAST_LINKER)
-        add_link_options(-Wl,--gdb-index)
-    endif()
-    message(STATUS "Cinder: split-dwarf enabled")
-endif()
-
 if(CINDER_USE_PIPE)
     add_compile_options(-pipe)
 endif()
@@ -158,10 +125,11 @@ endif()
 find_package(Threads REQUIRED)
 include(FetchContent)
 
-# Share fetchcontent downloads across all presets — avoids 7 clones per
-# new build/asan/tsan/etc directory. Sources are cached in .cache/ (already
-# gitignored); only the compiled objects are per-preset.
-set(FETCHCONTENT_BASE_DIR "${CMAKE_SOURCE_DIR}/.cache/fetchcontent")
+# Share fetchcontent source downloads across all presets — avoids 7 clones
+# per new build/asan/tsan/etc directory. Each dep's SOURCE_DIR points to a
+# shared .cache/sources/<name> location; build trees remain per-preset under
+# binaryDir/_deps/<name>-build so compiler/sanitizer flags never collide.
+# .cache/ is already gitignored.
 
 # Retry flaky git clones instead of failing configure outright
 set(CMAKE_EP_GIT_CLONE_RETRY_COUNT 3)
@@ -181,6 +149,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
     GIT_TAG        asio-1-38-2
     GIT_SHALLOW    TRUE
+    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/asio
 )
 FetchContent_MakeAvailable(asio)
 add_library(asio INTERFACE)
@@ -196,6 +165,7 @@ FetchContent_Declare(
     GIT_TAG        v0.8.3
     SOURCE_SUBDIR  cmake_unofficial
     GIT_SHALLOW    TRUE
+    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/xxhash
 )
 FetchContent_MakeAvailable(xxhash)
 
@@ -204,6 +174,7 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG        v1.17.0
     GIT_SHALLOW    TRUE
+    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/spdlog
 )
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
@@ -213,20 +184,9 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
     GIT_TAG        v2.6.2
     GIT_SHALLOW    TRUE
+    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/cli11
 )
 FetchContent_MakeAvailable(CLI11)
-
-if(CINDER_USE_MIMALLOC)
-    FetchContent_Declare(
-        mimalloc
-        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-        GIT_TAG        v3.4.3
-        GIT_SHALLOW    TRUE
-    )
-    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
-    set(MI_BUILD_TESTS   OFF CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(mimalloc)
-endif()
 
 if(CINDER_ENABLE_TLS)
     find_package(OpenSSL REQUIRED)
@@ -239,6 +199,7 @@ if(CINDER_BUILD_TESTS)
         GIT_REPOSITORY https://github.com/google/googletest.git
         GIT_TAG        v1.17.0
         GIT_SHALLOW    TRUE
+        SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/googletest
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -250,9 +211,11 @@ if(CINDER_BUILD_BENCHMARKS)
         GIT_REPOSITORY https://github.com/google/benchmark.git
         GIT_TAG        v1.9.5
         GIT_SHALLOW    TRUE
+        SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/benchmark
     )
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(benchmark)
 endif()
 
@@ -288,10 +251,6 @@ target_link_libraries(cinder_core PUBLIC
 if(CINDER_ENABLE_TLS)
     target_link_libraries(cinder_core PUBLIC OpenSSL::SSL OpenSSL::Crypto)
     target_compile_definitions(cinder_core PUBLIC CINDER_ENABLE_TLS)
-endif()
-
-if(CINDER_USE_MIMALLOC)
-    target_link_libraries(cinder_core PUBLIC mimalloc-static)
 endif()
 
 target_compile_options(cinder_core PRIVATE

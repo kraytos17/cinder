@@ -38,6 +38,9 @@ Checks: [
   '-cert-arr39-c',                              # alias of bugprone-sizeof-expression
   '-cert-err58-cpp',                            # noisy for static/global objects that can throw
 
+  # --- clang-analyzer ---
+  '-clang-analyzer-optin.cplusplus.VirtualCall',# false positive in ASIO resolver destruction
+
   # --- misc ---
   '-misc-const-correctness',                    # false-positive prone
   '-misc-include-cleaner',                      # useful in theory, far too many hits in practice
@@ -134,5 +137,5 @@ CheckOptions:
     value: 'h,hh,hpp,hxx'
 
 HeaderFilterRegex: '(^|/)(src|include)/cinder/.*'
-ExcludeHeaderFilterRegex: '(^|/)(build|_deps|third[-_]?party|external)/'
+ExcludeHeaderFilterRegex: '(^|/)(build|_deps|third[-_]?party|external|\.cache)/'
 FormatStyle: file

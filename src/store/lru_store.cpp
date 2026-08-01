@@ -27,7 +27,7 @@ LruStore::put(const std::string& key, std::string value,
 
         current_bytes_ += node->entry.value.size();
         touch(node);
-        evict_if_needed();
+        evictIfNeeded();
         return ok();
     }
 
@@ -46,7 +46,7 @@ LruStore::put(const std::string& key, std::string value,
     lru_list_.push_front({.key = key, .entry = std::move(entry)});
     index_[key] = lru_list_.begin();
     current_bytes_ += entry_size;
-    evict_if_needed();
+    evictIfNeeded();
     return ok();
 }
 
@@ -94,7 +94,7 @@ LruStore::size() const -> size_t {
 }
 
 auto
-LruStore::evict_expired() -> size_t {
+LruStore::evictExpired() -> size_t {
     std::scoped_lock lock(mutex_);
 
     auto now = std::chrono::steady_clock::now();
@@ -118,14 +118,14 @@ LruStore::touch(ListIt it) {
 }
 
 void
-LruStore::evict_if_needed() {
+LruStore::evictIfNeeded() {
     while (current_bytes_ > capacity_bytes_ && !lru_list_.empty()) {
-        evict_one();
+        evictOne();
     }
 }
 
 void
-LruStore::evict_one() {
+LruStore::evictOne() {
     auto& node = lru_list_.back();
     current_bytes_ -= node.key.size() + node.entry.value.size() + sizeof(Node);
     index_.erase(node.key);

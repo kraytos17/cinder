@@ -42,17 +42,17 @@ template <typename T> class Result {
 
     using value_type = T;
 
-    Result(T value)
+    explicit Result(T value)
         : value_(std::move(value)) {}
 
-    Result(Error error)
+    explicit Result(Error error)
         : error_(std::move(error)) {}
 
     static auto ok(T value) -> Result { return Result(std::move(value)); }
 
     static auto err(Error error) -> Result { return Result(std::move(error)); }
 
-    [[nodiscard]] auto has_value() const noexcept -> bool { return value_.has_value(); }
+    [[nodiscard]] auto hasValue() const noexcept -> bool { return value_.has_value(); }
 
     auto value() & -> T& { return value_.value(); }
 
@@ -62,9 +62,9 @@ template <typename T> class Result {
 
     [[nodiscard]] auto error() const -> const Error& { return error_; }
 
-    auto value_or(T fallback) const& -> T { return has_value() ? value() : fallback; }
+    auto valueOr(T fallback) const& -> T { return hasValue() ? value() : fallback; }
 
-    auto value_or(T fallback) && -> T { return has_value() ? std::move(*this).value() : fallback; }
+    auto valueOr(T fallback) && -> T { return hasValue() ? std::move(*this).value() : fallback; }
 
   private:
 
@@ -78,15 +78,15 @@ template <> class Result<void> {
     Result()
         : has_value_(true) {}
 
-    Result(Error error)
+    explicit Result(Error error)
         : has_value_(false),
           error_(std::move(error)) {}
 
     static auto ok() -> Result { return {}; }
 
-    static auto err(Error error) -> Result { return {std::move(error)}; }
+    static auto err(Error error) -> Result { return Result(std::move(error)); }
 
-    [[nodiscard]] auto has_value() const noexcept -> bool { return has_value_; }
+    [[nodiscard]] auto hasValue() const noexcept -> bool { return has_value_; }
 
     [[nodiscard]] auto error() const -> const Error& { return error_; }
 

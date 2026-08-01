@@ -17,35 +17,40 @@ namespace cinder::net {
 class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   public:
 
-    static constexpr size_t kBufferSize = 65'536;
-    static constexpr size_t kMaxWriteQueue = 64;
+    static constexpr size_t K_BUFFER_SIZE = 65'536;
+    static constexpr size_t K_MAX_WRITE_QUEUE = 64;
 
     TcpConnection(asio::ip::tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string node_id);
     ~TcpConnection();
 
+    TcpConnection(const TcpConnection&) = delete;
+    auto operator=(const TcpConnection&) -> TcpConnection& = delete;
+    TcpConnection(TcpConnection&&) = delete;
+    auto operator=(TcpConnection&&) -> TcpConnection& = delete;
+
     void start();
 
   private:
 
-    void do_read_header();
-    void on_header(std::error_code ec, size_t bytes);
-    void do_read_payload(size_t len);
-    void on_payload(std::error_code ec, size_t bytes);
+    void doReadHeader();
+    void onHeader(std::error_code ec, size_t bytes);
+    void doReadPayload(size_t len);
+    void onPayload(std::error_code ec, size_t bytes);
 
-    void handle_request(const Request& req);
-    void send_response(const Response& res);
+    void handleRequest(const Request& req);
+    void sendResponse(const Response& res);
 
-    void do_write();
-    void on_write(std::error_code ec, size_t bytes);
-    void maybe_read();
+    void doWrite();
+    void onWrite(std::error_code ec, size_t bytes);
+    void maybeRead();
 
     asio::ip::tcp::socket socket_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     std::string node_id_;
 
-    std::array<std::byte, kBufferSize> read_buf_;
+    std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     size_t payload_len_ = 0;
 
     std::deque<std::vector<std::byte>> write_queue_;

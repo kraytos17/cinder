@@ -4,7 +4,7 @@ namespace cinder {
 
 void
 TtlWheel::insert(const std::string& key, size_t ttl_ticks) {
-    auto slot = (cursor_ + ttl_ticks) % kSlotCount;
+    auto slot = (cursor_ + ttl_ticks) % K_SLOT_COUNT;
     wheel_[slot].insert(key);
     key_to_slot_[key] = slot;
 }
@@ -22,7 +22,7 @@ TtlWheel::remove(const std::string& key) {
 
 auto
 TtlWheel::tick() -> std::vector<std::string> {
-    cursor_ = (cursor_ + 1) % kSlotCount;
+    cursor_ = (cursor_ + 1) % K_SLOT_COUNT;
     auto& slot = wheel_[cursor_];
     if (slot.empty()) {
         return {};

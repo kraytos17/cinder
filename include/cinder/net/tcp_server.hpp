@@ -19,14 +19,18 @@ class TcpServer {
         const ConsistentHashRing& ring, std::string node_id);
     ~TcpServer();
 
+    TcpServer(const TcpServer&) = delete;
+    auto operator=(const TcpServer&) -> TcpServer& = delete;
+    TcpServer(TcpServer&&) = delete;
+    auto operator=(TcpServer&&) -> TcpServer& = delete;
+
     auto start() -> Result<void>;
     void shutdown();
 
   private:
 
-    void do_accept();
+    void doAccept();
 
-    asio::io_context& io_;
     asio::ip::tcp::acceptor acceptor_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;

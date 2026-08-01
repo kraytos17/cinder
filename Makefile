@@ -107,7 +107,7 @@ clean:
 	rm -rf "$(BUILD_DIR)"
 
 clean-all:
-	rm -rf build/
+	rm -rf build/ .cache/
 
 .PHONY: install
 install: build

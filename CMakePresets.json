@@ -50,28 +50,26 @@
       {
          "name":"sanitized",
          "displayName":"Sanitized",
-         "description":"Debug build with ASan+UBSan, no mimalloc (GCC)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/sanitized",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
+          "description":"Debug build with ASan+UBSan (GCC)",
+          "generator":"Ninja",
+          "binaryDir":"${sourceDir}/build/sanitized",
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON"
+          }
       },
       {
          "name":"asan",
          "displayName":"ASan+UBSan",
-         "description":"Debug build with ASan+UBSan, no mimalloc",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/asan",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
+          "description":"Debug build with ASan+UBSan",
+          "generator":"Ninja",
+          "binaryDir":"${sourceDir}/build/asan",
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON"
+          }
       },
       {
          "name":"asan-clang",
@@ -83,14 +81,13 @@
             "CMAKE_BUILD_TYPE":"Debug",
             "CMAKE_CXX_COMPILER":"clang++",
             "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
-      },
-      {
-         "name":"msan",
-         "displayName":"MSan (Clang)",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON"
+          }
+       },
+       {
+          "name":"msan",
+          "displayName":"MSan (Clang)",
          "description":"Clang with MemorySanitizer (experimental, needs instrumented libc++)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/msan",
@@ -98,26 +95,24 @@
             "CMAKE_BUILD_TYPE":"Debug",
             "CMAKE_CXX_COMPILER":"clang++",
             "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_MSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
-      },
-      {
-         "name":"tsan",
-         "displayName":"TSan",
-         "description":"Debug build with ThreadSanitizer, no mimalloc",
+             "CINDER_ENABLE_MSAN":"ON"
+          }
+       },
+       {
+          "name":"tsan",
+          "displayName":"TSan",
+          "description":"Debug build with ThreadSanitizer",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/tsan",
          "cacheVariables":{
             "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_TSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
-      },
-      {
-         "name":"ubsan",
-         "displayName":"UBSan",
-         "description":"Debug build with UBSan only (safe with mimalloc)",
+             "CINDER_ENABLE_TSAN":"ON"
+          }
+       },
+       {
+          "name":"ubsan",
+          "displayName":"UBSan",
+          "description":"Debug build with UBSan only",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/ubsan",
          "cacheVariables":{
@@ -141,15 +136,14 @@
       {
          "name":"ci-gcc",
          "displayName":"CI (GCC + sanitizers)",
-         "description":"CI build with GCC, ASan+UBSan, no mimalloc",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/ci-gcc",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON",
-            "CINDER_USE_MIMALLOC":"OFF"
-         }
+          "description":"CI build with GCC, ASan+UBSan",
+          "generator":"Ninja",
+          "binaryDir":"${sourceDir}/build/ci-gcc",
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON"
+          }
       },
       {
          "name":"fast",

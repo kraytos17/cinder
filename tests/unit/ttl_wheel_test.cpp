@@ -49,9 +49,8 @@ TEST(TtlWheelTest, RemoveBeforeExpiry) {
 
 TEST(TtlWheelTest, WrapAround) {
     TtlWheel wheel;
-    wheel.insert("key", TtlWheel::kSlotCount);
-
-    for (size_t i = 0; i < TtlWheel::kSlotCount; i++) {
+    wheel.insert("key", TtlWheel::K_SLOT_COUNT);
+    for (size_t i = 0; i < TtlWheel::K_SLOT_COUNT; i++) {
         auto expired = wheel.tick();
         if (!expired.empty()) {
             ASSERT_EQ(expired.size(), 1);

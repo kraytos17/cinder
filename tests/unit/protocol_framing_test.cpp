@@ -12,12 +12,12 @@ TEST(ProtocolTest, EncodeGetRequest) {
     req.key = "hello";
 
     auto result = encode(req);
-    ASSERT_TRUE(result.has_value());
+    ASSERT_TRUE(result.hasValue());
 
     auto& buf = result.value();
-    ASSERT_GE(buf.size(), kFrameHeaderSize);
-    EXPECT_EQ(buf[0], std::byte{kMagic});
-    EXPECT_EQ(buf[1], std::byte{kVersion});
+    ASSERT_GE(buf.size(), K_FRAME_HEADER_SIZE);
+    EXPECT_EQ(buf[0], std::byte{K_MAGIC});
+    EXPECT_EQ(buf[1], std::byte{K_VERSION});
     EXPECT_EQ(buf[2], std::byte{static_cast<uint8_t>(Opcode::Get)});
 }
 
@@ -27,10 +27,10 @@ TEST(ProtocolTest, EncodeDecodeGet) {
     req.key = "mykey";
 
     auto encoded = encode(req);
-    ASSERT_TRUE(encoded.has_value());
+    ASSERT_TRUE(encoded.hasValue());
 
     auto decoded = decode(encoded.value());
-    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded.hasValue());
     EXPECT_EQ(decoded.value().opcode, Opcode::Get);
     EXPECT_EQ(decoded.value().key, "mykey");
     EXPECT_TRUE(decoded.value().value.empty());
@@ -45,10 +45,10 @@ TEST(ProtocolTest, EncodeDecodeSet) {
     req.ttl = std::chrono::milliseconds(5'000);
 
     auto encoded = encode(req);
-    ASSERT_TRUE(encoded.has_value());
+    ASSERT_TRUE(encoded.hasValue());
 
     auto decoded = decode(encoded.value());
-    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded.hasValue());
     EXPECT_EQ(decoded.value().opcode, Opcode::Set);
     EXPECT_EQ(decoded.value().key, "k");
     EXPECT_EQ(decoded.value().value, "v");
@@ -62,26 +62,26 @@ TEST(ProtocolTest, EncodeDecodeDel) {
     req.key = "delete_me";
 
     auto encoded = encode(req);
-    ASSERT_TRUE(encoded.has_value());
+    ASSERT_TRUE(encoded.hasValue());
 
     auto decoded = decode(encoded.value());
-    ASSERT_TRUE(decoded.has_value());
+    ASSERT_TRUE(decoded.hasValue());
     EXPECT_EQ(decoded.value().opcode, Opcode::Del);
     EXPECT_EQ(decoded.value().key, "delete_me");
 }
 
 TEST(ProtocolTest, DecodeBadMagic) {
-    std::vector<std::byte> buf(kFrameHeaderSize, std::byte{0});
+    std::vector<std::byte> buf(K_FRAME_HEADER_SIZE, std::byte{0});
     auto result = decode(buf);
-    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(result.hasValue());
 }
 
 TEST(ProtocolTest, DecodeTruncatedFrame) {
-    std::vector<std::byte> buf(3, std::byte{kMagic});
-    buf[0] = std::byte{kMagic};
-    buf[1] = std::byte{kVersion};
+    std::vector<std::byte> buf(3, std::byte{K_MAGIC});
+    buf[0] = std::byte{K_MAGIC};
+    buf[1] = std::byte{K_VERSION};
     auto result = decode(buf);
-    EXPECT_FALSE(result.has_value());
+    EXPECT_FALSE(result.hasValue());
 }
 
 TEST(ProtocolTest, EncodeDecodeResponseOk) {
@@ -90,10 +90,10 @@ TEST(ProtocolTest, EncodeDecodeResponseOk) {
     res.value = "result_value";
 
     auto encoded = encode(res);
-    ASSERT_TRUE(encoded.has_value());
+    ASSERT_TRUE(encoded.hasValue());
 
-    auto decoded = decode_response(encoded.value());
-    ASSERT_TRUE(decoded.has_value());
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.hasValue());
     EXPECT_EQ(decoded.value().status, Errc::OK);
     ASSERT_TRUE(decoded.value().value.has_value());
     EXPECT_EQ(*decoded.value().value, "result_value");
@@ -104,10 +104,10 @@ TEST(ProtocolTest, EncodeDecodeResponseNotFound) {
     res.status = Errc::NotFound;
 
     auto encoded = encode(res);
-    ASSERT_TRUE(encoded.has_value());
+    ASSERT_TRUE(encoded.hasValue());
 
-    auto decoded = decode_response(encoded.value());
-    ASSERT_TRUE(decoded.has_value());
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.hasValue());
     EXPECT_EQ(decoded.value().status, Errc::NotFound);
     EXPECT_FALSE(decoded.value().value.has_value());
 }

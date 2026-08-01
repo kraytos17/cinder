@@ -12,10 +12,10 @@
 
 namespace cinder::net {
 
-constexpr uint8_t kMagic = 0xC1;
-constexpr uint8_t kVersion = 1;
-constexpr size_t kMaxMessageSize = 67'108'864;
-constexpr size_t kFrameHeaderSize = 7;
+constexpr uint8_t K_MAGIC = 0xC1;
+constexpr uint8_t K_VERSION = 1;
+constexpr size_t K_MAX_MESSAGE_SIZE = 67'108'864;
+constexpr size_t K_FRAME_HEADER_SIZE = 7;
 
 enum class Opcode : uint8_t {
     Get = 1,
@@ -26,7 +26,7 @@ enum class Opcode : uint8_t {
 };
 
 struct Request {
-    Opcode opcode;
+    Opcode opcode = Opcode::Get;
     std::string key;
     std::string value;
     std::optional<std::chrono::milliseconds> ttl;
@@ -47,5 +47,5 @@ auto
 encode(const Response& res) -> Result<std::vector<std::byte>>;
 
 auto
-decode_response(std::span<const std::byte> frame) -> Result<Response>;
+decodeResponse(std::span<const std::byte> frame) -> Result<Response>;
 } // namespace cinder::net

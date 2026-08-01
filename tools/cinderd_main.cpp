@@ -27,17 +27,18 @@ main(int argc, char* argv[]) -> int {
     cinder::Logger::info("starting cinderd on port " + std::to_string(port));
 
     cinder::ConsistentHashRing ring(150);
-    ring.add_node(node_id);
+    ring.addNode(node_id);
     if (!peers.empty()) {
         size_t start = 0;
         while (true) {
             auto end = peers.find(',', start);
             auto peer = peers.substr(start, end - start);
             if (peer.contains('@')) {
-                ring.add_node(peer);
+                ring.addNode(peer);
             }
-            if (end == std::string::npos)
+            if (end == std::string::npos) {
                 break;
+            }
             start = end + 1;
         }
     }
@@ -47,7 +48,7 @@ main(int argc, char* argv[]) -> int {
     cinder::net::TcpServer server(io, port, store, ring, node_id);
 
     auto result = server.start();
-    if (!result.has_value()) {
+    if (!result.hasValue()) {
         cinder::Logger::error("failed to start server");
         return 1;
     }

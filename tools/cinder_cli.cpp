@@ -9,7 +9,7 @@
 using asio::ip::tcp;
 
 static auto
-status_string(cinder::Errc status) -> std::string_view {
+statusString(cinder::Errc status) -> std::string_view {
     switch (status) {
         case cinder::Errc::OK:
             return "OK";
@@ -55,11 +55,11 @@ connect(asio::io_context& io, const std::string& host, uint16_t port)
 }
 
 static auto
-send_request(tcp::socket& socket, const cinder::net::Request& req)
+sendRequest(tcp::socket& socket, const cinder::net::Request& req)
     -> cinder::Result<cinder::net::Response> {
 
     auto encoded = cinder::net::encode(req);
-    if (!encoded.has_value()) {
+    if (!encoded.hasValue()) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InvalidArgument, "encode failed"));
     }
@@ -71,30 +71,30 @@ send_request(tcp::socket& socket, const cinder::net::Request& req)
             cinder::Error(cinder::Errc::InternalError, "write failed"));
     }
 
-    std::array<std::byte, 65'536> buf;
-    (void)asio::read(socket, asio::buffer(buf.data(), cinder::net::kFrameHeaderSize), ec);
+    std::array<std::byte, 65'536> buf{};
+    (void)asio::read(socket, asio::buffer(buf.data(), cinder::net::K_FRAME_HEADER_SIZE), ec);
     if (ec) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InternalError, "read header failed"));
     }
 
-    uint32_t net_len;
+    uint32_t net_len = 0;
     std::memcpy(&net_len, &buf[3], sizeof(net_len));
     size_t payload_len = std::byteswap(net_len);
-    if (payload_len > buf.size() - cinder::net::kFrameHeaderSize) {
+    if (payload_len > buf.size() - cinder::net::K_FRAME_HEADER_SIZE) {
         return cinder::err<cinder::net::Response>(
             cinder::Error(cinder::Errc::InvalidArgument, "response too large"));
     }
     if (payload_len > 0) {
         (void)asio::read(
-            socket, asio::buffer(buf.data() + cinder::net::kFrameHeaderSize, payload_len), ec);
+            socket, asio::buffer(buf.data() + cinder::net::K_FRAME_HEADER_SIZE, payload_len), ec);
         if (ec) {
             return cinder::err<cinder::net::Response>(
                 cinder::Error(cinder::Errc::InternalError, "read payload failed"));
         }
     }
-    return cinder::net::decode_response(
-        std::span<const std::byte>(buf.data(), cinder::net::kFrameHeaderSize + payload_len));
+    return cinder::net::decodeResponse(
+        std::span<const std::byte>(buf.data(), cinder::net::K_FRAME_HEADER_SIZE + payload_len));
 }
 
 auto
@@ -120,7 +120,7 @@ main(int argc, char* argv[]) -> int {
 
     asio::io_context io;
     auto sock_result = connect(io, host, port);
-    if (!sock_result.has_value()) {
+    if (!sock_result.hasValue()) {
         std::cerr << "connect failed\n";
         return 1;
     }
@@ -147,8 +147,8 @@ main(int argc, char* argv[]) -> int {
         return 1;
     }
 
-    auto res = send_request(socket, req);
-    if (!res.has_value()) {
+    auto res = sendRequest(socket, req);
+    if (!res.hasValue()) {
         std::cerr << "request failed: " << res.error().message() << "\n";
         return 1;
     }
@@ -159,7 +159,7 @@ main(int argc, char* argv[]) -> int {
     } else if (response.value.has_value()) {
         std::cout << response.value.value() << "\n";
     } else {
-        std::cout << status_string(response.status) << "\n";
+        std::cout << statusString(response.status) << "\n";
     }
     return 0;
 }

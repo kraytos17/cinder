@@ -1,7 +1,6 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 
 #include <algorithm>
-#include <array>
 #include <cstdio>
 #include <cstring>
 #include <unordered_set>
@@ -10,7 +9,7 @@
 namespace cinder {
 
 static auto
-hash_64(std::string_view data) -> uint64_t {
+hash64(std::string_view data) -> uint64_t {
     return XXH3_64bits(data.data(), data.size());
 }
 
@@ -20,7 +19,7 @@ ConsistentHashRing::ConsistentHashRing(int vnodes_per_node)
 }
 
 void
-ConsistentHashRing::add_node(const NodeId& node_id) {
+ConsistentHashRing::addNode(const NodeId& node_id) {
     auto old = snapshot_.load();
     auto snap = std::make_shared<RingSnapshot>();
 
@@ -29,7 +28,7 @@ ConsistentHashRing::add_node(const NodeId& node_id) {
     snap->physical_nodes.push_back(node_id);
 
     for (int i = 0; i < vnodes_per_node_; i++) {
-        auto h = hash_vnode(node_id, i);
+        auto h = hashVnode(node_id, i);
         snap->ring.emplace_back(h, node_id);
     }
 
@@ -38,15 +37,15 @@ ConsistentHashRing::add_node(const NodeId& node_id) {
 }
 
 void
-ConsistentHashRing::remove_node(std::string_view node_id) {
+ConsistentHashRing::removeNode(std::string_view node_id) {
     auto old = snapshot_.load();
     auto snap = std::make_shared<RingSnapshot>();
-    for (auto& entry : old->ring) {
+    for (const auto& entry : old->ring) {
         if (entry.second != node_id) {
             snap->ring.push_back(entry);
         }
     }
-    for (auto& id : old->physical_nodes) {
+    for (const auto& id : old->physical_nodes) {
         if (id != node_id) {
             snap->physical_nodes.push_back(id);
         }
@@ -55,9 +54,9 @@ ConsistentHashRing::remove_node(std::string_view node_id) {
 }
 
 auto
-ConsistentHashRing::get_node(std::string_view key) const -> NodeId {
+ConsistentHashRing::getNode(std::string_view key) const -> NodeId {
     auto snap = snapshot_.load();
-    auto h = hash_key(key);
+    auto h = hashKey(key);
     auto it = std::lower_bound(snap->ring.begin(),
         snap->ring.end(),
         h,
@@ -70,10 +69,9 @@ ConsistentHashRing::get_node(std::string_view key) const -> NodeId {
 }
 
 auto
-ConsistentHashRing::get_nodes(std::string_view key, int replica_count) const
-    -> std::vector<NodeId> {
+ConsistentHashRing::getNodes(std::string_view key, int replica_count) const -> std::vector<NodeId> {
     auto snap = snapshot_.load();
-    auto h = hash_key(key);
+    auto h = hashKey(key);
     auto it = std::lower_bound(snap->ring.begin(),
         snap->ring.end(),
         h,
@@ -103,16 +101,13 @@ ConsistentHashRing::get_nodes(std::string_view key, int replica_count) const
 }
 
 auto
-ConsistentHashRing::hash_vnode(std::string_view node_id, int vnode_index) -> uint64_t {
-    std::array<char, 64> buf;
-    auto n = std::min(node_id.size(), buf.size() - 16);
-    std::memcpy(buf.data(), node_id.data(), n);
-    int len = static_cast<int>(n) + snprintf(buf.data() + n, buf.size() - n, "-%d", vnode_index);
-    return hash_64(std::string_view(buf.data(), static_cast<size_t>(len)));
+ConsistentHashRing::hashVnode(std::string_view node_id, int vnode_index) -> uint64_t {
+    auto label = std::string(node_id) + "-" + std::to_string(vnode_index);
+    return hash64(label);
 }
 
 auto
-ConsistentHashRing::hash_key(std::string_view key) -> uint64_t {
-    return hash_64(key);
+ConsistentHashRing::hashKey(std::string_view key) -> uint64_t {
+    return hash64(key);
 }
 } // namespace cinder

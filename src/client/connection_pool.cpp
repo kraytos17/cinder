@@ -1,1 +1,150 @@
-// TODO: implement
+#include "cinder/client/connection_pool.hpp"
+
+#include <asio.hpp>
+
+#include "cinder/net/protocol.hpp"
+
+using asio::ip::tcp;
+
+namespace cinder {
+
+ConnectionPool::ConnectionPool(const ClusterConfig& config, asio::io_context& io)
+    : io_(io) {
+    for (const auto& n : config.nodes) {
+        node_addrs_[n.id] = n;
+    }
+}
+
+ConnectionPool::~ConnectionPool() {
+    shutdown();
+}
+
+auto
+ConnectionPool::send(const NodeId& node_id, const net::Request& req) -> Result<net::Response> {
+    auto entry_res = getOrConnect(node_id);
+    if (!entry_res.hasValue()) {
+        return Result<net::Response>::err(entry_res.error());
+    }
+
+    auto& socket = entry_res.value()->socket;
+    auto send_res = sendFramed(socket, req);
+    if (!send_res.hasValue()) {
+        entry_res.value()->connected = false;
+        return Result<net::Response>::err(send_res.error());
+    }
+
+    auto recv_res = recvFramed(socket);
+    if (!recv_res.hasValue()) {
+        entry_res.value()->connected = false;
+        return Result<net::Response>::err(recv_res.error());
+    }
+    return ok(std::move(recv_res.value()));
+}
+
+void
+ConnectionPool::shutdown() {
+    for (auto& [id, entry] : connections_) {
+        if (entry.connected) {
+            std::error_code ec;
+            entry.socket.shutdown(tcp::socket::shutdown_both, ec);
+            entry.socket.close(ec);
+            entry.connected = false;
+        }
+    }
+    connections_.clear();
+    node_addrs_.clear();
+}
+
+auto
+ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
+    auto addr_it = node_addrs_.find(node_id);
+    if (addr_it == node_addrs_.end()) {
+        return Result<PoolEntry*>::err(Error(Errc::NotFound, "unknown node"));
+    }
+
+    auto conn_it = connections_.find(node_id);
+    if (conn_it != connections_.end() && conn_it->second.connected) {
+        return Result<PoolEntry*>::ok(&conn_it->second);
+    }
+    if (conn_it == connections_.end()) {
+        auto emplaced = connections_.emplace(node_id, PoolEntry{tcp::socket(io_), false});
+        conn_it = emplaced.first;
+    }
+
+    auto& entry = conn_it->second;
+    if (entry.connected) {
+        return Result<PoolEntry*>::ok(&entry);
+    }
+
+    std::error_code ec;
+    auto& addr = addr_it->second;
+    tcp::resolver resolver(io_);
+    auto endpoints = resolver.resolve(addr.host, std::to_string(addr.port), ec);
+    if (ec) {
+        return Result<PoolEntry*>::err(Error(Errc::NotReady, "resolve failed: " + ec.message()));
+    }
+
+    asio::connect(entry.socket, endpoints, ec);
+    if (ec) {
+        return Result<PoolEntry*>::err(Error(Errc::NotReady, "connect failed: " + ec.message()));
+    }
+
+    entry.connected = true;
+    return Result<PoolEntry*>::ok(&entry);
+}
+
+auto
+ConnectionPool::readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<void> {
+    std::error_code ec;
+    auto n =
+        asio::read(s, asio::buffer(buf.data(), buf.size()), asio::transfer_exactly(buf.size()), ec);
+    if (ec || n != buf.size()) {
+        return err(Error(Errc::Timeout, "read failed: " + ec.message()));
+    }
+    return ok();
+}
+
+auto
+ConnectionPool::sendFramed(tcp::socket& s, const net::Request& req) -> Result<void> {
+    auto encoded = net::encode(req);
+    if (!encoded.hasValue()) {
+        return err(encoded.error());
+    }
+
+    std::error_code ec;
+    asio::write(s, asio::buffer(encoded.value().data(), encoded.value().size()), ec);
+    if (ec) {
+        return err(Error(Errc::Timeout, "write failed: " + ec.message()));
+    }
+    return ok();
+}
+
+auto
+ConnectionPool::recvFramed(tcp::socket& s) -> Result<net::Response> {
+    std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
+    auto header_res = readExactly(s, header);
+    if (!header_res.hasValue()) {
+        return Result<net::Response>::err(header_res.error());
+    }
+    if (header[0] != std::byte{net::K_MAGIC}) {
+        return Result<net::Response>::err(Error(Errc::InternalError, "bad magic in response"));
+    }
+
+    uint32_t payload_len = 0;
+    std::memcpy(&payload_len, &header[3], sizeof(payload_len));
+    payload_len = std::byteswap(payload_len);
+    if (payload_len > net::K_MAX_MESSAGE_SIZE) {
+        return Result<net::Response>::err(Error(Errc::InternalError, "response payload too large"));
+    }
+
+    std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
+    std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
+
+    auto payload_span = std::span(frame).subspan(net::K_FRAME_HEADER_SIZE);
+    auto payload_res = readExactly(s, payload_span);
+    if (!payload_res.hasValue()) {
+        return Result<net::Response>::err(payload_res.error());
+    }
+    return net::decodeResponse(frame);
+}
+} // namespace cinder

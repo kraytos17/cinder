@@ -3,12 +3,13 @@
 #include <asio.hpp>
 #include <utility>
 
+using asio::ip::tcp;
+
 namespace cinder::net {
 
 TcpServer::TcpServer(asio::io_context& io, uint16_t port, CacheStore& store,
     const ConsistentHashRing& ring, std::string node_id)
-    : io_(io),
-      acceptor_(io, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), port)),
+    : acceptor_(io, tcp::endpoint(tcp::v4(), port)),
       store_(store),
       ring_(ring),
       node_id_(std::move(node_id)) {}
@@ -20,7 +21,7 @@ TcpServer::~TcpServer() {
 
 auto
 TcpServer::start() -> Result<void> {
-    do_accept();
+    doAccept();
     return ok();
 }
 
@@ -31,15 +32,15 @@ TcpServer::shutdown() {
 }
 
 void
-TcpServer::do_accept() {
-    acceptor_.async_accept([this](std::error_code ec, asio::ip::tcp::socket socket) {
+TcpServer::doAccept() {
+    acceptor_.async_accept([this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
             auto conn = std::make_shared<TcpConnection>(std::move(socket), store_, ring_, node_id_);
             connections_.push_back(conn);
             conn->start();
         }
         if (acceptor_.is_open()) {
-            do_accept();
+            doAccept();
         }
     });
 }

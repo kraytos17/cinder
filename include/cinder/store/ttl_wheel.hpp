@@ -11,7 +11,7 @@ namespace cinder {
 class TtlWheel {
   public:
 
-    static constexpr size_t kSlotCount = 256;
+    static constexpr size_t K_SLOT_COUNT = 256;
 
     TtlWheel() = default;
 
@@ -23,7 +23,7 @@ class TtlWheel {
 
   private:
 
-    std::vector<std::unordered_set<std::string>> wheel_{kSlotCount};
+    std::vector<std::unordered_set<std::string>> wheel_{K_SLOT_COUNT};
     size_t cursor_ = 0;
     std::unordered_map<std::string, size_t> key_to_slot_;
 };

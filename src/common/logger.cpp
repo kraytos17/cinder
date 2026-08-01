@@ -6,7 +6,7 @@
 namespace cinder {
 
 static auto
-to_spdlog_level(LogLevel level) -> spdlog::level::level_enum {
+toSpdlogLevel(LogLevel level) -> spdlog::level::level_enum {
     switch (level) {
         case LogLevel::Trace:
             return spdlog::level::trace;
@@ -26,7 +26,7 @@ void
 Logger::init(std::string_view name, LogLevel level) {
     auto logger = spdlog::stdout_color_mt(std::string(name));
     logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%n] %v");
-    logger->set_level(to_spdlog_level(level));
+    logger->set_level(toSpdlogLevel(level));
     spdlog::set_default_logger(logger);
 }
 

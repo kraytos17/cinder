@@ -3,85 +3,51 @@
 #include <csignal>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <string>
 #include <sys/wait.h>
-#include <thread>
 #include <unistd.h>
 
 #include "cinder/net/protocol.hpp"
+#include "integration/test_helpers.hpp"
 
+using asio::ip::address_v4;
 using asio::ip::tcp;
+
+using cinder::net::Opcode;
+using cinder::net::Request;
+using cinder::net::test::readResponse;
+using cinder::net::test::waitForPort;
 
 namespace cinder::net {
 namespace {
 
-auto
-read_response(tcp::socket& socket) -> Result<Response> {
-    std::array<std::byte, 4'096> buf;
-    asio::error_code ec;
-    (void)asio::read(socket, asio::buffer(buf.data(), kFrameHeaderSize), ec);
-    if (ec) {
-        return err<Response>(Error(Errc::InternalError, "read header failed"));
-    }
-
-    uint32_t net_len;
-    std::memcpy(&net_len, &buf[3], sizeof(net_len));
-    size_t payload_len = std::byteswap(net_len);
-    if (payload_len > buf.size() - kFrameHeaderSize) {
-        return err<Response>(Error(Errc::InvalidArgument, "response too large"));
-    }
-    if (payload_len > 0) {
-        (void)asio::read(socket, asio::buffer(buf.data() + kFrameHeaderSize, payload_len), ec);
-        if (ec) {
-            return err<Response>(Error(Errc::InternalError, "read payload failed"));
-        }
-    }
-    return decode_response(std::span<const std::byte>(buf.data(), kFrameHeaderSize + payload_len));
-}
-
-auto
-wait_for_port(int port, int max_retries = 50) -> bool {
-    asio::io_context io;
-    for (int i = 0; i < max_retries; i++) {
-        tcp::socket sock(io);
-        asio::error_code ec;
-        sock.connect(tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
-        if (!ec) {
-            sock.close();
-            return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    return false;
-}
-
 TEST(ClusterSmokeTest, SetGetDelPing) {
     int port = 17'890;
-    std::array<char, 16> port_str;
-    (void)snprintf(port_str.data(), port_str.size(), "%d", port);
-
+    auto port_str = std::to_string(port);
     pid_t pid = fork();
     ASSERT_NE(pid, -1) << "fork failed";
     if (pid == 0) {
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.data(), nullptr);
+        // NOLINTNEXTLINE
+        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
         _exit(1);
     }
 
-    ASSERT_TRUE(wait_for_port(port)) << "server did not start in time";
+    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
 
     asio::io_context io;
     tcp::socket socket(io);
     asio::error_code ec;
-    socket.connect(tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
+
     // SET
     {
         Request req{.opcode = Opcode::Set, .key = "k", .value = "v", .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.has_value());
-
+        ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));
-        auto resp = read_response(socket);
-        ASSERT_TRUE(resp.has_value());
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -89,37 +55,34 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.has_value());
-
+        ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));
-        auto resp = read_response(socket);
-        ASSERT_TRUE(resp.has_value());
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
-        EXPECT_EQ(*resp.value().value, "v"); // NOLINT
+        EXPECT_EQ(*resp.value().value, "v");
     }
 
     // DEL
     {
         Request req{.opcode = Opcode::Del, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.has_value());
-
+        ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));
-        auto resp = read_response(socket);
-        ASSERT_TRUE(resp.has_value());
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
-    // GET after delete → NotFound
+    // GET after delete -> NotFound
     {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.has_value());
-
+        ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));
-        auto resp = read_response(socket);
-        ASSERT_TRUE(resp.has_value());
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
     }
 
@@ -127,11 +90,10 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     {
         Request req{.opcode = Opcode::Ping, .key = {}, .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
-        ASSERT_TRUE(encoded.has_value());
-
+        ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));
-        auto resp = read_response(socket);
-        ASSERT_TRUE(resp.has_value());
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
@@ -139,5 +101,236 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
     (void)kill(pid, SIGTERM);
     (void)waitpid(pid, nullptr, 0);
 }
+
+TEST(ClusterSmokeTest, TTLExpiry) {
+    int port = 17'891;
+    auto port_str = std::to_string(port);
+    pid_t pid = fork();
+    ASSERT_NE(pid, -1) << "fork failed";
+    if (pid == 0) {
+        // NOLINTNEXTLINE
+        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
+        _exit(1);
+    }
+
+    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+
+    asio::io_context io;
+    tcp::socket socket(io);
+    asio::error_code ec;
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    ASSERT_FALSE(ec) << "connect failed";
+
+    // SET with 200ms TTL
+    {
+        Request req{
+            .opcode = Opcode::Set,
+            .key = "ttlkey",
+            .value = "ephemeral",
+            .ttl = std::chrono::milliseconds(200),
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // Get immediately - still valid
+    {
+        Request req{
+            .opcode = Opcode::Get,
+            .key = "ttlkey",
+            .value = {},
+            .ttl = std::nullopt,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // Wait past TTL
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Get after TTL - should be expired
+    {
+        Request req{
+            .opcode = Opcode::Get,
+            .key = "ttlkey",
+            .value = {},
+            .ttl = std::nullopt,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::NotFound);
+    }
+
+    socket.close();
+    (void)kill(pid, SIGTERM);
+    (void)waitpid(pid, nullptr, 0);
+}
+
+TEST(ClusterSmokeTest, CapacityEviction) {
+    int port = 17'892;
+    auto port_str = std::to_string(port);
+    auto cap_str = std::to_string(80);
+    pid_t pid = fork();
+    ASSERT_NE(pid, -1) << "fork failed";
+    if (pid == 0) {
+        // NOLINTNEXTLINE
+        execl(CINDER_TEST_CINDERD_PATH, "cinderd",
+            "--port", port_str.c_str(),
+            "--capacity", cap_str.c_str(),
+            nullptr);
+        _exit(1);
+    }
+
+    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+
+    asio::io_context io;
+    tcp::socket socket(io);
+    asio::error_code ec;
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    ASSERT_FALSE(ec) << "connect failed";
+
+    std::string val(30, 'x');
+    // SET k1 - ~35 bytes
+    {
+        Request req{.opcode = Opcode::Set, .key = "k1", .value = val};
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // SET k2 - ~35 bytes, total ~70 < 80
+    {
+        Request req{.opcode = Opcode::Set, .key = "k2", .value = val};
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // SET k3 - total ~105 > 80, k1 should be evicted
+    {
+        Request req{.opcode = Opcode::Set, .key = "k3", .value = val};
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // k1 should be evicted
+    {
+        Request req{
+            .opcode = Opcode::Get,
+            .key = "k1",
+            .value = {},
+            .ttl = std::nullopt,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::NotFound);
+    }
+
+    // k3 should still be present
+    {
+        Request req{
+            .opcode = Opcode::Get,
+            .key = "k3",
+            .value = {},
+            .ttl = std::nullopt,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+        ASSERT_TRUE(resp.value().value.has_value());
+        EXPECT_EQ(*resp.value().value, val);
+    }
+
+    socket.close();
+    (void)kill(pid, SIGTERM);
+    (void)waitpid(pid, nullptr, 0);
+}
+
+TEST(ClusterSmokeTest, LargeValue) {
+    int port = 17'893;
+    auto port_str = std::to_string(port);
+    pid_t pid = fork();
+    ASSERT_NE(pid, -1) << "fork failed";
+    if (pid == 0) {
+        // NOLINTNEXTLINE
+        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
+        _exit(1);
+    }
+
+    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+
+    asio::io_context io;
+    tcp::socket socket(io);
+    asio::error_code ec;
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    ASSERT_FALSE(ec) << "connect failed";
+
+    std::string big_val(50'000, 'Z');
+    // SET big value
+    {
+        Request req{
+            .opcode = Opcode::Set,
+            .key = "big",
+            .value = big_val,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+    }
+
+    // GET back and verify
+    {
+        Request req{
+            .opcode = Opcode::Get,
+            .key = "big",
+            .value = {},
+            .ttl = std::nullopt,
+        };
+        auto encoded = encode(req);
+        ASSERT_TRUE(encoded.hasValue());
+        (void)asio::write(socket, asio::buffer(encoded.value()));
+        auto resp = readResponse(socket);
+        ASSERT_TRUE(resp.hasValue());
+        EXPECT_EQ(resp.value().status, Errc::OK);
+        ASSERT_TRUE(resp.value().value.has_value());
+        EXPECT_EQ(resp.value().value->size(), big_val.size());
+        EXPECT_EQ(*resp.value().value, big_val);
+    }
+
+    socket.close();
+    (void)kill(pid, SIGTERM);
+    (void)waitpid(pid, nullptr, 0);
+}
+
 } // namespace
 } // namespace cinder::net

@@ -23,7 +23,7 @@ class LfuStore : public CacheStore {
     auto get(const std::string& key) -> std::optional<std::string> override;
     auto remove(const std::string& key) -> bool override;
     auto size() const -> size_t override;
-    auto evict_expired() -> size_t override;
+    auto evictExpired() -> size_t override;
 
   private:
 
@@ -35,11 +35,11 @@ class LfuStore : public CacheStore {
 
     using ListIt = std::list<Node>::iterator;
 
-    void increment_freq(ListIt it);
-    void remove_from_freq_bucket(ListIt it);
-    void remove_from_freq_bucket(ListIt it, size_t freq);
-    void evict_if_needed();
-    void evict_one();
+    void incrementFreq(ListIt it);
+    void removeFromFreqBucket(ListIt it);
+    void removeFromFreqBucket(ListIt it, size_t freq);
+    void evictIfNeeded();
+    void evictOne();
 
     mutable std::mutex mutex_;
     std::list<Node> lfu_list_;

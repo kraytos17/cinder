@@ -3,6 +3,8 @@
 #include <asio.hpp>
 #include <utility>
 
+#include "cinder/net/protocol.hpp"
+
 namespace cinder::net {
 
 TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
@@ -10,7 +12,8 @@ TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
-      node_id_(std::move(node_id)) {}
+      node_id_(std::move(node_id)),
+      read_buf_{} {}
 
 TcpConnection::~TcpConnection() {
     if (socket_.is_open()) {
@@ -21,79 +24,79 @@ TcpConnection::~TcpConnection() {
 
 void
 TcpConnection::start() {
-    maybe_read();
+    maybeRead();
 }
 
 void
-TcpConnection::maybe_read() {
-    if (!reading_ && write_queue_.size() < kMaxWriteQueue) {
+TcpConnection::maybeRead() {
+    if (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE) {
         reading_ = true;
-        do_read_header();
+        doReadHeader();
     }
 }
 
 void
-TcpConnection::do_read_header() {
+TcpConnection::doReadHeader() {
     auto self = shared_from_this();
     asio::async_read(socket_,
-        asio::buffer(read_buf_.data(), kFrameHeaderSize),
+        asio::buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
         [this, self](std::error_code ec, size_t) {
         if (ec) {
             return;
         }
-        on_header(ec, kFrameHeaderSize);
+        onHeader(ec, K_FRAME_HEADER_SIZE);
     });
 }
 
 void
-TcpConnection::on_header(std::error_code ec, size_t) {
+TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     if (ec) {
         return;
     }
-    if (read_buf_[0] != std::byte{kMagic} || read_buf_[1] != std::byte{kVersion}) {
+    if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
         return;
     }
 
-    uint32_t net_len;
+    uint32_t net_len = 0;
     std::memcpy(&net_len, &read_buf_[3], sizeof(net_len));
     payload_len_ = std::byteswap(net_len);
-    if (payload_len_ > kMaxMessageSize || payload_len_ + kFrameHeaderSize > kBufferSize) {
+    if (payload_len_ > K_MAX_MESSAGE_SIZE || payload_len_ + K_FRAME_HEADER_SIZE > K_BUFFER_SIZE) {
         return;
     }
-    do_read_payload(payload_len_);
+    doReadPayload(payload_len_);
 }
 
 void
-TcpConnection::do_read_payload(size_t len) {
+TcpConnection::doReadPayload(size_t len) {
     auto self = shared_from_this();
     asio::async_read(socket_,
-        asio::buffer(read_buf_.data() + kFrameHeaderSize, len),
-        [this, self](std::error_code ec, size_t) { on_payload(ec, payload_len_); });
+        asio::buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
+        [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
 }
 
 void
-TcpConnection::on_payload(std::error_code ec, size_t len) {
+TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     reading_ = false;
     if (ec) {
         return;
     }
 
-    auto result = decode(std::span<const std::byte>(read_buf_.data(), kFrameHeaderSize + len));
-    if (!result.has_value()) {
+    auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
+    if (!result.hasValue()) {
         Response res{.status = Errc::InvalidArgument, .value = std::nullopt};
-        send_response(res);
+        sendResponse(res);
         return;
     }
-    handle_request(result.value());
+    handleRequest(result.value());
 }
 
 void
-TcpConnection::handle_request(const Request& req) {
+TcpConnection::handleRequest(const Request& req) {
     if (req.opcode != Opcode::Ping) {
-        auto owner = ring_.get_node(req.key);
+        auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
-            send_response({.status = Errc::NotReady, .value = "moved to " + owner});
-            maybe_read();
+            sendResponse({.status = Errc::NotReady, .value = "moved to " + owner});
+            maybeRead();
             return;
         }
     }
@@ -112,7 +115,7 @@ TcpConnection::handle_request(const Request& req) {
         }
         case Opcode::Set: {
             auto result = store_.put(req.key, req.value, req.ttl);
-            res.status = result.has_value() ? Errc::OK : result.error().code();
+            res.status = result.hasValue() ? Errc::OK : result.error().code();
             break;
         }
         case Opcode::Del: {
@@ -130,25 +133,25 @@ TcpConnection::handle_request(const Request& req) {
         }
     }
 
-    send_response(res);
-    maybe_read();
+    sendResponse(res);
+    maybeRead();
 }
 
 void
-TcpConnection::send_response(const Response& res) {
+TcpConnection::sendResponse(const Response& res) {
     auto result = encode(res);
-    if (!result.has_value()) {
+    if (!result.hasValue()) {
         return;
     }
 
     write_queue_.push_back(std::move(result.value()));
     if (!writing_) {
-        do_write();
+        doWrite();
     }
 }
 
 void
-TcpConnection::do_write() {
+TcpConnection::doWrite() {
     if (write_queue_.empty()) {
         writing_ = false;
         return;
@@ -167,10 +170,10 @@ TcpConnection::do_write() {
 
         write_queue_.pop_front();
         if (!write_queue_.empty()) {
-            do_write();
+            doWrite();
         } else {
             writing_ = false;
-            maybe_read();
+            maybeRead();
         }
     });
 }
