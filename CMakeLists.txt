@@ -32,6 +32,8 @@ option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF
 option(CINDER_UNITY_BUILD           "Enable unity/jumbo builds"              OFF)
 option(CINDER_ENABLE_CLANG_TIDY     "Run clang-tidy during compilation"      OFF)
 option(CINDER_USE_PIPE              "Use -pipe (pipes over temp files)"      ON)
+option(CINDER_USE_FAST_LINKER       "Prefer mold, then lld, over the default" ON)
+option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"    ON)
 option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
 
 # ---------------------------------------------------------------------------
@@ -43,6 +45,25 @@ if(CCACHE_PROGRAM)
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     set(CCACHE_BASEDIR "${CMAKE_SOURCE_DIR}")
     message(STATUS "Cinder: using ccache (basedir: ${CCACHE_BASEDIR})")
+endif()
+
+# ---------------------------------------------------------------------------
+# Fast linker (mold > lld > default)
+# ---------------------------------------------------------------------------
+if(CINDER_USE_FAST_LINKER)
+    find_program(MOLD_PROGRAM mold)
+    if(MOLD_PROGRAM)
+        set(CMAKE_LINKER_TYPE MOLD)
+        message(STATUS "Cinder: using mold linker")
+    else()
+        find_program(LLD_PROGRAM ld.lld)
+        if(LLD_PROGRAM)
+            set(CMAKE_LINKER_TYPE LLD)
+            message(STATUS "Cinder: using lld linker")
+        else()
+            message(STATUS "Cinder: no fast linker found, using default")
+        endif()
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -110,6 +131,18 @@ endif()
 # ---------------------------------------------------------------------------
 if(CINDER_USE_PIPE)
     add_compile_options(-pipe)
+endif()
+
+# Split DWARF: emit per-TU debug info into .dwo files instead of one giant
+# .debug_info section in the executable. Faster linking + less disk I/O.
+# -Wl,--gdb-index pre-builds the index so gdb doesn't scan .dwo at load —
+# requires a fast linker (mold/lld) that supports it.
+if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+    add_compile_options(-gsplit-dwarf)
+    if(CINDER_USE_FAST_LINKER AND CMAKE_LINKER_TYPE MATCHES "MOLD|LLD")
+        add_link_options(-Wl,--gdb-index)
+    endif()
+    message(STATUS "Cinder: split-dwarf enabled")
 endif()
 
 if(CINDER_UNITY_BUILD)

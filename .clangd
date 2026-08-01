@@ -1,6 +1,7 @@
 CompileFlags:
   Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
   Compiler: clang++
+  CompilationDatabase: build/debug
   Remove: [-m*, -f*]
 
 Diagnostics:

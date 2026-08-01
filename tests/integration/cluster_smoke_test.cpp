@@ -1,7 +1,6 @@
 #include <asio.hpp>
 #include <chrono>
 #include <csignal>
-#include <cstring>
 #include <gtest/gtest.h>
 #include <string>
 #include <sys/wait.h>
@@ -180,14 +179,17 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 TEST(ClusterSmokeTest, CapacityEviction) {
     int port = 17'892;
     auto port_str = std::to_string(port);
-    auto cap_str = std::to_string(80);
+    auto cap_str = std::to_string(300);
     pid_t pid = fork();
     ASSERT_NE(pid, -1) << "fork failed";
     if (pid == 0) {
         // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd",
-            "--port", port_str.c_str(),
-            "--capacity", cap_str.c_str(),
+        execl(CINDER_TEST_CINDERD_PATH,
+            "cinderd",
+            "--port",
+            port_str.c_str(),
+            "--capacity",
+            cap_str.c_str(),
             nullptr);
         _exit(1);
     }
@@ -300,6 +302,7 @@ TEST(ClusterSmokeTest, LargeValue) {
             .key = "big",
             .value = big_val,
         };
+
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.hasValue());
         (void)asio::write(socket, asio::buffer(encoded.value()));

@@ -17,7 +17,6 @@ cinder_add_test(cinder_unit_tests
     unit/status_test.cpp
     unit/client_routing_test.cpp
 )
-set_target_properties(cinder_unit_tests PROPERTIES UNITY_BUILD ON)
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
 
 cinder_add_test(cinder_integration_tests
@@ -41,7 +40,6 @@ cinder_add_test(cinder_sim_tests
     sim/gossip_partition_sim_test.cpp
     sim/rebalance_sim_test.cpp
 )
-set_target_properties(cinder_sim_tests PROPERTIES UNITY_BUILD ON)
 gtest_discover_tests(cinder_sim_tests PROPERTIES LABELS "sim")
 
 cinder_add_test(cinder_cli_tests

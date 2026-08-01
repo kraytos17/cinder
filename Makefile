@@ -51,7 +51,7 @@ run: build
 run-cli: build
 	"$(BIN_DIR)/$(CLI)" $(ARGS)
 
-.PHONY: test test-unit test-integration test-sim \
+.PHONY: test test-unit test-integration test-cli test-sim \
         asan-test tsan-test ubsan-test asan-clang-test
 test: build
 	ctest --preset $(PRESET) --output-on-failure -j$(JOBS) -- $(ARGS)
@@ -61,6 +61,9 @@ test-unit: build
 
 test-integration: build
 	"$(TESTS_DIR)/cinder_integration_tests"
+
+test-cli: build
+	"$(TESTS_DIR)/cinder_cli_tests"
 
 test-sim: build
 	"$(TESTS_DIR)/cinder_sim_tests"

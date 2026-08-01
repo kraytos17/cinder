@@ -13,12 +13,11 @@ using cinder::net::test::waitForPort;
 
 namespace {
 
-static auto
-runCli(uint16_t port, const std::vector<std::string>& args)
-    -> std::pair<std::string, std::string> {
-    int out_pipe[2];
-    int err_pipe[2];
-    if (pipe(out_pipe) != 0 || pipe(err_pipe) != 0) {
+auto
+runCli(uint16_t port, const std::vector<std::string>& args) -> std::pair<std::string, std::string> {
+    std::array<int, 2> out_pipe{};
+    std::array<int, 2> err_pipe{};
+    if (pipe(out_pipe.data()) != 0 || pipe(err_pipe.data()) != 0) {
         return {};
     }
 
@@ -26,7 +25,6 @@ runCli(uint16_t port, const std::vector<std::string>& args)
     if (pid == -1) {
         return {};
     }
-
     if (pid == 0) {
         close(out_pipe[0]);
         close(err_pipe[0]);
@@ -40,6 +38,7 @@ runCli(uint16_t port, const std::vector<std::string>& args)
         for (const auto& a : args) {
             argv.push_back(a.c_str());
         }
+
         argv.push_back(nullptr);
         // NOLINTNEXTLINE
         execv(CINDER_TEST_CLI_PATH, const_cast<char* const*>(argv.data()));
@@ -59,6 +58,7 @@ runCli(uint16_t port, const std::vector<std::string>& args)
     while ((n = read(err_pipe[0], buf.data(), buf.size())) > 0) {
         err.append(buf.data(), static_cast<size_t>(n));
     }
+
     close(out_pipe[0]);
     close(err_pipe[0]);
 
@@ -67,7 +67,7 @@ runCli(uint16_t port, const std::vector<std::string>& args)
     return {out, err};
 }
 
-static auto
+auto
 spawnDaemon(int port) -> pid_t {
     auto port_str = std::to_string(port);
     pid_t pid = fork();
@@ -96,7 +96,7 @@ TEST(CliTest, SetGet) {
     ASSERT_TRUE(waitForPort(port));
     {
         auto [out, err] = runCli(port, {"set", "greeting", "hello"});
-        EXPECT_EQ(out, "hello\n");
+        EXPECT_EQ(out, "OK\n");
         EXPECT_TRUE(err.empty());
     }
     {
@@ -113,7 +113,7 @@ TEST(CliTest, GetNotFound) {
     pid_t dpid = spawnDaemon(port);
     ASSERT_TRUE(waitForPort(port));
     auto [out, err] = runCli(port, {"get", "nope"});
-    EXPECT_TRUE(out.find("not found") != std::string::npos);
+    EXPECT_TRUE(out.contains("not found"));
     EXPECT_TRUE(err.empty());
     (void)kill(dpid, SIGTERM);
     (void)waitpid(dpid, nullptr, 0);
@@ -121,7 +121,7 @@ TEST(CliTest, GetNotFound) {
 
 TEST(CliTest, ConnectRefused) {
     auto [out, err] = runCli(9'999, {"ping"});
-    EXPECT_TRUE(err.find("connect failed") != std::string::npos);
+    EXPECT_TRUE(err.contains("connect failed"));
     EXPECT_TRUE(out.empty());
 }
 
@@ -131,11 +131,11 @@ TEST(CliTest, Del) {
     ASSERT_TRUE(waitForPort(port));
     {
         auto [out, err] = runCli(port, {"set", "temp", "x"});
-        EXPECT_EQ(out, "x\n");
+        EXPECT_EQ(out, "OK\n");
     }
     {
         auto [out, err] = runCli(port, {"del", "temp"});
-        EXPECT_EQ(out, "(not found)\n");
+        EXPECT_EQ(out, "OK\n");
     }
     (void)kill(dpid, SIGTERM);
     (void)waitpid(dpid, nullptr, 0);

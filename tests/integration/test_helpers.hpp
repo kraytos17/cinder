@@ -11,7 +11,7 @@
 
 namespace cinder::net::test {
 
-static auto
+[[maybe_unused]] static auto
 readResponse(asio::ip::tcp::socket& socket) -> Result<Response> {
     std::array<std::byte, 65'536> buf{};
     asio::error_code ec;
@@ -37,7 +37,7 @@ readResponse(asio::ip::tcp::socket& socket) -> Result<Response> {
         std::span<const std::byte>(buf.data(), K_FRAME_HEADER_SIZE + payload_len));
 }
 
-static auto
+[[maybe_unused]] static auto
 waitForPort(int port, int max_retries = 50) -> bool {
     asio::io_context io;
     for (int i = 0; i < max_retries; i++) {
@@ -52,5 +52,4 @@ waitForPort(int port, int max_retries = 50) -> bool {
     }
     return false;
 }
-
 } // namespace cinder::net::test

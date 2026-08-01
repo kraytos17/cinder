@@ -14,7 +14,6 @@ set_target_properties(cinder_throughput_bench PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
-    UNITY_BUILD ON
 )
 target_compile_options(cinder_throughput_bench PRIVATE
     $<$<NOT:$<CONFIG:Release>>:-O3 -DNDEBUG>

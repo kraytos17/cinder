@@ -29,7 +29,7 @@ struct Request {
     Opcode opcode = Opcode::Get;
     std::string key;
     std::string value;
-    std::optional<std::chrono::milliseconds> ttl;
+    std::optional<std::chrono::milliseconds> ttl = std::nullopt;
 };
 
 struct Response {
