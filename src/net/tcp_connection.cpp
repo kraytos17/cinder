@@ -4,15 +4,20 @@
 #include <utility>
 
 #include "cinder/net/protocol.hpp"
+#include "cinder/node/replication_manager.hpp"
 
 namespace cinder::net {
 
 TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id)
+    const ConsistentHashRing& ring, std::string node_id, ReplicationManager* repl,
+    int replica_factor, ConsistencyMode mode)
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
       node_id_(std::move(node_id)),
+      repl_(repl),
+      replica_factor_(replica_factor),
+      mode_(mode),
       read_buf_{} {}
 
 TcpConnection::~TcpConnection() {
@@ -92,7 +97,17 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
 
 void
 TcpConnection::handleRequest(const Request& req) {
-    if (req.opcode != Opcode::Ping) {
+    // Replicate/Hint/Gossip are inter-node messages addressed to this node
+    // directly (a replica does not own the key) — skip the ring ownership check.
+    bool is_internal = req.opcode == Opcode::Replicate || req.opcode == Opcode::Hint
+                       || req.opcode == Opcode::Gossip;
+
+    // Reads are served from the local store when present — a replica holds a
+    // copy and can keep serving reads after the primary fails (failover read).
+    // Ownership only matters for writes and for read misses (redirect the
+    // client to the ring owner).
+    bool is_read = req.opcode == Opcode::Get;
+    if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
             sendResponse({.status = Errc::NotReady, .value = "moved to " + owner});
@@ -108,14 +123,45 @@ TcpConnection::handleRequest(const Request& req) {
             if (val.has_value()) {
                 res.status = Errc::OK;
                 res.value = std::move(val);
+            } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
+                sendResponse(
+                    {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});
+                maybeRead();
+                return;
             } else {
                 res.status = Errc::NotFound;
             }
             break;
         }
         case Opcode::Set: {
-            auto result = store_.put(req.key, req.value, req.ttl);
-            res.status = result.has_value() ? Errc::OK : result.error().code();
+            if (repl_ != nullptr && replica_factor_ > 1) {
+                auto nodes = ring_.getNodes(req.key, replica_factor_);
+                std::vector<NodeId> replicas;
+                for (const auto& n : nodes) {
+                    if (n != node_id_) {
+                        replicas.push_back(n);
+                    }
+                }
+
+                auto self = shared_from_this();
+                repl_->writeAsync(req.key,
+                    req.value,
+                    req.ttl,
+                    replicas,
+                    mode_,
+                    [this, self](Result<void> result) {
+                    Response async_res{
+                        .status = result.has_value() ? Errc::OK : result.error().code(),
+                        .value = std::nullopt,
+                    };
+                    sendResponse(async_res);
+                    maybeRead();
+                });
+                return; // response sent asynchronously from the write callback
+            } else {
+                auto result = store_.put(req.key, req.value, req.ttl);
+                res.status = result.has_value() ? Errc::OK : result.error().code();
+            }
             break;
         }
         case Opcode::Del: {
@@ -127,10 +173,23 @@ TcpConnection::handleRequest(const Request& req) {
             res.status = Errc::OK;
             break;
         }
-        case Opcode::Gossip:
         case Opcode::Replicate:
         case Opcode::Hint: {
-            res.status = Errc::NotSupported;
+            VersionedEntry entry;
+            entry.value = req.value;
+            entry.version = req.version;
+            entry.writer_node_hash = req.writer_node_hash;
+            if (req.ttl.has_value()) {
+                entry.expires_at = std::chrono::steady_clock::now() + *req.ttl;
+                entry.has_ttl = true;
+            }
+
+            auto result = store_.putVersioned(req.key, std::move(entry));
+            res.status = result.has_value() ? Errc::OK : result.error().code();
+            break;
+        }
+        case Opcode::Gossip: {
+            res.status = Errc::OK;
             break;
         }
         default: {

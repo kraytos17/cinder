@@ -3,6 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <deque>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -38,12 +40,20 @@ class ReplicationManager {
     ReplicationManager(ReplicationManager&&) = delete;
     auto operator=(ReplicationManager&&) -> ReplicationManager& = delete;
 
-    auto write(const std::string& key, std::string value, std::optional<milliseconds> ttl,
-        const std::vector<NodeId>& replica_nodes, ConsistencyMode mode) -> Result<void>;
+    using WriteCallback = std::move_only_function<void(Result<void>)>;
+    using ReplayCallback = std::move_only_function<void(size_t)>;
 
-    // Retry queued hints against now-healthy replicas. Returns count replayed
-    // (expired hints are dropped). Call periodically.
-    auto replayHints() -> size_t;
+    // Async write: commits locally, then fans out to replicas. `on_done` is
+    // invoked on the io thread.
+    //   Async  — immediately after local commit (fan-out is best-effort).
+    //   Quorum — after W = R/2+1 acks (incl. local) are observed, or when all
+    //            replicas answered with fewer than W (fails closed NotReady).
+    void writeAsync(const std::string& key, std::string value, std::optional<milliseconds> ttl,
+        const std::vector<NodeId>& replica_nodes, ConsistencyMode mode, WriteCallback on_done);
+
+    // Retry queued hints against now-healthy replicas. Invokes `on_done` with
+    // the count replayed (expired hints are dropped). Call periodically.
+    void replayHints(ReplayCallback on_done);
     auto hintCount() const -> size_t;
 
   private:
@@ -57,7 +67,24 @@ class ReplicationManager {
         steady_clock::time_point expires_at;
     };
 
+    // Shared per-write quorum accounting (owned by the in-flight sendAsync
+    // callbacks; destroyed when the last one completes).
+    struct QuorumState {
+        std::shared_ptr<WriteCallback> done;
+        size_t acks = 0;
+        size_t pending = 0;
+        bool done_flag = false;
+    };
+
+    // Shared per-replay accounting across hint sendAsync callbacks.
+    struct ReplayState {
+        std::shared_ptr<ReplayCallback> done;
+        size_t pending = 0;
+        size_t replayed = 0;
+    };
+
     void enqueueHint(const NodeId& target, const net::Request& req);
+    void removeHint(const Hint& hint);
 
     CacheStore& local_;
     NodeId self_;

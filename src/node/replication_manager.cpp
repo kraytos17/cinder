@@ -1,6 +1,8 @@
 #include "cinder/node/replication_manager.hpp"
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 #include <string_view>
 
 namespace cinder {
@@ -29,10 +31,10 @@ ReplicationManager::ReplicationManager(
       clock_(clock),
       transport_(transport) {}
 
-auto
-ReplicationManager::write(const std::string& key, std::string value,
-    std::optional<milliseconds> ttl, const std::vector<NodeId>& replica_nodes, ConsistencyMode mode)
-    -> Result<void> {
+void
+ReplicationManager::writeAsync(const std::string& key, std::string value,
+    std::optional<milliseconds> ttl, const std::vector<NodeId>& replica_nodes, ConsistencyMode mode,
+    WriteCallback on_done) {
     Version version = version_.fetch_add(1, std::memory_order_relaxed);
     uint64_t writer = fnv1a64(self_);
 
@@ -47,7 +49,8 @@ ReplicationManager::write(const std::string& key, std::string value,
 
     auto local_res = local_.putVersioned(key, std::move(entry));
     if (!local_res.has_value()) {
-        return local_res;
+        on_done(local_res);
+        return;
     }
 
     net::Request req;
@@ -58,46 +61,94 @@ ReplicationManager::write(const std::string& key, std::string value,
     req.version = version;
     req.writer_node_hash = writer;
 
-    // Local write counts as one acknowledgement.
-    size_t acks = 1;
+    if (mode == ConsistencyMode::Async) {
+        // Local commit counts; fan-out best-effort, hint on failure.
+        for (const auto& node : replica_nodes) {
+            transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
+                if (!r.has_value()) {
+                    enqueueHint(node, req);
+                }
+            });
+        }
+        on_done(ok());
+        return;
+    }
+
+    // Quorum: W = R/2 + 1 acknowledgements including the local write.
+    size_t total = replica_nodes.size() + 1;
+    size_t w = total / 2 + 1;
+    auto state = std::make_shared<QuorumState>();
+    state->done = std::make_shared<WriteCallback>(std::move(on_done));
+    state->acks = 1; // local write
+    state->pending = replica_nodes.size();
+
     for (const auto& node : replica_nodes) {
-        auto r = transport_.send(node, req);
-        if (r.has_value()) {
-            ++acks;
-        } else {
-            enqueueHint(node, req);
-        }
+        transport_.sendAsync(node, req, [this, node, req, state, w](Result<void> r) {
+            if (r.has_value()) {
+                ++state->acks;
+            } else {
+                enqueueHint(node, req);
+            }
+
+            --state->pending;
+            if (state->done_flag) {
+                return;
+            }
+            if (state->acks >= w) {
+                state->done_flag = true;
+                (*state->done)(ok());
+            } else if (state->pending == 0) {
+                state->done_flag = true;
+                (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
+            }
+        });
     }
-    if (mode == ConsistencyMode::Quorum) {
-        size_t total = replica_nodes.size() + 1;
-        size_t w = total / 2 + 1;
-        if (acks < w) {
-            return err(Error(Errc::NotReady, "quorum not reached"));
-        }
+    // No replicas: W == 1, the local ack suffices.
+    if (state->pending == 0 && !state->done_flag) {
+        state->done_flag = true;
+        (*state->done)(ok());
     }
-    return ok();
 }
 
-auto
-ReplicationManager::replayHints() -> size_t {
-    std::scoped_lock lock(hints_mutex_);
+void
+ReplicationManager::replayHints(ReplayCallback on_done) {
+    std::vector<Hint> snapshot;
+    {
+        std::scoped_lock lock(hints_mutex_);
+        snapshot.assign(hints_.begin(), hints_.end());
+    }
+    if (snapshot.empty()) {
+        on_done(0);
+        return;
+    }
+
+    auto state = std::make_shared<ReplayState>();
+    state->done = std::make_shared<ReplayCallback>(std::move(on_done));
+    state->pending = snapshot.size();
     auto now = clock_.now();
-    size_t replayed = 0;
-    for (auto it = hints_.begin(); it != hints_.end();) {
-        if (it->expires_at <= now) {
-            it = hints_.erase(it); // expired — drop
+
+    for (const auto& hint : snapshot) {
+        if (hint.expires_at <= now) {
+            // Expired — drop.
+            std::scoped_lock lock(hints_mutex_);
+            removeHint(hint);
+            if (--state->pending == 0) {
+                (*state->done)(state->replayed);
+            }
             continue;
         }
 
-        auto r = transport_.send(it->target, it->req);
-        if (r.has_value()) {
-            it = hints_.erase(it);
-            ++replayed;
-        } else {
-            ++it;
-        }
+        transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
+            if (r.has_value()) {
+                std::scoped_lock lock(hints_mutex_);
+                removeHint(hint);
+                ++state->replayed;
+            }
+            if (--state->pending == 0) {
+                (*state->done)(state->replayed);
+            }
+        });
     }
-    return replayed;
 }
 
 auto
@@ -113,5 +164,16 @@ ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
         hints_.pop_front(); // drop oldest to bound memory
     }
     hints_.push_back({target, req, clock_.now() + K_HINT_TTL});
+}
+
+void
+ReplicationManager::removeHint(const Hint& hint) {
+    auto it = std::find_if(hints_.begin(), hints_.end(), [&](const Hint& h) {
+        return h.target == hint.target && h.req.key == hint.req.key
+               && h.req.version == hint.req.version;
+    });
+    if (it != hints_.end()) {
+        hints_.erase(it);
+    }
 }
 } // namespace cinder

@@ -13,6 +13,7 @@ set(CINDER_CORE_SOURCES
     net/protocol.cpp
     net/tcp_server.cpp
     net/tcp_connection.cpp
+    net/tcp_transport.cpp
     client/cache_client.cpp
     client/connection_pool.cpp
 )

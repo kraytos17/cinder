@@ -47,6 +47,31 @@ class Error {
 
 template <typename T> using Result = std::expected<T, Error>;
 
+[[nodiscard]] inline auto
+toString(Errc code) -> std::string_view {
+    switch (code) {
+        case Errc::OK:
+            return "OK";
+        case Errc::NotFound:
+            return "(not found)";
+        case Errc::CapacityExceeded:
+            return "(capacity exceeded)";
+        case Errc::InvalidArgument:
+            return "(invalid argument)";
+        case Errc::TtlExpired:
+            return "(ttl expired)";
+        case Errc::NotSupported:
+            return "(not supported)";
+        case Errc::InternalError:
+            return "(internal error)";
+        case Errc::Timeout:
+            return "(timeout)";
+        case Errc::NotReady:
+            return "(not ready)";
+    }
+    return "(unknown)";
+}
+
 template <typename T>
 auto
 ok(T value) -> Result<T> {

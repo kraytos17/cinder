@@ -54,5 +54,12 @@ TEST(ResultTest, FreeFunctionErr) {
     EXPECT_FALSE(r.has_value());
     EXPECT_EQ(r.error().code(), Errc::NotFound);
 }
+
+TEST(ResultTest, ErrcToString) {
+    EXPECT_EQ(cinder::toString(Errc::OK), "OK");
+    EXPECT_EQ(cinder::toString(Errc::NotFound), "(not found)");
+    EXPECT_EQ(cinder::toString(Errc::CapacityExceeded), "(capacity exceeded)");
+    EXPECT_EQ(cinder::toString(Errc::NotReady), "(not ready)");
+}
 } // namespace
 } // namespace cinder

@@ -1,11 +1,10 @@
-#include <asio.hpp>
 #include <CLI/CLI.hpp>
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "cinder/common/logger.hpp"
-#include "cinder/hashing/consistent_hash_ring.hpp"
-#include "cinder/net/tcp_server.hpp"
-#include "cinder/store/lru_store.hpp"
+#include "cinder/node/cache_node_server.hpp"
 
 auto
 main(int argc, char* argv[]) -> int {
@@ -15,26 +14,39 @@ main(int argc, char* argv[]) -> int {
     size_t capacity = 67'108'864;
     std::string node_id = "node1";
     std::string peers;
+    int replica_factor = 1;
+    std::string consistency = "async";
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
     app.add_option("-n,--node-id", node_id, "This node's ID");
-    app.add_option("--peers", peers, "Peer node IDs (comma-separated)");
+    app.add_option("--peers", peers, "Peer nodes (comma-separated id@host:port)");
+    app.add_option("-r,--replication-factor", replica_factor, "Replication factor (1 = none)");
+    app.add_option("--consistency", consistency, "Write consistency: async|quorum");
 
     CLI11_PARSE(app, argc, argv);
 
     cinder::Logger::init("cinderd", cinder::LogLevel::Info);
     cinder::Logger::info("starting cinderd on port {}", port);
 
-    cinder::ConsistentHashRing ring(150);
-    ring.addNode(node_id);
+    cinder::CacheNodeServerOptions options;
+    options.node_id = node_id;
+    options.port = port;
+    options.capacity = capacity;
+    options.replica_factor = replica_factor;
+    options.mode =
+        consistency == "quorum" ? cinder::ConsistencyMode::Quorum : cinder::ConsistencyMode::Async;
+
     if (!peers.empty()) {
         size_t start = 0;
         while (true) {
             auto end = peers.find(',', start);
             auto peer = peers.substr(start, end - start);
-            if (peer.contains('@')) {
-                ring.addNode(peer);
+            cinder::ClusterConfig::NodeConfig peer_config;
+            if (parsePeer(peer, peer_config)) {
+                options.peers.push_back(peer_config);
+            } else {
+                cinder::Logger::warn("skipping malformed peer: {}", peer);
             }
             if (end == std::string::npos) {
                 break;
@@ -43,25 +55,16 @@ main(int argc, char* argv[]) -> int {
         }
     }
 
-    asio::io_context io;
-    cinder::LruStore store(capacity);
-    cinder::net::TcpServer server(io, port, store, ring, node_id);
-
+    cinder::CacheNodeServer server(std::move(options));
     auto result = server.start();
     if (!result.has_value()) {
         cinder::Logger::error("failed to start server");
         return 1;
     }
 
-    cinder::Logger::info("listening on port {}", port);
-    asio::signal_set signals(io, SIGINT, SIGTERM);
-    signals.async_wait([&](std::error_code, int) {
-        cinder::Logger::info("shutting down...");
-        server.shutdown();
-        io.stop();
-    });
-
-    io.run();
+    cinder::Logger::info(
+        "listening on port {} (replication factor {}, {})", port, replica_factor, consistency);
+    server.run();
     cinder::Logger::info("stopped");
     return 0;
 }

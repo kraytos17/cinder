@@ -16,4 +16,12 @@ class Clock {
 
     virtual auto now() const -> std::chrono::steady_clock::time_point = 0;
 };
+
+class RealClock final : public Clock {
+  public:
+
+    auto now() const -> std::chrono::steady_clock::time_point override {
+        return std::chrono::steady_clock::now();
+    }
+};
 } // namespace cinder

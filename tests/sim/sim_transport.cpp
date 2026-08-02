@@ -96,13 +96,14 @@ SimTransport::SimTransport(SimBus& bus, cinder::NodeId from)
     : bus_(bus),
       from_(std::move(from)) {}
 
-auto
-SimTransport::send(const cinder::NodeId& to, const cinder::net::Request& req)
-    -> cinder::Result<void> {
+void
+SimTransport::sendAsync(const cinder::NodeId& to, const cinder::net::Request& req,
+    cinder::Transport::SendCallback on_done) {
     if (!bus_.route(from_, to, req)) {
-        return cinder::err(cinder::Error(cinder::Errc::NotReady, "target node down"));
+        on_done(cinder::err(cinder::Error(cinder::Errc::NotReady, "target node down")));
+        return;
     }
-    return cinder::ok();
+    on_done(cinder::ok());
 }
 
 void

@@ -18,7 +18,9 @@
 // same delivery schedule.
 class SimBus {
   public:
-    using Handler = std::move_only_function<void(const cinder::NodeId& from, const cinder::net::Request&)>;
+
+    using Handler =
+        std::move_only_function<void(const cinder::NodeId& from, const cinder::net::Request&)>;
 
     explicit SimBus(SimClock& clock, uint64_t seed);
 
@@ -31,9 +33,9 @@ class SimBus {
     // Deliver every scheduled message whose time has come (<= clock.now()).
     void deliver();
 
-    void setLossRate(double p);                        // [0,1]
+    void setLossRate(double p); // [0,1]
     void setDelay(std::chrono::milliseconds d);
-    void setReorder(bool enabled);                     // swap consecutive deliveries
+    void setReorder(bool enabled); // swap consecutive deliveries
     void setNodeDown(const cinder::NodeId& id);
     void setNodeUp(const cinder::NodeId& id);
 
@@ -42,12 +44,14 @@ class SimBus {
     auto droppedCount() const -> size_t;
 
   private:
+
     struct Event {
         std::chrono::steady_clock::time_point deliver_at;
         cinder::NodeId from;
         cinder::NodeId to;
         cinder::net::Request req;
     };
+
     struct EventCmp {
         auto operator()(const Event& a, const Event& b) const -> bool {
             return a.deliver_at > b.deliver_at;
@@ -73,13 +77,15 @@ class SimBus {
 // ReplicationManager can send/register against it.
 class SimTransport final : public cinder::Transport {
   public:
+
     SimTransport(SimBus& bus, cinder::NodeId from);
 
-    auto send(const cinder::NodeId& to, const cinder::net::Request& req)
-        -> cinder::Result<void> override;
+    void sendAsync(const cinder::NodeId& to, const cinder::net::Request& req,
+        cinder::Transport::SendCallback on_done) override;
     void onMessage(MessageHandler handler) override;
 
   private:
+
     SimBus& bus_;
     cinder::NodeId from_;
 };

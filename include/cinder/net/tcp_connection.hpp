@@ -8,9 +8,14 @@
 #include <string>
 #include <vector>
 
+#include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/store/cache_store.hpp"
+
+namespace cinder {
+class ReplicationManager;
+}
 
 namespace cinder::net {
 
@@ -21,7 +26,8 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     static constexpr size_t K_MAX_WRITE_QUEUE = 64;
 
     TcpConnection(asio::ip::tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
-        std::string node_id);
+        std::string node_id, ReplicationManager* repl = nullptr, int replica_factor = 1,
+        ConsistencyMode mode = ConsistencyMode::Async);
     ~TcpConnection();
 
     TcpConnection(const TcpConnection&) = delete;
@@ -49,6 +55,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     std::string node_id_;
+    ReplicationManager* repl_;
+    int replica_factor_;
+    ConsistencyMode mode_;
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     size_t payload_len_ = 0;

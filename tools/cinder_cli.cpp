@@ -1,106 +1,12 @@
-#include <array>
 #include <asio.hpp>
-#include <charconv>
+#include <chrono>
 #include <CLI/CLI.hpp>
-#include <cstring>
 #include <iostream>
 #include <print>
 #include <string>
-#include <string_view>
 
-#include "cinder/net/protocol.hpp"
-
-using asio::ip::tcp;
-
-static auto
-statusString(cinder::Errc status) -> std::string_view {
-    switch (status) {
-        case cinder::Errc::OK:
-            return "OK";
-        case cinder::Errc::NotFound:
-            return "(not found)";
-        case cinder::Errc::CapacityExceeded:
-            return "(capacity exceeded)";
-        case cinder::Errc::InvalidArgument:
-            return "(invalid argument)";
-        case cinder::Errc::TtlExpired:
-            return "(ttl expired)";
-        case cinder::Errc::NotSupported:
-            return "(not supported)";
-        case cinder::Errc::InternalError:
-            return "(internal error)";
-        case cinder::Errc::Timeout:
-            return "(timeout)";
-        case cinder::Errc::NotReady:
-            return "(not ready)";
-    }
-    return "(unknown)";
-}
-
-static auto
-connect(asio::io_context& io, const std::string& host, uint16_t port)
-    -> cinder::Result<tcp::socket> {
-    tcp::socket socket(io);
-    tcp::resolver resolver(io);
-    asio::error_code ec;
-    std::array<char, 6> port_buf{};
-    auto [end, _] = std::to_chars(port_buf.data(), port_buf.data() + port_buf.size(), port);
-    auto endpoints =
-        resolver.resolve(host, std::string_view(port_buf.data(), end - port_buf.data()), ec);
-    if (ec) {
-        return cinder::err<tcp::socket>(
-            cinder::Error(cinder::Errc::InternalError, "resolve failed"));
-    }
-
-    (void)asio::connect(socket, endpoints, ec);
-    if (ec) {
-        return cinder::err<tcp::socket>(
-            cinder::Error(cinder::Errc::InternalError, "connect failed"));
-    }
-    return cinder::ok(std::move(socket));
-}
-
-static auto
-sendRequest(tcp::socket& socket, const cinder::net::Request& req)
-    -> cinder::Result<cinder::net::Response> {
-    auto encoded = cinder::net::encode(req);
-    if (!encoded.has_value()) {
-        return cinder::err<cinder::net::Response>(
-            cinder::Error(cinder::Errc::InvalidArgument, "encode failed"));
-    }
-
-    asio::error_code ec;
-    (void)asio::write(socket, asio::buffer(encoded.value()), ec);
-    if (ec) {
-        return cinder::err<cinder::net::Response>(
-            cinder::Error(cinder::Errc::InternalError, "write failed"));
-    }
-
-    std::array<std::byte, 65'536> buf{};
-    (void)asio::read(socket, asio::buffer(buf.data(), cinder::net::K_FRAME_HEADER_SIZE), ec);
-    if (ec) {
-        return cinder::err<cinder::net::Response>(
-            cinder::Error(cinder::Errc::InternalError, "read header failed"));
-    }
-
-    uint32_t net_len = 0;
-    std::memcpy(&net_len, &buf[3], sizeof(net_len));
-    size_t payload_len = std::byteswap(net_len);
-    if (payload_len > buf.size() - cinder::net::K_FRAME_HEADER_SIZE) {
-        return cinder::err<cinder::net::Response>(
-            cinder::Error(cinder::Errc::InvalidArgument, "response too large"));
-    }
-    if (payload_len > 0) {
-        (void)asio::read(
-            socket, asio::buffer(buf.data() + cinder::net::K_FRAME_HEADER_SIZE, payload_len), ec);
-        if (ec) {
-            return cinder::err<cinder::net::Response>(
-                cinder::Error(cinder::Errc::InternalError, "read payload failed"));
-        }
-    }
-    return cinder::net::decodeResponse(
-        std::span<const std::byte>(buf.data(), cinder::net::K_FRAME_HEADER_SIZE + payload_len));
-}
+#include "cinder/client/connection_pool.hpp"
+#include "cinder/common/status.hpp"
 
 auto
 main(int argc, char* argv[]) -> int {
@@ -123,14 +29,9 @@ main(int argc, char* argv[]) -> int {
 
     CLI11_PARSE(app, argc, argv);
 
-    asio::io_context io;
-    auto sock_result = connect(io, host, port);
-    if (!sock_result.has_value()) {
-        std::println(std::cerr, "connect failed");
-        return 1;
-    }
+    cinder::ClusterConfig config;
+    config.nodes.push_back({"server", host, port});
 
-    auto& socket = sock_result.value();
     cinder::net::Request req;
     if (cmd == "get") {
         req.opcode = cinder::net::Opcode::Get;
@@ -152,7 +53,9 @@ main(int argc, char* argv[]) -> int {
         return 1;
     }
 
-    auto res = sendRequest(socket, req);
+    asio::io_context io;
+    cinder::ConnectionPool pool(config, io);
+    auto res = pool.send("server", req);
     if (!res.has_value()) {
         std::println(std::cerr, "request failed: {}", res.error().message());
         return 1;
@@ -164,7 +67,7 @@ main(int argc, char* argv[]) -> int {
     } else if (response.value.has_value()) {
         std::println("{}", response.value.value());
     } else {
-        std::println("{}", statusString(response.status));
+        std::println("{}", cinder::toString(response.status));
     }
     return 0;
 }

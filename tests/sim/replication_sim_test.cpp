@@ -53,11 +53,30 @@ class TwoNodeCluster {
     }
 };
 
+// Synchronous shim over writeAsync: SimTransport resolves synchronously, so the
+// captured result is valid as soon as writeAsync returns.
+auto
+runWrite(ReplicationManager& mgr, const std::string& key, std::string value,
+    std::optional<std::chrono::milliseconds> ttl, const std::vector<NodeId>& replicas,
+    ConsistencyMode mode) -> Result<void> {
+    Result<void> result = err(Error(Errc::InternalError));
+    mgr.writeAsync(
+        key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = std::move(r); });
+    return result;
+}
+
+auto
+runReplay(ReplicationManager& mgr) -> size_t {
+    size_t replayed = 0;
+    mgr.replayHints([&](size_t n) { replayed = n; });
+    return replayed;
+}
+
 TEST(ReplicationSimTest, AsyncWriteReachesReplica) {
     TwoNodeCluster c;
     c.bus.setDelay(10ms);
     ASSERT_TRUE(
-        c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
 
     // Scheduled but not yet delivered.
     EXPECT_FALSE(c.store2.get("k").has_value());
@@ -75,9 +94,9 @@ TEST(ReplicationSimTest, OutOfOrderDeliveryHighestVersionWins) {
     c.bus.setReorder(true);
 
     ASSERT_TRUE(
-        c.mgr1.write("k", "old", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "old", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
     ASSERT_TRUE(
-        c.mgr1.write("k", "new", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "new", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
 
     c.clock.advance(10ms);
     c.bus.deliver(); // reorder → [v2, v1]; stale v1 rejected by versioning
@@ -91,7 +110,7 @@ TEST(ReplicationSimTest, MessageLossReplicaStaleNoCrash) {
     c.bus.setLossRate(1.0);
 
     ASSERT_TRUE(
-        c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
     c.clock.advance(10ms);
     c.bus.deliver();
 
@@ -103,7 +122,7 @@ TEST(ReplicationSimTest, MessageLossReplicaStaleNoCrash) {
 
 TEST(ReplicationSimTest, TtlPropagatesToReplica) {
     TwoNodeCluster c;
-    ASSERT_TRUE(c.mgr1.write("k", "v", 100ms, {"node2"}, ConsistencyMode::Async).has_value());
+    ASSERT_TRUE(runWrite(c.mgr1, "k", "v", 100ms, {"node2"}, ConsistencyMode::Async).has_value());
     c.bus.deliver();
 
     ASSERT_TRUE(c.store2.get("k").has_value());
@@ -144,8 +163,8 @@ TEST(ReplicationSimTest, FanoutToMultipleReplicas) {
     apply(s2, "node2");
     apply(s3, "node3");
 
-    ASSERT_TRUE(
-        m1.write("k", "v", std::nullopt, {"node2", "node3"}, ConsistencyMode::Async).has_value());
+    ASSERT_TRUE(runWrite(m1, "k", "v", std::nullopt, {"node2", "node3"}, ConsistencyMode::Async)
+            .has_value());
     clock.advance(5ms);
     bus.deliver();
 
@@ -156,7 +175,7 @@ TEST(ReplicationSimTest, FanoutToMultipleReplicas) {
 TEST(ReplicationSimTest, QuorumMetWithOneReplicaUp) {
     TwoNodeCluster c;
     // R = primary + 1 replica = 2, W = 2/2 + 1 = 2. Local ack + replica ack.
-    auto res = c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Quorum);
+    auto res = runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Quorum);
     ASSERT_TRUE(res.has_value());
 
     c.clock.advance(5ms);
@@ -169,7 +188,7 @@ TEST(ReplicationSimTest, QuorumNotMetWithReplicaDown) {
     TwoNodeCluster c;
     c.bus.setNodeDown("node2");
     // R = 2, W = 2. Local ack only (1 < 2) → fail closed.
-    auto res = c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Quorum);
+    auto res = runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Quorum);
     ASSERT_FALSE(res.has_value());
     EXPECT_EQ(res.error().code(), Errc::NotReady);
 
@@ -196,13 +215,14 @@ TEST(ReplicationSimTest, QuorumMetMajorityWithThreeNodes) {
             e.has_ttl = true;
             e.expires_at = c.clock.now() + *req.ttl;
         }
-        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        // NOLINTNEXTLINE
         (void)store3.putVersioned(req.key, std::move(e));
     });
 
     // node2 down, node3 up → acks = local + node3 = 2 = W → success.
     c.bus.setNodeDown("node2");
-    auto res = c.mgr1.write("k", "v", std::nullopt, {"node2", "node3"}, ConsistencyMode::Quorum);
+    auto res =
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2", "node3"}, ConsistencyMode::Quorum);
     ASSERT_TRUE(res.has_value());
 
     c.clock.advance(5ms);
@@ -218,13 +238,13 @@ TEST(ReplicationSimTest, HintedHandoffReplaysWhenReplicaReturns) {
 
     // Async write to a down replica → local ok, hint queued, replica stale.
     ASSERT_TRUE(
-        c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
     ASSERT_EQ(c.mgr1.hintCount(), 1);
     EXPECT_FALSE(c.store2.get("k").has_value());
 
     // Replica returns; replay delivers the hint.
     c.bus.setNodeUp("node2");
-    EXPECT_EQ(c.mgr1.replayHints(), 1);
+    EXPECT_EQ(runReplay(c.mgr1), 1);
     EXPECT_EQ(c.mgr1.hintCount(), 0);
 
     c.clock.advance(5ms);
@@ -237,12 +257,12 @@ TEST(ReplicationSimTest, HintExpiresAndIsDropped) {
     TwoNodeCluster c;
     c.bus.setNodeDown("node2");
     ASSERT_TRUE(
-        c.mgr1.write("k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
     ASSERT_EQ(c.mgr1.hintCount(), 1);
 
     // Hint TTL is 30s — advance past it; replay drops the expired hint.
     c.clock.advance(std::chrono::seconds(31));
-    EXPECT_EQ(c.mgr1.replayHints(), 0);
+    EXPECT_EQ(runReplay(c.mgr1), 0);
     EXPECT_EQ(c.mgr1.hintCount(), 0);
 }
 } // namespace
