@@ -265,5 +265,27 @@ TEST(ReplicationSimTest, HintExpiresAndIsDropped) {
     EXPECT_EQ(runReplay(c.mgr1), 0);
     EXPECT_EQ(c.mgr1.hintCount(), 0);
 }
+
+TEST(ReplicationSimTest, HintRetriesOnFailedReplay) {
+    TwoNodeCluster c;
+    c.bus.setNodeDown("node2");
+    ASSERT_TRUE(
+        runWrite(c.mgr1, "k", "v", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+    ASSERT_EQ(c.mgr1.hintCount(), 1);
+
+    // Replica still down: replay fails, hint must be retained for retry.
+    EXPECT_EQ(runReplay(c.mgr1), 0);
+    EXPECT_EQ(c.mgr1.hintCount(), 1);
+
+    // Replica returns: replay succeeds, hint drained, value delivered.
+    c.bus.setNodeUp("node2");
+    EXPECT_EQ(runReplay(c.mgr1), 1);
+    EXPECT_EQ(c.mgr1.hintCount(), 0);
+
+    c.clock.advance(5ms);
+    c.bus.deliver();
+    ASSERT_TRUE(c.store2.get("k").has_value());
+    EXPECT_EQ(c.store2.get("k").value(), "v");
+}
 } // namespace
 } // namespace cinder

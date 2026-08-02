@@ -3,6 +3,7 @@
 #include <asio.hpp>
 #include <utility>
 
+#include "cinder/cluster/gossip.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/replication_manager.hpp"
 
@@ -10,7 +11,7 @@ namespace cinder::net {
 
 TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
     const ConsistentHashRing& ring, std::string node_id, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode)
+    int replica_factor, ConsistencyMode mode, GossipManager* gossip)
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
@@ -18,6 +19,7 @@ TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
       repl_(repl),
       replica_factor_(replica_factor),
       mode_(mode),
+      gossip_(gossip),
       read_buf_{} {}
 
 TcpConnection::~TcpConnection() {
@@ -189,6 +191,11 @@ TcpConnection::handleRequest(const Request& req) {
             break;
         }
         case Opcode::Gossip: {
+            if (gossip_ != nullptr) {
+                // Sender identity is best-effort: the connection knows only its
+                // own node_id_; the sender's entry is always inside the payload.
+                gossip_->handleMessage(node_id_, req);
+            }
             res.status = Errc::OK;
             break;
         }
@@ -203,12 +210,13 @@ TcpConnection::handleRequest(const Request& req) {
 
 void
 TcpConnection::sendResponse(const Response& res) {
-    auto result = encode(res);
+    // Encode into the scratch buffer, then hand ownership to the write queue.
+    auto result = encodeInto(res, encode_buf_);
     if (!result.has_value()) {
         return;
     }
 
-    write_queue_.push_back(std::move(result.value()));
+    write_queue_.push_back(std::move(encode_buf_));
     if (!writing_) {
         doWrite();
     }
@@ -232,6 +240,8 @@ TcpConnection::doWrite() {
             return;
         }
 
+        // Recycle the completed buffer's capacity for the next encode.
+        encode_buf_ = std::move(write_queue_.front());
         write_queue_.pop_front();
         if (!write_queue_.empty()) {
             doWrite();

@@ -29,16 +29,16 @@ ConnectionPool::send(const NodeId& node_id, const net::Request& req) -> Result<n
         return err<net::Response>(entry_res.error());
     }
 
-    auto& socket = entry_res.value()->socket;
-    auto send_res = sendFramed(socket, req);
+    auto& entry = *entry_res.value();
+    auto send_res = sendFramed(entry, req);
     if (!send_res.has_value()) {
-        entry_res.value()->connected = false;
+        entry.connected = false;
         return err<net::Response>(send_res.error());
     }
 
-    auto recv_res = recvFramed(socket);
+    auto recv_res = recvFramed(entry);
     if (!recv_res.has_value()) {
-        entry_res.value()->connected = false;
+        entry.connected = false;
         return err<net::Response>(recv_res.error());
     }
     return ok(std::move(recv_res.value()));
@@ -71,7 +71,7 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
         return ok(&conn_it->second);
     }
     if (conn_it == connections_.end()) {
-        auto emplaced = connections_.emplace(node_id, PoolEntry{tcp::socket(io_), false});
+        auto emplaced = connections_.emplace(node_id, PoolEntry{tcp::socket(io_), false, {}, {}});
         conn_it = emplaced.first;
     }
 
@@ -112,14 +112,14 @@ ConnectionPool::readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<
 }
 
 auto
-ConnectionPool::sendFramed(tcp::socket& s, const net::Request& req) -> Result<void> {
-    auto encoded = net::encode(req);
+ConnectionPool::sendFramed(PoolEntry& entry, const net::Request& req) -> Result<void> {
+    auto encoded = net::encodeInto(req, entry.send_buf);
     if (!encoded.has_value()) {
         return err(encoded.error());
     }
 
     std::error_code ec;
-    asio::write(s, asio::buffer(encoded.value().data(), encoded.value().size()), ec);
+    asio::write(entry.socket, asio::buffer(entry.send_buf), ec);
     if (ec) {
         return err(Error(Errc::Timeout, "write failed: " + ec.message()));
     }
@@ -127,9 +127,9 @@ ConnectionPool::sendFramed(tcp::socket& s, const net::Request& req) -> Result<vo
 }
 
 auto
-ConnectionPool::recvFramed(tcp::socket& s) -> Result<net::Response> {
+ConnectionPool::recvFramed(PoolEntry& entry) -> Result<net::Response> {
     std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
-    auto header_res = readExactly(s, header);
+    auto header_res = readExactly(entry.socket, header);
     if (!header_res.has_value()) {
         return err<net::Response>(header_res.error());
     }
@@ -144,14 +144,14 @@ ConnectionPool::recvFramed(tcp::socket& s) -> Result<net::Response> {
         return err<net::Response>(Error(Errc::InternalError, "response payload too large"));
     }
 
-    std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
-    std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
+    entry.recv_buf.resize(net::K_FRAME_HEADER_SIZE + payload_len);
+    std::memcpy(entry.recv_buf.data(), header.data(), net::K_FRAME_HEADER_SIZE);
 
-    auto payload_span = std::span(frame).subspan(net::K_FRAME_HEADER_SIZE);
-    auto payload_res = readExactly(s, payload_span);
+    auto payload_span = std::span(entry.recv_buf).subspan(net::K_FRAME_HEADER_SIZE);
+    auto payload_res = readExactly(entry.socket, payload_span);
     if (!payload_res.has_value()) {
         return err<net::Response>(payload_res.error());
     }
-    return net::decodeResponse(frame);
+    return net::decodeResponse(entry.recv_buf);
 }
 } // namespace cinder

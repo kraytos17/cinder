@@ -1,1 +1,186 @@
-// TODO: implement
+#include <gtest/gtest.h>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "cinder/cluster/failure_detector.hpp"
+#include "cinder/cluster/gossip.hpp"
+#include "cinder/cluster/membership.hpp"
+#include "sim_clock.hpp"
+#include "sim_transport.hpp"
+
+namespace cinder {
+namespace {
+
+using namespace std::chrono_literals;
+using namespace std::chrono;
+
+// A node view: table + detector + gossip over a shared bus. SimTransport
+// resolves sendAsync synchronously (ok when the bus accepts, err when the
+// target is down), so Ping probes need no explicit ACK handler.
+struct GossipNode {
+    NodeId id;
+    SimTransport transport;
+    MembershipTable table;
+    FailureDetector detector;
+    GossipManager gossip;
+
+    GossipNode(SimClock& c, SimBus& b, NodeId node_id, NodeId self)
+        : id(node_id),
+          transport(b, node_id),
+          table(self),
+          detector(c, transport, table, self, 1'000ms, 3'000ms),
+          gossip(c, transport, table, 1'000ms) {
+        // Forward incoming Gossip requests to this node's manager.
+        transport.onMessage([this](const NodeId& from, const net::Request& req) {
+            if (req.opcode == net::Opcode::Gossip) {
+                gossip.handleMessage(from, req);
+            }
+        });
+    }
+};
+
+// Three nodes wired into one bus. `seedAll` adds every node to each table.
+struct GossipCluster {
+    SimClock clock;
+    SimBus bus{clock, 7};
+
+    std::vector<std::unique_ptr<GossipNode>> nodes;
+
+    GossipCluster() {
+        for (const auto& name : {"node1", "node2", "node3"}) {
+            nodes.push_back(std::make_unique<GossipNode>(clock, bus, name, "node1"));
+        }
+    }
+
+    void seedAll() {
+        std::vector<ClusterConfig::NodeConfig> peers{
+            {"node1", "127.0.0.1", 17'900},
+            {"node2", "127.0.0.1", 17'901},
+            {"node3", "127.0.0.1", 17'902},
+        };
+        for (auto& n : nodes) {
+            n->table.seed(peers);
+        }
+        for (auto& n : nodes) {
+            n->detector.start();
+            n->gossip.start();
+        }
+    }
+
+    void tickAll() {
+        for (auto& n : nodes) {
+            n->detector.tick();
+            n->gossip.tick();
+        }
+        bus.deliver();
+    }
+};
+
+TEST(GossipPartitionSimTest, SuspectThenDead) {
+    GossipCluster c;
+    c.seedAll();
+
+    // node2 goes down: probe fails → suspect, then escalated to dead.
+    c.bus.setNodeDown("node2");
+    c.tickAll();
+
+    const auto* info = c.nodes[0]->table.get("node2");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->state, NodeState::Suspect);
+
+    // Advance past suspect_timeout (3s); escalation happens on a tick.
+    c.clock.advance(4s);
+    c.tickAll();
+    info = c.nodes[0]->table.get("node2");
+    EXPECT_EQ(info->state, NodeState::Dead);
+}
+
+TEST(GossipPartitionSimTest, IncarnationRefutation) {
+    GossipCluster c;
+    c.seedAll();
+
+    // node2 marked dead locally, then "recovers" with a higher incarnation.
+    c.bus.setNodeDown("node2");
+    c.tickAll();
+    c.clock.advance(4s);
+    c.tickAll();
+    ASSERT_EQ(c.nodes[0]->table.get("node2")->state, NodeState::Dead);
+
+    // Recovery: node2's own higher-incarnation Alive rumor.
+    c.bus.setNodeUp("node2");
+    NodeInfo recovery;
+    recovery.id = "node2";
+    recovery.host = "127.0.0.1";
+    recovery.port = 17'901;
+    recovery.state = NodeState::Alive;
+    recovery.incarnation = 5;
+    c.nodes[0]->table.applyRumor("node2", recovery);
+
+    const auto* info = c.nodes[0]->table.get("node2");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->state, NodeState::Alive);
+    EXPECT_EQ(info->incarnation, 5);
+}
+
+TEST(GossipPartitionSimTest, StaleRumorIgnored) {
+    GossipCluster c;
+    c.seedAll();
+
+    // Local incarnation is high (5); a lower-incarnation Dead rumor is ignored.
+    c.nodes[0]->table.markAlive("node2", 5);
+
+    NodeInfo stale;
+    stale.id = "node2";
+    stale.state = NodeState::Dead;
+    stale.incarnation = 3;
+    c.nodes[0]->table.applyRumor("node2", stale);
+
+    const auto* info = c.nodes[0]->table.get("node2");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->state, NodeState::Alive);
+    EXPECT_EQ(info->incarnation, 5);
+}
+
+TEST(GossipPartitionSimTest, GossipPropagates) {
+    GossipCluster c;
+    c.seedAll();
+
+    // node1 learns node2 is dead via the detector, then gossips to node3.
+    c.bus.setNodeDown("node2");
+    c.tickAll();
+    c.clock.advance(4s);
+    c.tickAll();
+    ASSERT_EQ(c.nodes[0]->table.get("node2")->state, NodeState::Dead);
+
+    c.nodes[0]->gossip.tick();
+    c.clock.advance(1ms);
+    c.bus.deliver();
+
+    const auto* info = c.nodes[2]->table.get("node2");
+    ASSERT_NE(info, nullptr);
+    EXPECT_EQ(info->state, NodeState::Dead);
+}
+
+TEST(GossipPartitionSimTest, PartitionDegraded) {
+    GossipCluster c;
+    c.seedAll();
+
+    // Two of three nodes unreachable → below majority → degraded.
+    c.bus.setNodeDown("node2");
+    c.bus.setNodeDown("node3");
+    c.tickAll();
+    c.clock.advance(4s);
+    c.tickAll();
+    EXPECT_TRUE(c.nodes[0]->table.isDegraded());
+
+    // Both return → back to a majority → not degraded.
+    c.bus.setNodeUp("node2");
+    c.bus.setNodeUp("node3");
+    c.nodes[0]->table.markAlive("node2", 1);
+    c.nodes[0]->table.markAlive("node3", 1);
+    EXPECT_FALSE(c.nodes[0]->table.isDegraded());
+}
+
+} // namespace
+} // namespace cinder

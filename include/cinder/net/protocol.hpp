@@ -46,11 +46,19 @@ struct Response {
 auto
 encode(const Request& req) -> Result<std::vector<std::byte>>;
 
+// Encodes into a caller-provided buffer, reusing its capacity when possible
+// (avoids a fresh allocation on hot paths).
+auto
+encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void>;
+
 auto
 decode(std::span<const std::byte> frame) -> Result<Request>;
 
 auto
 encode(const Response& res) -> Result<std::vector<std::byte>>;
+
+auto
+encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void>;
 
 auto
 decodeResponse(std::span<const std::byte> frame) -> Result<Response>;

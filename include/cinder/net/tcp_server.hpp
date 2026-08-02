@@ -13,7 +13,8 @@
 
 namespace cinder {
 class ReplicationManager;
-}
+class GossipManager;
+} // namespace cinder
 
 namespace cinder::net {
 
@@ -22,7 +23,8 @@ class TcpServer {
 
     TcpServer(asio::io_context& io, uint16_t port, CacheStore& store,
         const ConsistentHashRing& ring, std::string node_id, ReplicationManager* repl = nullptr,
-        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async);
+        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
+        GossipManager* gossip = nullptr);
     ~TcpServer();
 
     TcpServer(const TcpServer&) = delete;
@@ -44,6 +46,7 @@ class TcpServer {
     ReplicationManager* repl_;
     int replica_factor_;
     ConsistencyMode mode_;
+    GossipManager* gossip_;
     std::vector<std::shared_ptr<TcpConnection>> connections_;
 };
 } // namespace cinder::net

@@ -39,12 +39,14 @@ class ConnectionPool {
     struct PoolEntry {
         asio::ip::tcp::socket socket;
         bool connected = false;
+        std::vector<std::byte> send_buf; // reused across sends on this connection
+        std::vector<std::byte> recv_buf; // reused across receives
     };
 
     auto getOrConnect(const NodeId& node_id) -> Result<PoolEntry*>;
     static auto readExactly(asio::ip::tcp::socket& s, std::span<std::byte> buf) -> Result<void>;
-    static auto sendFramed(asio::ip::tcp::socket& s, const net::Request& req) -> Result<void>;
-    static auto recvFramed(asio::ip::tcp::socket& s) -> Result<net::Response>;
+    static auto sendFramed(PoolEntry& entry, const net::Request& req) -> Result<void>;
+    static auto recvFramed(PoolEntry& entry) -> Result<net::Response>;
 
     asio::io_context& io_;
     std::unordered_map<NodeId, PoolEntry> connections_;

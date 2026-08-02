@@ -1,1 +1,154 @@
-// TODO: implement
+#include "cinder/cluster/gossip.hpp"
+
+#include <random>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include "cinder/net/protocol.hpp"
+
+namespace cinder {
+
+GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable& table,
+    std::chrono::milliseconds gossip_interval)
+    : clock_(clock),
+      transport_(transport),
+      table_(table),
+      gossip_interval_(gossip_interval) {}
+
+void
+GossipManager::start() {
+    peers_.clear();
+    for (const auto& info : table_.snapshot()) {
+        peers_.push_back(info.id);
+    }
+}
+
+void
+GossipManager::tick() {
+    if (peers_.empty()) {
+        return;
+    }
+
+    static thread_local std::mt19937 rng(
+        static_cast<uint32_t>(clock_.now().time_since_epoch().count()));
+    std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
+    sendView(peers_[dist(rng)]);
+}
+
+void
+GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
+    for (const auto& rumor : decodeView(req.value)) {
+        table_.applyRumor(from, rumor);
+    }
+}
+
+void
+GossipManager::sendView(const NodeId& to) {
+    net::Request req;
+    req.opcode = net::Opcode::Gossip;
+    req.value = encodeView(table_.snapshot());
+    transport_.sendAsync(to, req, [](Result<void> /*r*/) {});
+}
+
+auto
+GossipManager::encodeView(const std::vector<NodeInfo>& view) -> std::string {
+    std::string out;
+    for (const auto& info : view) {
+        if (!out.empty()) {
+            out.push_back(';');
+        }
+
+        out += info.id;
+        out.push_back('@');
+        out += info.host;
+        out.push_back(':');
+        out += std::to_string(info.port);
+        out.push_back(':');
+        switch (info.state) {
+            case NodeState::Alive:
+                out += "alive";
+                break;
+            case NodeState::Suspect:
+                out += "suspect";
+                break;
+            case NodeState::Dead:
+                out += "dead";
+                break;
+        }
+        out.push_back(':');
+        out += std::to_string(info.incarnation);
+    }
+    return out;
+}
+
+namespace {
+
+// Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
+// input.
+auto
+parseEntry(std::string_view entry, NodeInfo& out) -> bool {
+    auto at = entry.find('@');
+    auto colon1 = entry.find(':', at);
+    auto colon2 =
+        colon1 == std::string_view::npos ? std::string_view::npos : entry.find(':', colon1 + 1);
+    auto colon3 =
+        colon2 == std::string_view::npos ? std::string_view::npos : entry.find(':', colon2 + 1);
+    if (at == std::string_view::npos || colon1 == std::string_view::npos
+        || colon2 == std::string_view::npos || colon3 == std::string_view::npos) {
+        return false;
+    }
+
+    out.id = std::string(entry.substr(0, at));
+    out.host = std::string(entry.substr(at + 1, colon1 - at - 1));
+    auto port_str = entry.substr(colon1 + 1, colon2 - colon1 - 1);
+    try {
+        out.port = static_cast<uint16_t>(std::stoi(std::string(port_str)));
+    } catch (...) {
+        return false;
+    }
+
+    auto state_str = entry.substr(colon2 + 1, colon3 - colon2 - 1);
+    if (state_str == "alive") {
+        out.state = NodeState::Alive;
+    } else if (state_str == "suspect") {
+        out.state = NodeState::Suspect;
+    } else if (state_str == "dead") {
+        out.state = NodeState::Dead;
+    } else {
+        return false;
+    }
+
+    auto inc_str = entry.substr(colon3 + 1);
+    try {
+        out.incarnation = static_cast<uint64_t>(std::stoull(std::string(inc_str)));
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+auto
+GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
+    std::vector<NodeInfo> result;
+    size_t start = 0;
+    while (start < value.size()) {
+        auto end = value.find(';', start);
+        auto entry =
+            value.substr(start, end == std::string_view::npos ? value.size() - start : end - start);
+        if (!entry.empty()) {
+            NodeInfo info;
+            if (parseEntry(entry, info)) {
+                result.push_back(std::move(info));
+            }
+        }
+        if (end == std::string_view::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return result;
+}
+} // namespace cinder

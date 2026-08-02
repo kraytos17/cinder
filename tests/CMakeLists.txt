@@ -17,6 +17,8 @@ cinder_add_test(cinder_unit_tests
     unit/status_test.cpp
     unit/client_routing_test.cpp
     unit/versioned_store_test.cpp
+    unit/cache_node_server_test.cpp
+    unit/membership_test.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
 
@@ -31,6 +33,7 @@ target_compile_definitions(cinder_integration_tests PRIVATE
 )
 gtest_discover_tests(cinder_integration_tests
     PROPERTIES LABELS "integration"
+    RUN_SERIAL TRUE
     DISCOVERY_TIMEOUT 60
 )
 

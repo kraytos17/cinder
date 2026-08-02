@@ -15,7 +15,8 @@
 
 namespace cinder {
 class ReplicationManager;
-}
+class GossipManager;
+} // namespace cinder
 
 namespace cinder::net {
 
@@ -27,7 +28,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     TcpConnection(asio::ip::tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string node_id, ReplicationManager* repl = nullptr, int replica_factor = 1,
-        ConsistencyMode mode = ConsistencyMode::Async);
+        ConsistencyMode mode = ConsistencyMode::Async, GossipManager* gossip = nullptr);
     ~TcpConnection();
 
     TcpConnection(const TcpConnection&) = delete;
@@ -58,11 +59,13 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     ReplicationManager* repl_;
     int replica_factor_;
     ConsistencyMode mode_;
+    GossipManager* gossip_;
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     size_t payload_len_ = 0;
 
     std::deque<std::vector<std::byte>> write_queue_;
+    std::vector<std::byte> encode_buf_; // scratch; recycles write_queue_ capacity
     bool writing_ = false;
     bool reading_ = false;
 };

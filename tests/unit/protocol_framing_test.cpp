@@ -124,5 +124,64 @@ TEST(ProtocolTest, EncodeDecodeResponseNotFound) {
     EXPECT_EQ(decoded.value().status, Errc::NotFound);
     EXPECT_FALSE(decoded.value().value.has_value());
 }
+
+TEST(ProtocolTest, EncodeIntoRequestMatchesEncode) {
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "some-key";
+    req.value = "some-value";
+    req.ttl = std::chrono::milliseconds(5'000);
+    req.version = 42;
+    req.writer_node_hash = 0xDEADBEEF;
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+
+    std::vector<std::byte> buf;
+    auto into = encodeInto(req, buf);
+    ASSERT_TRUE(into.has_value());
+    EXPECT_EQ(buf, encoded.value());
+}
+
+TEST(ProtocolTest, EncodeIntoRequestReusesBuffer) {
+    Request small;
+    small.opcode = Opcode::Get;
+    small.key = "a";
+
+    Request large;
+    large.opcode = Opcode::Set;
+    large.key = "k" + std::string(100, 'x');
+    large.value = std::string(200, 'y');
+    large.ttl = std::chrono::milliseconds(1'000);
+
+    std::vector<std::byte> buf;
+    ASSERT_TRUE(encodeInto(small, buf).has_value());
+    auto small_bytes = buf;
+
+    ASSERT_TRUE(encodeInto(large, buf).has_value());
+    auto large_bytes = buf;
+
+    // Buffer reuse must not corrupt output for either size.
+    auto small_expected = encode(small);
+    auto large_expected = encode(large);
+    ASSERT_TRUE(small_expected.has_value());
+    ASSERT_TRUE(large_expected.has_value());
+    EXPECT_EQ(small_bytes, small_expected.value());
+    EXPECT_EQ(large_bytes, large_expected.value());
+}
+
+TEST(ProtocolTest, EncodeIntoResponseMatchesEncode) {
+    Response res;
+    res.status = Errc::OK;
+    res.value = "result_value";
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    std::vector<std::byte> buf;
+    auto into = encodeInto(res, buf);
+    ASSERT_TRUE(into.has_value());
+    EXPECT_EQ(buf, encoded.value());
+}
 } // namespace
 } // namespace cinder::net

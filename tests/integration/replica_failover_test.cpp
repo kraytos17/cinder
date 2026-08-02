@@ -25,6 +25,7 @@ namespace {
 
 constexpr int K_PORT_NODE1 = 17'910;
 constexpr int K_PORT_NODE2 = 17'911;
+constexpr int K_PORT_NODE3 = 17'912;
 
 struct NodeProc {
     pid_t pid = -1;
@@ -33,8 +34,10 @@ struct NodeProc {
 };
 
 auto
-spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum) -> NodeProc {
+spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum,
+    int replica_factor = 2) -> NodeProc {
     auto port_str = std::to_string(port);
+    auto factor_str = std::to_string(replica_factor);
     pid_t pid = fork();
     if (pid == -1) {
         ADD_FAILURE() << "fork failed";
@@ -49,7 +52,7 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
             "--node-id",
             id.c_str(),
             "--replication-factor",
-            "2",
+            factor_str.c_str(),
             "--consistency",
             quorum ? "quorum" : "async",
             "--peers",
@@ -252,6 +255,101 @@ TEST(ReplicaFailoverTest, HintedHandoffReplaysWhenReplicaReturns) {
     ASSERT_TRUE(waitForPort(K_PORT_NODE2)) << "node2 did not start";
 
     EXPECT_TRUE(waitForValue(K_REPLICA_PORT, "hkey-5", "v4")) << "hinted write was not replayed";
+}
+
+TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
+    NodeProcGuard node1{spawnNode(K_PORT_NODE1,
+        "node1",
+        "node2@127.0.0.1:" + std::to_string(K_PORT_NODE2)
+            + ",node3@127.0.0.1:" + std::to_string(K_PORT_NODE3),
+        false,
+        3)};
+    NodeProcGuard node2{spawnNode(K_PORT_NODE2,
+        "node2",
+        "node1@127.0.0.1:" + std::to_string(K_PORT_NODE1)
+            + ",node3@127.0.0.1:" + std::to_string(K_PORT_NODE3),
+        false,
+        3)};
+    NodeProcGuard node3{spawnNode(K_PORT_NODE3,
+        "node3",
+        "node1@127.0.0.1:" + std::to_string(K_PORT_NODE1)
+            + ",node2@127.0.0.1:" + std::to_string(K_PORT_NODE2),
+        false,
+        3)};
+    ASSERT_TRUE(waitForPort(K_PORT_NODE1)) << "node1 did not start";
+    ASSERT_TRUE(waitForPort(K_PORT_NODE2)) << "node2 did not start";
+    ASSERT_TRUE(waitForPort(K_PORT_NODE3)) << "node3 did not start";
+
+    // Determine the primary and the two successors via the ring (factor 3).
+    ConsistentHashRing ring(150);
+    ring.addNode("node1");
+    ring.addNode("node2");
+    ring.addNode("node3");
+    auto nodes = ring.getNodes("fanout3-key", 3);
+    ASSERT_GE(nodes.size(), 3);
+
+    auto portOf = [](const std::string& id) -> int {
+        if (id == "node1") {
+            return K_PORT_NODE1;
+        }
+        if (id == "node2") {
+            return K_PORT_NODE2;
+        }
+        return K_PORT_NODE3;
+    };
+
+    int primary = portOf(nodes[0]);
+    int replica1 = portOf(nodes[1]);
+    int replica2 = portOf(nodes[2]);
+
+    auto set_res = setKey(primary, "fanout3-key", "v5");
+    ASSERT_TRUE(set_res.has_value());
+    EXPECT_EQ(set_res.value().status, Errc::OK);
+
+    // Both replicas must apply the fan-out (R-1 = 2 replicas).
+    EXPECT_TRUE(waitForValue(replica1, "fanout3-key", "v5")) << "replica1 did not apply write";
+    EXPECT_TRUE(waitForValue(replica2, "fanout3-key", "v5")) << "replica2 did not apply write";
+}
+
+TEST(ReplicaFailoverTest, TTLReplicationOverWire) {
+    NodeProcGuard node1{
+        spawnNode(K_PORT_NODE1, "node1", "node2@127.0.0.1:" + std::to_string(K_PORT_NODE2), false)};
+    NodeProcGuard node2{
+        spawnNode(K_PORT_NODE2, "node2", "node1@127.0.0.1:" + std::to_string(K_PORT_NODE1), false)};
+    ASSERT_TRUE(waitForPort(K_PORT_NODE1)) << "node1 did not start";
+    ASSERT_TRUE(waitForPort(K_PORT_NODE2)) << "node2 did not start";
+
+    ConsistentHashRing ring(150);
+    ring.addNode("node1");
+    ring.addNode("node2");
+    auto nodes = ring.getNodes("ttl-over-wire", 2);
+    ASSERT_GE(nodes.size(), 2);
+    int primary = nodes[0] == "node1" ? K_PORT_NODE1 : K_PORT_NODE2;
+    int replica = nodes[1] == "node1" ? K_PORT_NODE1 : K_PORT_NODE2;
+
+    // Set with a short TTL; the value must propagate to the replica.
+    Request req{
+        .opcode = Opcode::Set,
+        .key = "ttl-over-wire",
+        .value = "ephemeral",
+        .ttl = std::chrono::milliseconds(300),
+    };
+    auto set_res = rawRequest(primary, req);
+    ASSERT_TRUE(set_res.has_value());
+    EXPECT_EQ(set_res.value().status, Errc::OK);
+    ASSERT_TRUE(waitForValue(replica, "ttl-over-wire", "ephemeral"))
+        << "replica did not apply TTL write";
+
+    // Wait past the TTL; both primary and replica must expire the entry.
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    auto primary_get = getKey(primary, "ttl-over-wire");
+    ASSERT_TRUE(primary_get.has_value());
+    EXPECT_EQ(primary_get.value().status, Errc::NotFound);
+    // Replica GET on a miss redirects to the ring owner (NotReady) — the value
+    // must no longer be served locally.
+    auto replica_get = getKey(replica, "ttl-over-wire");
+    ASSERT_TRUE(replica_get.has_value());
+    EXPECT_NE(replica_get.value().status, Errc::OK);
 }
 } // namespace
 } // namespace cinder

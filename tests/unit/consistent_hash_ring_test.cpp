@@ -131,5 +131,58 @@ TEST(ConsistentHashRingTest, ConcurrentReads) {
         th.join();
     }
 }
+
+TEST(ConsistentHashRingTest, GetNodesAllDistinct) {
+    ConsistentHashRing ring(50);
+    ring.addNode("node1");
+    ring.addNode("node2");
+    ring.addNode("node3");
+
+    for (int i = 0; i < 200; i++) {
+        auto key = "key" + std::to_string(i);
+        auto nodes = ring.getNodes(key, 3);
+        ASSERT_EQ(nodes.size(), 3);
+        EXPECT_NE(nodes[0], nodes[1]);
+        EXPECT_NE(nodes[0], nodes[2]);
+        EXPECT_NE(nodes[1], nodes[2]);
+    }
+}
+
+TEST(ConsistentHashRingTest, GetNodesReplicaCountExceedsAlive) {
+    ConsistentHashRing ring(50);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    // Requesting more replicas than alive nodes must not overrun the fixed
+    // dedup buffer or fabricate nodes.
+    for (int i = 0; i < 200; i++) {
+        auto key = "key" + std::to_string(i);
+        auto nodes = ring.getNodes(key, 8);
+        EXPECT_LE(nodes.size(), 2);
+    }
+}
+
+TEST(ConsistentHashRingTest, AddNodeIdempotent) {
+    ConsistentHashRing ring(10);
+    ring.addNode("node1");
+    ring.addNode("node1"); // duplicate add must not duplicate vnodes
+
+    // Duplicate physical nodes would break getNodes dedup for replica>1.
+    ring.addNode("node2");
+    for (int i = 0; i < 200; i++) {
+        auto key = "key" + std::to_string(i);
+        auto nodes = ring.getNodes(key, 2);
+        ASSERT_EQ(nodes.size(), 2);
+        EXPECT_NE(nodes[0], nodes[1]);
+    }
+
+    // Re-add after remove works (add→remove→add round-trip).
+    ring.removeNode("node2");
+    ring.addNode("node2");
+    for (int i = 0; i < 200; i++) {
+        auto key = "key" + std::to_string(i);
+        EXPECT_EQ(ring.getNodes(key, 2).size(), 2);
+    }
+}
 } // namespace
 } // namespace cinder

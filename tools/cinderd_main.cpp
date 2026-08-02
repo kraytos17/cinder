@@ -15,7 +15,11 @@ main(int argc, char* argv[]) -> int {
     std::string node_id = "node1";
     std::string peers;
     int replica_factor = 1;
+
     std::string consistency = "async";
+    int ping_interval_ms = 1'000;
+    int suspect_timeout_ms = 3'000;
+    int gossip_interval_ms = 1'000;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -23,6 +27,9 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--peers", peers, "Peer nodes (comma-separated id@host:port)");
     app.add_option("-r,--replication-factor", replica_factor, "Replication factor (1 = none)");
     app.add_option("--consistency", consistency, "Write consistency: async|quorum");
+    app.add_option("--ping-interval", ping_interval_ms, "Failure-detector ping interval (ms)");
+    app.add_option("--suspect-timeout", suspect_timeout_ms, "Suspect timeout before Dead (ms)");
+    app.add_option("--gossip-interval", gossip_interval_ms, "Gossip dissemination interval (ms)");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -36,6 +43,9 @@ main(int argc, char* argv[]) -> int {
     options.replica_factor = replica_factor;
     options.mode =
         consistency == "quorum" ? cinder::ConsistencyMode::Quorum : cinder::ConsistencyMode::Async;
+    options.ping_interval = std::chrono::milliseconds(ping_interval_ms);
+    options.suspect_timeout = std::chrono::milliseconds(suspect_timeout_ms);
+    options.gossip_interval = std::chrono::milliseconds(gossip_interval_ms);
 
     if (!peers.empty()) {
         size_t start = 0;

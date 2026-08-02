@@ -1,10 +1,10 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <format>
-#include <unordered_set>
 #include <xxhash.h>
 
 namespace cinder {
@@ -22,8 +22,13 @@ ConsistentHashRing::ConsistentHashRing(int vnodes_per_node)
 void
 ConsistentHashRing::addNode(const NodeId& node_id) {
     auto old = snapshot_.load();
-    auto snap = std::make_shared<RingSnapshot>();
+    for (const auto& existing : old->physical_nodes) {
+        if (existing == node_id) {
+            return; // already present — idempotent (re-announce/re-alive safe)
+        }
+    }
 
+    auto snap = std::make_shared<RingSnapshot>();
     snap->ring = old->ring;
     snap->physical_nodes = old->physical_nodes;
     snap->physical_nodes.push_back(node_id);
@@ -74,12 +79,27 @@ ConsistentHashRing::getNodes(std::string_view key, int replica_count) const -> s
         it = snap->ring.begin();
     }
 
-    std::unordered_set<std::string_view> seen;
+    // Replica counts are tiny (2–3), so a small fixed array + linear dedup
+    // beats an unordered_set allocation on every lookup.
+    constexpr size_t K_MAX_REPLICAS = 32;
+    std::array<NodeId, K_MAX_REPLICAS> seen{};
+    size_t seen_count = 0;
+
     std::vector<NodeId> result;
+    result.reserve(static_cast<size_t>(replica_count));
     auto cur = it;
     while (result.size() < static_cast<size_t>(replica_count)) {
-        if (seen.insert(cur->second).second) {
-            result.push_back(cur->second);
+        const auto& node = cur->second;
+        bool dup = false;
+        for (size_t i = 0; i < seen_count; i++) {
+            if (seen[i] == node) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup) {
+            seen[seen_count++] = node;
+            result.push_back(node);
         }
 
         cur++;

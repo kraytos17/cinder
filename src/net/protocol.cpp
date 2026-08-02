@@ -30,6 +30,16 @@ toNet(T val) -> T {
 
 auto
 encode(const Request& req) -> Result<std::vector<std::byte>> {
+    std::vector<std::byte> buf;
+    auto result = encodeInto(req, buf);
+    if (!result.has_value()) {
+        return err<std::vector<std::byte>>(result.error());
+    }
+    return ok(std::move(buf));
+}
+
+auto
+encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     size_t payload_size = 0;
     payload_size += sizeof(uint32_t) + req.key.size();
     payload_size += sizeof(uint32_t) + req.value.size();
@@ -42,53 +52,53 @@ encode(const Request& req) -> Result<std::vector<std::byte>> {
     payload_size += sizeof(uint8_t);
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     if (total > K_MAX_MESSAGE_SIZE) {
-        return err<std::vector<std::byte>>(Error(Errc::InvalidArgument, "message too large"));
+        return err(Error(Errc::InvalidArgument, "message too large"));
     }
 
-    std::vector<std::byte> buf(total);
+    out.resize(total); // reuses capacity across calls
     size_t off = 0;
 
-    buf[off++] = std::byte{K_MAGIC};
-    buf[off++] = std::byte{K_VERSION};
-    buf[off++] = std::byte{std::to_underlying(req.opcode)};
+    out[off++] = std::byte{K_MAGIC};
+    out[off++] = std::byte{K_VERSION};
+    out[off++] = std::byte{std::to_underlying(req.opcode)};
 
     uint32_t net_len = payload_size;
     net_len = toNet(net_len);
-    std::memcpy(&buf[off], &net_len, sizeof(net_len));
+    std::memcpy(&out[off], &net_len, sizeof(net_len));
     off += sizeof(net_len);
 
     uint8_t flags = req.ttl.has_value() ? 1 : 0;
-    buf[off++] = std::byte{flags};
+    out[off++] = std::byte{flags};
     if (req.ttl.has_value()) {
         auto net_ttl = static_cast<uint32_t>(req.ttl->count());
         net_ttl = toNet(net_ttl);
-        std::memcpy(&buf[off], &net_ttl, sizeof(net_ttl));
+        std::memcpy(&out[off], &net_ttl, sizeof(net_ttl));
         off += sizeof(net_ttl);
     }
 
     uint64_t net_version = toNet(req.version);
-    std::memcpy(&buf[off], &net_version, sizeof(net_version));
+    std::memcpy(&out[off], &net_version, sizeof(net_version));
     off += sizeof(net_version);
 
     uint64_t net_writer = toNet(req.writer_node_hash);
-    std::memcpy(&buf[off], &net_writer, sizeof(net_writer));
+    std::memcpy(&out[off], &net_writer, sizeof(net_writer));
     off += sizeof(net_writer);
 
     auto net_key_len = static_cast<uint32_t>(req.key.size());
     net_key_len = toNet(net_key_len);
-    std::memcpy(&buf[off], &net_key_len, sizeof(net_key_len));
+    std::memcpy(&out[off], &net_key_len, sizeof(net_key_len));
     off += sizeof(net_key_len);
-    std::memcpy(&buf[off], req.key.data(), req.key.size());
+    std::memcpy(&out[off], req.key.data(), req.key.size());
     off += req.key.size();
 
     auto net_val_len = static_cast<uint32_t>(req.value.size());
     net_val_len = toNet(net_val_len);
-    std::memcpy(&buf[off], &net_val_len, sizeof(net_val_len));
+    std::memcpy(&out[off], &net_val_len, sizeof(net_val_len));
     off += sizeof(net_val_len);
     if (!req.value.empty()) {
-        std::memcpy(&buf[off], req.value.data(), req.value.size());
+        std::memcpy(&out[off], req.value.data(), req.value.size());
     }
-    return ok(std::move(buf));
+    return ok();
 }
 
 auto
@@ -172,6 +182,16 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
 
 auto
 encode(const Response& res) -> Result<std::vector<std::byte>> {
+    std::vector<std::byte> buf;
+    auto result = encodeInto(res, buf);
+    if (!result.has_value()) {
+        return err<std::vector<std::byte>>(result.error());
+    }
+    return ok(std::move(buf));
+}
+
+auto
+encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     size_t payload_size = sizeof(uint8_t);
     payload_size += sizeof(uint32_t);
     if (res.value.has_value()) {
@@ -179,29 +199,29 @@ encode(const Response& res) -> Result<std::vector<std::byte>> {
     }
 
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
-    std::vector<std::byte> buf(total);
+    out.resize(total); // reuses capacity across calls
     size_t off = 0;
 
-    buf[off++] = std::byte{K_MAGIC};
-    buf[off++] = std::byte{K_VERSION};
-    buf[off++] = std::byte{0}; // response opcode unused
+    out[off++] = std::byte{K_MAGIC};
+    out[off++] = std::byte{K_VERSION};
+    out[off++] = std::byte{0}; // response opcode unused
 
     uint32_t net_len = payload_size;
     net_len = toNet(net_len);
-    std::memcpy(&buf[off], &net_len, sizeof(net_len));
+    std::memcpy(&out[off], &net_len, sizeof(net_len));
 
     off += sizeof(net_len);
-    buf[off++] = std::byte{std::to_underlying(res.status)};
+    out[off++] = std::byte{std::to_underlying(res.status)};
 
     uint32_t has_val = res.value.has_value() ? 1 : 0;
     uint32_t net_has_val = toNet(has_val);
 
-    std::memcpy(&buf[off], &net_has_val, sizeof(net_has_val));
+    std::memcpy(&out[off], &net_has_val, sizeof(net_has_val));
     off += sizeof(net_has_val);
     if (res.value.has_value()) {
-        std::memcpy(&buf[off], res.value->data(), res.value->size());
+        std::memcpy(&out[off], res.value->data(), res.value->size());
     }
-    return ok(std::move(buf));
+    return ok();
 }
 
 auto
