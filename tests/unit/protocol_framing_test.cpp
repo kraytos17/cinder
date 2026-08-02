@@ -183,5 +183,40 @@ TEST(ProtocolTest, EncodeIntoResponseMatchesEncode) {
     ASSERT_TRUE(into.has_value());
     EXPECT_EQ(buf, encoded.value());
 }
+
+TEST(ProtocolTest, EncodeDecodeExpiresAt) {
+    Request req;
+    req.opcode = Opcode::Replicate;
+    req.key = "k";
+    req.value = "v";
+    req.version = 7;
+    req.writer_node_hash = 42;
+    req.expires_at =
+        std::chrono::system_clock::time_point(std::chrono::milliseconds(1'700'000'000'123));
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decode(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_TRUE(decoded.value().expires_at.has_value());
+    EXPECT_EQ(*decoded.value().expires_at, *req.expires_at);
+    EXPECT_FALSE(decoded.value().ttl.has_value());
+}
+
+TEST(ProtocolTest, EncodeDecodeExpiresAtAbsent) {
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "k";
+    req.value = "v";
+    req.ttl = std::chrono::milliseconds(5'000);
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decode(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_FALSE(decoded.value().expires_at.has_value());
+    ASSERT_TRUE(decoded.value().ttl.has_value());
+    EXPECT_EQ(decoded.value().ttl->count(), 5'000);
+}
 } // namespace
 } // namespace cinder::net

@@ -11,8 +11,11 @@ class SimClock final : public cinder::Clock {
     SimClock();
 
     auto now() const -> std::chrono::steady_clock::time_point override;
+    auto nowSystem() const -> std::chrono::system_clock::time_point override;
     void advance(std::chrono::milliseconds d);
 
   private:
     std::chrono::steady_clock::time_point now_;
+    std::chrono::steady_clock::time_point steady_base_;
+    std::chrono::system_clock::time_point system_base_;
 };

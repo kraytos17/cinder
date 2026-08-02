@@ -35,7 +35,10 @@ void
 ReplicationManager::writeAsync(const std::string& key, std::string value,
     std::optional<milliseconds> ttl, const std::vector<NodeId>& replica_nodes, ConsistencyMode mode,
     WriteCallback on_done) {
-    Version version = version_.fetch_add(1, std::memory_order_relaxed);
+    // Version comes from the store — it is the single version authority. The
+    // store's counter has advanced past any observed peer versions (Lamport
+    // bump) and is seeded from the clock, so a restarted node wins LWW.
+    Version version = local_.mintVersion();
     uint64_t writer = fnv1a64(self_);
 
     VersionedEntry entry;
@@ -45,6 +48,14 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     if (ttl.has_value()) {
         entry.expires_at = clock_.now() + *ttl;
         entry.has_ttl = true;
+    }
+
+    // Capture the absolute wall-clock expiry before `entry` is moved into the
+    // store below. Carried on the wire (not a relative ttl) so every replica
+    // expires the key at the same instant regardless of delivery delay.
+    std::optional<system_clock::time_point> wire_expiry;
+    if (entry.has_ttl) {
+        wire_expiry = toSystemExpiry(clock_, entry.expires_at);
     }
 
     auto local_res = local_.putVersioned(key, std::move(entry));
@@ -57,7 +68,7 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     req.opcode = net::Opcode::Replicate;
     req.key = key;
     req.value = std::move(value);
-    req.ttl = ttl;
+    req.expires_at = wire_expiry;
     req.version = version;
     req.writer_node_hash = writer;
 

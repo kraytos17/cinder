@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "cinder/cluster/clock.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
@@ -27,8 +28,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     static constexpr size_t K_MAX_WRITE_QUEUE = 64;
 
     TcpConnection(asio::ip::tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
-        std::string node_id, ReplicationManager* repl = nullptr, int replica_factor = 1,
-        ConsistencyMode mode = ConsistencyMode::Async, GossipManager* gossip = nullptr);
+        std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
+        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
+        GossipManager* gossip = nullptr);
     ~TcpConnection();
 
     TcpConnection(const TcpConnection&) = delete;
@@ -55,6 +57,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     asio::ip::tcp::socket socket_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;
+    Clock& clock_;
     std::string node_id_;
     ReplicationManager* repl_;
     int replica_factor_;

@@ -37,6 +37,11 @@ class CacheStore {
     virtual auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> = 0;
     virtual auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> = 0;
 
+    // Mint a monotonic local version for a locally-originated write. The store
+    // is the single version authority regardless of which write path is used
+    // (direct put() or ReplicationManager). Thread-safe (store mutex).
+    virtual auto mintVersion() -> Version = 0;
+
   protected:
 
     // Injected clock for deterministic sims; nullptr → real steady_clock.

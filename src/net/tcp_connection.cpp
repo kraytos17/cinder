@@ -10,11 +10,12 @@
 namespace cinder::net {
 
 TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id, ReplicationManager* repl,
+    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
     int replica_factor, ConsistencyMode mode, GossipManager* gossip)
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
+      clock_(clock),
       node_id_(std::move(node_id)),
       repl_(repl),
       replica_factor_(replica_factor),
@@ -181,8 +182,10 @@ TcpConnection::handleRequest(const Request& req) {
             entry.value = req.value;
             entry.version = req.version;
             entry.writer_node_hash = req.writer_node_hash;
-            if (req.ttl.has_value()) {
-                entry.expires_at = std::chrono::steady_clock::now() + *req.ttl;
+            // Apply the primary's absolute wall-clock expiry on the local steady
+            // basis, so all replicas expire the key at the same instant.
+            if (req.expires_at.has_value()) {
+                entry.expires_at = toSteadyExpiry(clock_, *req.expires_at);
                 entry.has_ttl = true;
             }
 

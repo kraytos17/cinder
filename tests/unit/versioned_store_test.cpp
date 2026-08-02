@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gtest/gtest.h>
 
 #include "cinder/store/lfu_store.hpp"
@@ -5,6 +6,19 @@
 
 namespace cinder {
 namespace {
+
+// Deterministic clock for the restart-seed test.
+class TestClock final : public Clock {
+  public:
+
+    auto now() const -> std::chrono::steady_clock::time_point override { return now_; }
+
+    void advance(std::chrono::milliseconds d) { now_ += d; }
+
+  private:
+
+    std::chrono::steady_clock::time_point now_{};
+};
 
 // used to supress clang -Wunneeded-internal-declaration
 [[maybe_unused]] auto
@@ -78,6 +92,53 @@ TYPED_TEST(VersionedStoreTest, TtlExpiresVersioned) {
 TYPED_TEST(VersionedStoreTest, GetVersionedMissing) {
     TypeParam store(1'024);
     EXPECT_FALSE(store.getVersioned("missing").has_value());
+}
+
+TYPED_TEST(VersionedStoreTest, MintVersionIsMonotonic) {
+    TypeParam store(1'024);
+    Version a = store.mintVersion();
+    Version b = store.mintVersion();
+    EXPECT_GT(b, a);
+
+    // Interleaved with put(): versions keep increasing.
+    ASSERT_TRUE(store.put("k", "v").has_value());
+    Version c = store.mintVersion();
+    EXPECT_GT(c, b);
+    EXPECT_GT(store.getVersioned("k")->version, a);
+}
+
+TYPED_TEST(VersionedStoreTest, LamportBumpOnAcceptedWrite) {
+    TypeParam store(1'024);
+    // Accept a replicated write with a high version.
+    ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v", 5, 10)).has_value());
+
+    // Next minted version advances past the observed version.
+    EXPECT_GE(store.mintVersion(), 6);
+
+    // A stale write (version 2) must NOT advance the counter.
+    TypeParam store2(1'024);
+    ASSERT_TRUE(store2.putVersioned("k", makeVersionedEntry("high", 100, 10)).has_value());
+    ASSERT_TRUE(store2.putVersioned("k", makeVersionedEntry("stale", 2, 10)).has_value());
+    EXPECT_GE(store2.mintVersion(), 101);
+}
+
+TYPED_TEST(VersionedStoreTest, RestartSeedWins) {
+    TestClock clock;
+    // Store A "runs" at a low time seed.
+    TypeParam store_a(1'024, &clock);
+    auto old = store_a.mintVersion();
+
+    // A restart gap passes; a fresh store seeds from the advanced clock.
+    clock.advance(std::chrono::seconds(5));
+    TypeParam store_b(1'024, &clock);
+    EXPECT_GT(store_b.mintVersion(), old);
+
+    // The restarted node's write wins LWW when both versions reach one store.
+    TypeParam store_c(1'024, &clock);
+    ASSERT_TRUE(store_c.putVersioned("k", makeVersionedEntry("old", old, 10)).has_value());
+    ASSERT_TRUE(store_c.putVersioned("k", makeVersionedEntry("new", store_b.mintVersion(), 10))
+            .has_value());
+    EXPECT_EQ(store_c.getVersioned("k")->value, "new");
 }
 } // namespace
 } // namespace cinder

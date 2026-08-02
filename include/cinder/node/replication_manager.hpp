@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <chrono>
 #include <deque>
 #include <functional>
@@ -90,7 +89,6 @@ class ReplicationManager {
     NodeId self_;
     Clock& clock_;
     Transport& transport_;
-    std::atomic<Version> version_{1};
 
     mutable std::mutex hints_mutex_;
     std::deque<Hint> hints_;

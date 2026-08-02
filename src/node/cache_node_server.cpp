@@ -36,8 +36,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       detector_(clock_, transport_, table_, options.node_id, options.ping_interval,
           options.suspect_timeout),
       gossip_(clock_, transport_, table_, options.gossip_interval),
-      server_(io_, options.port, store_, ring_, options.node_id, &repl_, options.replica_factor,
-          options.mode, &gossip_),
+      server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
+          options.replica_factor, options.mode, &gossip_),
       replay_timer_(io_),
       gossip_timer_(io_),
       signals_(io_) {

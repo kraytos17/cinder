@@ -288,7 +288,7 @@ TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
     auto nodes = ring.getNodes("fanout3-key", 3);
     ASSERT_GE(nodes.size(), 3);
 
-    auto portOf = [](const std::string& id) -> int {
+    auto port_of = [](const std::string& id) -> int {
         if (id == "node1") {
             return K_PORT_NODE1;
         }
@@ -298,9 +298,9 @@ TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
         return K_PORT_NODE3;
     };
 
-    int primary = portOf(nodes[0]);
-    int replica1 = portOf(nodes[1]);
-    int replica2 = portOf(nodes[2]);
+    int primary = port_of(nodes[0]);
+    int replica1 = port_of(nodes[1]);
+    int replica2 = port_of(nodes[2]);
 
     auto set_res = setKey(primary, "fanout3-key", "v5");
     ASSERT_TRUE(set_res.has_value());

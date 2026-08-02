@@ -1,5 +1,6 @@
 #include "cinder/store/lru_store.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <utility>
 
@@ -7,7 +8,8 @@ namespace cinder {
 
 LruStore::LruStore(size_t capacity_bytes, Clock* clock)
     : CacheStore(clock),
-      capacity_bytes_(capacity_bytes) {}
+      capacity_bytes_(capacity_bytes),
+      next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
 
 auto
 LruStore::put(const std::string& key, std::string value,
@@ -38,6 +40,10 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
             return ok();
         }
 
+        // Lamport bump: advance past any observed (incl. replicated) version so
+        // this node wins LWW if it later coordinates the same key.
+        next_version_ = std::max(next_version_, entry.version + 1);
+
         current_bytes_ -= node->entry.value.size();
         node->entry = std::move(entry);
         current_bytes_ += node->entry.value.size();
@@ -51,11 +57,19 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         return err(Error(Errc::CapacityExceeded, "value exceeds capacity"));
     }
 
+    next_version_ = std::max(next_version_, entry.version + 1);
+
     lru_list_.push_front({.key = key, .entry = std::move(entry)});
     index_[key] = lru_list_.begin();
     current_bytes_ += entry_size;
     evictIfNeeded();
     return ok();
+}
+
+auto
+LruStore::mintVersion() -> Version {
+    std::scoped_lock lock(mutex_);
+    return next_version_++;
 }
 
 auto

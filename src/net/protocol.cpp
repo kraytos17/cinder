@@ -50,6 +50,9 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     }
 
     payload_size += sizeof(uint8_t);
+    if (req.expires_at.has_value()) {
+        payload_size += sizeof(uint64_t);
+    }
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     if (total > K_MAX_MESSAGE_SIZE) {
         return err(Error(Errc::InvalidArgument, "message too large"));
@@ -67,13 +70,28 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     std::memcpy(&out[off], &net_len, sizeof(net_len));
     off += sizeof(net_len);
 
-    uint8_t flags = req.ttl.has_value() ? 1 : 0;
+    uint8_t flags = 0;
+    if (req.ttl.has_value()) {
+        flags |= K_FLAG_HAS_TTL;
+    }
+    if (req.expires_at.has_value()) {
+        flags |= K_FLAG_HAS_EXPIRES_AT;
+    }
     out[off++] = std::byte{flags};
     if (req.ttl.has_value()) {
         auto net_ttl = static_cast<uint32_t>(req.ttl->count());
         net_ttl = toNet(net_ttl);
         std::memcpy(&out[off], &net_ttl, sizeof(net_ttl));
         off += sizeof(net_ttl);
+    }
+    if (req.expires_at.has_value()) {
+        uint64_t net_expiry =
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                req.expires_at->time_since_epoch())
+                    .count());
+        net_expiry = toNet(net_expiry);
+        std::memcpy(&out[off], &net_expiry, sizeof(net_expiry));
+        off += sizeof(net_expiry);
     }
 
     uint64_t net_version = toNet(req.version);
@@ -131,7 +149,8 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
 
     size_t off = K_FRAME_HEADER_SIZE;
     auto flags = static_cast<uint8_t>(frame[off++]);
-    bool has_ttl = (flags & 1U) != 0;
+    bool has_ttl = (flags & K_FLAG_HAS_TTL) != 0;
+    bool has_expires_at = (flags & K_FLAG_HAS_EXPIRES_AT) != 0;
     if (has_ttl) {
         if (off + sizeof(uint32_t) > frame.size()) {
             return err<Request>(Error(Errc::InvalidArgument, "truncated ttl"));
@@ -140,6 +159,18 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         uint32_t ttl_ms = readBe32(&frame[off]);
         off += sizeof(uint32_t);
         req.ttl = std::chrono::milliseconds(ttl_ms);
+    }
+    if (has_expires_at) {
+        if (off + sizeof(uint64_t) > frame.size()) {
+            return err<Request>(Error(Errc::InvalidArgument, "truncated expires_at"));
+        }
+
+        uint64_t net_expiry = 0;
+        std::memcpy(&net_expiry, &frame[off], sizeof(net_expiry));
+        net_expiry = toNet(net_expiry);
+        off += sizeof(net_expiry);
+        req.expires_at =
+            std::chrono::system_clock::time_point(std::chrono::milliseconds(net_expiry));
     }
     if (off + sizeof(uint64_t) > frame.size()) {
         return err<Request>(Error(Errc::InvalidArgument, "truncated version"));

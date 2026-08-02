@@ -27,6 +27,7 @@ class LruStore : public CacheStore {
     auto evictExpired() -> size_t override;
     auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> override;
     auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> override;
+    auto mintVersion() -> Version override;
 
   private:
 
@@ -46,6 +47,6 @@ class LruStore : public CacheStore {
     std::unordered_map<std::string, ListIt> index_;
     size_t capacity_bytes_;
     size_t current_bytes_ = 0;
-    Version next_version_ = 1;
+    Version next_version_; // seeded from the clock in the ctor (restart-safe)
 };
 } // namespace cinder

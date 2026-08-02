@@ -43,9 +43,9 @@ class TwoNodeCluster {
             e.value = req.value;
             e.version = req.version;
             e.writer_node_hash = req.writer_node_hash;
-            if (req.ttl.has_value()) {
+            if (req.expires_at.has_value()) {
                 e.has_ttl = true;
-                e.expires_at = clock.now() + *req.ttl;
+                e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
             (void)store.putVersioned(req.key, std::move(e));
@@ -131,6 +131,30 @@ TEST(ReplicationSimTest, TtlPropagatesToReplica) {
     EXPECT_FALSE(c.store2.get("k").has_value());
 }
 
+TEST(ReplicationSimTest, TtlAbsoluteExpirySharedAcrossReplicas) {
+    TwoNodeCluster c;
+    // Nonzero delivery delay: the replica receives the write after the primary
+    // committed it. With an absolute wall-clock expiry on the wire, both nodes
+    // must still expire the key at the SAME instant (not primary + delay).
+    // TTL is chosen larger than the delay so the entry is still live at delivery.
+    c.bus.setDelay(200ms);
+
+    ASSERT_TRUE(runWrite(c.mgr1, "k", "v", 500ms, {"node2"}, ConsistencyMode::Async).has_value());
+
+    // Let the delayed Replicate message actually be delivered.
+    c.clock.advance(200ms);
+    c.bus.deliver();
+
+    ASSERT_TRUE(c.store1.getVersioned("k").has_value());
+    ASSERT_TRUE(c.store2.getVersioned("k").has_value());
+    EXPECT_EQ(c.store2.getVersioned("k")->expires_at, c.store1.getVersioned("k")->expires_at);
+
+    // Both expire together after the TTL, regardless of the delivery delay.
+    c.clock.advance(300ms);
+    EXPECT_FALSE(c.store1.get("k").has_value());
+    EXPECT_FALSE(c.store2.get("k").has_value());
+}
+
 TEST(ReplicationSimTest, FanoutToMultipleReplicas) {
     SimClock clock;
     SimBus bus{clock, 7};
@@ -152,9 +176,9 @@ TEST(ReplicationSimTest, FanoutToMultipleReplicas) {
             e.value = req.value;
             e.version = req.version;
             e.writer_node_hash = req.writer_node_hash;
-            if (req.ttl.has_value()) {
+            if (req.expires_at.has_value()) {
                 e.has_ttl = true;
-                e.expires_at = clock.now() + *req.ttl;
+                e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
             (void)store.putVersioned(req.key, std::move(e));
@@ -211,9 +235,9 @@ TEST(ReplicationSimTest, QuorumMetMajorityWithThreeNodes) {
         e.value = req.value;
         e.version = req.version;
         e.writer_node_hash = req.writer_node_hash;
-        if (req.ttl.has_value()) {
+        if (req.expires_at.has_value()) {
             e.has_ttl = true;
-            e.expires_at = c.clock.now() + *req.ttl;
+            e.expires_at = toSteadyExpiry(c.clock, *req.expires_at);
         }
         // NOLINTNEXTLINE
         (void)store3.putVersioned(req.key, std::move(e));
@@ -286,6 +310,32 @@ TEST(ReplicationSimTest, HintRetriesOnFailedReplay) {
     c.bus.deliver();
     ASSERT_TRUE(c.store2.get("k").has_value());
     EXPECT_EQ(c.store2.get("k").value(), "v");
+}
+
+TEST(ReplicationSimTest, ObservedPeerVersionThenLocalWriteWins) {
+    TwoNodeCluster c;
+    // node1 (primary) writes; node2 applies version V via replication.
+    ASSERT_TRUE(
+        runWrite(c.mgr1, "k", "v1", std::nullopt, {"node2"}, ConsistencyMode::Async).has_value());
+    c.clock.advance(5ms);
+    c.bus.deliver();
+    ASSERT_TRUE(c.store2.get("k").has_value());
+    Version observed = c.store2.getVersioned("k")->version;
+
+    // The store's counter must have advanced past the observed version
+    // (Lamport bump), so a local write on node2 outranks the primary's.
+    EXPECT_GT(c.store2.mintVersion(), observed);
+
+    // Simulate node2 now becoming primary and writing the same key: its
+    // store-minted version must win LWW against node1's earlier write.
+    Version fresh = c.store2.mintVersion();
+    VersionedEntry entry;
+    entry.value = "v2";
+    entry.version = fresh;
+    entry.writer_node_hash = 0x42;
+    ASSERT_TRUE(c.store2.putVersioned("k", std::move(entry)).has_value());
+    EXPECT_EQ(c.store2.get("k").value(), "v2");
+    EXPECT_GT(c.store2.getVersioned("k")->version, observed);
 }
 } // namespace
 } // namespace cinder
