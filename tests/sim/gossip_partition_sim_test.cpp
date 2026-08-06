@@ -29,7 +29,7 @@ struct GossipNode {
         : id(node_id),
           transport(b, node_id),
           table(self),
-          detector(c, transport, table, self, 1'000ms, 3'000ms),
+          detector(c, transport, table, self, 3'000ms),
           gossip(c, transport, table, 1'000ms) {
         // Forward incoming Gossip requests to this node's manager.
         transport.onMessage([this](const NodeId& from, const net::Request& req) {
@@ -85,8 +85,8 @@ TEST(GossipPartitionSimTest, SuspectThenDead) {
     c.bus.setNodeDown("node2");
     c.tickAll();
 
-    const auto* info = c.nodes[0]->table.get("node2");
-    ASSERT_NE(info, nullptr);
+    auto info = c.nodes[0]->table.get("node2");
+    ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Suspect);
 
     // Advance past suspect_timeout (3s); escalation happens on a tick.
@@ -117,8 +117,8 @@ TEST(GossipPartitionSimTest, IncarnationRefutation) {
     recovery.incarnation = 5;
     c.nodes[0]->table.applyRumor("node2", recovery);
 
-    const auto* info = c.nodes[0]->table.get("node2");
-    ASSERT_NE(info, nullptr);
+    auto info = c.nodes[0]->table.get("node2");
+    ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Alive);
     EXPECT_EQ(info->incarnation, 5);
 }
@@ -136,8 +136,8 @@ TEST(GossipPartitionSimTest, StaleRumorIgnored) {
     stale.incarnation = 3;
     c.nodes[0]->table.applyRumor("node2", stale);
 
-    const auto* info = c.nodes[0]->table.get("node2");
-    ASSERT_NE(info, nullptr);
+    auto info = c.nodes[0]->table.get("node2");
+    ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Alive);
     EXPECT_EQ(info->incarnation, 5);
 }
@@ -157,8 +157,8 @@ TEST(GossipPartitionSimTest, GossipPropagates) {
     c.clock.advance(1ms);
     c.bus.deliver();
 
-    const auto* info = c.nodes[2]->table.get("node2");
-    ASSERT_NE(info, nullptr);
+    auto info = c.nodes[2]->table.get("node2");
+    ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Dead);
 }
 
@@ -180,6 +180,37 @@ TEST(GossipPartitionSimTest, PartitionDegraded) {
     c.nodes[0]->table.markAlive("node2", 1);
     c.nodes[0]->table.markAlive("node3", 1);
     EXPECT_FALSE(c.nodes[0]->table.isDegraded());
+}
+
+// Regression: an onChange observer that re-enters the table (like
+// CacheNodeServer::rebuildRing, which takes a snapshot) must not deadlock when
+// the table fires it from inside a mutating call.
+TEST(GossipPartitionSimTest, OnChangeReentrantSnapshot) {
+    GossipCluster c;
+    c.seedAll();
+
+    // Observe membership changes by taking a full snapshot (re-enters the
+    // mutex). Before the fix, firing this from applyRumor/markSuspect under the
+    // lock deadlocked.
+    int notifications = 0;
+    c.nodes[0]->table.onChange([&] {
+        (void)c.nodes[0]->table.snapshot(); // would self-deadlock if under lock
+        ++notifications;
+    });
+
+    // A state transition must complete (not hang) and notify the observer.
+    c.nodes[0]->table.markSuspect("node2");
+    EXPECT_GE(notifications, 1);
+
+    // An unknown-Alive rumor (gossip join path) also fires onChange.
+    NodeInfo rumor;
+    rumor.id = "node9";
+    rumor.host = "127.0.0.1";
+    rumor.port = 17'909;
+    rumor.state = NodeState::Alive;
+    rumor.incarnation = 1;
+    c.nodes[0]->table.applyRumor("node9", rumor);
+    EXPECT_GE(notifications, 2);
 }
 
 } // namespace

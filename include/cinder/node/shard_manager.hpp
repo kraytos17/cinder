@@ -1,0 +1,42 @@
+#pragma once
+
+#include <string>
+
+#include "cinder/cluster/clock.hpp"
+#include "cinder/cluster/transport.hpp"
+#include "cinder/common/types.hpp"
+#include "cinder/hashing/consistent_hash_ring.hpp"
+#include "cinder/store/cache_store.hpp"
+
+namespace cinder {
+
+// Rebalances keys when cluster membership changes. After the ring is rebuilt,
+// every node enumerates its local store and pushes each key it no longer owns
+// to the new ring owner (via the Replicate write path), then drops it locally
+// once the replica acknowledges. Best-effort: a key whose push fails stays local
+// as a failover copy and is retried on the next rebalance().
+class ShardManager {
+  public:
+
+    ShardManager(CacheStore& store, ConsistentHashRing& ring, Transport& transport, NodeId self,
+        Clock& clock);
+    ~ShardManager() = default;
+
+    ShardManager(const ShardManager&) = delete;
+    auto operator=(const ShardManager&) -> ShardManager& = delete;
+    ShardManager(ShardManager&&) = delete;
+    auto operator=(ShardManager&&) -> ShardManager& = delete;
+
+    void rebalance();
+
+  private:
+
+    void migrateKey(const std::string& key, const VersionedEntry& entry, const NodeId& owner);
+
+    CacheStore& store_;
+    ConsistentHashRing& ring_;
+    Transport& transport_;
+    NodeId self_;
+    Clock& clock_;
+};
+} // namespace cinder

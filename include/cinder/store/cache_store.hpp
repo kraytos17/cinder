@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <optional>
 #include <string>
 
@@ -41,6 +42,13 @@ class CacheStore {
     // is the single version authority regardless of which write path is used
     // (direct put() or ReplicationManager). Thread-safe (store mutex).
     virtual auto mintVersion() -> Version = 0;
+
+    // Visit every live (unexpired) entry. The visitor is invoked outside the
+    // store lock over a point-in-time snapshot, so it may safely call store
+    // mutators (e.g. remove) without self-deadlocking. Used by rebalancing to
+    // enumerate keys an old owner must hand over.
+    virtual void forEach(
+        std::move_only_function<void(const std::string& key, const VersionedEntry&)>) const = 0;
 
   protected:
 

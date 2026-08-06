@@ -1,5 +1,6 @@
 #include <chrono>
 #include <gtest/gtest.h>
+#include <map>
 
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -139,6 +140,36 @@ TYPED_TEST(VersionedStoreTest, RestartSeedWins) {
     ASSERT_TRUE(store_c.putVersioned("k", makeVersionedEntry("new", store_b.mintVersion(), 10))
             .has_value());
     EXPECT_EQ(store_c.getVersioned("k")->value, "new");
+}
+
+TYPED_TEST(VersionedStoreTest, ForEachVisitsAllKeys) {
+    TypeParam store(1'048'576); // ample capacity — no eviction
+    std::map<std::string, std::string> expected;
+    for (int i = 0; i < 10; i++) {
+        auto key = "key" + std::to_string(i);
+        auto value = "v" + std::to_string(i);
+        ASSERT_TRUE(store.put(key, value).has_value());
+        expected[key] = value;
+    }
+
+    std::map<std::string, std::string> visited;
+    store.forEach(
+        [&](const std::string& key, const VersionedEntry& entry) { visited[key] = entry.value; });
+    EXPECT_EQ(visited, expected);
+}
+
+TYPED_TEST(VersionedStoreTest, ForEachSkipsExpired) {
+    TestClock clock;
+    TypeParam store(1'048'576, &clock);
+
+    auto entry = makeVersionedEntry("gone", 1, 0);
+    entry.has_ttl = true;
+    entry.expires_at = clock.now() - std::chrono::seconds(1); // relative to injected clock
+    ASSERT_TRUE(store.putVersioned("gone", entry).has_value());
+
+    size_t count = 0;
+    store.forEach([&](const std::string&, const VersionedEntry&) { ++count; });
+    EXPECT_EQ(count, 0);
 }
 } // namespace
 } // namespace cinder

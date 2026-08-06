@@ -29,20 +29,25 @@ parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool {
 }
 
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
-    : store_(options.capacity),
+    : node_id_(options.node_id),
+      ping_interval_(options.ping_interval),
+      store_(options.capacity),
       transport_(io_),
       repl_(store_, options.node_id, clock_, transport_),
       table_(options.node_id),
-      detector_(clock_, transport_, table_, options.node_id, options.ping_interval,
-          options.suspect_timeout),
+      detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
       gossip_(clock_, transport_, table_, options.gossip_interval),
+      shard_(store_, ring_, transport_, options.node_id, clock_),
       server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_),
       replay_timer_(io_),
       gossip_timer_(io_),
+      probe_timer_(io_),
+      evict_timer_(io_),
       signals_(io_) {
     ring_.addNode(options.node_id);
     table_.seed(options.peers);
+    table_.setSelfAddress("127.0.0.1", options.port);
 
     ClusterConfig config;
     config.nodes.push_back({options.node_id, "127.0.0.1", options.port});
@@ -71,6 +76,8 @@ CacheNodeServer::run() {
     gossip_.start();
     scheduleReplay();
     scheduleGossip();
+    scheduleProbe();
+    scheduleEvict();
     io_.run();
 }
 
@@ -78,6 +85,8 @@ void
 CacheNodeServer::shutdown() {
     replay_timer_.cancel();
     gossip_timer_.cancel();
+    probe_timer_.cancel();
+    evict_timer_.cancel();
     server_.shutdown();
     io_.stop();
 }
@@ -108,20 +117,52 @@ CacheNodeServer::scheduleGossip() {
             return;
         }
 
-        detector_.tick();
         gossip_.tick();
         scheduleGossip();
     });
 }
 
 void
+CacheNodeServer::scheduleProbe() {
+    probe_timer_.expires_after(ping_interval_);
+    probe_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+
+        detector_.tick();
+        scheduleProbe();
+    });
+}
+
+void
+CacheNodeServer::scheduleEvict() {
+    evict_timer_.expires_after(seconds(1));
+    evict_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+
+        store_.evictExpired();
+        scheduleEvict();
+    });
+}
+
+void
 CacheNodeServer::rebuildRing() {
     for (const auto& info : table_.snapshot()) {
+        if (info.id == node_id_) {
+            continue;
+        }
+
+        transport_.addAddr(info.id, info.host, info.port);
         if (info.state == NodeState::Alive) {
             ring_.addNode(info.id);
         } else {
             ring_.removeNode(info.id);
         }
     }
+    // Push keys this node no longer owns to their new ring owners.
+    shard_.rebalance();
 }
 } // namespace cinder

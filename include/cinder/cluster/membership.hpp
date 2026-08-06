@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -45,6 +46,10 @@ class MembershipTable {
     // Seed initial Alive members (incarnation 0) from a static peer list.
     void seed(const std::vector<ClusterConfig::NodeConfig>& peers);
 
+    // Record this node's own host/port so its gossip view advertises a reachable
+    // address for peers to adopt and migrate keys to.
+    void setSelfAddress(const std::string& host, uint16_t port);
+
     // Apply a rumor from another node; ignored if its incarnation is stale.
     void applyRumor(const NodeId& from, const NodeInfo& rumor);
 
@@ -52,7 +57,7 @@ class MembershipTable {
     void markDead(const NodeId& id);
     void markAlive(const NodeId& id, uint64_t incarnation);
 
-    [[nodiscard]] auto get(const NodeId& id) const -> const NodeInfo*;
+    [[nodiscard]] auto get(const NodeId& id) const -> std::optional<NodeInfo>;
     [[nodiscard]] auto aliveCount() const -> size_t;
     [[nodiscard]] auto visibleAliveCount() const -> size_t;
     [[nodiscard]] auto expectedClusterSize() const -> size_t;
@@ -60,12 +65,15 @@ class MembershipTable {
     [[nodiscard]] auto isDegraded() const -> bool;
     [[nodiscard]] auto snapshot() const -> std::vector<NodeInfo>;
 
-    using ChangeCallback = std::move_only_function<void()>;
+    using ChangeCallback = std::function<void()>;
     void onChange(ChangeCallback cb);
 
   private:
 
-    void refuteSelfRumor(const NodeInfo& rumor);
+    // Invoke the change observers WITHOUT holding mutex_, so observers may
+    // safely re-enter the table (e.g. take a snapshot) without self-deadlocking.
+    void fireCallbacks();
+    bool refuteSelfRumor(const NodeInfo& rumor);
 
     mutable std::mutex mutex_;
     NodeId self_;

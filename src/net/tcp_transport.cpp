@@ -19,6 +19,11 @@ TcpTransport::setConfig(const ClusterConfig& config) {
 }
 
 void
+TcpTransport::addAddr(const NodeId& id, const std::string& host, uint16_t port) {
+    addrs_[id] = {id, host, port};
+}
+
+void
 TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
     auto addr_it = addrs_.find(to);
     if (addr_it == addrs_.end()) {

@@ -28,6 +28,9 @@ class LruStore : public CacheStore {
     auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> override;
     auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> override;
     auto mintVersion() -> Version override;
+    void forEach(
+        std::move_only_function<void(const std::string&, const VersionedEntry&)> /*unused*/)
+        const override;
 
   private:
 

@@ -72,6 +72,28 @@ LruStore::mintVersion() -> Version {
     return next_version_++;
 }
 
+void
+LruStore::forEach(
+    std::move_only_function<void(const std::string&, const VersionedEntry&)> fn) const {
+    // Snapshot under the lock, then invoke the visitor outside it — the visitor
+    // may safely call store mutators without self-deadlocking.
+    std::vector<std::pair<std::string, VersionedEntry>> items;
+    {
+        std::scoped_lock lock(mutex_);
+        items.reserve(lru_list_.size());
+        auto current = now();
+        for (const auto& node : lru_list_) {
+            if (node.entry.has_ttl && node.entry.expires_at <= current) {
+                continue; // expired — skip
+            }
+            items.emplace_back(node.key, node.entry);
+        }
+    }
+    for (const auto& [key, entry] : items) {
+        fn(key, entry);
+    }
+}
+
 auto
 LruStore::get(const std::string& key) -> std::optional<std::string> {
     std::scoped_lock lock(mutex_);

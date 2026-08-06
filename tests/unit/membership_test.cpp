@@ -10,7 +10,7 @@ namespace {
 
 NodeInfo
 makeInfo(const std::string& id, NodeState state, uint64_t incarnation) {
-    return {.id = id, .state = state, .incarnation = incarnation};
+    return {.id = id, .host = "", .state = state, .incarnation = incarnation};
 }
 
 TEST(MembershipTest, HigherIncarnationWins) {
@@ -42,8 +42,8 @@ TEST(MembershipTest, SelfRumorRefuted) {
 
     // A peer claims node1 is dead → node1 refutes with a higher incarnation.
     table.applyRumor("node2", makeInfo("node1", NodeState::Dead, 9));
-    const NodeInfo* self = table.get("node1");
-    ASSERT_NE(self, nullptr);
+    auto self = table.get("node1");
+    ASSERT_TRUE(self.has_value());
     EXPECT_EQ(self->state, NodeState::Alive);
     EXPECT_GT(self->incarnation, 9);
 }
@@ -79,5 +79,14 @@ TEST(MembershipTest, OnChangeFires) {
     EXPECT_EQ(calls, 2);
 }
 
+TEST(MembershipTest, SetSelfAddress) {
+    MembershipTable table("node1");
+    table.setSelfAddress("127.0.0.1", 7'000);
+
+    auto self = table.get("node1");
+    ASSERT_TRUE(self.has_value());
+    EXPECT_EQ(self->host, "127.0.0.1");
+    EXPECT_EQ(self->port, 7'000);
+}
 } // namespace
 } // namespace cinder

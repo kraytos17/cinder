@@ -28,6 +28,10 @@ class TcpTransport final : public Transport {
     // Seed the node→address table (id@host:port from a ClusterConfig).
     void setConfig(const ClusterConfig& config);
 
+    // Register (or update) a single node's address at runtime — used when
+    // membership gossip learns about a newly-joined peer.
+    void addAddr(const NodeId& id, const std::string& host, uint16_t port);
+
     void sendAsync(const NodeId& to, const net::Request& req,
         cinder::Transport::SendCallback on_done) override;
     void onMessage(MessageHandler handler) override;

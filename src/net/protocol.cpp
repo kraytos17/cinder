@@ -77,6 +77,7 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     if (req.expires_at.has_value()) {
         flags |= K_FLAG_HAS_EXPIRES_AT;
     }
+
     out[off++] = std::byte{flags};
     if (req.ttl.has_value()) {
         auto net_ttl = static_cast<uint32_t>(req.ttl->count());
@@ -188,7 +189,6 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
     std::memcpy(&net_writer, &frame[off], sizeof(net_writer));
     req.writer_node_hash = toNet(net_writer);
     off += sizeof(net_writer);
-
     if (off + sizeof(uint32_t) > frame.size()) {
         return err<Request>(Error(Errc::InvalidArgument, "truncated key length"));
     }

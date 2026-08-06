@@ -21,7 +21,7 @@ class FailureDetector {
   public:
 
     FailureDetector(Clock& clock, Transport& transport, MembershipTable& table, NodeId self,
-        std::chrono::milliseconds ping_interval, std::chrono::milliseconds suspect_timeout);
+        std::chrono::milliseconds suspect_timeout);
     ~FailureDetector() = default;
 
     FailureDetector(const FailureDetector&) = delete;

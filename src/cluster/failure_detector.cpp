@@ -8,7 +8,7 @@ namespace cinder {
 using namespace std::chrono;
 
 FailureDetector::FailureDetector(Clock& clock, Transport& transport, MembershipTable& table,
-    NodeId self, milliseconds /*ping_interval*/, milliseconds suspect_timeout)
+    NodeId self, milliseconds suspect_timeout)
     : clock_(clock),
       transport_(transport),
       table_(table),
@@ -54,8 +54,8 @@ FailureDetector::tick() {
             continue;
         }
 
-        const NodeInfo* info = table_.get(peer);
-        if (info != nullptr && info->state == NodeState::Dead) {
+        auto info = table_.get(peer);
+        if (info.has_value() && info->state == NodeState::Dead) {
             continue;
         }
 
@@ -81,8 +81,8 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     it->second.pending = false;
     if (acked) {
         suspect_since_.erase(peer);
-        const NodeInfo* info = table_.get(peer);
-        table_.markAlive(peer, info != nullptr ? info->incarnation : 0);
+        auto info = table_.get(peer);
+        table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
         return;
     }
 
@@ -95,8 +95,8 @@ void
 FailureDetector::escalateSuspects() {
     std::vector<NodeId> to_dead;
     for (const auto& [peer, since] : suspect_since_) {
-        const NodeInfo* info = table_.get(peer);
-        if (info == nullptr || info->state != NodeState::Suspect) {
+        auto info = table_.get(peer);
+        if (!info.has_value() || info->state != NodeState::Suspect) {
             continue;
         }
         if (clock_.now() - since > suspect_timeout_) {

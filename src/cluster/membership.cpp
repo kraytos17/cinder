@@ -10,6 +10,13 @@ MembershipTable::MembershipTable(NodeId self)
 }
 
 void
+MembershipTable::setSelfAddress(const std::string& host, uint16_t port) {
+    std::scoped_lock lock(mutex_);
+    nodes_[self_].host = host;
+    nodes_[self_].port = port;
+}
+
+void
 MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
     std::scoped_lock lock(mutex_);
     for (const auto& peer : peers) {
@@ -27,107 +34,116 @@ MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
 
 void
 MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
-    std::scoped_lock lock(mutex_);
+    bool changed = false;
+    {
+        std::scoped_lock lock(mutex_);
 
-    auto it = nodes_.find(rumor.id);
-    if (it == nodes_.end()) {
-        // Unknown node: accept if the rumor claims it Alive (a peer we don't
-        // know about shouldn't be propagated as suspect/dead without a base).
-        if (rumor.state != NodeState::Alive) {
-            return;
+        auto it = nodes_.find(rumor.id);
+        if (it == nodes_.end()) {
+            if (rumor.state != NodeState::Alive) {
+                return;
+            }
+            nodes_[rumor.id] = rumor;
+            changed = true; // newly-discovered node — observers must rebuild
+        } else {
+            NodeInfo& local = it->second;
+            if (rumor.incarnation < local.incarnation) {
+                return; // stale rumor — ignore
+            }
+            if (rumor.incarnation == local.incarnation && rumor.state == local.state) {
+                return; // no change
+            }
+            if (rumor.id == self_ && rumor.state != NodeState::Alive) {
+                changed = refuteSelfRumor(rumor);
+            } else {
+                bool state_changed = local.state != rumor.state;
+                bool incarnation_changed = local.incarnation != rumor.incarnation;
+                local.state = rumor.state;
+                local.incarnation = rumor.incarnation;
+                if (!local.host.empty() && rumor.host.empty()) {
+                    local.host = rumor.host;
+                }
+                if (local.port == 0 && rumor.port != 0) {
+                    local.port = rumor.port;
+                }
+                changed = state_changed || incarnation_changed;
+            }
         }
-        nodes_[rumor.id] = rumor;
-        return;
-    }
-
-    NodeInfo& local = it->second;
-    if (rumor.incarnation < local.incarnation) {
-        return; // stale rumor — ignore
-    }
-    if (rumor.incarnation == local.incarnation && rumor.state == local.state) {
-        return; // no change
-    }
-    // Refute a Suspect/Dead rumor about ourselves with a higher incarnation.
-    if (rumor.id == self_ && rumor.state != NodeState::Alive) {
-        refuteSelfRumor(rumor);
-        return;
-    }
-
-    bool changed = local.state != rumor.state || local.incarnation != rumor.incarnation;
-    local.state = rumor.state;
-    local.incarnation = rumor.incarnation;
-    if (!local.host.empty() && rumor.host.empty()) {
-        local.host = rumor.host;
-    }
-    if (local.port == 0 && rumor.port != 0) {
-        local.port = rumor.port;
     }
     if (changed) {
-        for (auto& cb : cbs_) {
-            cb();
-        }
+        fireCallbacks();
     }
 }
 
 void
 MembershipTable::markSuspect(const NodeId& id) {
-    std::scoped_lock lock(mutex_);
-    auto it = nodes_.find(id);
-    if (it == nodes_.end() || it->second.state == NodeState::Dead) {
-        return;
+    bool changed = false;
+    {
+        std::scoped_lock lock(mutex_);
+        auto it = nodes_.find(id);
+        if (it == nodes_.end() || it->second.state == NodeState::Dead) {
+            return;
+        }
+        if (it->second.state == NodeState::Suspect) {
+            return;
+        }
+        it->second.state = NodeState::Suspect;
+        changed = true;
     }
-    if (it->second.state == NodeState::Suspect) {
-        return;
-    }
-
-    it->second.state = NodeState::Suspect;
-    for (auto& cb : cbs_) {
-        cb();
+    if (changed) {
+        fireCallbacks();
     }
 }
 
 void
 MembershipTable::markDead(const NodeId& id) {
-    std::scoped_lock lock(mutex_);
-    auto it = nodes_.find(id);
-    if (it == nodes_.end() || it->second.state == NodeState::Dead) {
-        return;
+    bool changed = false;
+    {
+        std::scoped_lock lock(mutex_);
+        auto it = nodes_.find(id);
+        if (it == nodes_.end() || it->second.state == NodeState::Dead) {
+            return;
+        }
+        it->second.state = NodeState::Dead;
+        changed = true;
     }
-
-    it->second.state = NodeState::Dead;
-    for (auto& cb : cbs_) {
-        cb();
+    if (changed) {
+        fireCallbacks();
     }
 }
 
 void
 MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
-    std::scoped_lock lock(mutex_);
-    auto it = nodes_.find(id);
-    if (it == nodes_.end()) {
-        return;
-    }
+    bool changed = false;
+    {
+        std::scoped_lock lock(mutex_);
+        auto it = nodes_.find(id);
+        if (it == nodes_.end()) {
+            return;
+        }
 
-    NodeInfo& info = it->second;
-    if (info.state == NodeState::Alive && info.incarnation >= incarnation) {
-        return;
-    }
+        NodeInfo& info = it->second;
+        if (info.state == NodeState::Alive && info.incarnation >= incarnation) {
+            return;
+        }
 
-    info.state = NodeState::Alive;
-    info.incarnation = incarnation;
-    for (auto& cb : cbs_) {
-        cb();
+        info.state = NodeState::Alive;
+        info.incarnation = incarnation;
+        changed = true;
+    }
+    if (changed) {
+        fireCallbacks();
     }
 }
 
 auto
-MembershipTable::get(const NodeId& id) const -> const NodeInfo* {
+MembershipTable::get(const NodeId& id) const -> std::optional<NodeInfo> {
     std::scoped_lock lock(mutex_);
     auto it = nodes_.find(id);
     if (it == nodes_.end()) {
-        return nullptr;
+        return std::nullopt;
     }
-    return &it->second;
+    return it->second;
 }
 
 auto
@@ -169,7 +185,6 @@ MembershipTable::isDegraded() const -> bool {
     if (total == 0) {
         return true;
     }
-
     size_t visible = 0;
     for (const auto& [id, info] : nodes_) {
         (void)id;
@@ -199,16 +214,29 @@ MembershipTable::onChange(ChangeCallback cb) {
 }
 
 void
+MembershipTable::fireCallbacks() {
+    std::vector<ChangeCallback> cbs;
+    {
+        std::scoped_lock lock(mutex_);
+        cbs = cbs_;
+    }
+    for (auto& cb : cbs) {
+        cb();
+    }
+}
+
+bool
 MembershipTable::refuteSelfRumor(const NodeInfo& rumor) {
     NodeInfo& self = nodes_[self_];
+    bool changed = false;
     if (self.incarnation <= rumor.incarnation) {
         self.incarnation = rumor.incarnation + 1;
+        changed = true;
     }
     if (self.state != NodeState::Alive) {
         self.state = NodeState::Alive;
-        for (auto& cb : cbs_) {
-            cb();
-        }
+        changed = true;
     }
+    return changed;
 }
 } // namespace cinder

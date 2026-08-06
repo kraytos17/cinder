@@ -15,6 +15,7 @@
 #include "cinder/net/tcp_server.hpp"
 #include "cinder/net/tcp_transport.hpp"
 #include "cinder/node/replication_manager.hpp"
+#include "cinder/node/shard_manager.hpp"
 #include "cinder/store/lru_store.hpp"
 
 namespace cinder {
@@ -59,9 +60,13 @@ class CacheNodeServer {
 
     void scheduleReplay();
     void scheduleGossip();
+    void scheduleProbe();
+    void scheduleEvict();
     void rebuildRing();
 
     asio::io_context io_;
+    NodeId node_id_;
+    std::chrono::milliseconds ping_interval_{1'000};
     LruStore store_;
     RealClock clock_;
     ConsistentHashRing ring_;
@@ -70,9 +75,12 @@ class CacheNodeServer {
     MembershipTable table_;
     FailureDetector detector_;
     GossipManager gossip_;
+    ShardManager shard_;
     net::TcpServer server_;
     asio::steady_timer replay_timer_;
     asio::steady_timer gossip_timer_;
+    asio::steady_timer probe_timer_;
+    asio::steady_timer evict_timer_;
     asio::signal_set signals_;
 };
 } // namespace cinder
