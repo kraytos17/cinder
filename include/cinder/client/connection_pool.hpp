@@ -32,6 +32,12 @@ class ConnectionPool {
     auto operator=(ConnectionPool&&) -> ConnectionPool& = delete;
 
     auto send(const NodeId& node_id, const net::Request& req) -> Result<net::Response>;
+
+    // Pipelined send: writes all requests back-to-back on one connection, then
+    // reads all responses in order. Responses correspond 1:1 to `reqs`.
+    auto sendBatch(const NodeId& node_id, const std::vector<net::Request>& reqs)
+        -> Result<std::vector<net::Response>>;
+
     void shutdown();
 
   private:

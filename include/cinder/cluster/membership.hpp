@@ -25,6 +25,7 @@ struct NodeInfo {
     uint16_t port = 0;
     NodeState state = NodeState::Alive;
     uint64_t incarnation = 0;
+    std::chrono::steady_clock::time_point joined_at{};
 };
 
 // Local view of cluster membership. Tracks (id, host, port, state, incarnation)
@@ -64,6 +65,11 @@ class MembershipTable {
     // Degraded when fewer than a majority of the expected cluster is visible.
     [[nodiscard]] auto isDegraded() const -> bool;
     [[nodiscard]] auto snapshot() const -> std::vector<NodeInfo>;
+
+    // True if `id` joined (or re-joined after being Dead/Suspect) within the
+    // quarantine window. `quarantine` of zero disables the check.
+    [[nodiscard]] auto isQuarantined(const NodeId& id, std::chrono::steady_clock::time_point now,
+        std::chrono::milliseconds quarantine) const -> bool;
 
     using ChangeCallback = std::function<void()>;
     void onChange(ChangeCallback cb);

@@ -34,7 +34,7 @@ struct RebalanceNode {
           table(node_id),
           ring(50),
           store(capacity, &c),
-          shard(store, ring, transport, node_id, c) {
+          shard(store, ring, transport, table, node_id, c, 0ms) {
         transport.onMessage([this](const NodeId&, const net::Request& req) {
             if (req.opcode != net::Opcode::Replicate) {
                 return;

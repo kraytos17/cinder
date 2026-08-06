@@ -12,7 +12,8 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with versioned LWW conflict resolution and hinted handoff for down replicas
 - **Failover reads** — a replica serves local reads, so data stays available if the primary dies
 - **SWIM-style membership** — failure detection (Ping → suspect → dead), incarnation-guarded gossip, and automatic ring rebuild on membership change
-- **Smart client library** (`CacheClient` + `ConnectionPool`) — routes via the ring, maintains persistent per-node connections
+- **Automatic rebalancing** — when a node joins the ring, keys migrate to their new owners (re-join quarantine prevents the fresh node from accepting migrations until it is healthy)
+- **Smart client library** (`CacheClient` + `ConnectionPool`) — routes via the ring, follows `moved to` redirects with a single retry, and pipelines reads with `multiGet`
 
 ## Build
 
@@ -152,25 +153,26 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
- 81 unit tests (11 suites):   Result, LruStore, LfuStore, TtlWheel, Protocol,
-                              ConsistentHashRing, CacheClient routing,
-                              VersionedStore, CacheNodeServer parsePeer, Membership
- 16 sim tests (2 suites):     replication (async/quorum/hinted-handoff),
-                              gossip partition (suspect/dead/incarnation/degraded)
- 11 integration tests:        SetGetDelPing, TTLExpiry, CapacityEviction, LargeValue,
+ 96 unit tests (11 suites):   Result, LruStore, LfuStore, TtlWheel, Protocol,
+                              ConsistentHashRing, CacheClient routing + redirects,
+                              VersionedStore (LRU/LFU), parsePeer, Membership
+ 21 sim tests (3 suites):     replication (async/quorum/hinted-handoff),
+                              gossip partition (suspect/dead/incarnation/degraded),
+                              rebalancing (keys migrate on join)
+ 14 integration tests:        SetGetDelPing, TTLExpiry, CapacityEviction, LargeValue,
                               replica failover (fanout, failover read, quorum,
-                              hinted handoff, 3-node fanout, TTL-over-wire)
+                              hinted handoff, 3-node fanout, TTL-over-wire),
+                              rebalance on join, multi-get
   5 cli tests:                Ping, SetGet, GetNotFound, ConnectRefused, Del
-  1 skipped:                  RebalanceOnJoin (needs Phase 7 rebalancing)
 ```
 
 ```bash
-make test-unit         # 81 fast in-process tests
-make test-sim          # 16 deterministic simulation tests (SimClock/SimBus)
+make test-unit         # 96 fast in-process tests
+make test-sim          # 21 deterministic simulation tests (SimClock/SimBus)
 make test-integration  # forks real cinderd processes (RUN_SERIAL)
 make test-cli          # forks cinderd + cinder-cli
 make test-all          # run every test binary against the current preset
-make test              # everything via ctest (113 entries)
+make test              # everything via ctest (136 entries)
 ```
 
 The simulation harness (`tests/sim/`) drives replication and membership logic against a
@@ -197,17 +199,17 @@ cinder/
 │   ├── hashing/                 # ConsistentHashRing (xxHash3, immutable snapshots)
 │   ├── net/                     # Wire protocol, TCP server/connection, async transport
 │   ├── client/                  # CacheClient, ConnectionPool, ClusterConfig
-│   ├── node/                    # CacheNodeServer, ReplicationManager
+│   ├── node/                    # CacheNodeServer, ReplicationManager, ShardManager
 │   └── cluster/                 # MembershipTable, FailureDetector, Gossip, Clock, Transport
 ├── src/                         # Implementations
 ├── tools/
 │   ├── cinderd_main.cpp         # Server entry point
 │   └── cinder_cli.cpp           # CLI client (get/set/del/ping)
 ├── tests/
-│   ├── unit/                    # 81 unit tests (GoogleTest)
-│   ├── integration/             # 11 integration + 5 CLI tests (fork real cinderd)
-│   └── sim/                     # 16 deterministic simulation tests (SimClock/SimBus)
-└── benchmarks/                  # throughput_bench (LRU/LFU) + allocator/ring (stubs)
+│   ├── unit/                    # 96 unit tests (GoogleTest)
+│   ├── integration/             # 14 integration + 5 CLI tests (fork real cinderd)
+│   └── sim/                     # 21 deterministic simulation tests (SimClock/SimBus)
+└── benchmarks/                  # throughput, allocator, and ring benchmarks
 ```
 
 ## Tooling
@@ -217,6 +219,7 @@ make format          # clang-format all sources
 make check-format    # verify formatting (CI)
 make ci              # Clang + clang-tidy inline — catches lint at build time
 make info            # show resolved PRESET/build paths
+make kill-stale      # kill leftover cinderd daemons holding test ports
 make help            # all targets
 ```
 

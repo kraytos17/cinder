@@ -1,24 +1,27 @@
 #include "cinder/node/shard_manager.hpp"
 
 #include <utility>
+#include <vector>
 
 #include "cinder/net/protocol.hpp"
 
 namespace cinder {
 
-ShardManager::ShardManager(
-    CacheStore& store, ConsistentHashRing& ring, Transport& transport, NodeId self, Clock& clock)
+ShardManager::ShardManager(CacheStore& store, ConsistentHashRing& ring, Transport& transport,
+    MembershipTable& table, NodeId self, Clock& clock, milliseconds quarantine_interval)
     : store_(store),
       ring_(ring),
       transport_(transport),
+      table_(table),
       self_(std::move(self)),
-      clock_(clock) {}
+      clock_(clock),
+      quarantine_interval_(quarantine_interval) {}
 
 void
 ShardManager::rebalance() {
     // Collect pending migrations under forEach's store lock; do not send here —
-    // a synchronous transport would invoke the remove
-    // callback re-entrantly and deadlock on the store mutex.
+    // a synchronous transport would invoke the remove callback re-entrantly and
+    // deadlock on the store mutex.
     struct Pending {
         std::string key;
         VersionedEntry entry;
@@ -26,9 +29,10 @@ ShardManager::rebalance() {
     };
 
     std::vector<Pending> pending;
-    store_.forEach([this, &pending](const std::string& key, const VersionedEntry& entry) {
+    auto now = clock_.now();
+    store_.forEach([this, &pending, now](const std::string& key, const VersionedEntry& entry) {
         NodeId owner = ring_.getNode(key);
-        if (owner != self_) {
+        if (owner != self_ && !table_.isQuarantined(owner, now, quarantine_interval_)) {
             pending.push_back({key, entry, owner});
         }
     });

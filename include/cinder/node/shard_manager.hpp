@@ -1,8 +1,10 @@
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/cluster/membership.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
@@ -15,11 +17,15 @@ namespace cinder {
 // to the new ring owner (via the Replicate write path), then drops it locally
 // once the replica acknowledges. Best-effort: a key whose push fails stays local
 // as a failover copy and is retried on the next rebalance().
+//
+// Keys are NOT pushed to a quarantined owner (a node that just re-joined and is
+// still warming), so a crash-looped node doesn't become a hot migration target.
 class ShardManager {
   public:
 
-    ShardManager(CacheStore& store, ConsistentHashRing& ring, Transport& transport, NodeId self,
-        Clock& clock);
+    ShardManager(CacheStore& store, ConsistentHashRing& ring, Transport& transport,
+        MembershipTable& table, NodeId self, Clock& clock,
+        std::chrono::milliseconds quarantine_interval);
     ~ShardManager() = default;
 
     ShardManager(const ShardManager&) = delete;
@@ -36,7 +42,9 @@ class ShardManager {
     CacheStore& store_;
     ConsistentHashRing& ring_;
     Transport& transport_;
+    MembershipTable& table_;
     NodeId self_;
     Clock& clock_;
+    std::chrono::milliseconds quarantine_interval_;
 };
 } // namespace cinder

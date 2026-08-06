@@ -117,6 +117,17 @@ asan-clang-test: asan-clang
 bench: build
 	"$(BIN_DIR)/cinder_throughput_bench" $(ARGS)
 
+# Kill any leftover cinderd daemons (e.g. orphans from an interrupted test run
+# that are still holding test ports). `-x` matches the exact process name, so
+# this can never kill the invoking shell.
+.PHONY: kill-stale
+kill-stale:
+	@if pkill -x cinderd 2>/dev/null; then \
+		echo "==> killed stale cinderd process(es)"; \
+	else \
+		echo "==> no stale cinderd processes found"; \
+	fi
+
 .PHONY: format check-format
 format:
 	$(ensure-configured)
@@ -179,6 +190,7 @@ help:
 	@echo 'Misc:'
 	@echo '  make install [DESTDIR=/tmp/staging]'
 	@echo '  make info          Show resolved PRESET/build paths'
+	@echo '  make kill-stale    Kill leftover cinderd daemons holding test ports'
 	@echo '  make clean         Remove build/<PRESET>'
 	@echo '  make clean-all     Remove build/ and .cache/ (re-fetch dependencies)'
 	@echo '  make help          Show this help'

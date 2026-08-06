@@ -37,5 +37,13 @@ TEST(CacheClientTest, RoutePrimaryDistributes) {
     }
     EXPECT_GE(nodes.size(), 2);
 }
+
+TEST(CacheClientTest, ParseRedirect) {
+    EXPECT_EQ(parseRedirect("moved to node2"), std::optional<NodeId>("node2"));
+    EXPECT_EQ(parseRedirect("moved to  node2 "), std::optional<NodeId>(" node2 "));
+    EXPECT_FALSE(parseRedirect("OK").has_value());
+    EXPECT_FALSE(parseRedirect("").has_value());
+    EXPECT_FALSE(parseRedirect("moved to").has_value());
+}
 } // namespace
 } // namespace cinder

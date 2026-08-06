@@ -11,9 +11,9 @@ void
 bmLruStorePut(benchmark::State& state) {
     LruStore store(static_cast<size_t>(state.range(0)));
     int i = 0;
-    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE
     for (auto _ : state) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        // NOLINTNEXTLINE
         (void)store.put(std::to_string(i++), std::string(256, 'x'));
     }
 }
@@ -25,12 +25,12 @@ void
 bmLruStoreGet(benchmark::State& state) {
     LruStore store(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < 1'000; i++) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        // NOLINTNEXTLINE
         (void)store.put(std::to_string(i), std::string(256, 'x'));
     }
 
     int i = 0;
-    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));
     }
@@ -43,9 +43,9 @@ void
 bmLfuStorePut(benchmark::State& state) {
     LfuStore store(static_cast<size_t>(state.range(0)));
     int i = 0;
-    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE
     for (auto _ : state) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        // NOLINTNEXTLINE
         (void)store.put(std::to_string(i++), std::string(256, 'x'));
     }
 }
@@ -57,12 +57,12 @@ void
 bmLfuStoreGet(benchmark::State& state) {
     LfuStore store(static_cast<size_t>(state.range(0)));
     for (int i = 0; i < 1'000; i++) {
-        // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
+        // NOLINTNEXTLINE
         (void)store.put(std::to_string(i), std::string(256, 'x'));
     }
 
     int i = 0;
-    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    // NOLINTNEXTLINE
     for (auto _ : state) {
         store.get(std::to_string(i++ % 1'000));
     }

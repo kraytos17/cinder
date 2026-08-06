@@ -44,6 +44,41 @@ ConnectionPool::send(const NodeId& node_id, const net::Request& req) -> Result<n
     return ok(std::move(recv_res.value()));
 }
 
+auto
+ConnectionPool::sendBatch(const NodeId& node_id, const std::vector<net::Request>& reqs)
+    -> Result<std::vector<net::Response>> {
+    if (reqs.empty()) {
+        return ok(std::vector<net::Response>{});
+    }
+
+    auto entry_res = getOrConnect(node_id);
+    if (!entry_res.has_value()) {
+        return err<std::vector<net::Response>>(entry_res.error());
+    }
+
+    auto& entry = *entry_res.value();
+    for (const auto& req : reqs) {
+        auto send_res = sendFramed(entry, req);
+        if (!send_res.has_value()) {
+            entry.connected = false;
+            return err<std::vector<net::Response>>(send_res.error());
+        }
+    }
+
+    // Read every response in the same order.
+    std::vector<net::Response> responses;
+    responses.reserve(reqs.size());
+    for (size_t i = 0; i < reqs.size(); i++) {
+        auto recv_res = recvFramed(entry);
+        if (!recv_res.has_value()) {
+            entry.connected = false;
+            return err<std::vector<net::Response>>(recv_res.error());
+        }
+        responses.push_back(std::move(recv_res.value()));
+    }
+    return ok(std::move(responses));
+}
+
 void
 ConnectionPool::shutdown() {
     for (auto& [id, entry] : connections_) {

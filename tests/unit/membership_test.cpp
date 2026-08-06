@@ -88,5 +88,26 @@ TEST(MembershipTest, SetSelfAddress) {
     EXPECT_EQ(self->host, "127.0.0.1");
     EXPECT_EQ(self->port, 7'000);
 }
+
+TEST(MembershipTest, QuarantineAfterRejoin) {
+    using namespace std::chrono_literals;
+    MembershipTable table("node1");
+    table.seed({{"node2", "127.0.0.1", 17'901}});
+    auto t0 = std::chrono::steady_clock::now();
+
+    // A seeded node is quarantined briefly after seeding.
+    EXPECT_TRUE(table.isQuarantined("node2", t0, 1'000ms));
+    EXPECT_FALSE(table.isQuarantined("node2", t0 + 2'000ms, 1'000ms));
+
+    // Re-join resets the window: Dead → Alive starts a fresh quarantine.
+    table.markDead("node2");
+    EXPECT_FALSE(table.isQuarantined("node2", t0, 1'000ms)); // not alive
+    table.markAlive("node2", 10);
+    EXPECT_TRUE(table.isQuarantined("node2", t0, 1'000ms));
+    EXPECT_FALSE(table.isQuarantined("node2", t0 + 2'000ms, 1'000ms));
+
+    // Zero interval disables quarantine.
+    EXPECT_FALSE(table.isQuarantined("node2", t0, 0ms));
+}
 } // namespace
 } // namespace cinder

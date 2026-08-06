@@ -20,6 +20,7 @@ main(int argc, char* argv[]) -> int {
     int ping_interval_ms = 1'000;
     int suspect_timeout_ms = 3'000;
     int gossip_interval_ms = 1'000;
+    int quarantine_interval_ms = 10'000;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -30,6 +31,9 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--ping-interval", ping_interval_ms, "Failure-detector ping interval (ms)");
     app.add_option("--suspect-timeout", suspect_timeout_ms, "Suspect timeout before Dead (ms)");
     app.add_option("--gossip-interval", gossip_interval_ms, "Gossip dissemination interval (ms)");
+    app.add_option("--quarantine-interval",
+        quarantine_interval_ms,
+        "Re-join quarantine before receiving migrated keys (ms, 0 = off)");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -46,6 +50,7 @@ main(int argc, char* argv[]) -> int {
     options.ping_interval = std::chrono::milliseconds(ping_interval_ms);
     options.suspect_timeout = std::chrono::milliseconds(suspect_timeout_ms);
     options.gossip_interval = std::chrono::milliseconds(gossip_interval_ms);
+    options.quarantine_interval = std::chrono::milliseconds(quarantine_interval_ms);
 
     if (!peers.empty()) {
         size_t start = 0;

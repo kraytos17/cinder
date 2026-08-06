@@ -1,5 +1,7 @@
 #include "cinder/node/cache_node_server.hpp"
 
+#include <csignal>
+
 #include "cinder/common/logger.hpp"
 
 using namespace std::chrono;
@@ -37,7 +39,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       table_(options.node_id),
       detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
       gossip_(clock_, transport_, table_, options.gossip_interval),
-      shard_(store_, ring_, transport_, options.node_id, clock_),
+      shard_(
+          store_, ring_, transport_, table_, options.node_id, clock_, options.quarantine_interval),
       server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_),
       replay_timer_(io_),
@@ -45,6 +48,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       probe_timer_(io_),
       evict_timer_(io_),
       signals_(io_) {
+    signals_.add(SIGINT);
+    signals_.add(SIGTERM);
     ring_.addNode(options.node_id);
     table_.seed(options.peers);
     table_.setSelfAddress("127.0.0.1", options.port);

@@ -31,6 +31,7 @@ struct CacheNodeServerOptions {
     std::chrono::milliseconds ping_interval{1'000};
     std::chrono::milliseconds suspect_timeout{3'000};
     std::chrono::milliseconds gossip_interval{1'000};
+    std::chrono::milliseconds quarantine_interval{10'000};
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false

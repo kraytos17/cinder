@@ -23,12 +23,14 @@ MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
         if (peer.id == self_) {
             continue;
         }
-        nodes_[peer.id] = {
-            .id = peer.id,
-            .host = peer.host,
-            .port = peer.port,
-            .state = NodeState::Alive,
-        };
+
+        NodeInfo info;
+        info.id = peer.id;
+        info.host = peer.host;
+        info.port = peer.port;
+        info.state = NodeState::Alive;
+        info.joined_at = std::chrono::steady_clock::now();
+        nodes_[peer.id] = info;
     }
 }
 
@@ -43,7 +45,10 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
             if (rumor.state != NodeState::Alive) {
                 return;
             }
-            nodes_[rumor.id] = rumor;
+
+            NodeInfo fresh = rumor;
+            fresh.joined_at = std::chrono::steady_clock::now();
+            nodes_[rumor.id] = fresh;
             changed = true; // newly-discovered node — observers must rebuild
         } else {
             NodeInfo& local = it->second;
@@ -126,6 +131,10 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         if (info.state == NodeState::Alive && info.incarnation >= incarnation) {
             return;
         }
+        // A node recovering from Dead/Suspect starts a fresh quarantine window.
+        if (info.state != NodeState::Alive) {
+            info.joined_at = std::chrono::steady_clock::now();
+        }
 
         info.state = NodeState::Alive;
         info.incarnation = incarnation;
@@ -205,6 +214,21 @@ MembershipTable::snapshot() const -> std::vector<NodeInfo> {
         result.push_back(info);
     }
     return result;
+}
+
+auto
+MembershipTable::isQuarantined(const NodeId& id, std::chrono::steady_clock::time_point now,
+    std::chrono::milliseconds quarantine) const -> bool {
+    if (quarantine.count() <= 0) {
+        return false;
+    }
+
+    std::scoped_lock lock(mutex_);
+    auto it = nodes_.find(id);
+    if (it == nodes_.end() || it->second.state != NodeState::Alive) {
+        return false;
+    }
+    return now - it->second.joined_at < quarantine;
 }
 
 void
