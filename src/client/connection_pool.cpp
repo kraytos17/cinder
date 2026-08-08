@@ -7,11 +7,17 @@
 
 #include "cinder/net/protocol.hpp"
 
+using asio::buffer;
+using asio::connect;
+using asio::io_context;
+using asio::read;
+using asio::transfer_exactly;
+using asio::write;
 using asio::ip::tcp;
 
 namespace cinder {
 
-ConnectionPool::ConnectionPool(const ClusterConfig& config, asio::io_context& io)
+ConnectionPool::ConnectionPool(const ClusterConfig& config, io_context& io)
     : io_(io) {
     for (const auto& n : config.nodes) {
         node_addrs_[n.id] = n;
@@ -126,7 +132,7 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
         return err<PoolEntry*>(Error(Errc::NotReady, "resolve failed: " + ec.message()));
     }
 
-    asio::connect(entry.socket, endpoints, ec);
+    connect(entry.socket, endpoints, ec);
     if (ec) {
         return err<PoolEntry*>(Error(Errc::NotReady, "connect failed: " + ec.message()));
     }
@@ -138,8 +144,7 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
 auto
 ConnectionPool::readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<void> {
     std::error_code ec;
-    auto n =
-        asio::read(s, asio::buffer(buf.data(), buf.size()), asio::transfer_exactly(buf.size()), ec);
+    auto n = read(s, buffer(buf.data(), buf.size()), transfer_exactly(buf.size()), ec);
     if (ec || n != buf.size()) {
         return err(Error(Errc::Timeout, "read failed: " + ec.message()));
     }
@@ -154,7 +159,7 @@ ConnectionPool::sendFramed(PoolEntry& entry, const net::Request& req) -> Result<
     }
 
     std::error_code ec;
-    asio::write(entry.socket, asio::buffer(entry.send_buf), ec);
+    write(entry.socket, buffer(entry.send_buf), ec);
     if (ec) {
         return err(Error(Errc::Timeout, "write failed: " + ec.message()));
     }

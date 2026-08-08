@@ -4,6 +4,8 @@
 
 #include "cinder/store/lfu_store.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 namespace {
 
@@ -82,9 +84,9 @@ TEST(LfuStoreTest, FrequencyOrder) {
 
 TEST(LfuStoreTest, TtlExpiry) {
     LfuStore store(1'024);
-    EXPECT_TRUE(store.put("key", "value", std::chrono::milliseconds(10)).has_value());
+    EXPECT_TRUE(store.put("key", "value", milliseconds(10)).has_value());
     EXPECT_TRUE(store.get("key").has_value());
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(milliseconds(20));
     EXPECT_FALSE(store.get("key").has_value());
 }
 
@@ -97,10 +99,10 @@ TEST(LfuStoreTest, ValueLargerThanCapacity) {
 
 TEST(LfuStoreTest, EvictExpired) {
     LfuStore store(1'024);
-    EXPECT_TRUE(store.put("a", "1", std::chrono::milliseconds(10)).has_value());
+    EXPECT_TRUE(store.put("a", "1", milliseconds(10)).has_value());
     EXPECT_TRUE(store.put("b", "2").has_value());
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    std::this_thread::sleep_for(milliseconds(20));
     EXPECT_EQ(store.evictExpired(), 1);
     EXPECT_EQ(store.size(), 1);
     EXPECT_FALSE(store.get("a").has_value());

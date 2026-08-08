@@ -8,6 +8,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/net/protocol.hpp"
 
+using asio::io_context;
 using asio::ip::tcp;
 
 namespace cinder {
@@ -23,7 +24,7 @@ namespace cinder {
 class TcpTransport final : public Transport {
   public:
 
-    explicit TcpTransport(asio::io_context& io);
+    explicit TcpTransport(io_context& io);
 
     // Seed the node→address table (id@host:port from a ClusterConfig).
     void setConfig(const ClusterConfig& config);
@@ -39,7 +40,7 @@ class TcpTransport final : public Transport {
   private:
 
     struct OutboundRequest {
-        OutboundRequest(asio::io_context& io, const std::string& host, uint16_t port,
+        OutboundRequest(io_context& io, const std::string& host, uint16_t port,
             cinder::Transport::SendCallback cb)
             : resolver(io),
               socket(io),
@@ -66,7 +67,7 @@ class TcpTransport final : public Transport {
     void finishDecode(OutboundRequest* self);
     void finish(OutboundRequest* self, Result<void> result);
 
-    asio::io_context& io_;
+    io_context& io_;
     std::unordered_map<NodeId, ClusterConfig::NodeConfig> addrs_;
     MessageHandler handler_;
 };

@@ -3,6 +3,9 @@
 
 #include "cinder/net/protocol.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
+
 namespace cinder::net {
 namespace {
 
@@ -42,7 +45,7 @@ TEST(ProtocolTest, EncodeDecodeSet) {
     req.opcode = Opcode::Set;
     req.key = "k";
     req.value = "v";
-    req.ttl = std::chrono::milliseconds(5'000);
+    req.ttl = milliseconds(5'000);
 
     auto encoded = encode(req);
     ASSERT_TRUE(encoded.has_value());
@@ -130,7 +133,7 @@ TEST(ProtocolTest, EncodeIntoRequestMatchesEncode) {
     req.opcode = Opcode::Set;
     req.key = "some-key";
     req.value = "some-value";
-    req.ttl = std::chrono::milliseconds(5'000);
+    req.ttl = milliseconds(5'000);
     req.version = 42;
     req.writer_node_hash = 0xDEADBEEF;
 
@@ -152,7 +155,7 @@ TEST(ProtocolTest, EncodeIntoRequestReusesBuffer) {
     large.opcode = Opcode::Set;
     large.key = "k" + std::string(100, 'x');
     large.value = std::string(200, 'y');
-    large.ttl = std::chrono::milliseconds(1'000);
+    large.ttl = milliseconds(1'000);
 
     std::vector<std::byte> buf;
     ASSERT_TRUE(encodeInto(small, buf).has_value());
@@ -191,8 +194,7 @@ TEST(ProtocolTest, EncodeDecodeExpiresAt) {
     req.value = "v";
     req.version = 7;
     req.writer_node_hash = 42;
-    req.expires_at =
-        std::chrono::system_clock::time_point(std::chrono::milliseconds(1'700'000'000'123));
+    req.expires_at = system_clock::time_point(milliseconds(1'700'000'000'123));
 
     auto encoded = encode(req);
     ASSERT_TRUE(encoded.has_value());
@@ -208,7 +210,7 @@ TEST(ProtocolTest, EncodeDecodeExpiresAtAbsent) {
     req.opcode = Opcode::Set;
     req.key = "k";
     req.value = "v";
-    req.ttl = std::chrono::milliseconds(5'000);
+    req.ttl = milliseconds(5'000);
 
     auto encoded = encode(req);
     ASSERT_TRUE(encoded.has_value());

@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+using std::chrono::milliseconds;
+
 SimBus::SimBus(SimClock& clock, uint64_t seed)
     : clock_(clock),
       rng_(seed) {}
@@ -58,7 +60,7 @@ SimBus::setLossRate(double p) {
 }
 
 void
-SimBus::setDelay(std::chrono::milliseconds d) {
+SimBus::setDelay(milliseconds d) {
     delay_ = d;
 }
 

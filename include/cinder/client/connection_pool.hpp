@@ -9,6 +9,9 @@
 #include "cinder/common/types.hpp"
 #include "cinder/net/protocol.hpp"
 
+using asio::io_context;
+using asio::ip::tcp;
+
 namespace cinder {
 
 struct ClusterConfig {
@@ -24,7 +27,7 @@ struct ClusterConfig {
 class ConnectionPool {
   public:
 
-    ConnectionPool(const ClusterConfig& config, asio::io_context& io);
+    ConnectionPool(const ClusterConfig& config, io_context& io);
     ~ConnectionPool();
     ConnectionPool(const ConnectionPool&) = delete;
     auto operator=(const ConnectionPool&) -> ConnectionPool& = delete;
@@ -43,18 +46,18 @@ class ConnectionPool {
   private:
 
     struct PoolEntry {
-        asio::ip::tcp::socket socket;
+        tcp::socket socket;
         bool connected = false;
         std::vector<std::byte> send_buf; // reused across sends on this connection
         std::vector<std::byte> recv_buf; // reused across receives
     };
 
     auto getOrConnect(const NodeId& node_id) -> Result<PoolEntry*>;
-    static auto readExactly(asio::ip::tcp::socket& s, std::span<std::byte> buf) -> Result<void>;
+    static auto readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<void>;
     static auto sendFramed(PoolEntry& entry, const net::Request& req) -> Result<void>;
     static auto recvFramed(PoolEntry& entry) -> Result<net::Response>;
 
-    asio::io_context& io_;
+    io_context& io_;
     std::unordered_map<NodeId, PoolEntry> connections_;
     std::unordered_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
 };

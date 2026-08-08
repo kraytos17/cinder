@@ -5,6 +5,8 @@
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/membership.hpp"
 
+using std::chrono::steady_clock;
+
 namespace cinder {
 namespace {
 
@@ -93,7 +95,7 @@ TEST(MembershipTest, QuarantineAfterRejoin) {
     using namespace std::chrono_literals;
     MembershipTable table("node1");
     table.seed({{"node2", "127.0.0.1", 17'901}});
-    auto t0 = std::chrono::steady_clock::now();
+    auto t0 = steady_clock::now();
 
     // A seeded node is quarantined briefly after seeding.
     EXPECT_TRUE(table.isQuarantined("node2", t0, 1'000ms));

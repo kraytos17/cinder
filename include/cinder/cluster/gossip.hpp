@@ -8,6 +8,8 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/types.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 // SWIM-style membership dissemination. Periodically sends this node's view
@@ -20,8 +22,8 @@ namespace cinder {
 class GossipManager {
   public:
 
-    GossipManager(Clock& clock, Transport& transport, MembershipTable& table,
-        std::chrono::milliseconds gossip_interval);
+    GossipManager(
+        Clock& clock, Transport& transport, MembershipTable& table, milliseconds gossip_interval);
     ~GossipManager() = default;
 
     GossipManager(const GossipManager&) = delete;
@@ -33,9 +35,7 @@ class GossipManager {
     void tick(); // send this node's view to a random peer; exposed for the sim harness
     void handleMessage(const NodeId& from, const net::Request& req);
 
-    [[nodiscard]] auto gossipInterval() const -> std::chrono::milliseconds {
-        return gossip_interval_;
-    }
+    [[nodiscard]] auto gossipInterval() const -> milliseconds { return gossip_interval_; }
 
   private:
 
@@ -46,7 +46,7 @@ class GossipManager {
     Clock& clock_;
     Transport& transport_;
     MembershipTable& table_;
-    std::chrono::milliseconds gossip_interval_;
+    milliseconds gossip_interval_;
     std::vector<NodeId> peers_;
 };
 } // namespace cinder

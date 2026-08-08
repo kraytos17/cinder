@@ -6,9 +6,15 @@
 #include <utility>
 #include <vector>
 
+using asio::async_connect;
+using asio::async_read;
+using asio::async_write;
+using asio::buffer;
+using asio::io_context;
+
 namespace cinder {
 
-TcpTransport::TcpTransport(asio::io_context& io)
+TcpTransport::TcpTransport(io_context& io)
     : io_(io) {}
 
 void
@@ -63,8 +69,7 @@ TcpTransport::start(OutboundRequest* self) {
 
 void
 TcpTransport::connect(OutboundRequest* self, const tcp::resolver::results_type& endpoints) {
-    asio::async_connect(
-        self->socket, endpoints, [this, self](std::error_code ec, const tcp::endpoint&) {
+    async_connect(self->socket, endpoints, [this, self](std::error_code ec, const tcp::endpoint&) {
         if (ec) {
             finish(self, err(Error(Errc::NotReady, "connect failed: " + ec.message())));
             return;
@@ -75,8 +80,7 @@ TcpTransport::connect(OutboundRequest* self, const tcp::resolver::results_type& 
 
 void
 TcpTransport::writeFrame(OutboundRequest* self) {
-    asio::async_write(
-        self->socket, asio::buffer(self->write_buf), [this, self](std::error_code ec, size_t) {
+    async_write(self->socket, buffer(self->write_buf), [this, self](std::error_code ec, size_t) {
         if (ec) {
             finish(self, err(Error(Errc::NotReady, "write failed: " + ec.message())));
             return;
@@ -87,8 +91,7 @@ TcpTransport::writeFrame(OutboundRequest* self) {
 
 void
 TcpTransport::readHeader(OutboundRequest* self) {
-    asio::async_read(
-        self->socket, asio::buffer(self->header), [this, self](std::error_code ec, size_t) {
+    async_read(self->socket, buffer(self->header), [this, self](std::error_code ec, size_t) {
         if (ec) {
             finish(self, err(Error(Errc::NotReady, "read failed: " + ec.message())));
             return;
@@ -118,8 +121,8 @@ TcpTransport::readPayload(OutboundRequest* self, uint32_t payload_len) {
         return;
     }
 
-    asio::async_read(self->socket,
-        asio::buffer(self->frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+    async_read(self->socket,
+        buffer(self->frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
         [this, self](std::error_code ec, size_t) {
         if (ec) {
             finish(self, err(Error(Errc::NotReady, "read failed: " + ec.message())));

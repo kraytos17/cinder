@@ -8,6 +8,9 @@
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/common/status.hpp"
 
+using asio::io_context;
+using std::chrono::milliseconds;
+
 auto
 main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder cache client"};
@@ -41,7 +44,7 @@ main(int argc, char* argv[]) -> int {
         req.key = key;
         req.value = value;
         if (ttl_ms > 0) {
-            req.ttl = std::chrono::milliseconds(ttl_ms);
+            req.ttl = milliseconds(ttl_ms);
         }
     } else if (cmd == "del") {
         req.opcode = cinder::net::Opcode::Del;
@@ -53,7 +56,7 @@ main(int argc, char* argv[]) -> int {
         return 1;
     }
 
-    asio::io_context io;
+    io_context io;
     cinder::ConnectionPool pool(config, io);
     auto res = pool.send("server", req);
     if (!res.has_value()) {

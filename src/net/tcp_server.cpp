@@ -6,11 +6,12 @@
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/node/replication_manager.hpp"
 
+using asio::io_context;
 using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(asio::io_context& io, uint16_t port, CacheStore& store,
+TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
     const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
     int replica_factor, ConsistencyMode mode, GossipManager* gossip)
     : acceptor_(io, tcp::endpoint(tcp::v4(), port)),

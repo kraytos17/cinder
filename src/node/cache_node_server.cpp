@@ -4,31 +4,9 @@
 
 #include "cinder/common/logger.hpp"
 
-using namespace std::chrono;
+using std::chrono::seconds;
 
 namespace cinder {
-
-auto
-parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool {
-    auto at = peer.rfind('@');
-    if (at == std::string::npos) {
-        return false;
-    }
-
-    auto colon = peer.find(':', at);
-    if (colon == std::string::npos) {
-        return false;
-    }
-    // Empty node id or empty host is malformed — reject.
-    if (at == 0 || colon == at + 1) {
-        return false;
-    }
-
-    out.id = peer.substr(0, at);
-    out.host = peer.substr(at + 1, colon - at - 1);
-    out.port = static_cast<uint16_t>(std::stoi(peer.substr(colon + 1)));
-    return true;
-}
 
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     : node_id_(options.node_id),

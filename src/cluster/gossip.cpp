@@ -8,10 +8,12 @@
 
 #include "cinder/net/protocol.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
-GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable& table,
-    std::chrono::milliseconds gossip_interval)
+GossipManager::GossipManager(
+    Clock& clock, Transport& transport, MembershipTable& table, milliseconds gossip_interval)
     : clock_(clock),
       transport_(transport),
       table_(table),

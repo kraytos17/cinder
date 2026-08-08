@@ -4,7 +4,8 @@
 
 namespace cinder {
 
-using namespace std::chrono;
+using std::chrono::steady_clock;
+using std::chrono::system_clock;
 
 class Clock {
   public:

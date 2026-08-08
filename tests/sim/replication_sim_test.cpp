@@ -7,6 +7,9 @@
 #include "sim_clock.hpp"
 #include "sim_transport.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+
 namespace cinder {
 namespace {
 
@@ -57,8 +60,8 @@ class TwoNodeCluster {
 // captured result is valid as soon as writeAsync returns.
 auto
 runWrite(ReplicationManager& mgr, const std::string& key, std::string value,
-    std::optional<std::chrono::milliseconds> ttl, const std::vector<NodeId>& replicas,
-    ConsistencyMode mode) -> Result<void> {
+    std::optional<milliseconds> ttl, const std::vector<NodeId>& replicas, ConsistencyMode mode)
+    -> Result<void> {
     Result<void> result = err(Error(Errc::InternalError));
     mgr.writeAsync(
         key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = std::move(r); });
@@ -285,7 +288,7 @@ TEST(ReplicationSimTest, HintExpiresAndIsDropped) {
     ASSERT_EQ(c.mgr1.hintCount(), 1);
 
     // Hint TTL is 30s — advance past it; replay drops the expired hint.
-    c.clock.advance(std::chrono::seconds(31));
+    c.clock.advance(seconds(31));
     EXPECT_EQ(runReplay(c.mgr1), 0);
     EXPECT_EQ(c.mgr1.hintCount(), 0);
 }

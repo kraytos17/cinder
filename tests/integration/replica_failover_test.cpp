@@ -7,6 +7,8 @@
 #include "cinder/net/protocol.hpp"
 #include "integration/test_helpers.hpp"
 
+using std::chrono::milliseconds;
+
 using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::getKey;
@@ -186,7 +188,7 @@ TEST(ReplicaFailoverTest, TTLReplicationOverWire) {
         .opcode = Opcode::Set,
         .key = "ttl-over-wire",
         .value = "ephemeral",
-        .ttl = std::chrono::milliseconds(300),
+        .ttl = milliseconds(300),
     };
     auto set_res = rawRequest(primary, req);
     ASSERT_TRUE(set_res.has_value());
@@ -195,7 +197,7 @@ TEST(ReplicaFailoverTest, TTLReplicationOverWire) {
         << "replica did not apply TTL write";
 
     // Wait past the TTL; both primary and replica must expire the entry.
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(milliseconds(500));
     auto primary_get = getKey(primary, "ttl-over-wire");
     ASSERT_TRUE(primary_get.has_value());
     EXPECT_EQ(primary_get.value().status, Errc::NotFound);

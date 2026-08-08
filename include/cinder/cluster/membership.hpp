@@ -11,6 +11,9 @@
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/common/types.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 namespace cinder {
 
 enum class NodeState : uint8_t {
@@ -25,7 +28,7 @@ struct NodeInfo {
     uint16_t port = 0;
     NodeState state = NodeState::Alive;
     uint64_t incarnation = 0;
-    std::chrono::steady_clock::time_point joined_at{};
+    steady_clock::time_point joined_at{};
 };
 
 // Local view of cluster membership. Tracks (id, host, port, state, incarnation)
@@ -67,8 +70,8 @@ class MembershipTable {
 
     // True if `id` joined (or re-joined after being Dead/Suspect) within the
     // quarantine window. `quarantine` of zero disables the check.
-    [[nodiscard]] auto isQuarantined(const NodeId& id, std::chrono::steady_clock::time_point now,
-        std::chrono::milliseconds quarantine) const -> bool;
+    [[nodiscard]] auto isQuarantined(
+        const NodeId& id, steady_clock::time_point now, milliseconds quarantine) const -> bool;
 
     using ChangeCallback = std::function<void()>;
     void onChange(ChangeCallback cb);

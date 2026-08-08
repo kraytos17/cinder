@@ -12,6 +12,8 @@
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 class LfuStore : public CacheStore {
@@ -20,7 +22,7 @@ class LfuStore : public CacheStore {
     explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
     auto put(const std::string& key, std::string value,
-        std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> override;
+        std::optional<milliseconds> ttl = std::nullopt) -> Result<void> override;
     auto get(const std::string& key) -> std::optional<std::string> override;
     auto remove(const std::string& key) -> bool override;
     auto size() const -> size_t override;

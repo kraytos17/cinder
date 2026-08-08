@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+using std::chrono::steady_clock;
+
 namespace cinder {
 
 using Bytes = std::vector<std::byte>;
@@ -26,7 +28,7 @@ enum class ConsistencyMode : uint8_t {
 
 struct CacheEntry {
     std::string value;
-    std::chrono::steady_clock::time_point expires_at;
+    steady_clock::time_point expires_at;
     bool has_ttl = false;
 };
 
@@ -34,7 +36,7 @@ struct VersionedEntry {
     std::string value;
     Version version = 0;
     uint64_t writer_node_hash = 0;
-    std::chrono::steady_clock::time_point expires_at;
+    steady_clock::time_point expires_at;
     bool has_ttl = false;
 };
 } // namespace cinder

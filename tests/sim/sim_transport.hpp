@@ -12,6 +12,9 @@
 #include "cinder/cluster/transport.hpp"
 #include "sim_clock.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 // Shared in-process message bus. `route` accepts a message for delivery at
 // clock.now() + delay_ unless the target is down. Loss is applied at delivery
 // time (a queued message may be silently dropped). Deterministic: same seed →
@@ -34,7 +37,7 @@ class SimBus {
     void deliver();
 
     void setLossRate(double p); // [0,1]
-    void setDelay(std::chrono::milliseconds d);
+    void setDelay(milliseconds d);
     void setReorder(bool enabled); // swap consecutive deliveries
     void setNodeDown(const cinder::NodeId& id);
     void setNodeUp(const cinder::NodeId& id);
@@ -46,7 +49,7 @@ class SimBus {
   private:
 
     struct Event {
-        std::chrono::steady_clock::time_point deliver_at;
+        steady_clock::time_point deliver_at;
         cinder::NodeId from;
         cinder::NodeId to;
         cinder::net::Request req;
@@ -62,7 +65,7 @@ class SimBus {
     std::mt19937 rng_;
     std::uniform_real_distribution<double> unit_{0.0, 1.0};
     double loss_rate_ = 0.0;
-    std::chrono::milliseconds delay_{0};
+    milliseconds delay_{0};
     bool reorder_ = false;
 
     std::priority_queue<Event, std::vector<Event>, EventCmp> queue_;

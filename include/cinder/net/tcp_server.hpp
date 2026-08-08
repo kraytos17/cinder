@@ -12,6 +12,9 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_connection.hpp"
 
+using asio::io_context;
+using asio::ip::tcp;
+
 namespace cinder {
 class ReplicationManager;
 class GossipManager;
@@ -22,10 +25,10 @@ namespace cinder::net {
 class TcpServer {
   public:
 
-    TcpServer(asio::io_context& io, uint16_t port, CacheStore& store,
-        const ConsistentHashRing& ring, std::string node_id, Clock& clock,
-        ReplicationManager* repl = nullptr, int replica_factor = 1,
-        ConsistencyMode mode = ConsistencyMode::Async, GossipManager* gossip = nullptr);
+    TcpServer(io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
+        std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
+        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
+        GossipManager* gossip = nullptr);
     ~TcpServer();
 
     TcpServer(const TcpServer&) = delete;
@@ -40,7 +43,7 @@ class TcpServer {
 
     void doAccept();
 
-    asio::ip::tcp::acceptor acceptor_;
+    tcp::acceptor acceptor_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     Clock& clock_;

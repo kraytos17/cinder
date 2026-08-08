@@ -10,6 +10,9 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 namespace cinder {
 
 class CacheStore {
@@ -26,7 +29,7 @@ class CacheStore {
     auto operator=(CacheStore&&) -> CacheStore& = delete;
 
     virtual auto put(const std::string& key, std::string value,
-        std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void> = 0;
+        std::optional<milliseconds> ttl = std::nullopt) -> Result<void> = 0;
     virtual auto get(const std::string& key) -> std::optional<std::string> = 0;
     virtual auto remove(const std::string& key) -> bool = 0;
     [[nodiscard]] virtual auto size() const -> size_t = 0;
@@ -53,8 +56,8 @@ class CacheStore {
   protected:
 
     // Injected clock for deterministic sims; nullptr → real steady_clock.
-    auto now() const -> std::chrono::steady_clock::time_point {
-        return clock_ ? clock_->now() : std::chrono::steady_clock::now();
+    auto now() const -> steady_clock::time_point {
+        return clock_ ? clock_->now() : steady_clock::now();
     }
 
   private:

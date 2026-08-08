@@ -17,7 +17,8 @@
 
 namespace cinder {
 
-using namespace std::chrono;
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
 
 // Coordinates writes to the primary + replicas. The write path assigns a
 // monotonic version and a stable per-node writer hash so replica applies are

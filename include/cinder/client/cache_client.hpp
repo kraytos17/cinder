@@ -10,6 +10,9 @@
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 
+using asio::io_context;
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 class CacheClient {
@@ -23,7 +26,7 @@ class CacheClient {
     auto operator=(CacheClient&&) -> CacheClient& = delete;
 
     auto set(const std::string& key, const std::string& value,
-        std::optional<std::chrono::milliseconds> ttl = std::nullopt) -> Result<void>;
+        std::optional<milliseconds> ttl = std::nullopt) -> Result<void>;
     auto get(const std::string& key) -> std::optional<std::string>;
     auto remove(const std::string& key) -> bool;
 
@@ -38,13 +41,19 @@ class CacheClient {
     auto routePrimary(std::string_view key) const -> NodeId;
     auto sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response>;
 
-    asio::io_context io_ctx_;
+    io_context io_ctx_;
     ConsistentHashRing ring_;
     ConnectionPool pool_;
 };
 
 // Parse a server redirect hint ("moved to <node>") into a target node id.
 // Returns nullopt for non-redirect values.
-[[nodiscard]] auto
-parseRedirect(std::string_view value) -> std::optional<NodeId>;
+[[nodiscard]] inline constexpr auto
+parseRedirect(std::string_view value) -> std::optional<NodeId> {
+    constexpr std::string_view K_PREFIX = "moved to ";
+    if (!value.starts_with(K_PREFIX)) {
+        return std::nullopt;
+    }
+    return NodeId(value.substr(K_PREFIX.size()));
+}
 } // namespace cinder

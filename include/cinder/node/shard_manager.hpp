@@ -10,6 +10,8 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/store/cache_store.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 // Rebalances keys when cluster membership changes. After the ring is rebuilt,
@@ -24,8 +26,7 @@ class ShardManager {
   public:
 
     ShardManager(CacheStore& store, ConsistentHashRing& ring, Transport& transport,
-        MembershipTable& table, NodeId self, Clock& clock,
-        std::chrono::milliseconds quarantine_interval);
+        MembershipTable& table, NodeId self, Clock& clock, milliseconds quarantine_interval);
     ~ShardManager() = default;
 
     ShardManager(const ShardManager&) = delete;
@@ -48,6 +49,6 @@ class ShardManager {
     MembershipTable& table_;
     NodeId self_;
     Clock& clock_;
-    std::chrono::milliseconds quarantine_interval_;
+    milliseconds quarantine_interval_;
 };
 } // namespace cinder

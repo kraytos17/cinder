@@ -14,6 +14,8 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/store/cache_store.hpp"
 
+using asio::ip::tcp;
+
 namespace cinder {
 class ReplicationManager;
 class GossipManager;
@@ -27,7 +29,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     static constexpr size_t K_BUFFER_SIZE = 65'536;
     static constexpr size_t K_MAX_WRITE_QUEUE = 64;
 
-    TcpConnection(asio::ip::tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
+    TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
         GossipManager* gossip = nullptr);
@@ -54,7 +56,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     void onWrite(std::error_code ec, size_t bytes);
     void maybeRead();
 
-    asio::ip::tcp::socket socket_;
+    tcp::socket socket_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     Clock& clock_;

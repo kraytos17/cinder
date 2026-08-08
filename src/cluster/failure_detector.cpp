@@ -5,7 +5,7 @@
 
 namespace cinder {
 
-using namespace std::chrono;
+using std::chrono::milliseconds;
 
 FailureDetector::FailureDetector(Clock& clock, Transport& transport, MembershipTable& table,
     NodeId self, milliseconds suspect_timeout)

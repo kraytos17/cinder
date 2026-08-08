@@ -1,8 +1,11 @@
 #pragma once
 
 #include <asio.hpp>
+#include <charconv>
 #include <cstdint>
+#include <limits>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "cinder/client/connection_pool.hpp"
@@ -18,6 +21,11 @@
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/lru_store.hpp"
 
+using asio::io_context;
+using asio::signal_set;
+using asio::steady_timer;
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 // Options for constructing a CacheNodeServer.
@@ -28,16 +36,43 @@ struct CacheNodeServerOptions {
     std::vector<ClusterConfig::NodeConfig> peers;
     int replica_factor = 1;
     ConsistencyMode mode = ConsistencyMode::Async;
-    std::chrono::milliseconds ping_interval{1'000};
-    std::chrono::milliseconds suspect_timeout{3'000};
-    std::chrono::milliseconds gossip_interval{1'000};
-    std::chrono::milliseconds quarantine_interval{10'000};
+    milliseconds ping_interval{1'000};
+    milliseconds suspect_timeout{3'000};
+    milliseconds gossip_interval{1'000};
+    milliseconds quarantine_interval{10'000};
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
-// on malformed input (no '@' separator or missing port).
-auto
-parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool;
+// on malformed input (no '@' separator, missing port, or a non-numeric or
+// out-of-range port). constexpr so it can be exercised at compile time.
+inline constexpr auto
+parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool {
+    auto at = peer.rfind('@');
+    if (at == std::string::npos) {
+        return false;
+    }
+
+    auto colon = peer.find(':', at);
+    if (colon == std::string::npos) {
+        return false;
+    }
+    if (at == 0 || colon == at + 1) {
+        return false;
+    }
+
+    const char* begin = peer.data() + colon + 1;
+    const char* end = peer.data() + peer.size();
+    uint32_t port = 0;
+    auto [ptr, ec] = std::from_chars(begin, end, port);
+    if (ec != std::errc{} || ptr != end || port > std::numeric_limits<uint16_t>::max()) {
+        return false;
+    }
+
+    out.id = peer.substr(0, at);
+    out.host = peer.substr(at + 1, colon - at - 1);
+    out.port = static_cast<uint16_t>(port);
+    return true;
+}
 
 // Assembles a single cache node: store + ring + replication transport +
 // TCP server, plus periodic hinted-handoff replay and signal-driven shutdown.
@@ -66,10 +101,10 @@ class CacheNodeServer {
     void rebuildRing();
     void scheduleRebalance();
 
-    asio::io_context io_;
+    io_context io_;
     NodeId node_id_;
-    std::chrono::milliseconds ping_interval_{1'000};
-    std::chrono::milliseconds quarantine_interval_{10'000};
+    milliseconds ping_interval_{1'000};
+    milliseconds quarantine_interval_{10'000};
     LruStore store_;
     RealClock clock_;
     ConsistentHashRing ring_;
@@ -80,11 +115,11 @@ class CacheNodeServer {
     GossipManager gossip_;
     ShardManager shard_;
     net::TcpServer server_;
-    asio::steady_timer replay_timer_;
-    asio::steady_timer gossip_timer_;
-    asio::steady_timer probe_timer_;
-    asio::steady_timer evict_timer_;
-    asio::steady_timer quarantine_timer_;
-    asio::signal_set signals_;
+    steady_timer replay_timer_;
+    steady_timer gossip_timer_;
+    steady_timer probe_timer_;
+    steady_timer evict_timer_;
+    steady_timer quarantine_timer_;
+    signal_set signals_;
 };
 } // namespace cinder

@@ -6,6 +6,8 @@
 #include "cinder/common/logger.hpp"
 #include "cinder/node/cache_node_server.hpp"
 
+using std::chrono::milliseconds;
+
 auto
 main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder distributed cache server"};
@@ -47,10 +49,10 @@ main(int argc, char* argv[]) -> int {
     options.replica_factor = replica_factor;
     options.mode =
         consistency == "quorum" ? cinder::ConsistencyMode::Quorum : cinder::ConsistencyMode::Async;
-    options.ping_interval = std::chrono::milliseconds(ping_interval_ms);
-    options.suspect_timeout = std::chrono::milliseconds(suspect_timeout_ms);
-    options.gossip_interval = std::chrono::milliseconds(gossip_interval_ms);
-    options.quarantine_interval = std::chrono::milliseconds(quarantine_interval_ms);
+    options.ping_interval = milliseconds(ping_interval_ms);
+    options.suspect_timeout = milliseconds(suspect_timeout_ms);
+    options.gossip_interval = milliseconds(gossip_interval_ms);
+    options.quarantine_interval = milliseconds(quarantine_interval_ms);
 
     if (!peers.empty()) {
         size_t start = 0;

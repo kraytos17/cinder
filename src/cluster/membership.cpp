@@ -2,6 +2,9 @@
 
 #include <utility>
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 namespace cinder {
 
 MembershipTable::MembershipTable(NodeId self)
@@ -29,7 +32,7 @@ MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
         info.host = peer.host;
         info.port = peer.port;
         info.state = NodeState::Alive;
-        info.joined_at = std::chrono::steady_clock::now();
+        info.joined_at = steady_clock::now();
         nodes_[peer.id] = info;
     }
 }
@@ -47,7 +50,7 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
             }
 
             NodeInfo fresh = rumor;
-            fresh.joined_at = std::chrono::steady_clock::now();
+            fresh.joined_at = steady_clock::now();
             nodes_[rumor.id] = fresh;
             changed = true; // newly-discovered node — observers must rebuild
         } else {
@@ -133,7 +136,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         }
         // A node recovering from Dead/Suspect starts a fresh quarantine window.
         if (info.state != NodeState::Alive) {
-            info.joined_at = std::chrono::steady_clock::now();
+            info.joined_at = steady_clock::now();
         }
 
         info.state = NodeState::Alive;
@@ -217,8 +220,8 @@ MembershipTable::snapshot() const -> std::vector<NodeInfo> {
 }
 
 auto
-MembershipTable::isQuarantined(const NodeId& id, std::chrono::steady_clock::time_point now,
-    std::chrono::milliseconds quarantine) const -> bool {
+MembershipTable::isQuarantined(
+    const NodeId& id, steady_clock::time_point now, milliseconds quarantine) const -> bool {
     if (quarantine.count() <= 0) {
         return false;
     }

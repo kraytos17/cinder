@@ -1,6 +1,8 @@
 #include "cinder/net/protocol.hpp"
 
+#include <array>
 #include <bit>
+#include <cstddef>
 #include <cstring>
 #include <span>
 #include <utility>
@@ -8,27 +10,35 @@
 namespace cinder::net {
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
-// Network byte order is big-endian. On little-endian hosts
-// values are byteswapped; on big-endian hosts the raw memcpy is already correct.
-static auto
+// Network byte order is big-endian. Assembling the bytes big-endian yields the
+// host-order value on any endianness (a single load+bswap on x86) and is fully
+// constant-evaluable (unlike memcpy).
+static constexpr auto
 readBe32(const std::byte* buf) -> uint32_t {
-    uint32_t val = 0;
-    std::memcpy(&val, buf, sizeof(val));
-    if constexpr (std::endian::native == std::endian::big) {
-        return val;
-    }
-    return std::byteswap(val);
+    return static_cast<uint32_t>(std::to_integer<uint8_t>(buf[0])) << 24U
+           | static_cast<uint32_t>(std::to_integer<uint8_t>(buf[1])) << 16U
+           | static_cast<uint32_t>(std::to_integer<uint8_t>(buf[2])) << 8U
+           | static_cast<uint32_t>(std::to_integer<uint8_t>(buf[3]));
 }
 
 template <typename T>
-static auto
+static constexpr auto
 toNet(T val) -> T {
     if constexpr (std::endian::native == std::endian::big) {
         return val;
     }
     return std::byteswap(val);
 }
+
+static_assert(toNet(toNet(uint32_t{0x01020304})) == uint32_t{0x01020304});
+
+// The four bytes are the big-endian encoding of 0x01020304; readBe32 converts
+// to host order, yielding the same value on both endians.
+constexpr std::array<std::byte, 4> K_NET_BE_BYTES = {
+    std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+static_assert(readBe32(K_NET_BE_BYTES.data()) == 0x01020304U);
 
 auto
 encode(const Request& req) -> Result<std::vector<std::byte>> {
@@ -171,8 +181,7 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         std::memcpy(&net_expiry, &frame[off], sizeof(net_expiry));
         net_expiry = toNet(net_expiry);
         off += sizeof(net_expiry);
-        req.expires_at =
-            std::chrono::system_clock::time_point(std::chrono::milliseconds(net_expiry));
+        req.expires_at = system_clock::time_point(milliseconds(net_expiry));
     }
     if (off + sizeof(uint64_t) > frame.size()) {
         return err<Request>(Error(Errc::InvalidArgument, "truncated version"));

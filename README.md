@@ -5,14 +5,14 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 ## Features
 
 - **In-memory cache store** with LRU / LFU eviction + TTL expiry
-- **Binary wire protocol** over TCP — length-prefixed frames with magic/version/opcode validation, big-endian fields
+- **Binary wire protocol** over TCP — length-prefixed frames with magic/version/opcode validation, big-endian fields; frame layout and opcode range are derived and verified at compile time (consteval + static_assert)
 - **Async TCP server** using Asio, with per-connection backpressure and reusable write buffers
 - **Consistent hash ring** — xxHash3 virtual nodes, immutable-snapshot atomic swap, lock-free reads, binary search over sorted vector
 - **Cluster-aware routing** — each node owns a hash-ring range; non-owned keys return a redirect
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with versioned LWW conflict resolution and hinted handoff for down replicas
 - **Failover reads** — a replica serves local reads, so data stays available if the primary dies
 - **SWIM-style membership** — failure detection (Ping → suspect → dead), incarnation-guarded gossip, and automatic ring rebuild on membership change
-- **Automatic rebalancing** — when a node joins the ring, keys migrate to their new owners (re-join quarantine prevents the fresh node from accepting migrations until it is healthy)
+- **Automatic rebalancing** — when a node joins the ring, keys migrate to their new owners; a re-join quarantine defers migrations to a node until it is healthy, then retries automatically once the window clears
 - **Smart client library** (`CacheClient` + `ConnectionPool`) — routes via the ring, follows `moved to` redirects with a single retry, and pipelines reads with `multiGet`
 
 ## Build
@@ -149,6 +149,7 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 | `--ping-interval` | `1000` | Failure-detector ping interval (ms) |
 | `--suspect-timeout` | `3000` | Time a suspect persists before being marked dead (ms) |
 | `--gossip-interval` | `1000` | Membership gossip dissemination interval (ms) |
+| `--quarantine-interval` | `10000` | Re-join quarantine before a node receives migrated keys (ms, `0` = off) |
 
 ## Tests
 
@@ -229,7 +230,7 @@ make help            # all targets
 - **mold** auto-selected as the linker (falls back to lld, then GNU ld) — disable with `-DCINDER_USE_FAST_LINKER=OFF`.
 - **split-dwarf** (`-gsplit-dwarf` + `--gdb-index`) enabled in Debug/RelWithDebInfo for faster linking — disable with `-DCINDER_USE_SPLIT_DWARF=OFF`.
 
-## Dependencies (all fetched by CMake)
+## Dependencies
 
 - [Asio](https://think-async.com/Asio/) — networking (standalone, no Boost)
 - [xxHash](https://xxhash.com/) — fast hashing for the consistent hash ring

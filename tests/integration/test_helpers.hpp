@@ -14,6 +14,15 @@
 
 #include "cinder/net/protocol.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+using asio::buffer;
+using asio::error_code;
+using asio::io_context;
+using asio::ip::address_v4;
+using asio::read;
+using asio::write;
 using asio::ip::tcp;
 
 namespace cinder::net::test {
@@ -28,10 +37,10 @@ inline constexpr int K_PORT_RB_NODE2 = 17'931;
 inline constexpr int K_PORT_RB_NODE3 = 17'932;
 
 [[maybe_unused]] static auto
-readResponse(asio::ip::tcp::socket& socket) -> Result<Response> {
+readResponse(tcp::socket& socket) -> Result<Response> {
     std::array<std::byte, 65'536> buf{};
-    asio::error_code ec;
-    (void)asio::read(socket, asio::buffer(buf.data(), K_FRAME_HEADER_SIZE), ec);
+    error_code ec;
+    (void)read(socket, buffer(buf.data(), K_FRAME_HEADER_SIZE), ec);
     if (ec) {
         return err<Response>(Error(Errc::InternalError, "read header failed"));
     }
@@ -43,8 +52,8 @@ readResponse(asio::ip::tcp::socket& socket) -> Result<Response> {
         return err<Response>(Error(Errc::InvalidArgument, "response too large"));
     }
     if (payload_len > 0) {
-        (void)asio::read(socket,
-            asio::buffer(buf.data() + K_FRAME_HEADER_SIZE, payload_len), ec);
+        (void)read(socket,
+            buffer(buf.data() + K_FRAME_HEADER_SIZE, payload_len), ec);
         if (ec) {
             return err<Response>(Error(Errc::InternalError, "read payload failed"));
         }
@@ -55,16 +64,16 @@ readResponse(asio::ip::tcp::socket& socket) -> Result<Response> {
 
 [[maybe_unused]] static auto
 waitForPort(int port, int max_retries = 50) -> bool {
-    asio::io_context io;
+    io_context io;
     for (int i = 0; i < max_retries; i++) {
-        asio::ip::tcp::socket sock(io);
-        asio::error_code ec;
-        sock.connect(asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
+        tcp::socket sock(io);
+        error_code ec;
+        sock.connect(tcp::endpoint(address_v4::loopback(), port), ec);
         if (!ec) {
             sock.close();
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(milliseconds(50));
     }
     return false;
 }
@@ -120,13 +129,13 @@ stopNode(const NodeProc& node) {
 
     (void)kill(node.pid, SIGTERM);
     int status = 0;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (std::chrono::steady_clock::now() < deadline) {
+    auto deadline = steady_clock::now() + seconds(2);
+    while (steady_clock::now() < deadline) {
         pid_t r = waitpid(node.pid, &status, WNOHANG);
         if (r == node.pid) {
             return;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        std::this_thread::sleep_for(milliseconds(50));
     }
     (void)kill(node.pid, SIGKILL);
     (void)waitpid(node.pid, &status, 0);
@@ -164,10 +173,10 @@ class NodeProcGuard {
 
 [[maybe_unused]] static auto
 rawRequest(int port, const Request& req) -> cinder::Result<Response> {
-    asio::io_context io;
+    io_context io;
     tcp::socket socket(io);
-    asio::error_code ec;
-    socket.connect(tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
+    error_code ec;
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     if (ec) {
         return cinder::err<Response>(cinder::Error(cinder::Errc::InternalError, "connect failed"));
     }
@@ -176,7 +185,7 @@ rawRequest(int port, const Request& req) -> cinder::Result<Response> {
     if (!encoded.has_value()) {
         return cinder::err<Response>(encoded.error());
     }
-    (void)asio::write(socket, asio::buffer(encoded.value()), ec);
+    (void)write(socket, buffer(encoded.value()), ec);
     if (ec) {
         return cinder::err<Response>(cinder::Error(cinder::Errc::InternalError, "write failed"));
     }
@@ -208,7 +217,7 @@ waitForValue(int port, const std::string& key, const std::string& expected, int 
             && *res.value().value == expected) {
             return true;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(milliseconds(100));
     }
     return false;
 }

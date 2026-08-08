@@ -9,6 +9,12 @@
 #include "cinder/net/protocol.hpp"
 #include "integration/test_helpers.hpp"
 
+using asio::buffer;
+using asio::error_code;
+using asio::io_context;
+using asio::write;
+using std::chrono::milliseconds;
+
 using asio::ip::address_v4;
 using asio::ip::tcp;
 
@@ -33,9 +39,9 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
 
     ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
 
-    asio::io_context io;
+    io_context io;
     tcp::socket socket(io);
-    asio::error_code ec;
+    error_code ec;
     socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
@@ -44,7 +50,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Set, .key = "k", .value = "v", .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -55,7 +61,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -68,7 +74,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Del, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -79,7 +85,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Get, .key = "k", .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
@@ -90,7 +96,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         Request req{.opcode = Opcode::Ping, .key = {}, .value = {}, .ttl = std::nullopt};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -114,9 +120,9 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 
     ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
 
-    asio::io_context io;
+    io_context io;
     tcp::socket socket(io);
-    asio::error_code ec;
+    error_code ec;
     socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
@@ -126,12 +132,12 @@ TEST(ClusterSmokeTest, TTLExpiry) {
             .opcode = Opcode::Set,
             .key = "ttlkey",
             .value = "ephemeral",
-            .ttl = std::chrono::milliseconds(200),
+            .ttl = milliseconds(200),
         };
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -148,14 +154,14 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
 
     // Wait past TTL
-    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    std::this_thread::sleep_for(milliseconds(300));
 
     // Get after TTL - should be expired
     {
@@ -168,7 +174,7 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
@@ -199,9 +205,9 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 
     ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
 
-    asio::io_context io;
+    io_context io;
     tcp::socket socket(io);
-    asio::error_code ec;
+    error_code ec;
     socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
@@ -211,7 +217,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
         Request req{.opcode = Opcode::Set, .key = "k1", .value = val};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -222,7 +228,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
         Request req{.opcode = Opcode::Set, .key = "k2", .value = val};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -233,7 +239,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
         Request req{.opcode = Opcode::Set, .key = "k3", .value = val};
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -250,7 +256,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
@@ -267,7 +273,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -293,9 +299,9 @@ TEST(ClusterSmokeTest, LargeValue) {
 
     ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
 
-    asio::io_context io;
+    io_context io;
     tcp::socket socket(io);
-    asio::error_code ec;
+    error_code ec;
     socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
@@ -310,7 +316,7 @@ TEST(ClusterSmokeTest, LargeValue) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
@@ -327,7 +333,7 @@ TEST(ClusterSmokeTest, LargeValue) {
 
         auto encoded = encode(req);
         ASSERT_TRUE(encoded.has_value());
-        (void)asio::write(socket, asio::buffer(encoded.value()));
+        (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);

@@ -8,6 +8,9 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/types.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 namespace cinder {
 
 // SWIM-style liveness probing. Periodically pings one peer (round-robin) using
@@ -21,7 +24,7 @@ class FailureDetector {
   public:
 
     FailureDetector(Clock& clock, Transport& transport, MembershipTable& table, NodeId self,
-        std::chrono::milliseconds suspect_timeout);
+        milliseconds suspect_timeout);
     ~FailureDetector() = default;
 
     FailureDetector(const FailureDetector&) = delete;
@@ -36,7 +39,7 @@ class FailureDetector {
 
     struct ProbeState {
         bool pending = false;
-        std::chrono::steady_clock::time_point sent_at;
+        steady_clock::time_point sent_at;
     };
 
     void onProbeResult(const NodeId& peer, bool acked);
@@ -46,10 +49,10 @@ class FailureDetector {
     Transport& transport_;
     MembershipTable& table_;
     NodeId self_;
-    std::chrono::milliseconds suspect_timeout_;
+    milliseconds suspect_timeout_;
     std::vector<NodeId> peers_;
     size_t next_peer_ = 0;
     std::unordered_map<NodeId, ProbeState> probes_;
-    std::unordered_map<NodeId, std::chrono::steady_clock::time_point> suspect_since_;
+    std::unordered_map<NodeId, steady_clock::time_point> suspect_since_;
 };
 } // namespace cinder

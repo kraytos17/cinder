@@ -5,6 +5,10 @@
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+
 namespace cinder {
 namespace {
 
@@ -12,13 +16,13 @@ namespace {
 class TestClock final : public Clock {
   public:
 
-    auto now() const -> std::chrono::steady_clock::time_point override { return now_; }
+    auto now() const -> steady_clock::time_point override { return now_; }
 
-    void advance(std::chrono::milliseconds d) { now_ += d; }
+    void advance(milliseconds d) { now_ += d; }
 
   private:
 
-    std::chrono::steady_clock::time_point now_{};
+    steady_clock::time_point now_{};
 };
 
 // used to supress clang -Wunneeded-internal-declaration
@@ -85,7 +89,7 @@ TYPED_TEST(VersionedStoreTest, TtlExpiresVersioned) {
     TypeParam store(1'024);
     auto entry = makeVersionedEntry("v", 1, 10);
     entry.has_ttl = true;
-    entry.expires_at = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+    entry.expires_at = steady_clock::now() - seconds(1);
     ASSERT_TRUE(store.putVersioned("k", entry).has_value());
     EXPECT_FALSE(store.getVersioned("k").has_value());
 }
@@ -130,7 +134,7 @@ TYPED_TEST(VersionedStoreTest, RestartSeedWins) {
     auto old = store_a.mintVersion();
 
     // A restart gap passes; a fresh store seeds from the advanced clock.
-    clock.advance(std::chrono::seconds(5));
+    clock.advance(seconds(5));
     TypeParam store_b(1'024, &clock);
     EXPECT_GT(store_b.mintVersion(), old);
 
@@ -164,7 +168,7 @@ TYPED_TEST(VersionedStoreTest, ForEachSkipsExpired) {
 
     auto entry = makeVersionedEntry("gone", 1, 0);
     entry.has_ttl = true;
-    entry.expires_at = clock.now() - std::chrono::seconds(1); // relative to injected clock
+    entry.expires_at = clock.now() - seconds(1); // relative to injected clock
     ASSERT_TRUE(store.putVersioned("gone", entry).has_value());
 
     size_t count = 0;

@@ -7,11 +7,16 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/replication_manager.hpp"
 
+using asio::async_read;
+using asio::async_write;
+using asio::buffer;
+using asio::ip::tcp;
+
 namespace cinder::net {
 
-TcpConnection::TcpConnection(asio::ip::tcp::socket socket, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode, GossipManager* gossip)
+TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
+    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
+    ConsistencyMode mode, GossipManager* gossip)
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
@@ -46,8 +51,8 @@ TcpConnection::maybeRead() {
 void
 TcpConnection::doReadHeader() {
     auto self = shared_from_this();
-    asio::async_read(socket_,
-        asio::buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
+    async_read(socket_,
+        buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
         [this, self](std::error_code ec, size_t) {
         if (ec) {
             return;
@@ -77,8 +82,8 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
 void
 TcpConnection::doReadPayload(size_t len) {
     auto self = shared_from_this();
-    asio::async_read(socket_,
-        asio::buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
+    async_read(socket_,
+        buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
         [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
 }
 
@@ -235,8 +240,7 @@ TcpConnection::doWrite() {
     writing_ = true;
     auto self = shared_from_this();
     auto& buf = write_queue_.front();
-    asio::async_write(
-        socket_, asio::buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
+    async_write(socket_, buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
         if (ec) {
             write_queue_.clear();
             writing_ = false;

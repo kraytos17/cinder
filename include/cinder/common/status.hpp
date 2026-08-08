@@ -47,7 +47,7 @@ class Error {
 
 template <typename T> using Result = std::expected<T, Error>;
 
-[[nodiscard]] inline auto
+[[nodiscard]] inline constexpr auto
 toString(Errc code) -> std::string_view {
     switch (code) {
         case Errc::OK:

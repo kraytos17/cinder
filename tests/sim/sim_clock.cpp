@@ -1,23 +1,27 @@
 #include "sim_clock.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+using std::chrono::system_clock;
+
 SimClock::SimClock()
-    : now_(std::chrono::steady_clock::now()),
+    : now_(steady_clock::now()),
       steady_base_(now_),
-      system_base_(std::chrono::system_clock::now()) {}
+      system_base_(system_clock::now()) {}
 
 auto
-SimClock::now() const -> std::chrono::steady_clock::time_point {
+SimClock::now() const -> steady_clock::time_point {
     return now_;
 }
 
 auto
-SimClock::nowSystem() const -> std::chrono::system_clock::time_point {
+SimClock::nowSystem() const -> system_clock::time_point {
     // Advance wall time in lockstep with the simulated monotonic clock so the
     // sys↔steady conversion round-trips exactly (deterministic expiry).
     return system_base_ + (now_ - steady_base_);
 }
 
 void
-SimClock::advance(std::chrono::milliseconds d) {
+SimClock::advance(milliseconds d) {
     now_ += d;
 }

@@ -1,5 +1,7 @@
 #include "cinder/client/cache_client.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 CacheClient::CacheClient(ClusterConfig config)
@@ -14,15 +16,6 @@ CacheClient::~CacheClient() = default;
 auto
 CacheClient::routePrimary(std::string_view key) const -> NodeId {
     return ring_.getNode(key);
-}
-
-auto
-parseRedirect(std::string_view value) -> std::optional<NodeId> {
-    constexpr std::string_view K_PREFIX = "moved to ";
-    if (!value.starts_with(K_PREFIX)) {
-        return std::nullopt;
-    }
-    return NodeId(value.substr(K_PREFIX.size()));
 }
 
 auto
@@ -42,8 +35,8 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
 }
 
 auto
-CacheClient::set(const std::string& key, const std::string& value,
-    std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
+CacheClient::set(const std::string& key, const std::string& value, std::optional<milliseconds> ttl)
+    -> Result<void> {
     net::Request req{net::Opcode::Set, key, value, ttl};
     return sendToOwner(key, req).and_then([](net::Response res) -> Result<void> {
         if (res.status != Errc::OK) {

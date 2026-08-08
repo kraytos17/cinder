@@ -4,6 +4,8 @@
 #include <chrono>
 #include <utility>
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
 LruStore::LruStore(size_t capacity_bytes, Clock* clock)
@@ -12,8 +14,8 @@ LruStore::LruStore(size_t capacity_bytes, Clock* clock)
       next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
 
 auto
-LruStore::put(const std::string& key, std::string value,
-    std::optional<std::chrono::milliseconds> ttl) -> Result<void> {
+LruStore::put(const std::string& key, std::string value, std::optional<milliseconds> ttl)
+    -> Result<void> {
     VersionedEntry entry;
     entry.value = std::move(value);
     entry.version = next_version_++;

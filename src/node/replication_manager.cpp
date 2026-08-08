@@ -7,7 +7,8 @@
 
 namespace cinder {
 
-using namespace std::chrono;
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
 namespace {
 
