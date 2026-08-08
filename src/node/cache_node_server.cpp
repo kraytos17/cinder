@@ -33,6 +33,7 @@ parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool {
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     : node_id_(options.node_id),
       ping_interval_(options.ping_interval),
+      quarantine_interval_(options.quarantine_interval),
       store_(options.capacity),
       transport_(io_),
       repl_(store_, options.node_id, clock_, transport_),
@@ -47,6 +48,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       gossip_timer_(io_),
       probe_timer_(io_),
       evict_timer_(io_),
+      quarantine_timer_(io_),
       signals_(io_) {
     signals_.add(SIGINT);
     signals_.add(SIGTERM);
@@ -92,6 +94,7 @@ CacheNodeServer::shutdown() {
     gossip_timer_.cancel();
     probe_timer_.cancel();
     evict_timer_.cancel();
+    quarantine_timer_.cancel();
     server_.shutdown();
     io_.stop();
 }
@@ -167,7 +170,29 @@ CacheNodeServer::rebuildRing() {
             ring_.removeNode(info.id);
         }
     }
-    // Push keys this node no longer owns to their new ring owners.
-    shard_.rebalance();
+    // Push keys this node no longer owns to their new ring owners. If some were
+    // deferred because their owner is still quarantined, retry once the window
+    // has elapsed.
+    if (shard_.rebalance()) {
+        scheduleRebalance();
+    }
+}
+
+void
+CacheNodeServer::scheduleRebalance() {
+    if (quarantine_interval_.count() <= 0) {
+        return;
+    }
+    quarantine_timer_.expires_after(quarantine_interval_);
+    quarantine_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+        // Keep retrying while any owner is still inside its quarantine window
+        // (e.g. a flapping node keeps resetting joined_at).
+        if (shard_.rebalance()) {
+            scheduleRebalance();
+        }
+    });
 }
 } // namespace cinder

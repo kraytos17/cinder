@@ -6,6 +6,8 @@
 #include <utility>
 
 namespace cinder::net {
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
 
 // Network byte order is big-endian. On little-endian hosts
 // values are byteswapped; on big-endian hosts the raw memcpy is already correct.
@@ -53,6 +55,7 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     if (req.expires_at.has_value()) {
         payload_size += sizeof(uint64_t);
     }
+
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     if (total > K_MAX_MESSAGE_SIZE) {
         return err(Error(Errc::InvalidArgument, "message too large"));
@@ -86,10 +89,8 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
         off += sizeof(net_ttl);
     }
     if (req.expires_at.has_value()) {
-        uint64_t net_expiry =
-            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                req.expires_at->time_since_epoch())
-                    .count());
+        uint64_t net_expiry = static_cast<uint64_t>(
+            duration_cast<milliseconds>(req.expires_at->time_since_epoch()).count());
         net_expiry = toNet(net_expiry);
         std::memcpy(&out[off], &net_expiry, sizeof(net_expiry));
         off += sizeof(net_expiry);
@@ -146,8 +147,8 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         || raw_opcode > std::to_underlying(Opcode::Hint)) {
         return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
-    req.opcode = static_cast<Opcode>(frame[2]);
 
+    req.opcode = static_cast<Opcode>(frame[2]);
     size_t off = K_FRAME_HEADER_SIZE;
     auto flags = static_cast<uint8_t>(frame[off++]);
     bool has_ttl = (flags & K_FLAG_HAS_TTL) != 0;
@@ -159,7 +160,7 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
 
         uint32_t ttl_ms = readBe32(&frame[off]);
         off += sizeof(uint32_t);
-        req.ttl = std::chrono::milliseconds(ttl_ms);
+        req.ttl = milliseconds(ttl_ms);
     }
     if (has_expires_at) {
         if (off + sizeof(uint64_t) > frame.size()) {

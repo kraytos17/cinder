@@ -24,7 +24,7 @@ ConsistentHashRing::addNode(const NodeId& node_id) {
     auto old = snapshot_.load();
     for (const auto& existing : old->physical_nodes) {
         if (existing == node_id) {
-            return; // already present — idempotent (re-announce/re-alive safe)
+            return; // already present — idempotent
         }
     }
 

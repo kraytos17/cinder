@@ -17,8 +17,8 @@ ShardManager::ShardManager(CacheStore& store, ConsistentHashRing& ring, Transpor
       clock_(clock),
       quarantine_interval_(quarantine_interval) {}
 
-void
-ShardManager::rebalance() {
+auto
+ShardManager::rebalance() -> bool {
     // Collect pending migrations under forEach's store lock; do not send here —
     // a synchronous transport would invoke the remove callback re-entrantly and
     // deadlock on the store mutex.
@@ -29,12 +29,19 @@ ShardManager::rebalance() {
     };
 
     std::vector<Pending> pending;
+    bool deferred = false;
     auto now = clock_.now();
-    store_.forEach([this, &pending, now](const std::string& key, const VersionedEntry& entry) {
+    store_.forEach(
+        [this, &pending, &deferred, now](const std::string& key, const VersionedEntry& entry) {
         NodeId owner = ring_.getNode(key);
-        if (owner != self_ && !table_.isQuarantined(owner, now, quarantine_interval_)) {
-            pending.push_back({key, entry, owner});
+        if (owner == self_) {
+            return;
         }
+        if (table_.isQuarantined(owner, now, quarantine_interval_)) {
+            deferred = true;
+            return;
+        }
+        pending.push_back({key, entry, owner});
     });
 
     // Send after forEach has released the lock; the remove callback then
@@ -42,6 +49,7 @@ ShardManager::rebalance() {
     for (auto& p : pending) {
         migrateKey(p.key, p.entry, p.owner);
     }
+    return deferred;
 }
 
 void

@@ -64,10 +64,12 @@ class CacheNodeServer {
     void scheduleProbe();
     void scheduleEvict();
     void rebuildRing();
+    void scheduleRebalance();
 
     asio::io_context io_;
     NodeId node_id_;
     std::chrono::milliseconds ping_interval_{1'000};
+    std::chrono::milliseconds quarantine_interval_{10'000};
     LruStore store_;
     RealClock clock_;
     ConsistentHashRing ring_;
@@ -82,6 +84,7 @@ class CacheNodeServer {
     asio::steady_timer gossip_timer_;
     asio::steady_timer probe_timer_;
     asio::steady_timer evict_timer_;
+    asio::steady_timer quarantine_timer_;
     asio::signal_set signals_;
 };
 } // namespace cinder

@@ -6,7 +6,6 @@
 namespace cinder {
 namespace {
 
-// Baseline: raw hash + binary search on the ring for a single key.
 void
 bmRingGetNode(benchmark::State& state) {
     ConsistentHashRing ring(static_cast<int>(state.range(0)));
@@ -24,7 +23,6 @@ bmRingGetNode(benchmark::State& state) {
 // NOLINTNEXTLINE
 BENCHMARK(bmRingGetNode)->Arg(50)->Arg(150)->Arg(300);
 
-// Replica selection with dedup (the ring's own fixed-array dedup path).
 void
 bmRingGetNodes(benchmark::State& state) {
     ConsistentHashRing ring(static_cast<int>(state.range(0)));
@@ -42,7 +40,6 @@ bmRingGetNodes(benchmark::State& state) {
 // NOLINTNEXTLINE
 BENCHMARK(bmRingGetNodes)->Arg(50)->Arg(150)->Arg(300);
 
-// Add-node churn: the copy-on-write snapshot rebuild cost.
 void
 bmRingAddNode(benchmark::State& state) {
     ConsistentHashRing ring(static_cast<int>(state.range(0)));
@@ -56,6 +53,5 @@ bmRingAddNode(benchmark::State& state) {
 
 // NOLINTNEXTLINE
 BENCHMARK(bmRingAddNode)->Arg(50)->Arg(150);
-
 } // namespace
 } // namespace cinder

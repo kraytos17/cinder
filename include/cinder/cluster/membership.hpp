@@ -53,7 +53,6 @@ class MembershipTable {
 
     // Apply a rumor from another node; ignored if its incarnation is stale.
     void applyRumor(const NodeId& from, const NodeInfo& rumor);
-
     void markSuspect(const NodeId& id);
     void markDead(const NodeId& id);
     void markAlive(const NodeId& id, uint64_t incarnation);

@@ -52,10 +52,20 @@ seedKeys2Node(const std::vector<std::string>& keys) {
 }
 
 TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
-    NodeProcGuard node1{
-        spawnNode(K_PORT_RB_NODE1, "node1", "node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2))};
-    NodeProcGuard node2{
-        spawnNode(K_PORT_RB_NODE2, "node2", "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1))};
+    // Quarantine disabled so migrated keys land on node3 immediately — the
+    // deferred path (quarantine window + retry) is covered elsewhere.
+    NodeProcGuard node1{spawnNode(K_PORT_RB_NODE1,
+        "node1",
+        "node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
+    NodeProcGuard node2{spawnNode(K_PORT_RB_NODE2,
+        "node2",
+        "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE1)) << "node1 did not start";
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE2)) << "node2 did not start";
 
@@ -70,7 +80,10 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     NodeProcGuard node3{spawnNode(K_PORT_RB_NODE3,
         "node3",
         "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1)
-            + ",node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2))};
+            + ",node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE3)) << "node3 did not start";
 
     ConsistentHashRing ring(150);
@@ -85,10 +98,18 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
 }
 
 TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
-    NodeProcGuard node1{
-        spawnNode(K_PORT_RB_NODE1, "node1", "node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2))};
-    NodeProcGuard node2{
-        spawnNode(K_PORT_RB_NODE2, "node2", "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1))};
+    NodeProcGuard node1{spawnNode(K_PORT_RB_NODE1,
+        "node1",
+        "node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
+    NodeProcGuard node2{spawnNode(K_PORT_RB_NODE2,
+        "node2",
+        "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE1)) << "node1 did not start";
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE2)) << "node2 did not start";
 
@@ -101,7 +122,10 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
     NodeProcGuard node3{spawnNode(K_PORT_RB_NODE3,
         "node3",
         "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1)
-            + ",node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2))};
+            + ",node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2),
+        /*quorum=*/false,
+        /*replica_factor=*/1,
+        /*quarantine_interval_ms=*/0)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE3)) << "node3 did not start";
 
     ConsistentHashRing ring(150);

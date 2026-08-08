@@ -79,9 +79,10 @@ struct NodeProc {
 
 [[maybe_unused]] static auto
 spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum = false,
-    int replica_factor = 1) -> NodeProc {
+    int replica_factor = 1, int quarantine_interval_ms = 10'000) -> NodeProc {
     auto port_str = std::to_string(port);
     auto factor_str = std::to_string(replica_factor);
+    auto quarantine_str = std::to_string(quarantine_interval_ms);
     pid_t pid = fork();
     if (pid == -1) {
         ADD_FAILURE() << "fork failed";
@@ -101,6 +102,8 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
             quorum ? "quorum" : "async",
             "--peers",
             peer_list.c_str(),
+            "--quarantine-interval",
+            quarantine_str.c_str(),
             nullptr);
         _exit(1);
     }

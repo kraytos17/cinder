@@ -33,7 +33,10 @@ class ShardManager {
     ShardManager(ShardManager&&) = delete;
     auto operator=(ShardManager&&) -> ShardManager& = delete;
 
-    void rebalance();
+    // Pushes keys this node no longer owns to their new ring owners. Returns
+    // true when at least one key was deferred because its owner is still inside
+    // the quarantine window (so the caller can retry after it clears).
+    auto rebalance() -> bool;
 
   private:
 
