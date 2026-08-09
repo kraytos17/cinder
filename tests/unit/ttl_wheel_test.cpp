@@ -47,6 +47,20 @@ TEST(TtlWheelTest, RemoveBeforeExpiry) {
     EXPECT_TRUE(expired.empty());
 }
 
+TEST(TtlWheelTest, InsertOverwritesRemovesOldSlot) {
+    TtlWheel wheel;
+    wheel.insert("key", 1);
+    wheel.insert("key", 10); // expiry moved — must leave slot 1
+    for (int i = 0; i < 9; i++) {
+        auto expired = wheel.tick();
+        EXPECT_TRUE(expired.empty()) << "stale entry fired from old slot at tick " << i;
+    }
+
+    auto expired = wheel.tick();
+    ASSERT_EQ(expired.size(), 1);
+    EXPECT_EQ(expired[0], "key");
+}
+
 TEST(TtlWheelTest, WrapAround) {
     TtlWheel wheel;
     wheel.insert("key", TtlWheel::K_SLOT_COUNT);

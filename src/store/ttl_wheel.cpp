@@ -4,6 +4,12 @@ namespace cinder {
 
 void
 TtlWheel::insert(const std::string& key, size_t ttl_ticks) {
+    // Overwriting a key must not leak it in its previous slot — otherwise a
+    // stale tick() would fire the key again after its expiry was moved.
+    if (auto it = key_to_slot_.find(key); it != key_to_slot_.end()) {
+        wheel_[it->second].erase(key);
+    }
+
     auto slot = (cursor_ + ttl_ticks) % K_SLOT_COUNT;
     wheel_[slot].insert(key);
     key_to_slot_[key] = slot;

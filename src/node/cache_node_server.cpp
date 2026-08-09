@@ -18,8 +18,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       table_(options.node_id),
       detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
       gossip_(clock_, transport_, table_, options.gossip_interval),
-      shard_(
-          store_, ring_, transport_, table_, options.node_id, clock_, options.quarantine_interval),
+      shard_(store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
+          options.quarantine_interval),
       server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_),
       replay_timer_(io_),

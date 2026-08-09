@@ -26,6 +26,7 @@ cinder_add_test(cinder_integration_tests
     integration/cluster_smoke_test.cpp
     integration/replica_failover_test.cpp
     integration/rebalance_on_join_test.cpp
+    integration/rebalance_rf2_test.cpp
     integration/multi_get_test.cpp
 )
 add_dependencies(cinder_integration_tests cinderd)

@@ -11,7 +11,18 @@ namespace cinder {
 LfuStore::LfuStore(size_t capacity_bytes, Clock* clock)
     : CacheStore(clock),
       capacity_bytes_(capacity_bytes),
+      last_evict_(now()),
       next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
+
+auto
+LfuStore::expiryTicks(steady_clock::time_point expires_at) const -> size_t {
+    auto remaining = expires_at - now();
+    if (remaining <= std::chrono::seconds(0)) {
+        return 1;
+    }
+    auto ticks = std::chrono::ceil<std::chrono::seconds>(remaining).count();
+    return static_cast<size_t>(ticks) < 1 ? 1 : static_cast<size_t>(ticks);
+}
 
 auto
 LfuStore::put(const std::string& key, std::string value, std::optional<milliseconds> ttl)
@@ -51,6 +62,11 @@ LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         current_bytes_ += node->entry.value.size();
         incrementFreq(node);
         evictIfNeeded();
+        if (node->entry.has_ttl) {
+            wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
+        } else {
+            wheel_.remove(node->key);
+        }
         return ok();
     }
 
@@ -60,13 +76,19 @@ LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
     }
 
     next_version_ = std::max(next_version_, entry.version + 1);
-
+    bool has_ttl = entry.has_ttl;
+    auto expires_at = entry.expires_at;
     lfu_list_.push_front({.key = key, .entry = std::move(entry), .freq = 1});
     index_[key] = lfu_list_.begin();
     freq_buckets_[1].push_front(lfu_list_.begin());
     min_freq_ = 1;
     current_bytes_ += entry_size;
     evictIfNeeded();
+    if (has_ttl) {
+        wheel_.insert(key, expiryTicks(expires_at));
+    } else {
+        wheel_.remove(key);
+    }
     return ok();
 }
 
@@ -110,6 +132,7 @@ LfuStore::get(const std::string& key) -> std::optional<std::string> {
     auto& node = it->second;
     if (node->entry.has_ttl && node->entry.expires_at <= now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+        wheel_.remove(key);
         removeFromFreqBucket(node);
         lfu_list_.erase(node);
         index_.erase(it);
@@ -132,6 +155,7 @@ LfuStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> 
     auto& node = it->second;
     if (node->entry.has_ttl && node->entry.expires_at <= now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+        wheel_.remove(key);
         removeFromFreqBucket(node);
         lfu_list_.erase(node);
         index_.erase(it);
@@ -151,6 +175,7 @@ LfuStore::remove(const std::string& key) -> bool {
 
     auto& node = it->second;
     current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+    wheel_.remove(key);
     removeFromFreqBucket(node);
     lfu_list_.erase(node);
     index_.erase(it);
@@ -168,16 +193,34 @@ LfuStore::evictExpired() -> size_t {
     std::scoped_lock lock(mutex_);
 
     auto current = now();
+    // Advance the wheel to catch up with elapsed wall time (always ≥ 1 tick so
+    // a freshly-inserted sub-second TTL fires on the very next call).
+    auto elapsed = current - last_evict_;
+    auto elapsed_ticks = std::chrono::floor<std::chrono::seconds>(elapsed).count();
+    size_t ticks = elapsed_ticks < 1 ? 1 : static_cast<size_t>(elapsed_ticks);
+    ticks = std::min(ticks, TtlWheel::K_SLOT_COUNT);
+    last_evict_ = current;
+
     size_t evicted = 0;
-    for (auto it = lfu_list_.begin(); it != lfu_list_.end();) {
-        if (it->entry.has_ttl && it->entry.expires_at <= current) {
-            current_bytes_ -= it->key.size() + it->entry.value.size() + sizeof(Node);
-            removeFromFreqBucket(it);
-            index_.erase(it->key);
-            it = lfu_list_.erase(it);
-            ++evicted;
-        } else {
-            ++it;
+    for (size_t i = 0; i < ticks; ++i) {
+        for (const auto& key : wheel_.tick()) {
+            auto it = index_.find(key);
+            if (it == index_.end()) {
+                continue; // already removed
+            }
+
+            auto& node = it->second;
+            if (node->entry.has_ttl && node->entry.expires_at <= current) {
+                current_bytes_ -= node->key.size() + node->entry.value.size() + sizeof(Node);
+                removeFromFreqBucket(node);
+                index_.erase(node->key);
+                lfu_list_.erase(node);
+                ++evicted;
+            } else {
+                // Fired early (wheel wrap, sub-second drift): re-schedule so the
+                // key is still reaped at its true expiry.
+                wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
+            }
         }
     }
     return evicted;
@@ -237,6 +280,7 @@ LfuStore::evictOne() {
     }
 
     current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(Node);
+    wheel_.remove(node_it->key);
     index_.erase(node_it->key);
     lfu_list_.erase(node_it);
 }

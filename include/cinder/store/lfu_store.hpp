@@ -11,8 +11,10 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/ttl_wheel.hpp"
 
 using std::chrono::milliseconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
 
@@ -50,12 +52,18 @@ class LfuStore : public CacheStore {
     void evictIfNeeded();
     void evictOne();
 
+    // Wheel slot for an absolute expiry: at least 1 tick ahead of the current
+    // cursor, so sub-second TTLs are reaped on the very next evictExpired.
+    auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
+
     mutable std::mutex mutex_;
     std::list<Node> lfu_list_;
     std::unordered_map<std::string, ListIt> index_;
+    TtlWheel wheel_;
     std::unordered_map<size_t, std::list<ListIt>> freq_buckets_;
     size_t min_freq_ = 1;
     size_t capacity_bytes_;
+    steady_clock::time_point last_evict_;
     size_t current_bytes_ = 0;
     Version next_version_; // seeded from the clock in the ctor (restart-safe)
 };

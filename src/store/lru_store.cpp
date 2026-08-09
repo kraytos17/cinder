@@ -4,14 +4,27 @@
 #include <chrono>
 #include <utility>
 
+using std::chrono::floor;
 using std::chrono::milliseconds;
+using std::chrono::seconds;
 
 namespace cinder {
 
 LruStore::LruStore(size_t capacity_bytes, Clock* clock)
     : CacheStore(clock),
+      last_evict_(now()),
       capacity_bytes_(capacity_bytes),
       next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
+
+auto
+LruStore::expiryTicks(steady_clock::time_point expires_at) const -> size_t {
+    auto remaining = expires_at - now();
+    if (remaining <= seconds(0)) {
+        return 1;
+    }
+    auto ticks = std::chrono::ceil<seconds>(remaining).count();
+    return static_cast<size_t>(ticks) < 1 ? 1 : static_cast<size_t>(ticks);
+}
 
 auto
 LruStore::put(const std::string& key, std::string value, std::optional<milliseconds> ttl)
@@ -45,12 +58,16 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         // Lamport bump: advance past any observed (incl. replicated) version so
         // this node wins LWW if it later coordinates the same key.
         next_version_ = std::max(next_version_, entry.version + 1);
-
         current_bytes_ -= node->entry.value.size();
         node->entry = std::move(entry);
         current_bytes_ += node->entry.value.size();
         touch(node);
         evictIfNeeded();
+        if (node->entry.has_ttl) {
+            wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
+        } else {
+            wheel_.remove(node->key);
+        }
         return ok();
     }
 
@@ -60,11 +77,17 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
     }
 
     next_version_ = std::max(next_version_, entry.version + 1);
-
+    bool has_ttl = entry.has_ttl;
+    auto expires_at = entry.expires_at;
     lru_list_.push_front({.key = key, .entry = std::move(entry)});
     index_[key] = lru_list_.begin();
     current_bytes_ += entry_size;
     evictIfNeeded();
+    if (has_ttl) {
+        wheel_.insert(key, expiryTicks(expires_at));
+    } else {
+        wheel_.remove(key);
+    }
     return ok();
 }
 
@@ -108,6 +131,7 @@ LruStore::get(const std::string& key) -> std::optional<std::string> {
     auto& node = it->second;
     if (node->entry.has_ttl && node->entry.expires_at <= now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+        wheel_.remove(key);
         lru_list_.erase(node);
         index_.erase(it);
         return std::nullopt;
@@ -129,6 +153,7 @@ LruStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> 
     auto& node = it->second;
     if (node->entry.has_ttl && node->entry.expires_at <= now()) {
         current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+        wheel_.remove(key);
         lru_list_.erase(node);
         index_.erase(it);
         return std::nullopt;
@@ -147,6 +172,7 @@ LruStore::remove(const std::string& key) -> bool {
 
     auto& node = it->second;
     current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
+    wheel_.remove(key);
     lru_list_.erase(node);
     index_.erase(it);
     return true;
@@ -163,15 +189,31 @@ LruStore::evictExpired() -> size_t {
     std::scoped_lock lock(mutex_);
 
     auto current = now();
+    // Advance the wheel to catch up with elapsed wall time (always ≥ 1 tick so
+    // a freshly-inserted sub-second TTL fires on the very next call).
+    auto elapsed = current - last_evict_;
+    auto elapsed_ticks = floor<seconds>(elapsed).count();
+    size_t ticks = elapsed_ticks < 1 ? 1 : static_cast<size_t>(elapsed_ticks);
+    ticks = std::min(ticks, TtlWheel::K_SLOT_COUNT);
+    last_evict_ = current;
+
     size_t evicted = 0;
-    for (auto it = lru_list_.begin(); it != lru_list_.end();) {
-        if (it->entry.has_ttl && it->entry.expires_at <= current) {
-            current_bytes_ -= it->key.size() + it->entry.value.size() + sizeof(Node);
-            index_.erase(it->key);
-            it = lru_list_.erase(it);
-            ++evicted;
-        } else {
-            ++it;
+    for (size_t i = 0; i < ticks; ++i) {
+        for (const auto& key : wheel_.tick()) {
+            auto it = index_.find(key);
+            if (it == index_.end()) {
+                continue; // already removed
+            }
+
+            auto& node = it->second;
+            if (node->entry.has_ttl && node->entry.expires_at <= current) {
+                current_bytes_ -= node->key.size() + node->entry.value.size() + sizeof(Node);
+                index_.erase(node->key);
+                lru_list_.erase(node);
+                ++evicted;
+            } else {
+                wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
+            }
         }
     }
     return evicted;
@@ -193,6 +235,7 @@ void
 LruStore::evictOne() {
     auto& node = lru_list_.back();
     current_bytes_ -= node.key.size() + node.entry.value.size() + sizeof(Node);
+    wheel_.remove(node.key);
     index_.erase(node.key);
     lru_list_.pop_back();
 }

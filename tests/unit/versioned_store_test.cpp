@@ -175,5 +175,87 @@ TYPED_TEST(VersionedStoreTest, ForEachSkipsExpired) {
     store.forEach([&](const std::string&, const VersionedEntry&) { ++count; });
     EXPECT_EQ(count, 0);
 }
+
+TYPED_TEST(VersionedStoreTest, EvictExpiredPurgesAcrossSlots) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    ASSERT_TRUE(store.put("a", "1", seconds(3)).has_value());
+    ASSERT_TRUE(store.put("b", "2", seconds(1)).has_value());
+
+    clock.advance(seconds(3) + milliseconds(500));
+    EXPECT_EQ(store.evictExpired(), 2);
+    EXPECT_EQ(store.size(), 0);
+}
+
+TYPED_TEST(VersionedStoreTest, EvictExpiredReSchedulesNotYetExpired) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    ASSERT_TRUE(store.put("a", "1", seconds(5)).has_value());
+    clock.advance(seconds(2));
+    EXPECT_EQ(store.evictExpired(), 0); // slot not fired yet
+    EXPECT_EQ(store.size(), 1);
+
+    clock.advance(seconds(4)); // now past expiry
+    EXPECT_EQ(store.evictExpired(), 1);
+    EXPECT_EQ(store.size(), 0);
+}
+
+TYPED_TEST(VersionedStoreTest, EvictExpiredWrapLongTtl) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    // 300s > wheel wrap (256 slots); catch-up must still reap it.
+    ASSERT_TRUE(store.put("a", "1", seconds(300)).has_value());
+    clock.advance(seconds(300));
+    EXPECT_EQ(store.evictExpired(), 1);
+    EXPECT_EQ(store.size(), 0);
+}
+
+TYPED_TEST(VersionedStoreTest, OverwriteMovesWheelSlot) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    ASSERT_TRUE(store.put("a", "1", seconds(2)).has_value());
+    clock.advance(seconds(1) + milliseconds(500));
+    // Overwrite with a shorter TTL: the old wheel slot must not leak.
+    ASSERT_TRUE(store.put("a", "2", seconds(1)).has_value());
+
+    clock.advance(milliseconds(600));
+    EXPECT_EQ(store.evictExpired(), 0); // not expired yet, re-scheduled
+    EXPECT_EQ(store.size(), 1);
+
+    clock.advance(milliseconds(500));
+    EXPECT_EQ(store.evictExpired(), 1);
+    EXPECT_EQ(store.size(), 0);
+}
+
+TYPED_TEST(VersionedStoreTest, RemoveClearsWheelSlot) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    ASSERT_TRUE(store.put("a", "1", seconds(1)).has_value());
+    EXPECT_TRUE(store.remove("a"));
+
+    clock.advance(seconds(2));
+    EXPECT_EQ(store.evictExpired(), 0); // wheel slot was cleared on remove
+    EXPECT_EQ(store.size(), 0);
+}
+
+TYPED_TEST(VersionedStoreTest, NonTtlOverwriteClearsWheelSlot) {
+    TestClock clock;
+    TypeParam store(1'024, &clock);
+
+    ASSERT_TRUE(store.put("a", "1", seconds(1)).has_value());
+    ASSERT_TRUE(store.put("a", "2").has_value()); // TTL dropped
+
+    clock.advance(seconds(2));
+    EXPECT_EQ(store.evictExpired(), 0);
+    EXPECT_EQ(store.size(), 1);
+    auto result = store.get("a");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "2");
+}
 } // namespace
 } // namespace cinder
