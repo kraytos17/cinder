@@ -6,6 +6,10 @@
 #include <string>
 #include <vector>
 
+#ifdef CINDER_ENABLE_TLS
+#include <asio/ssl.hpp>
+#endif
+
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
@@ -28,7 +32,13 @@ class TcpServer {
     TcpServer(io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
         std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
-        GossipManager* gossip = nullptr);
+        GossipManager* gossip = nullptr
+#ifdef CINDER_ENABLE_TLS
+        ,
+        asio::ssl::context* ssl_ctx = nullptr
+#endif
+    );
+
     ~TcpServer();
 
     TcpServer(const TcpServer&) = delete;
@@ -52,6 +62,9 @@ class TcpServer {
     int replica_factor_;
     ConsistencyMode mode_;
     GossipManager* gossip_;
+#ifdef CINDER_ENABLE_TLS
+    asio::ssl::context* ssl_ctx_ = nullptr;
+#endif
     std::vector<std::shared_ptr<TcpConnection>> connections_;
 };
 } // namespace cinder::net

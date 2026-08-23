@@ -8,10 +8,33 @@ using std::chrono::seconds;
 
 namespace cinder {
 
+#ifdef CINDER_ENABLE_TLS
+namespace {
+auto
+initSslContext(const CacheNodeServerOptions& opts) -> std::optional<asio::ssl::context> {
+    if (!opts.tls_enabled || opts.tls_cert_file.empty() || opts.tls_key_file.empty()) {
+        return std::nullopt;
+    }
+
+    asio::ssl::context ctx(asio::ssl::context::tlsv12_server);
+    ctx.use_certificate_chain_file(opts.tls_cert_file);
+    ctx.use_private_key_file(opts.tls_key_file, asio::ssl::context::pem);
+    if (!opts.tls_ca_file.empty()) {
+        ctx.load_verify_file(opts.tls_ca_file);
+        ctx.set_verify_mode(asio::ssl::verify_peer);
+    }
+    return ctx;
+}
+} // namespace
+#endif
+
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     : node_id_(options.node_id),
       ping_interval_(options.ping_interval),
       quarantine_interval_(options.quarantine_interval),
+#ifdef CINDER_ENABLE_TLS
+      ssl_ctx_(initSslContext(options)),
+#endif
       store_(options.capacity),
       persistence_(
           PersistenceManager::Options{
@@ -21,15 +44,25 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
               .max_wal_entries = options.max_wal_entries,
           },
           store_),
-      transport_(io_),
+      transport_(io_
+#ifdef CINDER_ENABLE_TLS
+          ,
+          ssl_ctx_ ? &*ssl_ctx_ : nullptr
+#endif
+          ),
       repl_(store_, options.node_id, clock_, transport_),
       table_(options.node_id),
       detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
-      gossip_(clock_, transport_, table_, options.gossip_interval),
+      gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
       shard_(store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
       server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
-          options.replica_factor, options.mode, &gossip_),
+          options.replica_factor, options.mode, &gossip_
+#ifdef CINDER_ENABLE_TLS
+          ,
+          ssl_ctx_ ? &*ssl_ctx_ : nullptr
+#endif
+          ),
       replay_timer_(io_),
       gossip_timer_(io_),
       probe_timer_(io_),

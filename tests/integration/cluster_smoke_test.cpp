@@ -20,29 +20,27 @@ using asio::ip::tcp;
 
 using cinder::net::Opcode;
 using cinder::net::Request;
+using cinder::net::test::NodeProcGuard;
 using cinder::net::test::readResponse;
+using cinder::net::test::spawnNode;
 using cinder::net::test::waitForPort;
 
 namespace cinder::net {
 namespace {
 
-TEST(ClusterSmokeTest, SetGetDelPing) {
-    int port = 17'890;
-    auto port_str = std::to_string(port);
-    pid_t pid = fork();
-    ASSERT_NE(pid, -1) << "fork failed";
-    if (pid == 0) {
-        // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
-        _exit(1);
-    }
+constexpr int K_SMOKE_PORT1 = 17'890;
+constexpr int K_SMOKE_PORT2 = 17'891;
+constexpr int K_SMOKE_PORT3 = 17'892;
+constexpr int K_SMOKE_PORT4 = 17'893;
 
-    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+TEST(ClusterSmokeTest, SetGetDelPing) {
+    NodeProcGuard node{spawnNode(K_SMOKE_PORT1, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_SMOKE_PORT1)) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT1), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     // SET
@@ -101,29 +99,16 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
     }
-
-    socket.close();
-    (void)kill(pid, SIGTERM);
-    (void)waitpid(pid, nullptr, 0);
 }
 
 TEST(ClusterSmokeTest, TTLExpiry) {
-    int port = 17'891;
-    auto port_str = std::to_string(port);
-    pid_t pid = fork();
-    ASSERT_NE(pid, -1) << "fork failed";
-    if (pid == 0) {
-        // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
-        _exit(1);
-    }
-
-    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+    NodeProcGuard node{spawnNode(K_SMOKE_PORT2, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_SMOKE_PORT2)) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT2), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     // SET with 200ms TTL
@@ -162,7 +147,6 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 
     // Wait past TTL
     std::this_thread::sleep_for(milliseconds(300));
-
     // Get after TTL - should be expired
     {
         Request req{
@@ -179,14 +163,12 @@ TEST(ClusterSmokeTest, TTLExpiry) {
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::NotFound);
     }
-
-    socket.close();
-    (void)kill(pid, SIGTERM);
-    (void)waitpid(pid, nullptr, 0);
 }
 
 TEST(ClusterSmokeTest, CapacityEviction) {
-    int port = 17'892;
+    // This test requires --capacity which spawnNode doesn't support, so we
+    // fork/exec manually.
+    int port = K_SMOKE_PORT3;
     auto port_str = std::to_string(port);
     auto cap_str = std::to_string(300);
     pid_t pid = fork();
@@ -287,22 +269,13 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 }
 
 TEST(ClusterSmokeTest, LargeValue) {
-    int port = 17'893;
-    auto port_str = std::to_string(port);
-    pid_t pid = fork();
-    ASSERT_NE(pid, -1) << "fork failed";
-    if (pid == 0) {
-        // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
-        _exit(1);
-    }
-
-    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+    NodeProcGuard node{spawnNode(K_SMOKE_PORT4, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_SMOKE_PORT4)) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT4), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     std::string big_val(50'000, 'Z');
@@ -335,17 +308,13 @@ TEST(ClusterSmokeTest, LargeValue) {
         ASSERT_TRUE(encoded.has_value());
         (void)write(socket, buffer(encoded.value()));
         auto resp = readResponse(socket);
+
         ASSERT_TRUE(resp.has_value());
         EXPECT_EQ(resp.value().status, Errc::OK);
         ASSERT_TRUE(resp.value().value.has_value());
         EXPECT_EQ(resp.value().value->size(), big_val.size());
         EXPECT_EQ(*resp.value().value, big_val);
     }
-
-    socket.close();
-    (void)kill(pid, SIGTERM);
-    (void)waitpid(pid, nullptr, 0);
 }
-
 } // namespace
 } // namespace cinder::net

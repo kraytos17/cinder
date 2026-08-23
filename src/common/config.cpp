@@ -59,6 +59,13 @@ loadConfig(const std::string& path) -> Result<Config> {
         cfg.snapshot_interval_s = pers["snapshot_interval_s"].as<int>(cfg.snapshot_interval_s);
         cfg.max_wal_entries = pers["max_wal_entries"].as<int>(cfg.max_wal_entries);
     }
+    // TLS
+    if (auto tls = root["tls"]) {
+        cfg.tls.enabled = tls["enabled"].as<bool>(cfg.tls.enabled);
+        cfg.tls.cert_file = tls["cert_file"].as<std::string>(cfg.tls.cert_file);
+        cfg.tls.key_file = tls["key_file"].as<std::string>(cfg.tls.key_file);
+        cfg.tls.ca_file = tls["ca_file"].as<std::string>(cfg.tls.ca_file);
+    }
     // Logging
     if (auto log = root["logging"]) {
         cfg.log_level = log["level"].as<std::string>(cfg.log_level);

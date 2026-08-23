@@ -14,7 +14,12 @@ namespace cinder::net {
 
 TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
     const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode, GossipManager* gossip)
+    int replica_factor, ConsistencyMode mode, GossipManager* gossip
+#ifdef CINDER_ENABLE_TLS
+    ,
+    asio::ssl::context* ssl_ctx
+#endif
+    )
     : acceptor_(io, tcp::endpoint(tcp::v4(), port)),
       store_(store),
       ring_(ring),
@@ -23,7 +28,15 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
       repl_(repl),
       replica_factor_(replica_factor),
       mode_(mode),
-      gossip_(gossip) {}
+      gossip_(gossip)
+#ifdef CINDER_ENABLE_TLS
+      ,
+      ssl_ctx_(ssl_ctx)
+#endif
+{
+    std::error_code ec;
+    acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
+}
 
 TcpServer::~TcpServer() {
     std::error_code ec;
@@ -46,10 +59,10 @@ void
 TcpServer::doAccept() {
     acceptor_.async_accept([this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
-            auto ep = socket.remote_endpoint();
-            Logger::debug("cinder tcp_server: connection accepted from {}:{}",
-                ep.address().to_string(),
-                ep.port());
+            // Prune dead connections before accepting a new one.
+            std::erase_if(connections_,
+                [](const std::shared_ptr<TcpConnection>& c) { return !c->isAlive(); });
+
             auto conn = std::make_shared<TcpConnection>(std::move(socket),
                 store_,
                 ring_,
@@ -58,7 +71,13 @@ TcpServer::doAccept() {
                 repl_,
                 replica_factor_,
                 mode_,
-                gossip_);
+                gossip_
+#ifdef CINDER_ENABLE_TLS
+                ,
+                ssl_ctx_
+#endif
+            );
+
             connections_.push_back(conn);
             conn->start();
         } else if (ec != asio::error::operation_aborted) {

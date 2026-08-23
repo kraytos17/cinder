@@ -22,8 +22,8 @@ namespace cinder {
 class GossipManager {
   public:
 
-    GossipManager(
-        Clock& clock, Transport& transport, MembershipTable& table, milliseconds gossip_interval);
+    GossipManager(Clock& clock, Transport& transport, MembershipTable& table, const NodeId& self,
+        milliseconds gossip_interval);
     ~GossipManager() = default;
 
     GossipManager(const GossipManager&) = delete;
@@ -46,6 +46,7 @@ class GossipManager {
     Clock& clock_;
     Transport& transport_;
     MembershipTable& table_;
+    NodeId self_;
     milliseconds gossip_interval_;
     std::vector<NodeId> peers_;
 };

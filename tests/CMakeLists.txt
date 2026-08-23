@@ -4,6 +4,7 @@ function(cinder_add_test name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE cinder::core GTest::gtest_main)
     target_include_directories(${name} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    _cinder_apply_debug_options(${name})
     list(TRANSFORM ARGN PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
     source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tests FILES ${ARGN})
 endfunction()
@@ -31,10 +32,13 @@ cinder_add_test(cinder_integration_tests
     integration/rebalance_rf2_test.cpp
     integration/read_repair_test.cpp
     integration/multi_get_test.cpp
+    integration/tls_test.cpp
 )
 add_dependencies(cinder_integration_tests cinderd)
 target_compile_definitions(cinder_integration_tests PRIVATE
     CINDER_TEST_CINDERD_PATH="${CMAKE_BINARY_DIR}/bin/cinderd"
+    CMAKE_CURRENT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    CMAKE_CURRENT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
 )
 gtest_discover_tests(cinder_integration_tests
     PROPERTIES LABELS "integration"

@@ -139,6 +139,5 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
         }
     }
 }
-
 } // namespace
 } // namespace cinder

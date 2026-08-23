@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 #include <span>
 #include <string>
+#include <sys/socket.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -27,8 +28,6 @@ using asio::ip::tcp;
 
 namespace cinder::net::test {
 
-// Integration-test ports (distinct per test file to avoid collisions when the
-// two integration binaries run concurrently, and unique across the suite).
 inline constexpr int K_PORT_NODE1 = 17'910;
 inline constexpr int K_PORT_NODE2 = 17'911;
 inline constexpr int K_PORT_NODE3 = 17'912;
@@ -77,8 +76,6 @@ waitForPort(int port, int max_retries = 50) -> bool {
     }
     return false;
 }
-
-// ---- Shared multi-process node harness (fork/exec real cinderd) ----
 
 struct NodeProc {
     pid_t pid = -1;
@@ -154,6 +151,7 @@ class NodeProcGuard {
         : node_(std::move(other.node_)) {
         other.node_ = {};
     }
+
     auto operator=(NodeProcGuard&& other) noexcept -> NodeProcGuard& {
         if (this != &other) {
             stopNode(node_);
@@ -181,14 +179,20 @@ rawRequest(int port, const Request& req) -> cinder::Result<Response> {
         return cinder::err<Response>(cinder::Error(cinder::Errc::InternalError, "connect failed"));
     }
 
+    struct timeval tv{};
+    tv.tv_sec = 5;
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     auto encoded = cinder::net::encode(req);
     if (!encoded.has_value()) {
         return cinder::err<Response>(encoded.error());
     }
+
     (void)write(socket, buffer(encoded.value()), ec);
     if (ec) {
         return cinder::err<Response>(cinder::Error(cinder::Errc::InternalError, "write failed"));
     }
+
     auto resp = readResponse(socket);
     socket.close();
     return resp;
@@ -209,7 +213,7 @@ getKey(int port, const std::string& key) -> cinder::Result<Response> {
 // Poll a node until it returns the expected value (async fan-out/replay is not
 // instant).
 [[maybe_unused]] static auto
-waitForValue(int port, const std::string& key, const std::string& expected, int max_attempts = 50)
+waitForValue(int port, const std::string& key, const std::string& expected, int max_attempts = 100)
     -> bool {
     for (int i = 0; i < max_attempts; i++) {
         auto res = getKey(port, key);

@@ -28,12 +28,16 @@ option(CINDER_ENABLE_ASAN           "Build with AddressSanitizer"            OFF
 option(CINDER_ENABLE_UBSAN          "Build with UndefinedBehaviorSanitizer"  OFF)
 option(CINDER_ENABLE_TSAN           "Build with ThreadSanitizer"             OFF)
 option(CINDER_ENABLE_MSAN           "Build with MemorySanitizer (Clang, needs instrumented libc++)" OFF)
+option(CINDER_ENABLE_FUZZER         "Build with libFuzzer (implies ASan, Clang only)" OFF)
 option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF)
 option(CINDER_UNITY_BUILD           "Enable unity/jumbo builds"              OFF)
 option(CINDER_ENABLE_CLANG_TIDY     "Run clang-tidy during compilation"      OFF)
+option(CINDER_ENABLE_IWYU           "Run include-what-you-use during compilation" OFF)
+option(CINDER_ENABLE_GCC_ANALYZER   "Run GCC's static analyzer (-fanalyzer, GCC only)" OFF)
 option(CINDER_USE_PIPE              "Use -pipe (pipes over temp files)"      ON)
 option(CINDER_USE_FAST_LINKER       "Prefer mold, then lld, over the default" ON)
 option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"    ON)
+option(CINDER_KEEP_FRAME_POINTER    "Keep frame pointer (-fno-omit-frame-pointer) for perf/profiling" OFF)
 option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
 option(CINDER_USE_MIMALLOC          "Override global allocator with mimalloc" ON)
 option(CINDER_PREFER_SYSTEM_DEPS    "Try find_package() before FetchContent for each dep" ON)
@@ -69,6 +73,21 @@ if(CINDER_USE_FAST_LINKER)
 endif()
 
 # ---------------------------------------------------------------------------
+# Fuzzing (libFuzzer, Clang only) — must resolve before the sanitizer flags
+# are built below, since a fuzzer build implies ASan.
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_FUZZER)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "CINDER_ENABLE_FUZZER requires Clang (libFuzzer is a Clang/LLVM feature)")
+    endif()
+    if(CINDER_ENABLE_TSAN OR CINDER_ENABLE_MSAN)
+        message(FATAL_ERROR "Fuzzer builds conflict with TSan/MSan — enable only one instrumentation mode")
+    endif()
+    set(CINDER_ENABLE_ASAN ON CACHE BOOL "" FORCE)
+    message(STATUS "Cinder: libFuzzer enabled (Clang, implies ASan)")
+endif()
+
+# ---------------------------------------------------------------------------
 # Sanitizers
 # ---------------------------------------------------------------------------
 if(CINDER_ENABLE_ASAN AND CINDER_ENABLE_TSAN)
@@ -85,6 +104,11 @@ if(CINDER_ENABLE_ASAN)
     list(APPEND SANITIZER_FLAGS "-fsanitize=address")
     list(APPEND SANITIZER_LINK_FLAGS "-fsanitize=address")
     message(STATUS "Cinder: AddressSanitizer enabled")
+endif()
+
+if(CINDER_ENABLE_FUZZER)
+    list(APPEND SANITIZER_FLAGS "-fsanitize=fuzzer")
+    list(APPEND SANITIZER_LINK_FLAGS "-fsanitize=fuzzer")
 endif()
 
 if(CINDER_ENABLE_UBSAN)
@@ -120,6 +144,23 @@ if(SANITIZER_FLAGS)
     endif()
 endif()
 
+if(CINDER_KEEP_FRAME_POINTER AND NOT SANITIZER_FLAGS)
+    add_compile_options(-fno-omit-frame-pointer)
+    message(STATUS "Cinder: frame pointer preserved for profiling")
+endif()
+
+# ---------------------------------------------------------------------------
+# Compiler-integrated static analysis
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_GCC_ANALYZER)
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        message(WARNING "CINDER_ENABLE_GCC_ANALYZER has no effect outside GCC")
+    else()
+        add_compile_options(-fanalyzer)
+        message(STATUS "Cinder: GCC -fanalyzer enabled")
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # LTO
 # ---------------------------------------------------------------------------
@@ -135,15 +176,28 @@ if(CINDER_USE_PIPE)
     add_compile_options(-pipe)
 endif()
 
-# Split DWARF: emit per-TU debug info into .dwo files instead of one giant
-# .debug_info section in the executable. Faster linking + less disk I/O.
-# -Wl,--gdb-index pre-builds the index so gdb doesn't scan .dwo at load —
-# requires a fast linker (mold/lld) that supports it.
-if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
-    add_compile_options(-gsplit-dwarf)
-    if(CINDER_USE_FAST_LINKER AND CMAKE_LINKER_TYPE MATCHES "MOLD|LLD")
-        add_link_options(-Wl,--gdb-index)
+# ---------------------------------------------------------------------------
+# Debug-flag helper — applies -Og/-O1, -gdwarf-5, -fdebug-types-section, and
+# -gsplit-dwarf only to our own targets, never to FetchContent'd dependencies.
+# Call this on every cinder target after it is created.
+# ---------------------------------------------------------------------------
+function(_cinder_apply_debug_options target)
+    target_compile_options(${target} PRIVATE
+        $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:GNU>>:-Og>
+        $<$<AND:$<CONFIG:Debug>,$<CXX_COMPILER_ID:Clang>>:-O1>
+    )
+    if(CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+        target_compile_options(${target} PRIVATE -gdwarf-5 -fdebug-types-section)
     endif()
+    if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+        target_compile_options(${target} PRIVATE -gsplit-dwarf)
+        if(CINDER_USE_FAST_LINKER AND CMAKE_LINKER_TYPE MATCHES "MOLD|LLD")
+            target_link_options(${target} PRIVATE -Wl,--gdb-index)
+        endif()
+    endif()
+endfunction()
+
+if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
     message(STATUS "Cinder: split-dwarf enabled")
 endif()
 
@@ -370,6 +424,16 @@ if(CINDER_ENABLE_CLANG_TIDY)
     endif()
 endif()
 
+if(CINDER_ENABLE_IWYU)
+    find_program(IWYU_PROGRAM include-what-you-use)
+    if(IWYU_PROGRAM)
+        set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE "${IWYU_PROGRAM}")
+        message(STATUS "Cinder: include-what-you-use enabled (${IWYU_PROGRAM})")
+    else()
+        message(WARNING "CINDER_ENABLE_IWYU is ON but include-what-you-use not found")
+    endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # Core library
 # ---------------------------------------------------------------------------
@@ -405,9 +469,10 @@ if(CINDER_ENABLE_TLS)
 endif()
 
 target_compile_options(cinder_core PRIVATE
-    -Wall -Wextra -Wpedantic
+    -Wall -Wextra -Wpedantic -Wshadow -Wconversion
     $<$<CONFIG:Release>:-O3>
 )
+_cinder_apply_debug_options(cinder_core)
 
 target_precompile_headers(cinder_core PRIVATE
     <asio.hpp>
@@ -458,6 +523,18 @@ if(CLANG_FORMAT_PROGRAM)
                       --Werror -style=file ${CINDER_FORMAT_SOURCES}
                       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} COMMENT
                       "Checking formatting with clang-format")
+endif()
+
+find_program(CPPCHECK_PROGRAM cppcheck)
+if(CPPCHECK_PROGRAM)
+    add_custom_target(cppcheck
+        COMMAND ${CPPCHECK_PROGRAM} --enable=warning,performance,portability
+                --std=c++23 --language=c++ --error-exitcode=1
+                --project=${CMAKE_BINARY_DIR}/compile_commands.json
+                --suppressions-list=${CMAKE_SOURCE_DIR}/suppressions/cppcheck.supp
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "Running cppcheck static analysis"
+    )
 endif()
 
 # ---------------------------------------------------------------------------

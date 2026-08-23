@@ -5,19 +5,24 @@
 
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/common/logger.hpp"
+#include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::async_read;
 using asio::async_write;
 using asio::buffer;
-using asio::ip::tcp;
 
 namespace cinder::net {
 
 TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
     std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
-    ConsistencyMode mode, GossipManager* gossip)
+    ConsistencyMode mode, GossipManager* gossip
+#ifdef CINDER_ENABLE_TLS
+    ,
+    asio::ssl::context* ssl_ctx
+#endif
+    )
     : socket_(std::move(socket)),
       store_(store),
       ring_(ring),
@@ -27,11 +32,22 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       replica_factor_(replica_factor),
       mode_(mode),
       gossip_(gossip),
-      read_buf_{} {}
+      read_buf_{} {
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_ctx) {
+        ssl_stream_.emplace(socket_, *ssl_ctx);
+    }
+#endif
+}
 
 TcpConnection::~TcpConnection() {
     if (socket_.is_open()) {
         std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+        if (ssl_stream_) {
+            ssl_stream_->shutdown(ec);
+        }
+#endif
         socket_.close(ec);
         Logger::debug("cinder tcp_connection: connection closed");
     }
@@ -39,6 +55,20 @@ TcpConnection::~TcpConnection() {
 
 void
 TcpConnection::start() {
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        ssl_stream_->async_handshake(
+            asio::ssl::stream_base::server, [this, self = shared_from_this()](std::error_code ec) {
+            if (ec) {
+                std::error_code close_ec;
+                socket_.close(close_ec);
+                return;
+            }
+            maybeRead();
+        });
+        return;
+    }
+#endif
     maybeRead();
 }
 
@@ -53,6 +83,19 @@ TcpConnection::maybeRead() {
 void
 TcpConnection::doReadHeader() {
     auto self = shared_from_this();
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        async_read(*ssl_stream_,
+            buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
+            [this, self](std::error_code ec, size_t) {
+            if (ec) {
+                return;
+            }
+            onHeader(ec, K_FRAME_HEADER_SIZE);
+        });
+        return;
+    }
+#endif
     async_read(socket_,
         buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
         [this, self](std::error_code ec, size_t) {
@@ -84,6 +127,14 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
 void
 TcpConnection::doReadPayload(size_t len) {
     auto self = shared_from_this();
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        async_read(*ssl_stream_,
+            buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
+            [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
+        return;
+    }
+#endif
     async_read(socket_,
         buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
         [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
@@ -102,6 +153,7 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         sendResponse(res);
         return;
     }
+
     handleRequest(result.value());
 }
 
@@ -290,8 +342,32 @@ TcpConnection::doWrite() {
     writing_ = true;
     auto self = shared_from_this();
     auto& buf = write_queue_.front();
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        async_write(
+            *ssl_stream_, buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
+            if (ec) {
+                Logger::warn("cinder tcp_connection: tls write failed: {}", ec.message());
+                write_queue_.clear();
+                writing_ = false;
+                return;
+            }
+
+            encode_buf_ = std::move(write_queue_.front());
+            write_queue_.pop_front();
+            if (!write_queue_.empty()) {
+                doWrite();
+            } else {
+                writing_ = false;
+                maybeRead();
+            }
+        });
+        return;
+    }
+#endif
     async_write(socket_, buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
         if (ec) {
+            Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
             write_queue_.clear();
             writing_ = false;
             return;

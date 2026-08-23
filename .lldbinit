@@ -1,0 +1,38 @@
+# ---------------------------------------------------------------------------
+# Cinder .lldbinit
+# ---------------------------------------------------------------------------
+
+# --- Usability defaults ---
+settings set target.x86-disassembly-flavor intel
+settings set stop-line-count-before 3
+settings set stop-line-count-after 3
+settings set target.max-string-summary-length 200
+
+# Don't step into stdlib/Asio internals while single-stepping through
+# application code — cuts noise dramatically
+settings set target.process.thread.step-avoid-regexp "^std::|^asio::|^__gnu_cxx::"
+
+# --- Multi-threaded debugging ---
+command alias all-bt thread backtrace all
+command alias all-bt-full thread backtrace all frame variable all
+
+# --- Sanitizer interop ---
+# Break before the sanitizer's abort() unwinds state away.
+# These are set unconditionally — LLDB silently ignores missing symbols.
+breakpoint set -n __asan_report_error
+breakpoint set -n __ubsan_handle_type_mismatch_v1
+
+# Sanitizer environment variables — relative paths assume CWD is the project root.
+# When debugging from a different directory, use absolute paths instead.
+env ASAN_OPTIONS=suppressions=suppressions/asan.supp:abort_on_error=1
+env LSAN_OPTIONS=suppressions=suppressions/lsan.supp
+env TSAN_OPTIONS=suppressions=suppressions/tsan.supp:abort_on_error=1
+env UBSAN_OPTIONS=suppressions=suppressions/ubsan.supp:print_stacktrace=1
+
+# --- Exception debugging ---
+# Break on C++ exceptions being thrown (catch throw equivalent):
+# breakpoint set -n __cxa_throw
+
+# LLDB has no native reverse-continue. For race conditions, record with
+# `rr record ./build/<preset>/cinderd` and replay under GDB instead
+# (rr's replay driver targets GDB's remote-serial protocol, not LLDB).

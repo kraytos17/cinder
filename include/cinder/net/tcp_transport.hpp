@@ -3,6 +3,10 @@
 #include <asio.hpp>
 #include <unordered_map>
 
+#ifdef CINDER_ENABLE_TLS
+#include <asio/ssl.hpp>
+#endif
+
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/types.hpp"
@@ -24,7 +28,12 @@ namespace cinder {
 class TcpTransport final : public Transport {
   public:
 
-    explicit TcpTransport(io_context& io);
+    explicit TcpTransport(io_context& io
+#ifdef CINDER_ENABLE_TLS
+        ,
+        asio::ssl::context* ssl_ctx = nullptr
+#endif
+    );
 
     void setConfig(const ClusterConfig& config);
     void addAddr(const NodeId& id, const std::string& host, uint16_t port);
@@ -36,11 +45,15 @@ class TcpTransport final : public Transport {
 
   private:
 
-    // Coroutine: resolve -> connect -> write request -> read response -> decode.
+    // Coroutine: resolve -> connect -> [SSL handshake]
+    //  -> write request -> read response -> decode.
     auto sendCoroutine(std::string host, uint16_t port, std::vector<std::byte> data)
         -> asio::awaitable<Result<net::Response>>;
 
     io_context& io_;
+#ifdef CINDER_ENABLE_TLS
+    asio::ssl::context* ssl_ctx_ = nullptr;
+#endif
     std::unordered_map<NodeId, ClusterConfig::NodeConfig> addrs_;
     MessageHandler handler_;
 };

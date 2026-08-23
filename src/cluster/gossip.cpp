@@ -13,18 +13,21 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
-GossipManager::GossipManager(
-    Clock& clock, Transport& transport, MembershipTable& table, milliseconds gossip_interval)
+GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable& table,
+    const NodeId& self, milliseconds gossip_interval)
     : clock_(clock),
       transport_(transport),
       table_(table),
+      self_(self),
       gossip_interval_(gossip_interval) {}
 
 void
 GossipManager::start() {
     peers_.clear();
     for (const auto& info : table_.snapshot()) {
-        peers_.push_back(info.id);
+        if (info.id != self_) {
+            peers_.push_back(info.id);
+        }
     }
 }
 

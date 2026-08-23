@@ -12,6 +12,8 @@ set_target_properties(cinderd cinder-cli PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+_cinder_apply_debug_options(cinderd)
+_cinder_apply_debug_options(cinder-cli)
 
 list(TRANSFORM CINDER_TOOL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tools FILES ${CINDER_TOOL_SOURCES})

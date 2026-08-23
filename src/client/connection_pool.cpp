@@ -10,15 +10,24 @@
 using asio::buffer;
 using asio::connect;
 using asio::io_context;
-using asio::read;
 using asio::transfer_exactly;
 using asio::write;
 using asio::ip::tcp;
 
 namespace cinder {
 
-ConnectionPool::ConnectionPool(const ClusterConfig& config, io_context& io)
-    : io_(io) {
+ConnectionPool::ConnectionPool(const ClusterConfig& config, io_context& io
+#ifdef CINDER_ENABLE_TLS
+    ,
+    asio::ssl::context* ssl_ctx
+#endif
+    )
+    : io_(io)
+#ifdef CINDER_ENABLE_TLS
+      ,
+      ssl_ctx_(ssl_ctx)
+#endif
+{
     for (const auto& n : config.nodes) {
         node_addrs_[n.id] = n;
     }
@@ -90,8 +99,17 @@ ConnectionPool::shutdown() {
     for (auto& [id, entry] : connections_) {
         if (entry.connected) {
             std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+            if (entry.use_tls && entry.stream) {
+                entry.stream->shutdown(ec);
+            } else {
+                entry.socket.shutdown(tcp::socket::shutdown_both, ec);
+                entry.socket.close(ec);
+            }
+#else
             entry.socket.shutdown(tcp::socket::shutdown_both, ec);
             entry.socket.close(ec);
+#endif
             entry.connected = false;
         }
     }
@@ -112,7 +130,17 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
         return ok(&conn_it->second);
     }
     if (conn_it == connections_.end()) {
-        auto emplaced = connections_.emplace(node_id, PoolEntry{tcp::socket(io_), false, {}, {}});
+#ifdef CINDER_ENABLE_TLS
+        PoolEntry entry(io_);
+        if (ssl_ctx_) {
+            entry.stream = std::make_unique<stream_type>(io_, *ssl_ctx_);
+            entry.use_tls = true;
+        }
+        auto emplaced = connections_.emplace(node_id, std::move(entry));
+#else
+        PoolEntry entry(io_);
+        auto emplaced = connections_.emplace(node_id, std::move(entry));
+#endif
         conn_it = emplaced.first;
     }
 
@@ -132,19 +160,48 @@ ConnectionPool::getOrConnect(const NodeId& node_id) -> Result<PoolEntry*> {
         return err<PoolEntry*>(Error(Errc::NotReady, "resolve failed: " + ec.message()));
     }
 
+#ifdef CINDER_ENABLE_TLS
+    if (entry.use_tls) {
+        asio::connect(entry.stream->lowest_layer(), endpoints, ec);
+        if (ec) {
+            return err<PoolEntry*>(Error(Errc::NotReady, "connect failed: " + ec.message()));
+        }
+
+        entry.stream->handshake(asio::ssl::stream_base::client, ec);
+        if (ec) {
+            return err<PoolEntry*>(Error(Errc::NotReady, "tls handshake failed: " + ec.message()));
+        }
+    } else {
+        connect(entry.socket, endpoints, ec);
+        if (ec) {
+            return err<PoolEntry*>(Error(Errc::NotReady, "connect failed: " + ec.message()));
+        }
+    }
+#else
     connect(entry.socket, endpoints, ec);
     if (ec) {
         return err<PoolEntry*>(Error(Errc::NotReady, "connect failed: " + ec.message()));
     }
-
+#endif
     entry.connected = true;
     return ok(&entry);
 }
 
 auto
-ConnectionPool::readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<void> {
+ConnectionPool::readExactly(PoolEntry& entry, std::span<std::byte> buf) -> Result<void> {
     std::error_code ec;
-    auto n = read(s, buffer(buf.data(), buf.size()), transfer_exactly(buf.size()), ec);
+    size_t n = 0;
+#ifdef CINDER_ENABLE_TLS
+    if (entry.use_tls) {
+        n = asio::read(
+            *entry.stream, buffer(buf.data(), buf.size()), transfer_exactly(buf.size()), ec);
+    } else {
+        n = asio::read(
+            entry.socket, buffer(buf.data(), buf.size()), transfer_exactly(buf.size()), ec);
+    }
+#else
+    n = asio::read(entry.socket, buffer(buf.data(), buf.size()), transfer_exactly(buf.size()), ec);
+#endif
     if (ec || n != buf.size()) {
         return err(Error(Errc::Timeout, "read failed: " + ec.message()));
     }
@@ -159,7 +216,15 @@ ConnectionPool::sendFramed(PoolEntry& entry, const net::Request& req) -> Result<
     }
 
     std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+    if (entry.use_tls) {
+        asio::write(*entry.stream, buffer(entry.send_buf), ec);
+    } else {
+        write(entry.socket, buffer(entry.send_buf), ec);
+    }
+#else
     write(entry.socket, buffer(entry.send_buf), ec);
+#endif
     if (ec) {
         return err(Error(Errc::Timeout, "write failed: " + ec.message()));
     }
@@ -169,7 +234,7 @@ ConnectionPool::sendFramed(PoolEntry& entry, const net::Request& req) -> Result<
 auto
 ConnectionPool::recvFramed(PoolEntry& entry) -> Result<net::Response> {
     std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
-    auto header_res = readExactly(entry.socket, header);
+    auto header_res = readExactly(entry, header);
     if (!header_res.has_value()) {
         return err<net::Response>(header_res.error());
     }
@@ -188,7 +253,7 @@ ConnectionPool::recvFramed(PoolEntry& entry) -> Result<net::Response> {
     std::memcpy(entry.recv_buf.data(), header.data(), net::K_FRAME_HEADER_SIZE);
 
     auto payload_span = std::span(entry.recv_buf).subspan(net::K_FRAME_HEADER_SIZE);
-    auto payload_res = readExactly(entry.socket, payload_span);
+    auto payload_res = readExactly(entry, payload_span);
     if (!payload_res.has_value()) {
         return err<net::Response>(payload_res.error());
     }

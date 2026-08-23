@@ -30,7 +30,7 @@ struct GossipNode {
           transport(b, node_id),
           table(self),
           detector(c, transport, table, self, 3'000ms),
-          gossip(c, transport, table, 1'000ms) {
+          gossip(c, transport, table, self, 1'000ms) {
         // Forward incoming Gossip requests to this node's manager.
         transport.onMessage([this](const NodeId& from, const net::Request& req) {
             if (req.opcode == net::Opcode::Gossip) {

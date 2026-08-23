@@ -18,6 +18,7 @@ set_target_properties(cinder_throughput_bench PROPERTIES
 target_compile_options(cinder_throughput_bench PRIVATE
     $<$<NOT:$<CONFIG:Release>>:-O3 -DNDEBUG>
 )
+_cinder_apply_debug_options(cinder_throughput_bench)
 
 list(TRANSFORM CINDER_BENCH_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX benchmarks FILES ${CINDER_BENCH_SOURCES})

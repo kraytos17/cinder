@@ -29,5 +29,11 @@ persistence:
   snapshot_interval_s: 60     # periodic compaction interval
   max_wal_entries: 10000      # auto-compact threshold
 
+tls:
+  enabled: false
+  cert_file: /etc/cinder/cert.pem   # server certificate chain (PEM)
+  key_file: /etc/cinder/key.pem     # server private key (PEM)
+  ca_file: /etc/cinder/ca.pem       # CA cert for peer verification (PEM, optional)
+
 logging:
   level: info                # trace | debug | info | warn | error

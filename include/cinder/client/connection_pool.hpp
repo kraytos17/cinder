@@ -5,6 +5,11 @@
 #include <unordered_map>
 #include <vector>
 
+#ifdef CINDER_ENABLE_TLS
+#include <asio/ssl.hpp>
+#include <memory>
+#endif
+
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/net/protocol.hpp"
@@ -27,7 +32,13 @@ struct ClusterConfig {
 class ConnectionPool {
   public:
 
-    ConnectionPool(const ClusterConfig& config, io_context& io);
+    ConnectionPool(const ClusterConfig& config, io_context& io
+#ifdef CINDER_ENABLE_TLS
+        ,
+        asio::ssl::context* ssl_ctx = nullptr
+#endif
+    );
+
     ~ConnectionPool();
     ConnectionPool(const ConnectionPool&) = delete;
     auto operator=(const ConnectionPool&) -> ConnectionPool& = delete;
@@ -45,19 +56,40 @@ class ConnectionPool {
 
   private:
 
+#ifdef CINDER_ENABLE_TLS
+    using stream_type = asio::ssl::stream<tcp::socket>;
+#else
+    using stream_type = tcp::socket;
+#endif
+
     struct PoolEntry {
-        tcp::socket socket;
+        explicit PoolEntry(io_context& io)
+            : socket(io) {}
+
+        PoolEntry(const PoolEntry&) = delete;
+        auto operator=(const PoolEntry&) -> PoolEntry& = delete;
+        PoolEntry(PoolEntry&&) = default;
+        auto operator=(PoolEntry&&) -> PoolEntry& = default;
+
+#ifdef CINDER_ENABLE_TLS
+        std::unique_ptr<stream_type> stream;
+#endif
+        tcp::socket socket; // always present; used when ssl_ctx_ is null
         bool connected = false;
+        bool use_tls = false;
         std::vector<std::byte> send_buf; // reused across sends on this connection
         std::vector<std::byte> recv_buf; // reused across receives
     };
 
     auto getOrConnect(const NodeId& node_id) -> Result<PoolEntry*>;
-    static auto readExactly(tcp::socket& s, std::span<std::byte> buf) -> Result<void>;
+    static auto readExactly(PoolEntry& entry, std::span<std::byte> buf) -> Result<void>;
     static auto sendFramed(PoolEntry& entry, const net::Request& req) -> Result<void>;
     static auto recvFramed(PoolEntry& entry) -> Result<net::Response>;
 
     io_context& io_;
+#ifdef CINDER_ENABLE_TLS
+    asio::ssl::context* ssl_ctx_ = nullptr;
+#endif
     std::unordered_map<NodeId, PoolEntry> connections_;
     std::unordered_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
 };

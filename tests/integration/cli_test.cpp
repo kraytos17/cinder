@@ -1,5 +1,4 @@
 #include <array>
-#include <csignal>
 #include <cstdio>
 #include <gtest/gtest.h>
 #include <string>
@@ -9,6 +8,8 @@
 
 #include "integration/test_helpers.hpp"
 
+using cinder::net::test::NodeProcGuard;
+using cinder::net::test::spawnNode;
 using cinder::net::test::waitForPort;
 
 namespace {
@@ -67,56 +68,40 @@ runCli(uint16_t port, const std::vector<std::string>& args) -> std::pair<std::st
     return {out, err};
 }
 
-auto
-spawnDaemon(int port) -> pid_t {
-    auto port_str = std::to_string(port);
-    pid_t pid = fork();
-    if (pid == 0) {
-        // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH, "cinderd", "--port", port_str.c_str(), nullptr);
-        _exit(1);
-    }
-    return pid;
-}
+constexpr int K_CLI_PORT1 = 17'900;
+constexpr int K_CLI_PORT2 = 17'901;
+constexpr int K_CLI_PORT3 = 17'902;
+constexpr int K_CLI_PORT5 = 17'903;
 
 TEST(CliTest, Ping) {
-    int port = 17'900;
-    pid_t dpid = spawnDaemon(port);
-    ASSERT_TRUE(waitForPort(port));
-    auto [out, err] = runCli(port, {"ping"});
+    NodeProcGuard node{spawnNode(K_CLI_PORT1, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_CLI_PORT1));
+    auto [out, err] = runCli(K_CLI_PORT1, {"ping"});
     EXPECT_EQ(out, "pong\n");
     EXPECT_TRUE(err.empty());
-    (void)kill(dpid, SIGTERM);
-    (void)waitpid(dpid, nullptr, 0);
 }
 
 TEST(CliTest, SetGet) {
-    int port = 17'901;
-    pid_t dpid = spawnDaemon(port);
-    ASSERT_TRUE(waitForPort(port));
+    NodeProcGuard node{spawnNode(K_CLI_PORT2, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_CLI_PORT2));
     {
-        auto [out, err] = runCli(port, {"set", "greeting", "hello"});
+        auto [out, err] = runCli(K_CLI_PORT2, {"set", "greeting", "hello"});
         EXPECT_EQ(out, "OK\n");
         EXPECT_TRUE(err.empty());
     }
     {
-        auto [out, err] = runCli(port, {"get", "greeting"});
+        auto [out, err] = runCli(K_CLI_PORT2, {"get", "greeting"});
         EXPECT_EQ(out, "hello\n");
         EXPECT_TRUE(err.empty());
     }
-    (void)kill(dpid, SIGTERM);
-    (void)waitpid(dpid, nullptr, 0);
 }
 
 TEST(CliTest, GetNotFound) {
-    int port = 17'902;
-    pid_t dpid = spawnDaemon(port);
-    ASSERT_TRUE(waitForPort(port));
-    auto [out, err] = runCli(port, {"get", "nope"});
+    NodeProcGuard node{spawnNode(K_CLI_PORT3, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_CLI_PORT3));
+    auto [out, err] = runCli(K_CLI_PORT3, {"get", "nope"});
     EXPECT_TRUE(out.contains("not found"));
     EXPECT_TRUE(err.empty());
-    (void)kill(dpid, SIGTERM);
-    (void)waitpid(dpid, nullptr, 0);
 }
 
 TEST(CliTest, ConnectRefused) {
@@ -126,19 +111,15 @@ TEST(CliTest, ConnectRefused) {
 }
 
 TEST(CliTest, Del) {
-    int port = 17'903;
-    pid_t dpid = spawnDaemon(port);
-    ASSERT_TRUE(waitForPort(port));
+    NodeProcGuard node{spawnNode(K_CLI_PORT5, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_CLI_PORT5));
     {
-        auto [out, err] = runCli(port, {"set", "temp", "x"});
+        auto [out, err] = runCli(K_CLI_PORT5, {"set", "temp", "x"});
         EXPECT_EQ(out, "OK\n");
     }
     {
-        auto [out, err] = runCli(port, {"del", "temp"});
+        auto [out, err] = runCli(K_CLI_PORT5, {"del", "temp"});
         EXPECT_EQ(out, "OK\n");
     }
-    (void)kill(dpid, SIGTERM);
-    (void)waitpid(dpid, nullptr, 0);
 }
-
 } // namespace

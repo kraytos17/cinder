@@ -10,6 +10,13 @@
 
 namespace cinder {
 
+struct TlsConfig {
+    bool enabled = false;
+    std::string cert_file;
+    std::string key_file;
+    std::string ca_file;
+};
+
 struct Config {
     // Server
     std::string node_id = "node1";
@@ -33,6 +40,8 @@ struct Config {
     int snapshot_interval_s = 60;
     int max_wal_entries = 10'000;
 
+    // TLS
+    TlsConfig tls;
     // Logging
     std::string log_level = "info";
 };

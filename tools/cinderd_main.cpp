@@ -31,6 +31,10 @@ main(int argc, char* argv[]) -> int {
     bool persistence_enabled = false;
     std::string data_dir;
     int snapshot_interval_s = 60;
+    bool tls_enabled = false;
+    std::string tls_cert_file;
+    std::string tls_key_file;
+    std::string tls_ca_file;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -44,10 +48,15 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--quarantine-interval",
         quarantine_interval_ms,
         "Re-join quarantine before receiving migrated keys (ms, 0 = off)");
+
     app.add_option("--log-level", log_level, "Log level: trace|debug|info|warn|error");
     app.add_flag("--enable-persistence", persistence_enabled, "Enable WAL + snapshot persistence");
     app.add_option("--data-dir", data_dir, "Directory for WAL and snapshot files");
     app.add_option("--snapshot-interval", snapshot_interval_s, "Snapshot interval (seconds)");
+    app.add_flag("--tls", tls_enabled, "Enable TLS encryption");
+    app.add_option("--tls-cert", tls_cert_file, "Path to TLS certificate chain (PEM)");
+    app.add_option("--tls-key", tls_key_file, "Path to TLS private key (PEM)");
+    app.add_option("--tls-ca", tls_ca_file, "Path to CA certificate for peer verification (PEM)");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -80,6 +89,7 @@ main(int argc, char* argv[]) -> int {
     options.replica_factor = replica_factor;
     options.mode =
         consistency == "quorum" ? cinder::ConsistencyMode::Quorum : cinder::ConsistencyMode::Async;
+
     options.ping_interval = milliseconds(ping_interval_ms);
     options.suspect_timeout = milliseconds(suspect_timeout_ms);
     options.gossip_interval = milliseconds(gossip_interval_ms);
@@ -87,6 +97,10 @@ main(int argc, char* argv[]) -> int {
     options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
     options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
     options.snapshot_interval_s = snapshot_interval_s;
+    options.tls_enabled = tls_enabled || cfg.tls.enabled;
+    options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;
+    options.tls_key_file = tls_key_file.empty() ? cfg.tls.key_file : tls_key_file;
+    options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
 
     if (!peers.empty()) {
         cinder::Config peer_cfg;

@@ -12,6 +12,17 @@
          }
       },
       {
+         "name":"debug-tls",
+         "displayName":"Debug + TLS",
+         "description":"Debug build with TLS/SSL enabled",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/debug-tls",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_TLS":"ON"
+         }
+      },
+      {
          "name":"debug-clang",
          "displayName":"Debug (Clang)",
          "description":"Debug build with Ninja and Clang",
@@ -163,6 +174,10 @@
          "configurePreset":"debug"
       },
       {
+         "name":"debug-tls",
+         "configurePreset":"debug-tls"
+      },
+      {
          "name":"debug-clang",
          "configurePreset":"debug-clang"
       },
@@ -215,6 +230,10 @@
       {
          "name":"debug",
          "configurePreset":"debug"
+      },
+      {
+         "name":"debug-tls",
+         "configurePreset":"debug-tls"
       },
       {
          "name":"debug-clang",

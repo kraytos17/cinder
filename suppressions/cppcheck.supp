@@ -1,0 +1,17 @@
+// cppcheck suppressions for Cinder
+// Format: <check-id>:<file-or-glob>  (or bare <check-id> to suppress everywhere)
+
+// Third-party deps pulled via FetchContent — not to fix
+*:*/.cache/fetchcontent-*/*
+
+// Suppress "unmatchedSuppression" warnings when listed suppressions don't
+// match the current code — avoids noisy re-check churn.
+unmatchedSuppression
+
+// cppcheck false-positives on #ifdef compile-time switches:
+// it evaluates both branches of CINDER_ENABLE_TLS etc. and flags
+// dead code in the disabled branch.
+knownConditionTrueFalse:*/src/net/tcp_connection.cpp
+knownConditionTrueFalse:*/src/net/tcp_server.cpp
+knownConditionTrueFalse:*/src/net/tcp_transport.cpp
+knownConditionTrueFalse:*/src/client/connection_pool.cpp

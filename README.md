@@ -20,6 +20,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Structured logging** — spdlog-backed `Logger` with configurable `Stdout`/`Stderr` sink; subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`)
 - **Persistence** — append-only WAL + periodic snapshot; crash recovery replays WAL from last snapshot; atomic snapshot via write-to-temp + rename
+- **TLS encryption** — compile-time opt-in (`CINDER_ENABLE_TLS`) with TLS 1.2; self-signed certs for testing, CA verification for production; server and client both support TLS
 
 ## Build
 
@@ -43,6 +44,7 @@ cmake --preset fast && cmake --build --preset fast
 | Preset | Compiler | Config | Use |
 |---|---|---|---|
 | `debug` | GCC | Debug, per-file | Editor indexing + incremental dev |
+| `debug-tls` | GCC | Debug + **TLS** | TLS development and testing |
 | `fast` | GCC | Debug, **unity** | One-time full builds |
 | `release` | GCC | Release + LTO | Production |
 | `release-clang` | Clang | Release + LTO | Production (Clang) |
@@ -133,6 +135,29 @@ cinderd --port 7001 --node-id node2 --peers "node1@127.0.0.1:7000"
 
 Each node routes requests to the correct owner via the hash ring. Non-owned keys return a redirect (`moved to <node>`).
 
+### TLS
+
+```bash
+# Build with TLS support
+cmake --preset debug-tls && cmake --build --preset debug-tls
+
+# Start a TLS-enabled server (uses test certs in tests/fixtures/)
+build/debug-tls/bin/cinderd --port 7000 --tls \
+    --tls-cert tests/fixtures/server.pem \
+    --tls-key tests/fixtures/server-key.pem \
+    --tls-ca tests/fixtures/ca.pem
+
+# Connect with the CLI
+build/debug-tls/bin/cinder-cli --port 7000 --tls \
+    --tls-ca tests/fixtures/ca.pem set mykey myvalue
+```
+
+- Compile-time opt-in via `CINDER_ENABLE_TLS` (the `debug-tls` preset enables it).
+- TLS 1.2 only; self-signed certs in `tests/fixtures/` for development.
+- Server with `--tls` rejects plaintext connections.
+- Client/server both support `--tls`, `--tls-cert`, `--tls-key`, `--tls-ca`.
+- Non-TLS code paths are unaffected — `ConnectionPool` and `TcpTransport` gracefully fall back to plain TCP when `ssl_ctx` is null.
+
 ### Replication
 
 ```bash
@@ -220,11 +245,15 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 | `--enable-persistence` | off | Enable WAL + snapshot persistence |
 | `--data-dir` | `""` | Directory for WAL and snapshot files |
 | `--snapshot-interval` | `60` | Snapshot compaction interval (seconds) |
+| `--tls` | off | Enable TLS encryption (requires `CINDER_ENABLE_TLS` build) |
+| `--tls-cert` | `""` | Path to TLS certificate chain (PEM) |
+| `--tls-key` | `""` | Path to TLS private key (PEM) |
+| `--tls-ca` | `""` | Path to CA certificate for peer verification (PEM) |
 
 ## Tests
 
 ```
-130 unit tests (12 suites):   Result, LruStore, LfuStore, TtlWheel, Protocol,
+130 unit tests (13 suites):   Result, LruStore, LfuStore, TtlWheel, Protocol,
                               ConsistentHashRing, CacheClient routing + redirects,
                               VersionedStore (LRU/LFU), parsePeer, Membership,
                               Config, Persistence
@@ -236,6 +265,7 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
                               hinted handoff, 3-node fanout, TTL-over-wire),
                               rebalance on join, rebalance RF=2, read repair, multi-get
   5 cli tests:                Ping, SetGet, GetNotFound, ConnectRefused, Del
+  3 TLS tests (TLS builds):   SetGetOverTls, PingOverTls, PlaintextRejected
 ```
 
 ```bash
@@ -256,7 +286,7 @@ so partition behavior is reproducible without real sockets.
 ```
 cinder/
 ├── CMakeLists.txt               # Build system (dual-compiler, clang-tidy hooks)
-├── CMakePresets.json            # 13 presets (GCC/Clang, sanitizers, CI)
+├── CMakePresets.json            # 14 presets (GCC/Clang, sanitizers, CI, TLS)
 ├── Makefile                     # Wrapper: build/run/test/bench/format/clean
 ├── cinderd.yaml                 # Example YAML configuration
 ├── suppressions/                # Sanitizer suppressions
@@ -282,8 +312,9 @@ cinder/
 │   └── cinder_cli.cpp           # CLI client (get/set/del/ping)
 ├── tests/
 │   ├── unit/                    # 130 unit tests (GoogleTest)
-│   ├── integration/             # 16 integration + 5 CLI tests (fork real cinderd)
-│   └── sim/                     # 27 deterministic simulation tests (SimClock/SimBus)
+│   ├── integration/             # 16 integration + 5 CLI + 3 TLS tests (fork real cinderd)
+│   ├── sim/                     # 27 deterministic simulation tests (SimClock/SimBus)
+│   └── fixtures/                # Test certificates (ca.pem, server.pem, server-key.pem)
 └── benchmarks/                  # throughput, allocator, and ring benchmarks
 ```
 

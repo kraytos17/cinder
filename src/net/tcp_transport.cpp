@@ -15,8 +15,19 @@ using asio::io_context;
 
 namespace cinder {
 
-TcpTransport::TcpTransport(io_context& io)
-    : io_(io) {}
+TcpTransport::TcpTransport(io_context& io
+#ifdef CINDER_ENABLE_TLS
+    ,
+    asio::ssl::context* ssl_ctx
+#endif
+    )
+    : io_(io)
+#ifdef CINDER_ENABLE_TLS
+      ,
+      ssl_ctx_(ssl_ctx)
+#endif
+{
+}
 
 void
 TcpTransport::setConfig(const ClusterConfig& config) {
@@ -42,6 +53,56 @@ TcpTransport::sendCoroutine(std::string host, uint16_t port, std::vector<std::by
         co_return err<net::Response>(Error(Errc::NotReady, "resolve: " + ec.message()));
     }
 
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_ctx_) {
+        asio::ssl::stream<tcp::socket> socket(ex, *ssl_ctx_);
+        co_await async_connect(socket.lowest_layer(), endpoints, asio::redirect_error(ec));
+        if (ec) {
+            co_return err<net::Response>(Error(Errc::NotReady, "connect: " + ec.message()));
+        }
+
+        co_await socket.async_handshake(asio::ssl::stream_base::client, asio::redirect_error(ec));
+        if (ec) {
+            co_return err<net::Response>(Error(Errc::NotReady, "tls handshake: " + ec.message()));
+        }
+
+        co_await async_write(socket, buffer(data), asio::redirect_error(ec));
+        if (ec) {
+            co_return err<net::Response>(Error(Errc::NotReady, "write: " + ec.message()));
+        }
+
+        std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
+        co_await async_read(socket, buffer(header), asio::redirect_error(ec));
+        if (ec) {
+            co_return err<net::Response>(Error(Errc::NotReady, "read header: " + ec.message()));
+        }
+        if (header[0] != std::byte{net::K_MAGIC}) {
+            co_return err<net::Response>(Error(Errc::InternalError, "bad magic in response"));
+        }
+
+        uint32_t payload_len = 0;
+        std::memcpy(&payload_len, &header[3], sizeof(payload_len));
+        payload_len = std::byteswap(payload_len);
+        if (payload_len > net::K_MAX_MESSAGE_SIZE) {
+            co_return err<net::Response>(Error(Errc::InternalError, "response payload too large"));
+        }
+
+        std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
+        std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
+        if (payload_len > 0) {
+            co_await async_read(socket,
+                buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+                asio::redirect_error(ec));
+            if (ec) {
+                co_return err<net::Response>(
+                    Error(Errc::NotReady, "read payload: " + ec.message()));
+            }
+        }
+        co_return net::decodeResponse(frame);
+    }
+#endif
+
+    // Plain TCP path: non-TLS build, or TLS build with ssl_ctx_ == nullptr.
     tcp::socket socket(ex);
     co_await async_connect(socket, endpoints, asio::redirect_error(ec));
     if (ec) {

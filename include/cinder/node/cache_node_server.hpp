@@ -8,6 +8,11 @@
 #include <system_error>
 #include <vector>
 
+#ifdef CINDER_ENABLE_TLS
+#include <asio/ssl.hpp>
+#include <optional>
+#endif
+
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/failure_detector.hpp"
@@ -46,6 +51,11 @@ struct CacheNodeServerOptions {
     bool persistence_enabled = false;
     size_t snapshot_interval_s = 60;
     size_t max_wal_entries = 10'000;
+    // TLS
+    bool tls_enabled = false;
+    std::string tls_cert_file;
+    std::string tls_key_file;
+    std::string tls_ca_file;
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -112,6 +122,9 @@ class CacheNodeServer {
     NodeId node_id_;
     milliseconds ping_interval_{1'000};
     milliseconds quarantine_interval_{10'000};
+#ifdef CINDER_ENABLE_TLS
+    std::optional<asio::ssl::context> ssl_ctx_;
+#endif
     LruStore store_;
     RealClock clock_;
     PersistenceManager persistence_;
