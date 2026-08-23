@@ -68,6 +68,25 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         } else {
             wheel_.remove(node->key);
         }
+
+        // WAL append
+        if (persistence_) {
+            WalEntry we;
+            we.op = WalEntry::Op::Set;
+            we.key = node->key;
+            we.value = node->entry.value;
+            we.version = node->entry.version;
+            we.writer_node_hash = node->entry.writer_node_hash;
+            we.has_ttl = node->entry.has_ttl;
+            if (node->entry.has_ttl) {
+                RealClock real_clock;
+                we.expires_at_ms = toSystemMs(real_clock, node->entry.expires_at);
+            } else {
+                we.expires_at_ms = 0;
+            }
+            persistence_->onWrite(we);
+        }
+
         return ok();
     }
 
@@ -79,6 +98,10 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
     next_version_ = std::max(next_version_, entry.version + 1);
     bool has_ttl = entry.has_ttl;
     auto expires_at = entry.expires_at;
+    auto stored_version = entry.version;
+    auto stored_writer_hash = entry.writer_node_hash;
+    auto stored_value = entry.value;
+
     lru_list_.push_front({.key = key, .entry = std::move(entry)});
     index_[key] = lru_list_.begin();
     current_bytes_ += entry_size;
@@ -87,6 +110,24 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         wheel_.insert(key, expiryTicks(expires_at));
     } else {
         wheel_.remove(key);
+    }
+
+    // WAL append
+    if (persistence_) {
+        WalEntry we;
+        we.op = WalEntry::Op::Set;
+        we.key = key;
+        we.value = std::move(stored_value);
+        we.version = stored_version;
+        we.writer_node_hash = stored_writer_hash;
+        we.has_ttl = has_ttl;
+        if (has_ttl) {
+            RealClock real_clock;
+            we.expires_at_ms = toSystemMs(real_clock, expires_at);
+        } else {
+            we.expires_at_ms = 0;
+        }
+        persistence_->onWrite(we);
     }
     return ok();
 }
@@ -164,13 +205,24 @@ LruStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> 
 auto
 LruStore::remove(const std::string& key) -> bool {
     std::scoped_lock lock(mutex_);
-
     auto it = index_.find(key);
     if (it == index_.end()) {
         return false;
     }
 
     auto& node = it->second;
+    // WAL append before erase
+    if (persistence_) {
+        WalEntry we;
+        we.op = WalEntry::Op::Del;
+        we.key = key;
+        we.version = node->entry.version;
+        we.writer_node_hash = node->entry.writer_node_hash;
+        we.has_ttl = false;
+        we.expires_at_ms = 0;
+        persistence_->onWrite(we);
+    }
+
     current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
     wheel_.remove(key);
     lru_list_.erase(node);
@@ -208,8 +260,9 @@ LruStore::evictExpired() -> size_t {
             auto& node = it->second;
             if (node->entry.has_ttl && node->entry.expires_at <= current) {
                 current_bytes_ -= node->key.size() + node->entry.value.size() + sizeof(Node);
-                index_.erase(node->key);
-                lru_list_.erase(node);
+                auto list_it = node;
+                index_.erase(it);
+                lru_list_.erase(list_it);
                 ++evicted;
             } else {
                 wheel_.insert(node->key, expiryTicks(node->entry.expires_at));

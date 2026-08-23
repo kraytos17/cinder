@@ -24,18 +24,29 @@ class SimBus {
 
     using Handler =
         std::move_only_function<void(const cinder::NodeId& from, const cinder::net::Request&)>;
+    using RequestHandler = std::move_only_function<cinder::net::Response(
+        const cinder::NodeId& from, const cinder::net::Request&)>;
 
     explicit SimBus(SimClock& clock, uint64_t seed);
 
     void registerHandler(const cinder::NodeId& id, Handler handler);
 
+    // Register a handler that returns a Response (for request-response messages
+    // like GetVersioned). Takes priority over the void Handler for routed messages.
+    void registerRequestHandler(const cinder::NodeId& id, RequestHandler handler);
+
     // Returns false if the target is down (message not accepted).
     auto route(const cinder::NodeId& from, const cinder::NodeId& to,
         const cinder::net::Request& req) -> bool;
 
+    // Route a request-response message. The response callback is invoked when
+    // the message is delivered (or dropped).
+    auto routeRequest(const cinder::NodeId& from, const cinder::NodeId& to,
+        const cinder::net::Request& req,
+        cinder::Transport::RequestCallback on_response) -> bool;
+
     // Deliver every scheduled message whose time has come (<= clock.now()).
     void deliver();
-
     void setLossRate(double p); // [0,1]
     void setDelay(milliseconds d);
     void setReorder(bool enabled); // swap consecutive deliveries
@@ -53,6 +64,7 @@ class SimBus {
         cinder::NodeId from;
         cinder::NodeId to;
         cinder::net::Request req;
+        cinder::Transport::RequestCallback on_response;
     };
 
     struct EventCmp {
@@ -70,6 +82,7 @@ class SimBus {
 
     std::priority_queue<Event, std::vector<Event>, EventCmp> queue_;
     std::unordered_map<cinder::NodeId, Handler> handlers_;
+    std::unordered_map<cinder::NodeId, RequestHandler> request_handlers_;
     std::unordered_set<cinder::NodeId> down_;
 
     size_t delivered_ = 0;
@@ -85,6 +98,8 @@ class SimTransport final : public cinder::Transport {
 
     void sendAsync(const cinder::NodeId& to, const cinder::net::Request& req,
         cinder::Transport::SendCallback on_done) override;
+    void sendRequestAsync(const cinder::NodeId& to, const cinder::net::Request& req,
+        cinder::Transport::RequestCallback on_done) override;
     void onMessage(MessageHandler handler) override;
 
   private:

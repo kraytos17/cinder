@@ -19,6 +19,8 @@ cinder_add_test(cinder_unit_tests
     unit/versioned_store_test.cpp
     unit/cache_node_server_test.cpp
     unit/membership_test.cpp
+    unit/config_test.cpp
+    unit/persistence_test.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
 
@@ -27,6 +29,7 @@ cinder_add_test(cinder_integration_tests
     integration/replica_failover_test.cpp
     integration/rebalance_on_join_test.cpp
     integration/rebalance_rf2_test.cpp
+    integration/read_repair_test.cpp
     integration/multi_get_test.cpp
 )
 add_dependencies(cinder_integration_tests cinderd)

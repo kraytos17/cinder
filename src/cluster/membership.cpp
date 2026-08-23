@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include "cinder/common/logger.hpp"
+
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 
@@ -99,6 +101,7 @@ MembershipTable::markSuspect(const NodeId& id) {
         changed = true;
     }
     if (changed) {
+        Logger::info("cinder membership: node suspect id={}", id);
         fireCallbacks();
     }
 }
@@ -116,6 +119,7 @@ MembershipTable::markDead(const NodeId& id) {
         changed = true;
     }
     if (changed) {
+        Logger::info("cinder membership: node dead id={}", id);
         fireCallbacks();
     }
 }
@@ -144,6 +148,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         changed = true;
     }
     if (changed) {
+        Logger::info("cinder membership: node alive id={} incarnation={}", id, incarnation);
         fireCallbacks();
     }
 }

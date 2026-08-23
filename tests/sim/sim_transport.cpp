@@ -14,6 +14,11 @@ SimBus::registerHandler(const cinder::NodeId& id, Handler handler) {
     handlers_[id] = std::move(handler);
 }
 
+void
+SimBus::registerRequestHandler(const cinder::NodeId& id, RequestHandler handler) {
+    request_handlers_[id] = std::move(handler);
+}
+
 auto
 SimBus::route(const cinder::NodeId& from, const cinder::NodeId& to, const cinder::net::Request& req)
     -> bool {
@@ -30,6 +35,31 @@ SimBus::route(const cinder::NodeId& from, const cinder::NodeId& to, const cinder
     return true;
 }
 
+auto
+SimBus::routeRequest(const cinder::NodeId& from, const cinder::NodeId& to,
+    const cinder::net::Request& req, cinder::Transport::RequestCallback on_response) -> bool {
+    if (down_.contains(to)) {
+        on_response(cinder::err<cinder::net::Response>(
+            cinder::Error(cinder::Errc::NotReady, "target node down")));
+        return false;
+    }
+
+    // Deliver synchronously (consistent with sendAsync which invokes its
+    // callback immediately). The RequestHandler reads from the target's
+    // store and the Response is returned to the caller right away.
+    auto it = request_handlers_.find(to);
+    if (it == request_handlers_.end()) {
+        on_response(cinder::err<cinder::net::Response>(
+            cinder::Error(cinder::Errc::NotFound, "no request handler")));
+        return false;
+    }
+
+    auto resp = it->second(from, req);
+    on_response(std::move(resp));
+    ++delivered_;
+    return true;
+}
+
 void
 SimBus::deliver() {
     std::vector<Event> ready;
@@ -43,12 +73,28 @@ SimBus::deliver() {
     for (auto& ev : ready) {
         if (unit_(rng_) < loss_rate_) {
             ++dropped_;
+            if (ev.on_response) {
+                ev.on_response(cinder::err<cinder::net::Response>(
+                    cinder::Error(cinder::Errc::NotReady, "message lost")));
+            }
             continue;
         }
-
-        auto it = handlers_.find(ev.to);
-        if (it != handlers_.end()) {
-            it->second(ev.from, ev.req);
+        if (ev.on_response) {
+            // Request-response path: call the RequestHandler, deliver the
+            // Response back to the caller synchronously.
+            auto it = request_handlers_.find(ev.to);
+            if (it != request_handlers_.end()) {
+                auto resp = it->second(ev.from, ev.req);
+                ev.on_response(std::move(resp));
+            } else {
+                ev.on_response(cinder::err<cinder::net::Response>(
+                    cinder::Error(cinder::Errc::NotFound, "no request handler")));
+            }
+        } else {
+            auto it = handlers_.find(ev.to);
+            if (it != handlers_.end()) {
+                it->second(ev.from, ev.req);
+            }
         }
         ++delivered_;
     }
@@ -106,6 +152,12 @@ SimTransport::sendAsync(const cinder::NodeId& to, const cinder::net::Request& re
         return;
     }
     on_done(cinder::ok());
+}
+
+void
+SimTransport::sendRequestAsync(const cinder::NodeId& to, const cinder::net::Request& req,
+    cinder::Transport::RequestCallback on_done) {
+    bus_.routeRequest(from_, to, req, std::move(on_done));
 }
 
 void

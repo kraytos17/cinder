@@ -23,9 +23,18 @@ toSpdlogLevel(LogLevel level) -> spdlog::level::level_enum {
 }
 
 void
-Logger::init(std::string_view name, LogLevel level) {
-    auto logger = spdlog::stdout_color_mt(std::string(name));
-    logger->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%n] %v");
+Logger::init(std::string_view name, LogLevel level, LogSink sink) {
+    spdlog::sink_ptr spd_sink;
+    if (sink == LogSink::Stderr) {
+        spd_sink = std::make_shared<spdlog::sinks::stderr_color_sink_mt>();
+    } else {
+        spd_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    }
+
+    spd_sink->set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%^%l%$] [%n] %v");
+    spd_sink->set_level(toSpdlogLevel(level));
+
+    auto logger = std::make_shared<spdlog::logger>(std::string(name), spd_sink);
     logger->set_level(toSpdlogLevel(level));
     spdlog::set_default_logger(logger);
 }

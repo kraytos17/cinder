@@ -20,6 +20,7 @@
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/lru_store.hpp"
+#include "cinder/store/persistence.hpp"
 
 using asio::io_context;
 using asio::signal_set;
@@ -40,6 +41,11 @@ struct CacheNodeServerOptions {
     milliseconds suspect_timeout{3'000};
     milliseconds gossip_interval{1'000};
     milliseconds quarantine_interval{10'000};
+    // Persistence
+    std::string data_dir;
+    bool persistence_enabled = false;
+    size_t snapshot_interval_s = 60;
+    size_t max_wal_entries = 10'000;
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -98,6 +104,7 @@ class CacheNodeServer {
     void scheduleGossip();
     void scheduleProbe();
     void scheduleEvict();
+    void scheduleCompact();
     void rebuildRing();
     void scheduleRebalance();
 
@@ -107,6 +114,7 @@ class CacheNodeServer {
     milliseconds quarantine_interval_{10'000};
     LruStore store_;
     RealClock clock_;
+    PersistenceManager persistence_;
     ConsistentHashRing ring_;
     TcpTransport transport_;
     ReplicationManager repl_;
@@ -120,6 +128,7 @@ class CacheNodeServer {
     steady_timer probe_timer_;
     steady_timer evict_timer_;
     steady_timer quarantine_timer_;
+    steady_timer compact_timer_;
     signal_set signals_;
 };
 } // namespace cinder

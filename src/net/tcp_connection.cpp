@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
+#include "cinder/common/logger.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/replication_manager.hpp"
 
@@ -32,6 +33,7 @@ TcpConnection::~TcpConnection() {
     if (socket_.is_open()) {
         std::error_code ec;
         socket_.close(ec);
+        Logger::debug("cinder tcp_connection: connection closed");
     }
 }
 
@@ -105,6 +107,10 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
 
 void
 TcpConnection::handleRequest(const Request& req) {
+    Logger::debug("cinder tcp_connection: request received opcode={} key={}",
+        static_cast<int>(req.opcode),
+        req.key);
+
     // Replicate/Hint/Gossip are inter-node messages addressed to this node
     // directly (a replica does not own the key) — skip the ring ownership check.
     bool is_internal = req.opcode == Opcode::Replicate || req.opcode == Opcode::Hint
@@ -114,7 +120,7 @@ TcpConnection::handleRequest(const Request& req) {
     // copy and can keep serving reads after the primary fails (failover read).
     // Ownership only matters for writes and for read misses (redirect the
     // client to the ring owner).
-    bool is_read = req.opcode == Opcode::Get;
+    bool is_read = req.opcode == Opcode::Get || req.opcode == Opcode::GetVersioned;
     if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
@@ -127,10 +133,54 @@ TcpConnection::handleRequest(const Request& req) {
     Response res;
     switch (req.opcode) {
         case Opcode::Get: {
+            if (repl_ != nullptr && replica_factor_ > 1 && !is_internal) {
+                auto nodes = ring_.getNodes(req.key, replica_factor_);
+                std::vector<NodeId> replicas;
+                for (const auto& n : nodes) {
+                    if (n != node_id_) {
+                        replicas.push_back(n);
+                    }
+                }
+
+                auto self = shared_from_this();
+                repl_->readAsync(req.key,
+                    replicas,
+                    replica_factor_,
+                    [this, self](Result<VersionedEntry> result) {
+                    Response async_res;
+                    if (result.has_value()) {
+                        async_res.status = Errc::OK;
+                        async_res.value = std::move(result->value);
+                    } else {
+                        async_res.status = result.error().code();
+                    }
+                    sendResponse(async_res);
+                    maybeRead();
+                });
+                return;
+            }
+
             auto val = store_.get(req.key);
             if (val.has_value()) {
                 res.status = Errc::OK;
                 res.value = std::move(val);
+            } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
+                sendResponse(
+                    {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});
+                maybeRead();
+                return;
+            } else {
+                res.status = Errc::NotFound;
+            }
+            break;
+        }
+        case Opcode::GetVersioned: {
+            auto entry = store_.getVersioned(req.key);
+            if (entry.has_value()) {
+                res.status = Errc::OK;
+                res.value = std::move(entry->value);
+                res.version = entry->version;
+                res.writer_node_hash = entry->writer_node_hash;
             } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
                 sendResponse(
                     {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});

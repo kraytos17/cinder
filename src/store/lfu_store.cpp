@@ -212,9 +212,10 @@ LfuStore::evictExpired() -> size_t {
             auto& node = it->second;
             if (node->entry.has_ttl && node->entry.expires_at <= current) {
                 current_bytes_ -= node->key.size() + node->entry.value.size() + sizeof(Node);
-                removeFromFreqBucket(node);
-                index_.erase(node->key);
-                lfu_list_.erase(node);
+                auto list_it = node;
+                removeFromFreqBucket(list_it);
+                index_.erase(it);
+                lfu_list_.erase(list_it);
                 ++evicted;
             } else {
                 // Fired early (wheel wrap, sub-second drift): re-schedule so the

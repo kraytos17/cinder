@@ -15,6 +15,8 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
+class PersistenceManager;
+
 class CacheStore {
   public:
 
@@ -52,6 +54,10 @@ class CacheStore {
     // enumerate keys an old owner must hand over.
     virtual void forEach(
         std::move_only_function<void(const std::string& key, const VersionedEntry&)>) const = 0;
+
+    // Set the persistence manager for WAL writes. Default no-op for stores
+    // that don't support persistence (e.g. simulation stores).
+    virtual void setPersistence(PersistenceManager* /*unused*/) {}
 
   protected:
 

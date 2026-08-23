@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/logger.hpp"
 #include "cinder/net/protocol.hpp"
 
 namespace cinder {
@@ -22,6 +23,8 @@ ShardManager::ShardManager(CacheStore& store, ConsistentHashRing& ring, Transpor
 
 auto
 ShardManager::rebalance() -> bool {
+    Logger::info("cinder shard_manager: rebalance started");
+
     // Collect pending migrations under forEach's store lock; do not send here —
     // a synchronous transport would invoke the remove callback re-entrantly and
     // deadlock on the store mutex.
@@ -89,6 +92,9 @@ ShardManager::rebalance() -> bool {
     for (auto& p : migrates) {
         migrateKey(p.key, p.entry, p.primary);
     }
+    Logger::info("cinder shard_manager: rebalance completed copies={} migrations={}",
+        copies.size(),
+        migrates.size());
     return deferred;
 }
 

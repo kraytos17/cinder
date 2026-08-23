@@ -13,6 +13,14 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       ping_interval_(options.ping_interval),
       quarantine_interval_(options.quarantine_interval),
       store_(options.capacity),
+      persistence_(
+          PersistenceManager::Options{
+              .data_dir = options.data_dir,
+              .enabled = options.persistence_enabled,
+              .snapshot_interval_s = options.snapshot_interval_s,
+              .max_wal_entries = options.max_wal_entries,
+          },
+          store_),
       transport_(io_),
       repl_(store_, options.node_id, clock_, transport_),
       table_(options.node_id),
@@ -27,6 +35,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       probe_timer_(io_),
       evict_timer_(io_),
       quarantine_timer_(io_),
+      compact_timer_(io_),
       signals_(io_) {
     signals_.add(SIGINT);
     signals_.add(SIGTERM);
@@ -43,6 +52,9 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
 
     transport_.setConfig(config);
     table_.onChange([this] { rebuildRing(); });
+    if (persistence_.enabled()) {
+        store_.setPersistence(&persistence_);
+    }
 }
 
 auto
@@ -52,6 +64,16 @@ CacheNodeServer::start() -> Result<void> {
 
 void
 CacheNodeServer::run() {
+    // Recover from disk before serving
+    if (persistence_.enabled()) {
+        auto res = persistence_.recover();
+        if (!res.has_value()) {
+            Logger::error("persistence recovery failed: {}", res.error().message());
+            return;
+        }
+        Logger::info("recovered {} entries from disk", store_.size());
+    }
+
     signals_.async_wait([this](std::error_code, int) {
         Logger::info("shutting down...");
         shutdown();
@@ -63,6 +85,9 @@ CacheNodeServer::run() {
     scheduleGossip();
     scheduleProbe();
     scheduleEvict();
+    if (persistence_.enabled()) {
+        scheduleCompact();
+    }
     io_.run();
 }
 
@@ -73,6 +98,10 @@ CacheNodeServer::shutdown() {
     probe_timer_.cancel();
     evict_timer_.cancel();
     quarantine_timer_.cancel();
+    compact_timer_.cancel();
+    if (persistence_.enabled()) {
+        persistence_.shutdown();
+    }
     server_.shutdown();
     io_.stop();
 }
@@ -171,6 +200,20 @@ CacheNodeServer::scheduleRebalance() {
         if (shard_.rebalance()) {
             scheduleRebalance();
         }
+    });
+}
+
+void
+CacheNodeServer::scheduleCompact() {
+    compact_timer_.expires_after(seconds(persistence_.snapshotInterval()));
+    compact_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+        if (auto result = persistence_.compact(); !result.has_value()) {
+            Logger::error("compact failed: {}", result.error().message());
+        }
+        scheduleCompact();
     });
 }
 } // namespace cinder

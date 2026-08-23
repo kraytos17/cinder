@@ -16,7 +16,7 @@ Offset  Size  Field        Description
 0       1     magic        0xC1 — identifies a Cinder frame
 1       1     version      0x03 — protocol version
 2       1     opcode       Request: 1=GET, 2=SET, 3=DEL, 4=PING, 5=GOSSIP,
-                           6=REPLICATE, 7=HINT
+                           6=REPLICATE, 7=HINT, 8=GET_VERSIONED
                            Response: 0x00
 3       4     payload_len  Length of payload in bytes (uint32, big-endian)
 ```
@@ -25,8 +25,8 @@ Maximum total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB). Enforced
 on both encode and decode; the decoder rejects any frame whose `payload_len`
 exceeds this before reading the body.
 
-The opcode byte is validated on decode: any value outside `GET..HINT`
-(1..7) is rejected as an unknown opcode.
+The opcode byte is validated on decode: any value outside `GET..GET_VERSIONED`
+(1..8) is rejected as an unknown opcode.
 
 ## Request Payload — common format
 
@@ -75,6 +75,7 @@ replication uses the latter.
 | PING (4) | all fields empty/zero |
 | GOSSIP (5) | membership view in `value`: `;`-delimited `id@host:port:state:incarnation` entries, e.g. `node1@127.0.0.1:7000:alive:3;node2@127.0.0.1:7001:dead:7`; `key` empty |
 | REPLICATE (6), HINT (7) | `key` + `value` set; `expires_at_ms` when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
+| GET_VERSIONED (8) | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (used by quorum reads and read repair) |
 
 ## Response Payload
 
@@ -84,6 +85,15 @@ Offset  Size  Field        Description
 0       1     status       Errc enum value (see below)
 1       4     has_val      Non-zero if a value follows (uint32, big-endian)
 5       M     value        Value bytes (only if has_val != 0)
+```
+
+For `GET_VERSIONED` responses, the response also carries version metadata after the value:
+
+```
+Offset        Size  Field              Description
+────────────  ────  ─────────────────  ─────────────────────────────
+5+M           8     version            LWW version (uint64, big-endian)
+13+M          8     writer_node_hash   Writer node hash (uint64, big-endian)
 ```
 
 The header opcode byte is always `0x00` on responses.

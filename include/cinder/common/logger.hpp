@@ -14,10 +14,16 @@ enum class LogLevel : uint8_t {
     Error
 };
 
+enum class LogSink : uint8_t {
+    Stdout, // default — server processes
+    Stderr  // CLI tools — errors go where the test harness expects them
+};
+
 class Logger {
   public:
 
-    static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Info);
+    static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Info,
+        LogSink sink = LogSink::Stdout);
     static void shutdown();
 
     template <typename... Args> static void trace(std::format_string<Args...> fmt, Args&&... args) {

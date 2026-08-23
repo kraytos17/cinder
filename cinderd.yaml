@@ -1,0 +1,33 @@
+# Cinder distributed cache server configuration.
+# CLI flags override these values when both are provided.
+server:
+  port: 7000
+  node_id: node1
+  capacity: 67108864          # 64 MB
+  replication_factor: 1
+  consistency: async          # async | quorum
+
+cluster:
+  peers: []
+  # peers:
+  #   - id: node2
+  #     host: 127.0.0.1
+  #     port: 7001
+  #   - id: node3
+  #     host: 127.0.0.1
+  #     port: 7002
+
+failure_detector:
+  ping_interval_ms: 1000
+  suspect_timeout_ms: 3000
+  gossip_interval_ms: 1000
+  quarantine_interval_ms: 10000
+
+persistence:
+  enabled: false              # WAL + snapshot persistence
+  data_dir: /var/lib/cinder   # directory for WAL and snapshot files
+  snapshot_interval_s: 60     # periodic compaction interval
+  max_wal_entries: 10000      # auto-compact threshold
+
+logging:
+  level: info                # trace | debug | info | warn | error

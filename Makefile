@@ -21,7 +21,7 @@ configure:
 	@echo "==> Configuring $(PRESET)..."
 	cmake --preset $(PRESET)
 
-# Ensure the preset is configured before building/formatting (idempotent).
+# Ensure the preset is configured before building/formatting.
 define ensure-configured
 	@if [ ! -f "$(BUILD_DIR)/CMakeCache.txt" ]; then \
 		echo "==> Configuring $(PRESET)..."; \
@@ -82,7 +82,7 @@ test-all: build
 	"$(TESTS_DIR)/cinder_cli_tests"
 	"$(TESTS_DIR)/cinder_integration_tests"
 
-# Sanitizer targets run the in-process suites (unit + sim) — no daemon forking,
+# Sanitizer targets run the in-process suites (unit + sim),
 # so failures are cleanly attributed under ASan/TSan/UBSan.
 .PHONY: asan-test tsan-test ubsan-test asan-clang-test
 asan-test: asan

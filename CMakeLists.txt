@@ -35,6 +35,8 @@ option(CINDER_USE_PIPE              "Use -pipe (pipes over temp files)"      ON)
 option(CINDER_USE_FAST_LINKER       "Prefer mold, then lld, over the default" ON)
 option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"    ON)
 option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
+option(CINDER_USE_MIMALLOC          "Override global allocator with mimalloc" ON)
+option(CINDER_PREFER_SYSTEM_DEPS    "Try find_package() before FetchContent for each dep" ON)
 
 # ---------------------------------------------------------------------------
 # ccache
@@ -158,11 +160,35 @@ endif()
 find_package(Threads REQUIRED)
 include(FetchContent)
 
-# Share fetchcontent source downloads across all presets — avoids 7 clones
-# per new build/asan/tsan/etc directory. Each dep's SOURCE_DIR points to a
-# shared .cache/sources/<name> location; build trees remain per-preset under
-# binaryDir/_deps/<name>-build so compiler/sanitizer flags never collide.
+# Share fetchcontent source downloads across all presets of the SAME
+# compiler family, avoiding N clones per new build/asan/tsan/etc directory.
+# Partitioned by compiler ID (clang vs gcc) rather than a single shared
+# dir: FETCHCONTENT_BASE_DIR governs the default -src, -subbuild, AND
+# -build locations for every dep, and mixing object files/build trees
+# produced by two different compilers/ABIs in one shared build dir is
+# unsafe. Each compiler family gets its own source+subbuild cache under
+# .cache/fetchcontent-<compiler>/; each preset still gets its own
+# per-target BINARY_DIR under binaryDir/_deps/<name>-build below so
+# compiler/sanitizer flags never collide on the compiled artifacts.
 # .cache/ is already gitignored.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    set(_cinder_toolchain_key "clang")
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(_cinder_toolchain_key "gcc")
+else()
+    string(TOLOWER "${CMAKE_CXX_COMPILER_ID}" _cinder_toolchain_key)
+endif()
+
+set(FETCHCONTENT_BASE_DIR
+    "${CMAKE_SOURCE_DIR}/.cache/fetchcontent-${_cinder_toolchain_key}"
+    CACHE PATH "Shared FetchContent source/subbuild cache, partitioned per compiler" FORCE)
+
+# All our deps are pinned to fixed tags, never floating branches, so there
+# is nothing for FetchContent to "update" to on reconfigure — skip the
+# git-fetch existence/update check it otherwise runs every configure.
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
+
+message(STATUS "Cinder: FetchContent cache -> ${FETCHCONTENT_BASE_DIR}")
 
 # Retry flaky git clones instead of failing configure outright
 set(CMAKE_EP_GIT_CLONE_RETRY_COUNT 3)
@@ -177,12 +203,23 @@ if(EXISTS "${CINDER_SANITIZER_IGNORELIST}" AND CINDER_ENABLE_ASAN AND CMAKE_CXX_
     message(STATUS "Cinder: using sanitizer ignorelist")
 endif()
 
+# Common FIND_PACKAGE_ARGS toggle: when ON, each FetchContent_Declare below
+# tries find_package() first (system/vcpkg/conan install) and only falls
+# back to cloning + building from source if nothing satisfying is found.
+# Skips the clang/gcc duplication entirely for anything already installed.
+set(_cinder_fp_args "")
+if(CINDER_PREFER_SYSTEM_DEPS)
+    set(_cinder_fp_args FIND_PACKAGE_ARGS)
+endif()
+
 FetchContent_Declare(
     asio
     GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
     GIT_TAG        asio-1-38-2
     GIT_SHALLOW    TRUE
-    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/asio
+    GIT_SUBMODULES ""
+    BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/asio-build
+    SYSTEM
 )
 FetchContent_MakeAvailable(asio)
 add_library(asio INTERFACE)
@@ -198,7 +235,9 @@ FetchContent_Declare(
     GIT_TAG        v0.8.3
     SOURCE_SUBDIR  cmake_unofficial
     GIT_SHALLOW    TRUE
-    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/xxhash
+    GIT_SUBMODULES ""
+    BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/xxhash-build
+    SYSTEM
 )
 FetchContent_MakeAvailable(xxhash)
 
@@ -207,7 +246,10 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
     GIT_TAG        v1.17.0
     GIT_SHALLOW    TRUE
-    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/spdlog
+    GIT_SUBMODULES ""
+    BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/spdlog-build
+    SYSTEM
+    ${_cinder_fp_args} NAMES spdlog
 )
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
@@ -215,11 +257,63 @@ FetchContent_MakeAvailable(spdlog)
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG        v2.6.2
+    GIT_TAG        v2.7.2
     GIT_SHALLOW    TRUE
-    SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/cli11
+    GIT_SUBMODULES ""
+    BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/cli11-build
+    SYSTEM
+    ${_cinder_fp_args} NAMES CLI11
 )
 FetchContent_MakeAvailable(CLI11)
+
+FetchContent_Declare(
+    yaml-cpp
+    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
+    GIT_TAG        yaml-cpp-0.9.0
+    GIT_SHALLOW    TRUE
+    GIT_SUBMODULES ""
+    BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/yaml-cpp-build
+    SYSTEM
+    ${_cinder_fp_args} NAMES yaml-cpp
+)
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(yaml-cpp)
+
+# mimalloc — global allocator override. Disabled automatically under any
+# sanitizer build: ASan/TSan/MSan each install their own allocation hooks,
+# and layering mimalloc's override underneath produces false positives /
+# crashes rather than useful signal. Sanitizer builds use the sanitizer's
+# own allocator instead, same mutual-exclusion spirit as the ASan/TSan/MSan
+# checks above.
+#
+# No FIND_PACKAGE_ARGS here on purpose: we need the exact v3.5.0 build with
+# MI_OVERRIDE/MI_BUILD_STATIC set our way, not whatever a system package
+# happens to ship — a mismatched system mimalloc build would silently defeat
+# the point of this dep.
+if(CINDER_USE_MIMALLOC AND (CINDER_ENABLE_ASAN OR CINDER_ENABLE_TSAN OR CINDER_ENABLE_MSAN))
+    message(STATUS "Cinder: mimalloc disabled — sanitizer build takes precedence")
+    set(CINDER_USE_MIMALLOC OFF)
+endif()
+
+if(CINDER_USE_MIMALLOC)
+    FetchContent_Declare(
+        mimalloc
+        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
+        GIT_TAG        v3.5.0
+        GIT_SHALLOW    TRUE
+        GIT_SUBMODULES ""
+        BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/mimalloc-build
+        SYSTEM
+    )
+
+    set(MI_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
+    set(MI_BUILD_STATIC ON  CACHE BOOL "" FORCE)
+    set(MI_OVERRIDE     ON  CACHE BOOL "" FORCE)   # provides malloc/free overrides
+    FetchContent_MakeAvailable(mimalloc)
+    message(STATUS "Cinder: mimalloc enabled (static override)")
+endif()
 
 if(CINDER_ENABLE_TLS)
     find_package(OpenSSL REQUIRED)
@@ -230,9 +324,13 @@ if(CINDER_BUILD_TESTS)
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.17.0
+        GIT_TAG        v1.18.0
         GIT_SHALLOW    TRUE
-        SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/googletest
+        GIT_SUBMODULES ""
+        BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/googletest-build
+        SYSTEM
+        EXCLUDE_FROM_ALL
+        ${_cinder_fp_args} NAMES GTest
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -244,11 +342,21 @@ if(CINDER_BUILD_BENCHMARKS)
         GIT_REPOSITORY https://github.com/google/benchmark.git
         GIT_TAG        v1.9.5
         GIT_SHALLOW    TRUE
-        SOURCE_DIR     ${CMAKE_SOURCE_DIR}/.cache/sources/benchmark
+        GIT_SUBMODULES ""
+        BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/benchmark-build
+        SYSTEM
+        EXCLUDE_FROM_ALL
+        ${_cinder_fp_args} NAMES benchmark
     )
-    set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
-    set(BENCHMARK_ENABLE_WERROR OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_TESTING        OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_INSTALL        OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_WERROR         OFF CACHE BOOL "" FORCE)
+    set(BENCHMARK_ENABLE_GTEST_TESTS    OFF CACHE BOOL "" FORCE)
+    # Without this, Google Benchmark FetchContents its OWN separate copy of
+    # googletest for its self-tests, even though we already fetch one above
+    # when CINDER_BUILD_TESTS is on — two independent googletest checkouts
+    # for no reason.
+    set(BENCHMARK_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(benchmark)
 endif()
 
@@ -279,7 +387,17 @@ target_link_libraries(cinder_core PUBLIC
     asio
     xxhash
     spdlog::spdlog
+    yaml-cpp::yaml-cpp
 )
+
+# mimalloc must come before other libs on the link line so its malloc/free
+# symbols are the ones the linker resolves against. PUBLIC so every
+# executable linking cinder::core (cinderd, cinder-cli, tests, benchmarks)
+# picks up the override automatically.
+if(CINDER_USE_MIMALLOC)
+    target_link_libraries(cinder_core PUBLIC mimalloc-static)
+    target_compile_definitions(cinder_core PUBLIC CINDER_USE_MIMALLOC)
+endif()
 
 if(CINDER_ENABLE_TLS)
     target_link_libraries(cinder_core PUBLIC OpenSSL::SSL OpenSSL::Crypto)

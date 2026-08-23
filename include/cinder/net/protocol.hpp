@@ -47,14 +47,16 @@ enum class Opcode : uint8_t {
     Gossip = 5,
     Replicate = 6,
     Hint = 7,
+    GetVersioned = 8,
 };
 
-// The decode path validates `raw_opcode ∈ [Get, Hint]`; assert at compile time
-// that this range covers exactly the declared opcodes with no gaps or overlap.
+// The decode path validates `raw_opcode ∈ [Get, GetVersioned]`; assert at
+// compile time that this range covers exactly the declared opcodes with no
+// gaps or overlap.
 consteval auto
 opcodeRangeCoverage() -> bool {
     const int min = std::to_underlying(Opcode::Get);
-    const int max = std::to_underlying(Opcode::Hint);
+    const int max = std::to_underlying(Opcode::GetVersioned);
     int count = 0;
     for (const auto op : {Opcode::Get,
              Opcode::Set,
@@ -62,7 +64,8 @@ opcodeRangeCoverage() -> bool {
              Opcode::Ping,
              Opcode::Gossip,
              Opcode::Replicate,
-             Opcode::Hint}) {
+             Opcode::Hint,
+             Opcode::GetVersioned}) {
         if (std::to_underlying(op) < min || std::to_underlying(op) > max) {
             return false;
         }
@@ -90,6 +93,9 @@ struct Request {
 struct Response {
     Errc status = Errc::OK;
     std::optional<std::string> value;
+    // Present only on GetVersioned responses — carry LWW metadata.
+    Version version = 0;
+    uint64_t writer_node_hash = 0;
 };
 
 auto

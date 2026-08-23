@@ -340,5 +340,172 @@ TEST(ReplicationSimTest, ObservedPeerVersionThenLocalWriteWins) {
     EXPECT_EQ(c.store2.get("k").value(), "v2");
     EXPECT_GT(c.store2.getVersioned("k")->version, observed);
 }
+
+// Cluster with both Replicate (fire-and-forget) and GetVersioned
+// (request-response) handlers registered on each node.
+class ReadRepairCluster {
+  public:
+
+    SimClock clock;
+    SimBus bus{clock, 99};
+    SimTransport t1{bus, "node1"};
+    SimTransport t2{bus, "node2"};
+    LruStore store1{1'024, &clock};
+    LruStore store2{1'024, &clock};
+    ReplicationManager mgr1{store1, "node1", clock, t1};
+    ReplicationManager mgr2{store2, "node2", clock, t2};
+
+    ReadRepairCluster() {
+        bus.registerHandler("node1", applyHandler(store1, clock));
+        bus.registerHandler("node2", applyHandler(store2, clock));
+        bus.registerRequestHandler("node1", versionedHandler(store1));
+        bus.registerRequestHandler("node2", versionedHandler(store2));
+    }
+
+  private:
+
+    static auto applyHandler(LruStore& store, SimClock& clock) -> SimBus::Handler {
+        return [&store, &clock](const NodeId&, const net::Request& req) {
+            if (req.opcode != net::Opcode::Replicate) {
+                return;
+            }
+
+            VersionedEntry e;
+            e.value = req.value;
+            e.version = req.version;
+            e.writer_node_hash = req.writer_node_hash;
+            if (req.expires_at.has_value()) {
+                e.has_ttl = true;
+                e.expires_at = toSteadyExpiry(clock, *req.expires_at);
+            }
+            // NOLINTNEXTLINE
+            (void)store.putVersioned(req.key, std::move(e));
+        };
+    }
+
+    static auto versionedHandler(LruStore& store) -> SimBus::RequestHandler {
+        return [&store](const NodeId&, const net::Request& req) -> net::Response {
+            if (req.opcode != net::Opcode::GetVersioned) {
+                return {.status = Errc::InvalidArgument, .value = std::nullopt};
+            }
+
+            auto entry = store.getVersioned(req.key);
+            if (!entry.has_value()) {
+                return {.status = Errc::NotFound, .value = std::nullopt};
+            }
+            return {.status = Errc::OK,
+                .value = entry->value,
+                .version = entry->version,
+                .writer_node_hash = entry->writer_node_hash};
+        };
+    }
+};
+
+auto
+runRead(ReplicationManager& mgr, const std::string& key, const std::vector<NodeId>& replicas,
+    size_t R) -> Result<VersionedEntry> {
+    Result<VersionedEntry> result = err<VersionedEntry>(Error(Errc::InternalError));
+    mgr.readAsync(key, replicas, R, [&](Result<VersionedEntry> r) { result = std::move(r); });
+    return result;
+}
+
+TEST(ReadRepairSimTest, ReadRepairFixesStaleReplica) {
+    ReadRepairCluster c;
+
+    // Write v1 to node1 (primary), replicate to node2.
+    auto wr = runWrite(c.mgr1, "key1", "v1", std::nullopt, {"node2"}, ConsistencyMode::Async);
+    ASSERT_TRUE(wr.has_value());
+    c.bus.deliver();
+    ASSERT_EQ(c.store2.get("key1"), "v1");
+
+    // Overwrite on node1 with v2 (higher version), replicate to node2.
+    auto wr2 = runWrite(c.mgr1, "key1", "v2", std::nullopt, {"node2"}, ConsistencyMode::Async);
+    ASSERT_TRUE(wr2.has_value());
+    c.bus.deliver();
+    ASSERT_EQ(c.store2.get("key1"), "v2");
+
+    // Record the current version on node1 (from the second write).
+    auto v2_entry = c.store1.getVersioned("key1");
+    ASSERT_TRUE(v2_entry.has_value());
+    Version v2_version = v2_entry->version;
+
+    // Now simulate a stale replica: manually revert node2 to an older version.
+    c.store2.remove("key1");
+    VersionedEntry stale;
+    stale.value = "v1";
+    stale.version = v2_version - 1;
+    stale.writer_node_hash = 100;
+    ASSERT_TRUE(c.store2.putVersioned("key1", std::move(stale)).has_value());
+    ASSERT_EQ(c.store2.get("key1"), "v1");
+
+    // Quorum read from node1 with R=2: should return v2 and repair node2.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "v2");
+    EXPECT_EQ(result->version, v2_version);
+
+    // Deliver the repair Replicate from node1 to node2.
+    c.bus.deliver();
+    EXPECT_EQ(c.store2.get("key1"), "v2");
+    EXPECT_EQ(c.store2.getVersioned("key1")->version, v2_version);
+}
+
+TEST(ReadRepairSimTest, ReadRepairSkipsWhenAllAgree) {
+    ReadRepairCluster c;
+
+    auto wr = runWrite(c.mgr1, "key1", "v1", std::nullopt, {"node2"}, ConsistencyMode::Async);
+    ASSERT_TRUE(wr.has_value());
+    c.bus.deliver();
+    ASSERT_EQ(c.store2.get("key1"), "v1");
+
+    // Quorum read: both agree on v1, no repair needed.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "v1");
+
+    // No Replicate messages should have been sent (bus should be empty).
+    EXPECT_EQ(c.bus.pending(), 0);
+}
+
+TEST(ReadRepairSimTest, ReadRepairReturnsBestVersion) {
+    ReadRepairCluster c;
+
+    // Seed node1 with v3, node2 with v1 (node2 is behind).
+    VersionedEntry e1;
+    e1.value = "v3";
+    e1.version = 3;
+    e1.writer_node_hash = 100;
+    ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
+
+    VersionedEntry e2;
+    e2.value = "v1";
+    e2.version = 1;
+    e2.writer_node_hash = 200;
+    ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
+
+    // Quorum read from node1: should return v3 (highest version).
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "v3");
+    EXPECT_EQ(result->version, 3);
+}
+
+TEST(ReadRepairSimTest, ReadRepairFallsBackToLocalOnReplicaFailure) {
+    ReadRepairCluster c;
+
+    VersionedEntry e1;
+    e1.value = "local-v";
+    e1.version = 5;
+    e1.writer_node_hash = 100;
+    ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
+
+    // Bring node2 down so sendRequestAsync fails.
+    c.bus.setNodeDown("node2");
+
+    // R=2 but node2 is down — should fall back to local read.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "local-v");
+}
 } // namespace
 } // namespace cinder

@@ -10,6 +10,7 @@ using asio::async_connect;
 using asio::async_read;
 using asio::async_write;
 using asio::buffer;
+using asio::error_code;
 using asio::io_context;
 
 namespace cinder {
@@ -29,6 +30,58 @@ TcpTransport::addAddr(const NodeId& id, const std::string& host, uint16_t port) 
     addrs_[id] = {id, host, port};
 }
 
+auto
+TcpTransport::sendCoroutine(std::string host, uint16_t port, std::vector<std::byte> data)
+    -> asio::awaitable<Result<net::Response>> {
+    std::error_code ec;
+    auto ex = co_await asio::this_coro::executor;
+    tcp::resolver resolver(ex);
+    auto endpoints =
+        co_await resolver.async_resolve(host, std::to_string(port), asio::redirect_error(ec));
+    if (ec) {
+        co_return err<net::Response>(Error(Errc::NotReady, "resolve: " + ec.message()));
+    }
+
+    tcp::socket socket(ex);
+    co_await async_connect(socket, endpoints, asio::redirect_error(ec));
+    if (ec) {
+        co_return err<net::Response>(Error(Errc::NotReady, "connect: " + ec.message()));
+    }
+
+    co_await async_write(socket, buffer(data), asio::redirect_error(ec));
+    if (ec) {
+        co_return err<net::Response>(Error(Errc::NotReady, "write: " + ec.message()));
+    }
+
+    std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
+    co_await async_read(socket, buffer(header), asio::redirect_error(ec));
+    if (ec) {
+        co_return err<net::Response>(Error(Errc::NotReady, "read header: " + ec.message()));
+    }
+    if (header[0] != std::byte{net::K_MAGIC}) {
+        co_return err<net::Response>(Error(Errc::InternalError, "bad magic in response"));
+    }
+
+    uint32_t payload_len = 0;
+    std::memcpy(&payload_len, &header[3], sizeof(payload_len));
+    payload_len = std::byteswap(payload_len);
+    if (payload_len > net::K_MAX_MESSAGE_SIZE) {
+        co_return err<net::Response>(Error(Errc::InternalError, "response payload too large"));
+    }
+
+    std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
+    std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
+    if (payload_len > 0) {
+        co_await async_read(socket,
+            buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+            asio::redirect_error(ec));
+        if (ec) {
+            co_return err<net::Response>(Error(Errc::NotReady, "read payload: " + ec.message()));
+        }
+    }
+    co_return net::decodeResponse(frame);
+}
+
 void
 TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
     auto addr_it = addrs_.find(to);
@@ -43,118 +96,56 @@ TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback 
         return;
     }
 
-    auto* op =
-        new OutboundRequest(io_, addr_it->second.host, addr_it->second.port, std::move(on_done));
-    op->write_buf = std::move(encoded.value());
-    start(op);
+    auto host = addr_it->second.host;
+    auto port = addr_it->second.port;
+    asio::co_spawn(io_,
+        sendCoroutine(host, port, std::move(encoded.value())),
+        [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
+        if (ep) {
+            cb(err(Error(Errc::NotReady, "coroutine failed")));
+            return;
+        }
+        if (!result.has_value()) {
+            cb(err(result.error()));
+            return;
+        }
+        if (result.value().status != Errc::OK) {
+            cb(err(Error(result.value().status, "replica rejected write")));
+            return;
+        }
+        cb(ok());
+    });
+}
+
+void
+TcpTransport::sendRequestAsync(const NodeId& to, const net::Request& req, RequestCallback on_done) {
+    auto addr_it = addrs_.find(to);
+    if (addr_it == addrs_.end()) {
+        on_done(err<net::Response>(Error(Errc::NotFound, "unknown node")));
+        return;
+    }
+
+    auto encoded = net::encode(req);
+    if (!encoded.has_value()) {
+        on_done(err<net::Response>(encoded.error()));
+        return;
+    }
+
+    auto host = addr_it->second.host;
+    auto port = addr_it->second.port;
+    asio::co_spawn(io_,
+        sendCoroutine(host, port, std::move(encoded.value())),
+        [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
+        if (ep) {
+            cb(err<net::Response>(Error(Errc::NotReady, "coroutine failed")));
+            return;
+        }
+        cb(std::move(result));
+    });
 }
 
 void
 TcpTransport::onMessage(MessageHandler handler) {
     handler_ = std::move(handler);
-}
-
-void
-TcpTransport::start(OutboundRequest* self) {
-    self->resolver.async_resolve(self->host,
-        std::to_string(self->port),
-        [this, self](std::error_code ec, tcp::resolver::results_type endpoints) {
-        if (ec) {
-            finish(self, err(Error(Errc::NotReady, "resolve failed: " + ec.message())));
-            return;
-        }
-        connect(self, endpoints);
-    });
-}
-
-void
-TcpTransport::connect(OutboundRequest* self, const tcp::resolver::results_type& endpoints) {
-    async_connect(self->socket, endpoints, [this, self](std::error_code ec, const tcp::endpoint&) {
-        if (ec) {
-            finish(self, err(Error(Errc::NotReady, "connect failed: " + ec.message())));
-            return;
-        }
-        writeFrame(self);
-    });
-}
-
-void
-TcpTransport::writeFrame(OutboundRequest* self) {
-    async_write(self->socket, buffer(self->write_buf), [this, self](std::error_code ec, size_t) {
-        if (ec) {
-            finish(self, err(Error(Errc::NotReady, "write failed: " + ec.message())));
-            return;
-        }
-        readHeader(self);
-    });
-}
-
-void
-TcpTransport::readHeader(OutboundRequest* self) {
-    async_read(self->socket, buffer(self->header), [this, self](std::error_code ec, size_t) {
-        if (ec) {
-            finish(self, err(Error(Errc::NotReady, "read failed: " + ec.message())));
-            return;
-        }
-        if (self->header[0] != std::byte{net::K_MAGIC}) {
-            finish(self, err(Error(Errc::InternalError, "bad magic in response")));
-            return;
-        }
-
-        uint32_t payload_len = 0;
-        std::memcpy(&payload_len, &self->header[3], sizeof(payload_len));
-        payload_len = std::byteswap(payload_len);
-        if (payload_len > net::K_MAX_MESSAGE_SIZE) {
-            finish(self, err(Error(Errc::InternalError, "response payload too large")));
-            return;
-        }
-        readPayload(self, payload_len);
-    });
-}
-
-void
-TcpTransport::readPayload(OutboundRequest* self, uint32_t payload_len) {
-    self->frame.resize(net::K_FRAME_HEADER_SIZE + payload_len);
-    std::memcpy(self->frame.data(), self->header.data(), net::K_FRAME_HEADER_SIZE);
-    if (payload_len == 0) {
-        finishDecode(self);
-        return;
-    }
-
-    async_read(self->socket,
-        buffer(self->frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-        [this, self](std::error_code ec, size_t) {
-        if (ec) {
-            finish(self, err(Error(Errc::NotReady, "read failed: " + ec.message())));
-            return;
-        }
-        finishDecode(self);
-    });
-}
-
-void
-TcpTransport::finishDecode(OutboundRequest* self) {
-    auto res = net::decodeResponse(self->frame);
-    if (!res.has_value()) {
-        finish(self, err(res.error()));
-        return;
-    }
-    if (res.value().status != Errc::OK) {
-        finish(self, err(Error(res.value().status, "replica rejected write")));
-        return;
-    }
-    finish(self, ok());
-}
-
-void
-TcpTransport::finish(OutboundRequest* self, Result<void> result) {
-    if (self->done) {
-        return;
-    }
-
-    self->done = true;
-    auto cb = std::move(self->on_done);
-    delete self;
-    cb(std::move(result));
 }
 } // namespace cinder

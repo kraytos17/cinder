@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/ttl_wheel.hpp"
@@ -44,7 +45,7 @@ class LfuStore : public CacheStore {
         size_t freq = 1;
     };
 
-    using ListIt = std::list<Node>::iterator;
+    using ListIt = std::list<Node, SlabAllocator<Node>>::iterator;
 
     void incrementFreq(ListIt it);
     void removeFromFreqBucket(ListIt it);
@@ -57,7 +58,7 @@ class LfuStore : public CacheStore {
     auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
 
     mutable std::mutex mutex_;
-    std::list<Node> lfu_list_;
+    std::list<Node, SlabAllocator<Node>> lfu_list_;
     std::unordered_map<std::string, ListIt> index_;
     TtlWheel wheel_;
     std::unordered_map<size_t, std::list<ListIt>> freq_buckets_;

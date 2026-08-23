@@ -4,6 +4,8 @@
 
 namespace cinder {
 
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
 using std::chrono::steady_clock;
 using std::chrono::system_clock;
 
@@ -44,5 +46,13 @@ toSystemExpiry(const Clock& clock, steady_clock::time_point t) -> system_clock::
 inline auto
 toSteadyExpiry(const Clock& clock, system_clock::time_point t) -> steady_clock::time_point {
     return clock.now() + (t - clock.nowSystem());
+}
+
+// Convert a steady-clock time_point to wall-clock milliseconds since epoch.
+// Used by persistence to store absolute TTLs on disk.
+inline auto
+toSystemMs(const Clock& clock, steady_clock::time_point t) -> uint64_t {
+    auto sys = toSystemExpiry(clock, t);
+    return static_cast<uint64_t>(duration_cast<milliseconds>(sys.time_since_epoch()).count());
 }
 } // namespace cinder

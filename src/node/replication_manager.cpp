@@ -5,6 +5,8 @@
 #include <memory>
 #include <string_view>
 
+#include "cinder/common/logger.hpp"
+
 namespace cinder {
 
 using std::chrono::milliseconds;
@@ -74,10 +76,15 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     req.writer_node_hash = writer;
 
     if (mode == ConsistencyMode::Async) {
+        Logger::debug("cinder replication: async write fan-out key={} replicas={}",
+            key,
+            replica_nodes.size());
         // Local commit counts; fan-out best-effort, hint on failure.
         for (const auto& node : replica_nodes) {
             transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
                 if (!r.has_value()) {
+                    Logger::warn(
+                        "cinder replication: replica unreachable node={} key={}", node, req.key);
                     enqueueHint(node, req);
                 }
             });
@@ -87,13 +94,18 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     }
 
     // Quorum: W = R/2 + 1 acknowledgements including the local write.
+    Logger::debug("cinder replication: quorum write fan-out key={} replicas={} W={}",
+        key,
+        replica_nodes.size(),
+        replica_nodes.size() / 2 + 1);
+
     size_t total = replica_nodes.size() + 1;
     size_t w = total / 2 + 1;
     auto state = std::make_shared<QuorumState>();
+
     state->done = std::make_shared<WriteCallback>(std::move(on_done));
     state->acks = 1; // local write
     state->pending = replica_nodes.size();
-
     for (const auto& node : replica_nodes) {
         transport_.sendAsync(node, req, [this, node, req, state, w](Result<void> r) {
             if (r.has_value()) {
@@ -123,6 +135,104 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
 }
 
 void
+ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>& replica_nodes,
+    size_t R, ReadCallback on_done) {
+    // Local read — always attempted first.
+    auto local_entry = local_.getVersioned(key);
+    if (replica_nodes.empty() || R <= 1) {
+        // No replicas or trivial quorum: return whatever the local store has.
+        if (local_entry.has_value()) {
+            on_done(std::move(*local_entry));
+        } else {
+            on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+        }
+        return;
+    }
+
+    net::Request req;
+    req.opcode = net::Opcode::GetVersioned;
+    req.key = key;
+    Logger::debug(
+        "cinder replication: quorum read fan-out key={} replicas={}", key, replica_nodes.size());
+
+    auto state = std::make_shared<ReadQuorumState>();
+    state->done = std::make_shared<ReadCallback>(std::move(on_done));
+    state->replicas = replica_nodes;
+    state->pending = replica_nodes.size();
+    if (local_entry.has_value()) {
+        state->acks = 1;
+        state->best_version = local_entry->version;
+        state->best_writer_hash = local_entry->writer_node_hash;
+        state->best_entry = std::move(*local_entry);
+    }
+    for (const auto& node : replica_nodes) {
+        transport_.sendRequestAsync(
+            node, req, [this, key, node, state, R](Result<net::Response> r) {
+            if (state->done_flag) {
+                return;
+            }
+            if (r.has_value() && r->status == Errc::OK && r->version != 0) {
+                ++state->acks;
+                if (r->version > state->best_version
+                    || (r->version == state->best_version
+                        && r->writer_node_hash > state->best_writer_hash)) {
+                    state->needs_repair = true;
+                    state->best_version = r->version;
+                    state->best_writer_hash = r->writer_node_hash;
+
+                    VersionedEntry entry;
+                    entry.value = std::move(*r->value);
+                    entry.version = r->version;
+                    entry.writer_node_hash = r->writer_node_hash;
+                    state->best_entry = std::move(entry);
+                } else if (r->version != state->best_version
+                           || r->writer_node_hash != state->best_writer_hash) {
+                    state->needs_repair = true;
+                }
+            } else if (r.has_value() && r->status == Errc::NotFound) {
+                // Replica doesn't have the key — stale, needs repair.
+                state->needs_repair = true;
+            }
+
+            --state->pending;
+            if (state->acks >= R) {
+                state->done_flag = true;
+                if (state->best_entry.has_value()) {
+                    if (state->needs_repair) {
+                        Logger::info("cinder replication: repair sent key={} version={}",
+                            key,
+                            state->best_entry->version);
+                        for (const auto& target : state->replicas) {
+                            net::Request repair;
+                            repair.opcode = net::Opcode::Replicate;
+                            repair.key = key;
+                            repair.value = state->best_entry->value;
+                            repair.version = state->best_entry->version;
+                            repair.writer_node_hash = state->best_entry->writer_node_hash;
+                            if (state->best_entry->has_ttl) {
+                                repair.expires_at =
+                                    toSystemExpiry(clock_, state->best_entry->expires_at);
+                            }
+                            transport_.sendAsync(target, repair, [](Result<void>) {});
+                        }
+                    }
+                    (*state->done)(std::move(*state->best_entry));
+                } else {
+                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+                }
+            } else if (state->pending == 0) {
+                state->done_flag = true;
+                if (state->best_entry.has_value()) {
+                    (*state->done)(std::move(*state->best_entry));
+                } else {
+                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+                }
+            }
+        });
+    }
+}
+
+void
 ReplicationManager::replayHints(ReplayCallback on_done) {
     std::vector<Hint> snapshot;
     {
@@ -138,7 +248,6 @@ ReplicationManager::replayHints(ReplayCallback on_done) {
     state->done = std::make_shared<ReplayCallback>(std::move(on_done));
     state->pending = snapshot.size();
     auto now = clock_.now();
-
     for (const auto& hint : snapshot) {
         if (hint.expires_at <= now) {
             // Expired — drop.
@@ -172,6 +281,7 @@ ReplicationManager::hintCount() const -> size_t {
 void
 ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
     std::scoped_lock lock(hints_mutex_);
+    Logger::debug("cinder replication: hint enqueued target={} key={}", target, req.key);
     if (hints_.size() >= K_MAX_HINTS) {
         hints_.pop_front(); // drop oldest to bound memory
     }

@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
+#include "cinder/common/logger.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::io_context;
@@ -45,6 +46,10 @@ void
 TcpServer::doAccept() {
     acceptor_.async_accept([this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
+            auto ep = socket.remote_endpoint();
+            Logger::debug("cinder tcp_server: connection accepted from {}:{}",
+                ep.address().to_string(),
+                ep.port());
             auto conn = std::make_shared<TcpConnection>(std::move(socket),
                 store_,
                 ring_,
@@ -56,6 +61,8 @@ TcpServer::doAccept() {
                 gossip_);
             connections_.push_back(conn);
             conn->start();
+        } else if (ec != asio::error::operation_aborted) {
+            Logger::warn("cinder tcp_server: accept error: {}", ec.message());
         }
         if (acceptor_.is_open()) {
             doAccept();

@@ -9,8 +9,10 @@
 #include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/persistence.hpp"
 #include "cinder/store/ttl_wheel.hpp"
 
 using std::chrono::milliseconds;
@@ -36,6 +38,8 @@ class LruStore : public CacheStore {
         std::move_only_function<void(const std::string&, const VersionedEntry&)> /*unused*/)
         const override;
 
+    void setPersistence(PersistenceManager* pm) override { persistence_ = pm; }
+
   private:
 
     struct Node {
@@ -43,7 +47,7 @@ class LruStore : public CacheStore {
         VersionedEntry entry;
     };
 
-    using ListIt = std::list<Node>::iterator;
+    using ListIt = std::list<Node, SlabAllocator<Node>>::iterator;
 
     void touch(ListIt it);
     void evictIfNeeded();
@@ -54,12 +58,13 @@ class LruStore : public CacheStore {
     auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
 
     mutable std::mutex mutex_;
-    std::list<Node> lru_list_;
+    std::list<Node, SlabAllocator<Node>> lru_list_;
     std::unordered_map<std::string, ListIt> index_;
     TtlWheel wheel_;
     steady_clock::time_point last_evict_;
     size_t capacity_bytes_;
     size_t current_bytes_ = 0;
     Version next_version_; // seeded from the clock in the ctor (restart-safe)
+    PersistenceManager* persistence_ = nullptr;
 };
 } // namespace cinder

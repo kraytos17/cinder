@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "cinder/common/logger.hpp"
+
 namespace cinder {
 
 using std::chrono::milliseconds;
@@ -33,6 +35,7 @@ FailureDetector::tick() {
         (void)peer;
         if (probe.pending && clock_.now() - probe.sent_at > suspect_timeout_) {
             probe.pending = false;
+            Logger::info("cinder failure_detector: suspect marked peer={} reason=timeout", peer);
             table_.markSuspect(peer);
         }
     }
@@ -63,6 +66,7 @@ FailureDetector::tick() {
         probe.pending = true;
         probe.sent_at = clock_.now();
 
+        Logger::debug("cinder failure_detector: ping sent peer={}", peer);
         net::Request ping;
         ping.opcode = net::Opcode::Ping;
         transport_.sendAsync(
@@ -80,6 +84,7 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
 
     it->second.pending = false;
     if (acked) {
+        Logger::debug("cinder failure_detector: ping received peer={}", peer);
         suspect_since_.erase(peer);
         auto info = table_.get(peer);
         table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
@@ -87,6 +92,7 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     }
 
     // Unreachable: suspect now, record when; escalateSuspects() promotes to Dead.
+    Logger::info("cinder failure_detector: suspect marked peer={} reason=unreachable", peer);
     suspect_since_.emplace(peer, clock_.now());
     table_.markSuspect(peer);
 }

@@ -220,5 +220,71 @@ TEST(ProtocolTest, EncodeDecodeExpiresAtAbsent) {
     ASSERT_TRUE(decoded.value().ttl.has_value());
     EXPECT_EQ(decoded.value().ttl->count(), 5'000);
 }
+
+TEST(ProtocolTest, EncodeDecodeGetVersionedRequest) {
+    Request req;
+    req.opcode = Opcode::GetVersioned;
+    req.key = "my-key";
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decode(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().opcode, Opcode::GetVersioned);
+    EXPECT_EQ(decoded.value().key, "my-key");
+}
+
+TEST(ProtocolTest, EncodeDecodeVersionedResponse) {
+    Response res;
+    res.status = Errc::OK;
+    res.value = "some-data";
+    res.version = 42;
+    res.writer_node_hash = 0xDEADBEEF;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().status, Errc::OK);
+    EXPECT_EQ(decoded.value().version, 42);
+    EXPECT_EQ(decoded.value().writer_node_hash, 0xDEADBEEF);
+    ASSERT_TRUE(decoded.value().value.has_value());
+    EXPECT_EQ(*decoded.value().value, "some-data");
+}
+
+TEST(ProtocolTest, EncodeDecodeVersionedResponseNoValue) {
+    Response res;
+    res.status = Errc::NotFound;
+    res.version = 99;
+    res.writer_node_hash = 7;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().status, Errc::NotFound);
+    EXPECT_EQ(decoded.value().version, 99);
+    EXPECT_EQ(decoded.value().writer_node_hash, 7);
+    EXPECT_FALSE(decoded.value().value.has_value());
+}
+
+TEST(ProtocolTest, PlainResponseNoVersionMeta) {
+    Response res;
+    res.status = Errc::OK;
+    res.value = "val";
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().status, Errc::OK);
+    EXPECT_EQ(decoded.value().version, 0);
+    EXPECT_EQ(decoded.value().writer_node_hash, 0);
+    ASSERT_TRUE(decoded.value().value.has_value());
+    EXPECT_EQ(*decoded.value().value, "val");
+}
 } // namespace
 } // namespace cinder::net

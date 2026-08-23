@@ -41,6 +41,7 @@ class ReplicationManager {
     auto operator=(ReplicationManager&&) -> ReplicationManager& = delete;
 
     using WriteCallback = std::move_only_function<void(Result<void>)>;
+    using ReadCallback = std::move_only_function<void(Result<VersionedEntry>)>;
     using ReplayCallback = std::move_only_function<void(size_t)>;
 
     // Async write: commits locally, then fans out to replicas. `on_done` is
@@ -50,6 +51,12 @@ class ReplicationManager {
     //            replicas answered with fewer than W (fails closed NotReady).
     void writeAsync(const std::string& key, std::string value, std::optional<milliseconds> ttl,
         const std::vector<NodeId>& replica_nodes, ConsistencyMode mode, WriteCallback on_done);
+
+    // Quorum read: reads from local store + fans out GetVersioned to replicas.
+    // Returns the entry with the highest version (LWW). Stale replicas are
+    // repaired in the background via a best-effort Replicate write-back.
+    void readAsync(const std::string& key, const std::vector<NodeId>& replica_nodes, size_t R,
+        ReadCallback on_done);
 
     // Retry queued hints against now-healthy replicas. Invokes `on_done` with
     // the count replayed (expired hints are dropped). Call periodically.
@@ -74,6 +81,20 @@ class ReplicationManager {
         size_t acks = 0;
         size_t pending = 0;
         bool done_flag = false;
+    };
+
+    // Shared per-read quorum accounting (owned by the in-flight sendAsync
+    // callbacks for GetVersioned fan-out; destroyed when the last one completes).
+    struct ReadQuorumState {
+        std::shared_ptr<ReadCallback> done;
+        std::vector<NodeId> replicas;
+        Version best_version = 0;
+        uint64_t best_writer_hash = 0;
+        std::optional<VersionedEntry> best_entry;
+        size_t acks = 0;
+        size_t pending = 0;
+        bool done_flag = false;
+        bool needs_repair = false;
     };
 
     // Shared per-replay accounting across hint sendAsync callbacks.

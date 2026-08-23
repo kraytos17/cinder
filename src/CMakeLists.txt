@@ -1,8 +1,12 @@
 set(CINDER_CORE_SOURCES
     common/logger.cpp
+    common/config.cpp
     store/lru_store.cpp
     store/lfu_store.cpp
     store/ttl_wheel.cpp
+    store/wal.cpp
+    store/snapshot.cpp
+    store/persistence.cpp
     hashing/consistent_hash_ring.cpp
     node/cache_node_server.cpp
     node/shard_manager.cpp

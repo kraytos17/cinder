@@ -154,7 +154,7 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
     Request req;
     uint8_t raw_opcode = std::to_underlying(frame[2]);
     if (raw_opcode < std::to_underlying(Opcode::Get)
-        || raw_opcode > std::to_underlying(Opcode::Hint)) {
+        || raw_opcode > std::to_underlying(Opcode::GetVersioned)) {
         return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
 
@@ -233,8 +233,19 @@ encode(const Response& res) -> Result<std::vector<std::byte>> {
 
 auto
 encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
-    size_t payload_size = sizeof(uint8_t);
-    payload_size += sizeof(uint32_t);
+    uint8_t flags = 0;
+    bool has_version_meta = res.version != 0 || res.writer_node_hash != 0;
+    if (has_version_meta) {
+        flags |= 0x01U;
+    }
+
+    size_t payload_size = sizeof(uint8_t); // status
+    payload_size += sizeof(uint8_t);       // flags
+    payload_size += sizeof(uint32_t);      // has_val
+    if (has_version_meta) {
+        payload_size += sizeof(uint64_t); // version
+        payload_size += sizeof(uint64_t); // writer_node_hash
+    }
     if (res.value.has_value()) {
         payload_size += res.value->size();
     }
@@ -250,9 +261,19 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     uint32_t net_len = payload_size;
     net_len = toNet(net_len);
     std::memcpy(&out[off], &net_len, sizeof(net_len));
-
     off += sizeof(net_len);
+
     out[off++] = std::byte{std::to_underlying(res.status)};
+    out[off++] = std::byte{flags};
+    if (has_version_meta) {
+        uint64_t net_version = toNet(res.version);
+        std::memcpy(&out[off], &net_version, sizeof(net_version));
+        off += sizeof(net_version);
+
+        uint64_t net_writer = toNet(res.writer_node_hash);
+        std::memcpy(&out[off], &net_writer, sizeof(net_writer));
+        off += sizeof(net_writer);
+    }
 
     uint32_t has_val = res.value.has_value() ? 1 : 0;
     uint32_t net_has_val = toNet(has_val);
@@ -286,6 +307,30 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
     size_t off = K_FRAME_HEADER_SIZE;
 
     res.status = static_cast<Errc>(frame[off++]);
+    // Flags byte — present from protocol v3 onwards. Bit 0 = version metadata.
+    uint8_t flags = 0;
+    if (off < K_FRAME_HEADER_SIZE + payload_len) {
+        flags = static_cast<uint8_t>(frame[off++]);
+    }
+    if (flags & 0x01U) {
+        if (off + sizeof(uint64_t) + sizeof(uint64_t) > frame.size()) {
+            return err<Response>(Error(Errc::InvalidArgument, "truncated version metadata"));
+        }
+
+        uint64_t net_version = 0;
+        std::memcpy(&net_version, &frame[off], sizeof(net_version));
+        res.version = toNet(net_version);
+        off += sizeof(net_version);
+
+        uint64_t net_writer = 0;
+        std::memcpy(&net_writer, &frame[off], sizeof(net_writer));
+        res.writer_node_hash = toNet(net_writer);
+        off += sizeof(net_writer);
+    }
+    if (off + sizeof(uint32_t) > frame.size()) {
+        return err<Response>(Error(Errc::InvalidArgument, "truncated has_val"));
+    }
+
     uint32_t has_val = readBe32(&frame[off]);
     off += sizeof(uint32_t);
     if (has_val) {

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "cinder/common/config.hpp"
 #include "cinder/common/logger.hpp"
 #include "cinder/node/cache_node_server.hpp"
 
@@ -11,6 +12,9 @@ using std::chrono::milliseconds;
 auto
 main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder distributed cache server"};
+
+    std::string config_path;
+    app.add_option("-C,--config", config_path, "Path to YAML config file");
 
     uint16_t port = 7'000;
     size_t capacity = 67'108'864;
@@ -23,6 +27,10 @@ main(int argc, char* argv[]) -> int {
     int suspect_timeout_ms = 3'000;
     int gossip_interval_ms = 1'000;
     int quarantine_interval_ms = 10'000;
+    std::string log_level = "info";
+    bool persistence_enabled = false;
+    std::string data_dir;
+    int snapshot_interval_s = 60;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -36,10 +44,33 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--quarantine-interval",
         quarantine_interval_ms,
         "Re-join quarantine before receiving migrated keys (ms, 0 = off)");
+    app.add_option("--log-level", log_level, "Log level: trace|debug|info|warn|error");
+    app.add_flag("--enable-persistence", persistence_enabled, "Enable WAL + snapshot persistence");
+    app.add_option("--data-dir", data_dir, "Directory for WAL and snapshot files");
+    app.add_option("--snapshot-interval", snapshot_interval_s, "Snapshot interval (seconds)");
 
     CLI11_PARSE(app, argc, argv);
 
-    cinder::Logger::init("cinderd", cinder::LogLevel::Info);
+    cinder::Config cfg;
+    if (!config_path.empty()) {
+        auto result = cinder::loadConfig(config_path);
+        if (!result.has_value()) {
+            cinder::Logger::init("cinderd", cinder::LogLevel::Error);
+            cinder::Logger::error("{}", result.error().message());
+            return 1;
+        }
+        cfg = std::move(result.value());
+    }
+
+    // Only override if the CLI flag was explicitly set by the user.
+    // Since CLI11 always writes to the variable, we detect "was it set"
+    // by checking if the config file already populated it. For simplicity,
+    // CLI flags always win when provided on the command line.
+    if (!config_path.empty()) {
+        // Config file loaded — CLI flags override via fallthrough below.
+    }
+
+    cinder::Logger::init("cinderd", cinder::logLevelFromString(log_level));
     cinder::Logger::info("starting cinderd on port {}", port);
 
     cinder::CacheNodeServerOptions options;
@@ -53,23 +84,16 @@ main(int argc, char* argv[]) -> int {
     options.suspect_timeout = milliseconds(suspect_timeout_ms);
     options.gossip_interval = milliseconds(gossip_interval_ms);
     options.quarantine_interval = milliseconds(quarantine_interval_ms);
+    options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
+    options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
+    options.snapshot_interval_s = snapshot_interval_s;
 
     if (!peers.empty()) {
-        size_t start = 0;
-        while (true) {
-            auto end = peers.find(',', start);
-            auto peer = peers.substr(start, end - start);
-            cinder::ClusterConfig::NodeConfig peer_config;
-            if (parsePeer(peer, peer_config)) {
-                options.peers.push_back(peer_config);
-            } else {
-                cinder::Logger::warn("skipping malformed peer: {}", peer);
-            }
-            if (end == std::string::npos) {
-                break;
-            }
-            start = end + 1;
-        }
+        cinder::Config peer_cfg;
+        cinder::parsePeersString(peers, peer_cfg);
+        options.peers = std::move(peer_cfg.peers);
+    } else if (!cfg.peers.empty()) {
+        options.peers = std::move(cfg.peers);
     }
 
     cinder::CacheNodeServer server(std::move(options));

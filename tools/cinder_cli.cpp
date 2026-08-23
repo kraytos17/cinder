@@ -1,11 +1,11 @@
 #include <asio.hpp>
 #include <chrono>
 #include <CLI/CLI.hpp>
-#include <iostream>
 #include <print>
 #include <string>
 
 #include "cinder/client/connection_pool.hpp"
+#include "cinder/common/logger.hpp"
 #include "cinder/common/status.hpp"
 
 using asio::io_context;
@@ -17,8 +17,10 @@ main(int argc, char* argv[]) -> int {
 
     std::string host = "127.0.0.1";
     uint16_t port = 7'000;
+    bool verbose = false;
     app.add_option("--host", host, "Server host");
     app.add_option("-p,--port", port, "Server port");
+    app.add_flag("-v,--verbose", verbose, "Enable verbose (debug) logging");
 
     std::string cmd;
     std::string key;
@@ -31,6 +33,10 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--ttl", ttl_ms, "TTL in ms (set only)");
 
     CLI11_PARSE(app, argc, argv);
+
+    cinder::Logger::init("cinder-cli",
+        verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
+        cinder::LogSink::Stderr);
 
     cinder::ClusterConfig config;
     config.nodes.push_back({"server", host, port});
@@ -52,15 +58,16 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "ping") {
         req.opcode = cinder::net::Opcode::Ping;
     } else {
-        std::println(std::cerr, "unknown command: {}", cmd);
+        cinder::Logger::error("unknown command: {}", cmd);
         return 1;
     }
 
     io_context io;
     cinder::ConnectionPool pool(config, io);
+    cinder::Logger::debug("sending {} to {}:{}", cmd, host, port);
     auto res = pool.send("server", req);
     if (!res.has_value()) {
-        std::println(std::cerr, "request failed: {}", res.error().message());
+        cinder::Logger::error("request failed: {}", res.error().message());
         return 1;
     }
 

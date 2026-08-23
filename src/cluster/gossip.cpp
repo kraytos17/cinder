@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/logger.hpp"
 #include "cinder/net/protocol.hpp"
 
 using std::chrono::milliseconds;
@@ -36,12 +37,16 @@ GossipManager::tick() {
     static thread_local std::mt19937 rng(
         static_cast<uint32_t>(clock_.now().time_since_epoch().count()));
     std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
-    sendView(peers_[dist(rng)]);
+    auto target = peers_[dist(rng)];
+    Logger::debug("cinder gossip: gossip round target={}", target);
+    sendView(target);
 }
 
 void
 GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
-    for (const auto& rumor : decodeView(req.value)) {
+    auto rumors = decodeView(req.value);
+    Logger::debug("cinder gossip: state disseminated from={} entries={}", from, rumors.size());
+    for (const auto& rumor : rumors) {
         table_.applyRumor(from, rumor);
     }
 }
