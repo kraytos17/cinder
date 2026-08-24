@@ -47,6 +47,7 @@ Checks: [
   '-misc-include-cleaner',                      # useful in theory, far too many hits in practice
   '-misc-no-recursion',
   '-misc-non-private-member-variables-in-classes',
+  '-misc-static-assert',                        # false-positive on runtime bounds checks (ByteWriter)
   '-misc-use-anonymous-namespace',
   '-misc-use-internal-linkage',
 

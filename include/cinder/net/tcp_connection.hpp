@@ -6,6 +6,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #ifdef CINDER_ENABLE_TLS
@@ -31,13 +32,15 @@ namespace cinder::net {
 class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
   public:
 
-    static constexpr size_t K_BUFFER_SIZE = 65'536;
+    // Maximum payload we'll buffer per connection. 1MB covers almost all of the
+    // requests; large values are handled by the client library, not the server.
+    static constexpr size_t K_BUFFER_SIZE = 1'048'576;
     static constexpr size_t K_MAX_WRITE_QUEUE = 64;
 
-    TcpConnection(
-        tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring, std::string node_id,
-        Clock& clock, ReplicationManager* repl = nullptr, int replica_factor = 1,
-        ConsistencyMode mode = ConsistencyMode::Async, GossipManager* gossip = nullptr
+    TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
+        std::string_view node_id, Clock& clock, ReplicationManager* repl = nullptr,
+        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
+        GossipManager* gossip = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -89,12 +92,12 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     Clock& clock_;
     ReplicationManager* repl_;
     GossipManager* gossip_;
-    std::string node_id_;
+    std::string_view node_id_;
     int replica_factor_;
     ConsistencyMode mode_;
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     std::deque<std::vector<std::byte>> write_queue_;
-    std::vector<std::byte> encode_buf_; // scratch; recycles write_queue_ capacity
+    std::vector<std::byte> encode_buf_; // scratch; pre-allocated for typical requests
 };
 } // namespace cinder::net

@@ -16,7 +16,7 @@ using asio::buffer;
 namespace cinder::net {
 
 TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
-    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
+    std::string_view node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
     ConsistencyMode mode, GossipManager* gossip
 #ifdef CINDER_ENABLE_TLS
     ,
@@ -29,10 +29,11 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       clock_(clock),
       repl_(repl),
       gossip_(gossip),
-      node_id_(std::move(node_id)),
+      node_id_(node_id),
       replica_factor_(replica_factor),
       mode_(mode),
-      read_buf_{} {
+      read_buf_{},
+      encode_buf_(512) { // pre-allocate for typical requests
 #ifdef CINDER_ENABLE_TLS
     if (ssl_ctx) {
         ssl_stream_.emplace(socket_, *ssl_ctx);
@@ -304,7 +305,7 @@ TcpConnection::handleRequest(const Request& req) {
             if (gossip_ != nullptr) {
                 // Sender identity is best-effort: the connection knows only its
                 // own node_id_; the sender's entry is always inside the payload.
-                gossip_->handleMessage(node_id_, req);
+                gossip_->handleMessage(std::string(node_id_), req);
             }
             res.status = Errc::OK;
             break;

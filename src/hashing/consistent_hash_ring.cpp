@@ -29,6 +29,7 @@ ConsistentHashRing::addNode(const NodeId& node_id) {
     }
 
     auto snap = std::make_shared<RingSnapshot>();
+    snap->ring.reserve(old->ring.size() + static_cast<size_t>(vnodes_per_node_));
     snap->ring = old->ring;
     snap->physical_nodes = old->physical_nodes;
     snap->physical_nodes.push_back(node_id);

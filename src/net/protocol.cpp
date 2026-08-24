@@ -2,10 +2,14 @@
 
 #include <array>
 #include <bit>
+#include <cassert>
 #include <cstddef>
 #include <cstring>
 #include <span>
 #include <utility>
+
+#include "cinder/net/byte_reader.hpp"
+#include "cinder/net/byte_writer.hpp"
 
 namespace cinder::net {
 using std::chrono::duration_cast;
@@ -38,7 +42,19 @@ static_assert(toNet(toNet(uint32_t{0x01020304})) == uint32_t{0x01020304});
 // to host order, yielding the same value on both endians.
 constexpr std::array<std::byte, 4> K_NET_BE_BYTES = {
     std::byte{0x01}, std::byte{0x02}, std::byte{0x03}, std::byte{0x04}};
+
 static_assert(readBe32(K_NET_BE_BYTES.data()) == 0x01020304U);
+
+// Reads a value from the ByteReader after the frame has been pre-validated.
+// The frame size, magic, version, and payload_len have already been checked,
+// so every subsequent read is guaranteed to succeed. On programmer error
+// (incorrect size calculation), this throws std::bad_expected_access.
+template <typename T>
+static auto
+mustRead(ByteReader& r) -> T {
+    auto val = r.read<T>();
+    return std::move(val).value();
+}
 
 auto
 encode(const Request& req) -> Result<std::vector<std::byte>> {
@@ -72,16 +88,12 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     }
 
     out.resize(total); // reuses capacity across calls
-    size_t off = 0;
+    ByteWriter w(out);
 
-    out[off++] = std::byte{K_MAGIC};
-    out[off++] = std::byte{K_VERSION};
-    out[off++] = std::byte{std::to_underlying(req.opcode)};
-
-    uint32_t net_len = payload_size;
-    net_len = toNet(net_len);
-    std::memcpy(&out[off], &net_len, sizeof(net_len));
-    off += sizeof(net_len);
+    w.writeByte(K_MAGIC);
+    w.writeByte(K_VERSION);
+    w.writeByte(std::to_underlying(req.opcode));
+    w.write(static_cast<uint32_t>(payload_size));
 
     uint8_t flags = 0;
     if (req.ttl.has_value()) {
@@ -91,42 +103,24 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
         flags |= K_FLAG_HAS_EXPIRES_AT;
     }
 
-    out[off++] = std::byte{flags};
+    w.writeByte(flags);
     if (req.ttl.has_value()) {
-        auto net_ttl = static_cast<uint32_t>(req.ttl->count());
-        net_ttl = toNet(net_ttl);
-        std::memcpy(&out[off], &net_ttl, sizeof(net_ttl));
-        off += sizeof(net_ttl);
+        w.write(static_cast<uint32_t>(req.ttl->count()));
     }
     if (req.expires_at.has_value()) {
-        uint64_t net_expiry = static_cast<uint64_t>(
-            duration_cast<milliseconds>(req.expires_at->time_since_epoch()).count());
-        net_expiry = toNet(net_expiry);
-        std::memcpy(&out[off], &net_expiry, sizeof(net_expiry));
-        off += sizeof(net_expiry);
+        w.write(static_cast<uint64_t>(
+            duration_cast<milliseconds>(req.expires_at->time_since_epoch()).count()));
     }
 
-    uint64_t net_version = toNet(req.version);
-    std::memcpy(&out[off], &net_version, sizeof(net_version));
-    off += sizeof(net_version);
+    w.write(req.version);
+    w.write(req.writer_node_hash);
 
-    uint64_t net_writer = toNet(req.writer_node_hash);
-    std::memcpy(&out[off], &net_writer, sizeof(net_writer));
-    off += sizeof(net_writer);
+    w.write(static_cast<uint32_t>(req.key.size()));
+    w.writeString(req.key);
 
-    auto net_key_len = static_cast<uint32_t>(req.key.size());
-    net_key_len = toNet(net_key_len);
-    std::memcpy(&out[off], &net_key_len, sizeof(net_key_len));
-    off += sizeof(net_key_len);
-    std::memcpy(&out[off], req.key.data(), req.key.size());
-    off += req.key.size();
-
-    auto net_val_len = static_cast<uint32_t>(req.value.size());
-    net_val_len = toNet(net_val_len);
-    std::memcpy(&out[off], &net_val_len, sizeof(net_val_len));
-    off += sizeof(net_val_len);
+    w.write(static_cast<uint32_t>(req.value.size()));
     if (!req.value.empty()) {
-        std::memcpy(&out[off], req.value.data(), req.value.size());
+        w.writeString(req.value);
     }
     return ok();
 }
@@ -151,72 +145,50 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         return err<Request>(Error(Errc::InvalidArgument, "truncated frame"));
     }
 
+    ByteReader r(frame);
+    // Skip header (magic + version + opcode + payload_len) — already validated above.
+    mustRead<uint8_t>(r); // magic
+    mustRead<uint8_t>(r); // version
+
     Request req;
-    uint8_t raw_opcode = std::to_underlying(frame[2]);
+    auto raw_opcode = mustRead<uint8_t>(r);
     if (raw_opcode < std::to_underlying(Opcode::Get)
         || raw_opcode > std::to_underlying(Opcode::GetVersioned)) {
         return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
 
-    req.opcode = static_cast<Opcode>(frame[2]);
-    size_t off = K_FRAME_HEADER_SIZE;
-    auto flags = static_cast<uint8_t>(frame[off++]);
+    req.opcode = static_cast<Opcode>(raw_opcode);
+    mustRead<uint32_t>(r); // payload_len — already validated
+
+    auto flags = mustRead<uint8_t>(r);
     bool has_ttl = (flags & K_FLAG_HAS_TTL) != 0;
     bool has_expires_at = (flags & K_FLAG_HAS_EXPIRES_AT) != 0;
     if (has_ttl) {
-        if (off + sizeof(uint32_t) > frame.size()) {
-            return err<Request>(Error(Errc::InvalidArgument, "truncated ttl"));
-        }
-
-        uint32_t ttl_ms = readBe32(&frame[off]);
-        off += sizeof(uint32_t);
-        req.ttl = milliseconds(ttl_ms);
+        req.ttl = milliseconds(mustRead<uint32_t>(r));
     }
     if (has_expires_at) {
-        if (off + sizeof(uint64_t) > frame.size()) {
-            return err<Request>(Error(Errc::InvalidArgument, "truncated expires_at"));
-        }
-
-        uint64_t net_expiry = 0;
-        std::memcpy(&net_expiry, &frame[off], sizeof(net_expiry));
-        net_expiry = toNet(net_expiry);
-        off += sizeof(net_expiry);
-        req.expires_at = system_clock::time_point(milliseconds(net_expiry));
-    }
-    if (off + sizeof(uint64_t) > frame.size()) {
-        return err<Request>(Error(Errc::InvalidArgument, "truncated version"));
+        req.expires_at = system_clock::time_point(milliseconds(mustRead<uint64_t>(r)));
     }
 
-    uint64_t net_version = 0;
-    std::memcpy(&net_version, &frame[off], sizeof(net_version));
-    req.version = toNet(net_version);
-    off += sizeof(net_version);
-    if (off + sizeof(uint64_t) > frame.size()) {
-        return err<Request>(Error(Errc::InvalidArgument, "truncated writer"));
-    }
+    req.version = mustRead<uint64_t>(r);
+    req.writer_node_hash = mustRead<uint64_t>(r);
 
-    uint64_t net_writer = 0;
-    std::memcpy(&net_writer, &frame[off], sizeof(net_writer));
-    req.writer_node_hash = toNet(net_writer);
-    off += sizeof(net_writer);
-    if (off + sizeof(uint32_t) > frame.size()) {
-        return err<Request>(Error(Errc::InvalidArgument, "truncated key length"));
-    }
-
-    uint32_t key_len = readBe32(&frame[off]);
-    off += sizeof(uint32_t);
+    auto key_len = mustRead<uint32_t>(r);
     if (key_len > 0) {
-        req.key.assign(reinterpret_cast<const char*>(&frame[off]), key_len);
-        off += key_len;
-    }
-    if (off + sizeof(uint32_t) > frame.size()) {
-        return err<Request>(Error(Errc::InvalidArgument, "truncated value length"));
+        auto key_bytes = r.readBytes(key_len);
+        if (!key_bytes) {
+            return err<Request>(key_bytes.error());
+        }
+        req.key.assign(reinterpret_cast<const char*>(key_bytes->data()), key_len);
     }
 
-    uint32_t val_len = readBe32(&frame[off]);
-    off += sizeof(uint32_t);
+    auto val_len = mustRead<uint32_t>(r);
     if (val_len > 0) {
-        req.value.assign(reinterpret_cast<const char*>(&frame[off]), val_len);
+        auto val_bytes = r.readBytes(val_len);
+        if (!val_bytes) {
+            return err<Request>(val_bytes.error());
+        }
+        req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), val_len);
     }
     return ok(std::move(req));
 }
@@ -252,36 +224,23 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
 
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     out.resize(total); // reuses capacity across calls
-    size_t off = 0;
+    ByteWriter w(out);
 
-    out[off++] = std::byte{K_MAGIC};
-    out[off++] = std::byte{K_VERSION};
-    out[off++] = std::byte{0}; // response opcode unused
+    w.writeByte(K_MAGIC);
+    w.writeByte(K_VERSION);
+    w.writeByte(0); // response opcode unused
+    w.write(static_cast<uint32_t>(payload_size));
 
-    uint32_t net_len = payload_size;
-    net_len = toNet(net_len);
-    std::memcpy(&out[off], &net_len, sizeof(net_len));
-    off += sizeof(net_len);
-
-    out[off++] = std::byte{std::to_underlying(res.status)};
-    out[off++] = std::byte{flags};
+    w.writeByte(std::to_underlying(res.status));
+    w.writeByte(flags);
     if (has_version_meta) {
-        uint64_t net_version = toNet(res.version);
-        std::memcpy(&out[off], &net_version, sizeof(net_version));
-        off += sizeof(net_version);
-
-        uint64_t net_writer = toNet(res.writer_node_hash);
-        std::memcpy(&out[off], &net_writer, sizeof(net_writer));
-        off += sizeof(net_writer);
+        w.write(res.version);
+        w.write(res.writer_node_hash);
     }
 
-    uint32_t has_val = res.value.has_value() ? 1 : 0;
-    uint32_t net_has_val = toNet(has_val);
-
-    std::memcpy(&out[off], &net_has_val, sizeof(net_has_val));
-    off += sizeof(net_has_val);
+    w.write(static_cast<uint32_t>(res.value.has_value() ? 1 : 0));
     if (res.value.has_value()) {
-        std::memcpy(&out[off], res.value->data(), res.value->size());
+        w.writeString(*res.value);
     }
     return ok();
 }
@@ -303,39 +262,36 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
         return err<Response>(Error(Errc::InvalidArgument, "truncated frame"));
     }
 
-    Response res;
-    size_t off = K_FRAME_HEADER_SIZE;
+    ByteReader r(frame);
+    // Skip header — already validated above.
+    mustRead<uint8_t>(r);  // magic
+    mustRead<uint8_t>(r);  // version
+    mustRead<uint8_t>(r);  // opcode (unused for responses)
+    mustRead<uint32_t>(r); // payload_len
 
-    res.status = static_cast<Errc>(frame[off++]);
+    Response res;
+    res.status = static_cast<Errc>(mustRead<uint8_t>(r));
+
     // Flags byte — present from protocol v3 onwards. Bit 0 = version metadata.
     uint8_t flags = 0;
-    if (off < K_FRAME_HEADER_SIZE + payload_len) {
-        flags = static_cast<uint8_t>(frame[off++]);
+    if (r.remaining() > 0) {
+        flags = mustRead<uint8_t>(r);
     }
     if (flags & 0x01U) {
-        if (off + sizeof(uint64_t) + sizeof(uint64_t) > frame.size()) {
-            return err<Response>(Error(Errc::InvalidArgument, "truncated version metadata"));
-        }
-
-        uint64_t net_version = 0;
-        std::memcpy(&net_version, &frame[off], sizeof(net_version));
-        res.version = toNet(net_version);
-        off += sizeof(net_version);
-
-        uint64_t net_writer = 0;
-        std::memcpy(&net_writer, &frame[off], sizeof(net_writer));
-        res.writer_node_hash = toNet(net_writer);
-        off += sizeof(net_writer);
-    }
-    if (off + sizeof(uint32_t) > frame.size()) {
-        return err<Response>(Error(Errc::InvalidArgument, "truncated has_val"));
+        res.version = mustRead<uint64_t>(r);
+        res.writer_node_hash = mustRead<uint64_t>(r);
     }
 
-    uint32_t has_val = readBe32(&frame[off]);
-    off += sizeof(uint32_t);
+    auto has_val = mustRead<uint32_t>(r);
     if (has_val) {
-        size_t val_len = frame.size() - off;
-        res.value = std::string(reinterpret_cast<const char*>(&frame[off]), val_len);
+        size_t val_len = r.remaining();
+        if (val_len > 0) {
+            auto val_bytes = r.readBytes(val_len);
+            if (!val_bytes) {
+                return err<Response>(val_bytes.error());
+            }
+            res.value = std::string(reinterpret_cast<const char*>(val_bytes->data()), val_len);
+        }
     }
     return ok(std::move(res));
 }

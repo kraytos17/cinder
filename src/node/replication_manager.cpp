@@ -1,6 +1,5 @@
 #include "cinder/node/replication_manager.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string_view>
@@ -232,70 +231,42 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     }
 }
 
+auto
+ReplicationManager::hintCount() const -> size_t {
+    return hints_.size();
+}
+
+void
+ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
+    Logger::debug("cinder replication: hint enqueued target={} key={}", target, req.key);
+    hints_.push({target, req, clock_.now() + K_HINT_TTL});
+}
+
 void
 ReplicationManager::replayHints(ReplayCallback on_done) {
-    std::vector<Hint> snapshot;
-    {
-        std::scoped_lock lock(hints_mutex_);
-        snapshot.assign(hints_.begin(), hints_.end());
-    }
-    if (snapshot.empty()) {
-        on_done(0);
-        return;
-    }
-
+    auto now = clock_.now();
     auto state = std::make_shared<ReplayState>();
     state->done = std::make_shared<ReplayCallback>(std::move(on_done));
-    state->pending = snapshot.size();
-    auto now = clock_.now();
-    for (const auto& hint : snapshot) {
-        if (hint.expires_at <= now) {
-            // Expired — drop.
-            std::scoped_lock lock(hints_mutex_);
-            removeHint(hint);
-            if (--state->pending == 0) {
-                (*state->done)(state->replayed);
-            }
-            continue;
-        }
 
+    bool has_hints = false;
+    hints_.replay([&](const HintQueue::Hint& hint) {
+        has_hints = true;
+        ++state->pending;
         transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
             if (r.has_value()) {
-                std::scoped_lock lock(hints_mutex_);
-                removeHint(hint);
+                hints_.remove(hint.target, hint.req);
                 ++state->replayed;
             }
             if (--state->pending == 0) {
                 (*state->done)(state->replayed);
             }
         });
-    }
-}
+    }, now);
 
-auto
-ReplicationManager::hintCount() const -> size_t {
-    std::scoped_lock lock(hints_mutex_);
-    return hints_.size();
-}
-
-void
-ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
-    std::scoped_lock lock(hints_mutex_);
-    Logger::debug("cinder replication: hint enqueued target={} key={}", target, req.key);
-    if (hints_.size() >= K_MAX_HINTS) {
-        hints_.pop_front(); // drop oldest to bound memory
-    }
-    hints_.push_back({target, req, clock_.now() + K_HINT_TTL});
-}
-
-void
-ReplicationManager::removeHint(const Hint& hint) {
-    auto it = std::find_if(hints_.begin(), hints_.end(), [&](const Hint& h) {
-        return h.target == hint.target && h.req.key == hint.req.key
-               && h.req.version == hint.req.version;
-    });
-    if (it != hints_.end()) {
-        hints_.erase(it);
+    // Only call on_done here if the queue was empty (no async callbacks to wait for).
+    // When hints exist, the sendAsync callbacks call on_done when all complete.
+    if (!has_hints) {
+        (*state->done)(0);
     }
 }
 } // namespace cinder

@@ -1,10 +1,8 @@
 #pragma once
 
 #include <chrono>
-#include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +11,7 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
+#include "cinder/node/hint_queue.hpp"
 #include "cinder/store/cache_store.hpp"
 
 namespace cinder {
@@ -68,12 +67,6 @@ class ReplicationManager {
     static constexpr size_t K_MAX_HINTS = 1'024;
     static constexpr milliseconds K_HINT_TTL{30'000};
 
-    struct Hint {
-        NodeId target;
-        net::Request req;
-        steady_clock::time_point expires_at;
-    };
-
     // Shared per-write quorum accounting (owned by the in-flight sendAsync
     // callbacks; destroyed when the last one completes).
     struct QuorumState {
@@ -105,14 +98,11 @@ class ReplicationManager {
     };
 
     void enqueueHint(const NodeId& target, const net::Request& req);
-    void removeHint(const Hint& hint);
 
     CacheStore& local_;
     NodeId self_;
     Clock& clock_;
     Transport& transport_;
-
-    mutable std::mutex hints_mutex_;
-    std::deque<Hint> hints_;
+    HintQueue hints_;
 };
 } // namespace cinder

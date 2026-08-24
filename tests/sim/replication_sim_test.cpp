@@ -63,8 +63,7 @@ runWrite(ReplicationManager& mgr, const std::string& key, std::string value,
     std::optional<milliseconds> ttl, const std::vector<NodeId>& replicas, ConsistencyMode mode)
     -> Result<void> {
     Result<void> result = err(Error(Errc::InternalError));
-    mgr.writeAsync(
-        key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = r; });
+    mgr.writeAsync(key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = r; });
     return result;
 }
 
