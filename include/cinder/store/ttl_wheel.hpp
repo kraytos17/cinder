@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -17,7 +18,7 @@ class TtlWheel {
 
     void insert(const std::string& key, size_t ttl_ticks);
     void remove(const std::string& key);
-    auto tick() -> std::vector<std::string>;
+    void tick(std::move_only_function<void(const std::string&)> on_expired);
 
     [[nodiscard]] auto cursor() const -> size_t;
 

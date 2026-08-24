@@ -64,7 +64,7 @@ runWrite(ReplicationManager& mgr, const std::string& key, std::string value,
     -> Result<void> {
     Result<void> result = err(Error(Errc::InternalError));
     mgr.writeAsync(
-        key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = std::move(r); });
+        key, std::move(value), ttl, replicas, mode, [&](Result<void> r) { result = r; });
     return result;
 }
 

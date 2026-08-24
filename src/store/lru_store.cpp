@@ -145,7 +145,7 @@ LruStore::forEach(
     // may safely call store mutators without self-deadlocking.
     std::vector<std::pair<std::string, VersionedEntry>> items;
     {
-        std::scoped_lock lock(mutex_);
+        std::shared_lock lock(mutex_);
         items.reserve(lru_list_.size());
         auto current = now();
         for (const auto& node : lru_list_) {
@@ -162,7 +162,7 @@ LruStore::forEach(
 
 auto
 LruStore::get(const std::string& key) -> std::optional<std::string> {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -184,7 +184,7 @@ LruStore::get(const std::string& key) -> std::optional<std::string> {
 
 auto
 LruStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -232,7 +232,7 @@ LruStore::remove(const std::string& key) -> bool {
 
 auto
 LruStore::size() const -> size_t {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
     return index_.size();
 }
 
@@ -251,10 +251,10 @@ LruStore::evictExpired() -> size_t {
 
     size_t evicted = 0;
     for (size_t i = 0; i < ticks; ++i) {
-        for (const auto& key : wheel_.tick()) {
+        wheel_.tick([&](const std::string& key) {
             auto it = index_.find(key);
             if (it == index_.end()) {
-                continue; // already removed
+                return; // already removed
             }
 
             auto& node = it->second;
@@ -267,7 +267,7 @@ LruStore::evictExpired() -> size_t {
             } else {
                 wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
             }
-        }
+        });
     }
     return evicted;
 }

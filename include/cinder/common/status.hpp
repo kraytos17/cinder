@@ -1,9 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <source_location>
-#include <string>
 #include <string_view>
 #include <utility>
 
@@ -24,15 +25,21 @@ enum class Errc : uint8_t {
 class Error {
   public:
 
-    explicit Error(Errc code, std::string message = {},
+    // For compile-time string literals — zero heap allocation.
+    explicit Error(Errc code, std::string_view message = {},
         std::source_location loc = std::source_location::current())
         : code_(code),
-          message_(std::move(message)),
-          location_(loc) {}
+          location_(loc) {
+        auto n = std::min(message.size(), msg_buf_.size() - 1);
+        std::memcpy(msg_buf_.data(), message.data(), n);
+        msg_len_ = static_cast<uint8_t>(n);
+    }
 
     [[nodiscard]] auto code() const noexcept -> Errc { return code_; }
 
-    [[nodiscard]] auto message() const noexcept -> std::string_view { return message_; }
+    [[nodiscard]] auto message() const noexcept -> std::string_view {
+        return {msg_buf_.data(), msg_len_};
+    }
 
     [[nodiscard]] auto location() const noexcept -> const std::source_location& {
         return location_;
@@ -41,7 +48,8 @@ class Error {
   private:
 
     Errc code_;
-    std::string message_;
+    std::array<char, 48> msg_buf_{};
+    uint8_t msg_len_ = 0;
     std::source_location location_;
 };
 
@@ -86,11 +94,11 @@ ok() -> Result<void> {
 template <typename T>
 auto
 err(Error error) -> Result<T> {
-    return std::unexpected(std::move(error));
+    return std::unexpected(error);
 }
 
 inline auto
 err(Error error) -> Result<void> {
-    return std::unexpected(std::move(error));
+    return std::unexpected(error);
 }
 } // namespace cinder

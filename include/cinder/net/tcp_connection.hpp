@@ -75,25 +75,26 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     template <typename ConstBufferSequence, typename Handler>
     void doAsyncWrite(const ConstBufferSequence& buf, Handler handler);
 
-    tcp::socket socket_;
+    // Hot path: socket + control flags in the same cache line.
+    alignas(64) tcp::socket socket_;
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::stream<tcp::socket&>> ssl_stream_;
 #endif
+    size_t payload_len_ = 0;
+    bool writing_ = false;
+    bool reading_ = false;
+
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     Clock& clock_;
-    std::string node_id_;
     ReplicationManager* repl_;
+    GossipManager* gossip_;
+    std::string node_id_;
     int replica_factor_;
     ConsistencyMode mode_;
-    GossipManager* gossip_;
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
-    size_t payload_len_ = 0;
-
     std::deque<std::vector<std::byte>> write_queue_;
     std::vector<std::byte> encode_buf_; // scratch; recycles write_queue_ capacity
-    bool writing_ = false;
-    bool reading_ = false;
 };
 } // namespace cinder::net

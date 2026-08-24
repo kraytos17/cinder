@@ -27,11 +27,11 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       store_(store),
       ring_(ring),
       clock_(clock),
-      node_id_(std::move(node_id)),
       repl_(repl),
+      gossip_(gossip),
+      node_id_(std::move(node_id)),
       replica_factor_(replica_factor),
       mode_(mode),
-      gossip_(gossip),
       read_buf_{} {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_ctx) {

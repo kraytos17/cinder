@@ -33,10 +33,11 @@ struct CacheEntry {
 };
 
 struct VersionedEntry {
-    std::string value;
+    bool has_ttl = false;
+    // 7 bytes padding
+    steady_clock::time_point expires_at;
     Version version = 0;
     uint64_t writer_node_hash = 0;
-    steady_clock::time_point expires_at;
-    bool has_ttl = false;
+    std::string value;
 };
 } // namespace cinder

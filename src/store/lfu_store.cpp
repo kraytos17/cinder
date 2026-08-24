@@ -78,11 +78,13 @@ LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
     next_version_ = std::max(next_version_, entry.version + 1);
     bool has_ttl = entry.has_ttl;
     auto expires_at = entry.expires_at;
-    lfu_list_.push_front({.key = key, .entry = std::move(entry), .freq = 1});
+
+    lfu_list_.push_front({.freq = 1, .key = key, .entry = std::move(entry)});
     index_[key] = lfu_list_.begin();
-    freq_buckets_[1].push_front(lfu_list_.begin());
+    freq_buckets_[1].push_back(lfu_list_.begin());
     min_freq_ = 1;
     current_bytes_ += entry_size;
+
     evictIfNeeded();
     if (has_ttl) {
         wheel_.insert(key, expiryTicks(expires_at));
@@ -105,7 +107,7 @@ LfuStore::forEach(
     // may safely call store mutators without self-deadlocking.
     std::vector<std::pair<std::string, VersionedEntry>> items;
     {
-        std::scoped_lock lock(mutex_);
+        std::shared_lock lock(mutex_);
         items.reserve(lfu_list_.size());
         auto current = now();
         for (const auto& node : lfu_list_) {
@@ -122,7 +124,7 @@ LfuStore::forEach(
 
 auto
 LfuStore::get(const std::string& key) -> std::optional<std::string> {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -145,7 +147,7 @@ LfuStore::get(const std::string& key) -> std::optional<std::string> {
 
 auto
 LfuStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -176,6 +178,7 @@ LfuStore::remove(const std::string& key) -> bool {
     auto& node = it->second;
     current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
     wheel_.remove(key);
+
     removeFromFreqBucket(node);
     lfu_list_.erase(node);
     index_.erase(it);
@@ -184,7 +187,7 @@ LfuStore::remove(const std::string& key) -> bool {
 
 auto
 LfuStore::size() const -> size_t {
-    std::scoped_lock lock(mutex_);
+    std::shared_lock lock(mutex_);
     return index_.size();
 }
 
@@ -203,10 +206,10 @@ LfuStore::evictExpired() -> size_t {
 
     size_t evicted = 0;
     for (size_t i = 0; i < ticks; ++i) {
-        for (const auto& key : wheel_.tick()) {
+        wheel_.tick([&](const std::string& key) {
             auto it = index_.find(key);
             if (it == index_.end()) {
-                continue; // already removed
+                return; // already removed
             }
 
             auto& node = it->second;
@@ -222,7 +225,7 @@ LfuStore::evictExpired() -> size_t {
                 // key is still reaped at its true expiry.
                 wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
             }
-        }
+        });
     }
     return evicted;
 }
@@ -234,7 +237,7 @@ LfuStore::incrementFreq(ListIt it) {
     it->freq = new_freq;
 
     removeFromFreqBucket(it, old_freq);
-    freq_buckets_[new_freq].push_front(it);
+    freq_buckets_[new_freq].push_back(it);
     if (old_freq == min_freq_ && freq_buckets_[old_freq].empty()) {
         ++min_freq_;
     }
@@ -249,8 +252,9 @@ void
 LfuStore::removeFromFreqBucket(ListIt it, size_t freq) {
     auto bucket_it = freq_buckets_.find(freq);
     if (bucket_it != freq_buckets_.end()) {
-        bucket_it->second.remove(it);
-        if (bucket_it->second.empty()) {
+        auto& vec = bucket_it->second;
+        vec.erase(std::remove(vec.begin(), vec.end(), it), vec.end());
+        if (vec.empty()) {
             freq_buckets_.erase(bucket_it);
             if (freq == min_freq_) {
                 min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
@@ -273,8 +277,8 @@ LfuStore::evictOne() {
         return;
     }
 
-    auto node_it = bucket_it->second.back();
-    bucket_it->second.pop_back();
+    auto node_it = bucket_it->second.front();
+    bucket_it->second.erase(bucket_it->second.begin());
     if (bucket_it->second.empty()) {
         freq_buckets_.erase(bucket_it);
         min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;

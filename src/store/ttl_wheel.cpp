@@ -26,22 +26,15 @@ TtlWheel::remove(const std::string& key) {
     key_to_slot_.erase(it);
 }
 
-auto
-TtlWheel::tick() -> std::vector<std::string> {
+void
+TtlWheel::tick(std::move_only_function<void(const std::string&)> on_expired) {
     cursor_ = (cursor_ + 1) % K_SLOT_COUNT;
     auto& slot = wheel_[cursor_];
-    if (slot.empty()) {
-        return {};
-    }
-
-    std::vector<std::string> expired;
-    expired.reserve(slot.size());
     for (const auto& key : slot) {
         key_to_slot_.erase(key);
-        expired.push_back(key);
+        on_expired(key);
     }
     slot.clear();
-    return expired;
 }
 
 auto

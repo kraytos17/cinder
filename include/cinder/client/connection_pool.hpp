@@ -68,8 +68,9 @@ class ConnectionPool {
 
         PoolEntry(const PoolEntry&) = delete;
         auto operator=(const PoolEntry&) -> PoolEntry& = delete;
-        PoolEntry(PoolEntry&&) = default;
-        auto operator=(PoolEntry&&) -> PoolEntry& = default;
+        PoolEntry(PoolEntry&&) noexcept = default;
+        auto operator=(PoolEntry&&) noexcept -> PoolEntry& = default;
+        ~PoolEntry() = default;
 
 #ifdef CINDER_ENABLE_TLS
         std::unique_ptr<stream_type> stream;

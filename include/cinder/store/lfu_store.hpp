@@ -2,9 +2,10 @@
 
 #include <chrono>
 #include <cstddef>
+#include <functional>
 #include <list>
-#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -40,9 +41,9 @@ class LfuStore : public CacheStore {
   private:
 
     struct Node {
+        size_t freq = 1; // touched on every get() — keep in first cache line
         std::string key;
         VersionedEntry entry;
-        size_t freq = 1;
     };
 
     using ListIt = std::list<Node, SlabAllocator<Node>>::iterator;
@@ -57,11 +58,11 @@ class LfuStore : public CacheStore {
     // cursor, so sub-second TTLs are reaped on the very next evictExpired.
     auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
 
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::list<Node, SlabAllocator<Node>> lfu_list_;
     std::unordered_map<std::string, ListIt> index_;
     TtlWheel wheel_;
-    std::unordered_map<size_t, std::list<ListIt>> freq_buckets_;
+    std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
     size_t min_freq_ = 1;
     size_t capacity_bytes_;
     steady_clock::time_point last_evict_;

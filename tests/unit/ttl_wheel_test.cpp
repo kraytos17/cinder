@@ -1,20 +1,29 @@
 #include <gtest/gtest.h>
+#include <vector>
 
 #include "cinder/store/ttl_wheel.hpp"
 
 namespace cinder {
 namespace {
 
+// Helper: tick once and collect expired keys via callback.
+auto
+tickCollect(TtlWheel& wheel) -> std::vector<std::string> {
+    std::vector<std::string> expired;
+    wheel.tick([&](const std::string& key) { expired.push_back(key); });
+    return expired;
+}
+
 TEST(TtlWheelTest, InsertAndTick) {
     TtlWheel wheel;
     wheel.insert("key1", 1);
     wheel.insert("key2", 2);
 
-    auto expired = wheel.tick();
+    auto expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 1);
     EXPECT_EQ(expired[0], "key1");
 
-    expired = wheel.tick();
+    expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 1);
     EXPECT_EQ(expired[0], "key2");
 }
@@ -24,7 +33,7 @@ TEST(TtlWheelTest, NoExpiryBeforeSlot) {
     wheel.insert("key", 5);
 
     for (int i = 0; i < 4; i++) {
-        auto expired = wheel.tick();
+        auto expired = tickCollect(wheel);
         EXPECT_TRUE(expired.empty());
     }
 }
@@ -34,7 +43,7 @@ TEST(TtlWheelTest, MultipleExpiries) {
     wheel.insert("a", 1);
     wheel.insert("b", 1);
 
-    auto expired = wheel.tick();
+    auto expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 2);
 }
 
@@ -43,7 +52,7 @@ TEST(TtlWheelTest, RemoveBeforeExpiry) {
     wheel.insert("key", 1);
     wheel.remove("key");
 
-    auto expired = wheel.tick();
+    auto expired = tickCollect(wheel);
     EXPECT_TRUE(expired.empty());
 }
 
@@ -52,11 +61,11 @@ TEST(TtlWheelTest, InsertOverwritesRemovesOldSlot) {
     wheel.insert("key", 1);
     wheel.insert("key", 10); // expiry moved — must leave slot 1
     for (int i = 0; i < 9; i++) {
-        auto expired = wheel.tick();
+        auto expired = tickCollect(wheel);
         EXPECT_TRUE(expired.empty()) << "stale entry fired from old slot at tick " << i;
     }
 
-    auto expired = wheel.tick();
+    auto expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 1);
     EXPECT_EQ(expired[0], "key");
 }
@@ -65,7 +74,7 @@ TEST(TtlWheelTest, WrapAround) {
     TtlWheel wheel;
     wheel.insert("key", TtlWheel::K_SLOT_COUNT);
     for (size_t i = 0; i < TtlWheel::K_SLOT_COUNT; i++) {
-        auto expired = wheel.tick();
+        auto expired = tickCollect(wheel);
         if (!expired.empty()) {
             ASSERT_EQ(expired.size(), 1);
             EXPECT_EQ(expired[0], "key");

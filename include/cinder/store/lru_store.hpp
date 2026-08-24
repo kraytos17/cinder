@@ -3,8 +3,8 @@
 #include <chrono>
 #include <cstddef>
 #include <list>
-#include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <unordered_map>
 
@@ -57,7 +57,7 @@ class LruStore : public CacheStore {
     // cursor, so sub-second TTLs are reaped on the very next evictExpired.
     auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
 
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::list<Node, SlabAllocator<Node>> lru_list_;
     std::unordered_map<std::string, ListIt> index_;
     TtlWheel wheel_;
