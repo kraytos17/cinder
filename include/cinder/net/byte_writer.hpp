@@ -20,8 +20,7 @@ class ByteWriter {
     explicit ByteWriter(std::vector<std::byte>& out)
         : out_(out) {}
 
-    template <typename T>
-    void write(T val) {
+    template <typename T> void write(T val) {
         assert(off_ + sizeof(T) <= out_.size());
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
         std::memcpy(&out_[off_], &val, sizeof(T));
@@ -44,8 +43,8 @@ class ByteWriter {
     }
 
     void writeString(std::string_view s) {
-        writeBytes(std::span<const std::byte>(
-            reinterpret_cast<const std::byte*>(s.data()), s.size()));
+        writeBytes(
+            std::span<const std::byte>(reinterpret_cast<const std::byte*>(s.data()), s.size()));
     }
 
     [[nodiscard]] auto offset() const -> size_t { return off_; }

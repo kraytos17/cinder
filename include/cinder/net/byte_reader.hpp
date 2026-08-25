@@ -19,8 +19,7 @@ class ByteReader {
     explicit ByteReader(std::span<const std::byte> data)
         : data_(data) {}
 
-    template <typename T>
-    auto read() -> Result<T> {
+    template <typename T> auto read() -> Result<T> {
         if (off_ + sizeof(T) > data_.size()) {
             return err<T>(Error(Errc::InvalidArgument, "truncated"));
         }
@@ -60,6 +59,7 @@ class ByteReader {
     }
 
     [[nodiscard]] auto offset() const -> size_t { return off_; }
+
     [[nodiscard]] auto remaining() const -> size_t { return data_.size() - off_; }
 
   private:

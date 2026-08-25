@@ -40,8 +40,10 @@ class HintQueue {
         if (next == tail_.load(std::memory_order_acquire)) {
             // Queue full — drop oldest hint to make room.
             auto old_tail = tail_.load(std::memory_order_relaxed);
-            if (tail_.compare_exchange_weak(old_tail, (old_tail + 1) % K_CAPACITY,
-                    std::memory_order_acq_rel, std::memory_order_relaxed)) {
+            if (tail_.compare_exchange_weak(old_tail,
+                    (old_tail + 1) % K_CAPACITY,
+                    std::memory_order_acq_rel,
+                    std::memory_order_relaxed)) {
                 slots_[old_tail].hint.reset();
                 slots_[old_tail].occupied.store(false, std::memory_order_release);
                 count_.fetch_sub(1, std::memory_order_relaxed);
@@ -53,8 +55,8 @@ class HintQueue {
         // Claim the slot.
         head = head_.load(std::memory_order_relaxed);
         next = (head + 1) % K_CAPACITY;
-        if (!head_.compare_exchange_weak(head, next,
-                std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        if (!head_.compare_exchange_weak(
+                head, next, std::memory_order_acq_rel, std::memory_order_relaxed)) {
             return false; // concurrent producer, retry later
         }
 
@@ -66,8 +68,7 @@ class HintQueue {
 
     // Main-thread only: iterate all entries, call fn for each valid hint.
     // Removes expired hints. Does NOT advance tail_ — only remove() consumes slots.
-    template <typename Fn>
-    auto replay(Fn&& fn, steady_clock::time_point now) -> size_t {
+    template <typename Fn> auto replay(Fn&& fn, steady_clock::time_point now) -> size_t {
         size_t replayed = 0;
         size_t tail = tail_.load(std::memory_order_relaxed);
         size_t head = head_.load(std::memory_order_acquire);
@@ -95,7 +96,8 @@ class HintQueue {
     // Main-thread only: remove a specific hint (by key+target match).
     void remove(const NodeId& target, const net::Request& req) {
         size_t head = head_.load(std::memory_order_acquire);
-        for (size_t i = tail_.load(std::memory_order_relaxed); i != head; i = (i + 1) % K_CAPACITY) {
+        for (size_t i = tail_.load(std::memory_order_relaxed); i != head;
+            i = (i + 1) % K_CAPACITY) {
             auto& slot = slots_[i];
             if (slot.occupied.load(std::memory_order_relaxed)) {
                 auto& hint = *slot.hint;
@@ -110,9 +112,7 @@ class HintQueue {
         }
     }
 
-    [[nodiscard]] auto size() const -> size_t {
-        return count_.load(std::memory_order_relaxed);
-    }
+    [[nodiscard]] auto size() const -> size_t { return count_.load(std::memory_order_relaxed); }
 
   private:
 
