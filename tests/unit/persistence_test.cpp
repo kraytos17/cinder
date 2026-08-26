@@ -1,3 +1,4 @@
+#include <chrono>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -7,9 +8,23 @@
 #include "cinder/store/snapshot.hpp"
 #include "cinder/store/wal.hpp"
 #include "gtest/gtest.h"
+#include "sim/sim_clock.hpp"
+
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
 
 namespace cinder {
 namespace {
+
+PersistenceManager::Options
+pmOptions(const std::filesystem::path& dir) {
+    return {
+        .data_dir = dir.string(),
+        .enabled = true,
+        .snapshot_interval_s = 60,
+        .max_wal_entries = 100,
+    };
+}
 
 class PersistenceTest : public ::testing::Test {
   protected:
@@ -132,8 +147,6 @@ TEST_F(PersistenceTest, WalEmptyFile) {
     EXPECT_FALSE(reader.hasMore());
 }
 
-// --- Snapshot Tests ---
-
 TEST_F(PersistenceTest, SnapshotWriteAndRead) {
     auto snap_path = (test_dir_ / "snapshot.dat").string();
     std::vector<SnapshotEntry> entries;
@@ -176,8 +189,6 @@ TEST_F(PersistenceTest, SnapshotWriteAndRead) {
     EXPECT_EQ(result->entries[1].key, "b");
     EXPECT_FALSE(result->entries[1].has_ttl);
 }
-
-// --- PersistenceManager Tests ---
 
 TEST_F(PersistenceTest, RecoverFromSnapshotPlusWal) {
     LruStore store(1'000'000);
@@ -339,5 +350,58 @@ TEST_F(PersistenceTest, PersistenceDisabled) {
     EXPECT_TRUE(pm.compact().has_value());
 }
 
+// Restart round-trip with a TTL'd key, deterministic via SimClock: the
+// remaining wall-clock lifetime must survive recovery instead of being reset
+// to ~1ms (regression test for the lost-TTL-on-restart bug).
+TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromSnapshot) {
+    SimClock sim;
+    LruStore store(1'000'000, &sim);
+    PersistenceManager pm(pmOptions(test_dir_), store, &sim);
+
+    ASSERT_TRUE(store.put("ttl", "v", milliseconds{10'000}).has_value());
+    ASSERT_TRUE(pm.compact().has_value()); // snapshot written, WAL truncated
+
+    // Fresh "process": same simulated time, new store + manager.
+    LruStore store2(1'000'000, &sim);
+    PersistenceManager pm2(pmOptions(test_dir_), store2, &sim);
+    ASSERT_TRUE(pm2.recover().has_value());
+
+    auto ve = store2.getVersioned("ttl");
+    ASSERT_TRUE(ve.has_value());
+    EXPECT_TRUE(ve->has_ttl);
+
+    auto remaining = duration_cast<milliseconds>(ve->expires_at - sim.now()).count();
+    EXPECT_GE(remaining, 9'900); // ~full lifetime preserved (not 1ms)
+    EXPECT_LE(remaining, 10'000);
+
+    // Advancing past the expiry must actually expire it.
+    sim.advance(milliseconds{10'001});
+    store2.evictExpired();
+    EXPECT_FALSE(store2.get("ttl").has_value());
+}
+
+TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromWal) {
+    SimClock sim;
+    LruStore store(1'000'000, &sim);
+    PersistenceManager pm(pmOptions(test_dir_), store, &sim);
+    store.setPersistence(&pm); // put() now appends through the real write path
+
+    // Production boots with recover() before serving; it opens the WAL writer.
+    ASSERT_TRUE(pm.recover().has_value());
+    ASSERT_TRUE(store.put("ttl", "v", milliseconds{5'000}).has_value());
+    pm.flush(); // WAL only — no snapshot in this dir
+
+    LruStore store2(1'000'000, &sim);
+    PersistenceManager pm2(pmOptions(test_dir_), store2, &sim);
+    ASSERT_TRUE(pm2.recover().has_value());
+
+    auto ve = store2.getVersioned("ttl");
+    ASSERT_TRUE(ve.has_value());
+    EXPECT_TRUE(ve->has_ttl);
+
+    auto remaining = duration_cast<milliseconds>(ve->expires_at - sim.now()).count();
+    EXPECT_GE(remaining, 4'900);
+    EXPECT_LE(remaining, 5'000);
+}
 } // namespace
 } // namespace cinder

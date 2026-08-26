@@ -14,6 +14,14 @@ struct RingSnapshot {
     std::vector<NodeId> physical_nodes;
 };
 
+// Consistent-hash ring with virtual nodes and lock-free reads.
+//
+// Concurrency contract: readers (getNode/getNodes) load an immutable
+// RingSnapshot via std::atomic<std::shared_ptr<>> and never block or tear;
+// mutators (addNode/removeNode) publish a fresh copy-on-write snapshot with a
+// CAS retry loop, so concurrent mutators merge instead of losing updates.
+// Readers may observe either the pre- or post-mutation view for keys in flight
+// during a membership change (standard ring-linearization semantics).
 class ConsistentHashRing {
   public:
 

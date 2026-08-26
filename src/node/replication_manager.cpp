@@ -14,7 +14,7 @@ using std::chrono::system_clock;
 namespace {
 
 // Stable FNV-1a 64-bit hash — deterministic across compilers/platforms, used
-// purely as a per-node write tiebreaker (not for the hash ring).
+// purely as a per-node write tiebreaker.
 uint64_t
 fnv1a64(std::string_view s) {
     uint64_t h = 14'695'981'039'346'656'037ULL;
@@ -106,29 +106,51 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     state->acks = 1; // local write
     state->pending = replica_nodes.size();
     for (const auto& node : replica_nodes) {
-        transport_.sendAsync(node, req, [this, node, req, state, w](Result<void> r) {
-            if (r.has_value()) {
-                ++state->acks;
-            } else {
+        transport_.sendAsync(node, req, [this, state, w, node, req](Result<void> r) {
+            if (!r.has_value()) {
+                Logger::warn(
+                    "cinder replication: replica unreachable node={} key={}", node, req.key);
                 enqueueHint(node, req);
             }
 
-            --state->pending;
-            if (state->done_flag) {
-                return;
+            bool succeed = false;
+            bool fail = false;
+            {
+                std::scoped_lock lock(state->mu);
+                if (r.has_value()) {
+                    ++state->acks;
+                }
+
+                --state->pending;
+                if (!state->decided) {
+                    if (state->acks >= w) {
+                        state->decided = true;
+                        succeed = true;
+                    } else if (state->pending == 0) {
+                        state->decided = true;
+                        fail = true;
+                    }
+                }
             }
-            if (state->acks >= w) {
-                state->done_flag = true;
+
+            if (succeed) {
                 (*state->done)(ok());
-            } else if (state->pending == 0) {
-                state->done_flag = true;
+            } else if (fail) {
                 (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
             }
         });
     }
     // No replicas: W == 1, the local ack suffices.
-    if (state->pending == 0 && !state->done_flag) {
-        state->done_flag = true;
+    bool no_replicas_ok = false;
+    {
+        std::scoped_lock lock(state->mu);
+        if (state->pending == 0 && !state->decided) {
+            state->decided = true;
+            no_replicas_ok = true;
+        }
+    }
+
+    if (no_replicas_ok) {
         (*state->done)(ok());
     }
 }
@@ -167,65 +189,77 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     for (const auto& node : replica_nodes) {
         transport_.sendRequestAsync(
             node, req, [this, key, node, state, R](Result<net::Response> r) {
-            if (state->done_flag) {
+            bool decided = false;
+            std::optional<VersionedEntry> result;
+            bool needs_repair = false;
+            {
+                std::scoped_lock lock(state->mu);
+                if (state->decided) {
+                    return;
+                }
+                if (r.has_value() && r->status == Errc::OK && r->version != 0) {
+                    ++state->acks;
+                    if (r->version > state->best_version
+                        || (r->version == state->best_version
+                            && r->writer_node_hash > state->best_writer_hash)) {
+                        state->needs_repair = true;
+                        state->best_version = r->version;
+                        state->best_writer_hash = r->writer_node_hash;
+
+                        VersionedEntry entry;
+                        entry.value = std::move(*r->value);
+                        entry.version = r->version;
+                        entry.writer_node_hash = r->writer_node_hash;
+                        if (r->expires_at.has_value()) {
+                            entry.has_ttl = true;
+                            entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
+                        }
+                        state->best_entry = std::move(entry);
+                    } else if (r->version != state->best_version
+                               || r->writer_node_hash != state->best_writer_hash) {
+                        state->needs_repair = true;
+                    }
+                } else if (r.has_value() && r->status == Errc::NotFound) {
+                    // Replica doesn't have the key — stale, needs repair.
+                    state->needs_repair = true;
+                }
+
+                --state->pending;
+                if (state->acks >= R) {
+                    state->decided = true;
+                    decided = true;
+                } else if (state->pending == 0) {
+                    state->decided = true;
+                    decided = true;
+                }
+
+                if (decided) {
+                    // Snapshot the outcome; the winner entry is delivered
+                    // to the caller and used for repair fan-out below.
+                    needs_repair = state->needs_repair;
+                    if (state->best_entry.has_value()) {
+                        result = std::move(state->best_entry);
+                    }
+                }
+            }
+
+            if (!decided) {
                 return;
             }
-            if (r.has_value() && r->status == Errc::OK && r->version != 0) {
-                ++state->acks;
-                if (r->version > state->best_version
-                    || (r->version == state->best_version
-                        && r->writer_node_hash > state->best_writer_hash)) {
-                    state->needs_repair = true;
-                    state->best_version = r->version;
-                    state->best_writer_hash = r->writer_node_hash;
-
-                    VersionedEntry entry;
-                    entry.value = std::move(*r->value);
-                    entry.version = r->version;
-                    entry.writer_node_hash = r->writer_node_hash;
-                    state->best_entry = std::move(entry);
-                } else if (r->version != state->best_version
-                           || r->writer_node_hash != state->best_writer_hash) {
-                    state->needs_repair = true;
+            if (result.has_value() && needs_repair) {
+                // Self-heal local store: if local was behind a replica, update it.
+                auto heal = local_.putVersioned(key, *result);
+                if (!heal.has_value()) {
+                    Logger::debug("cinder replication: local self-heal skipped key={} reason={}",
+                        key,
+                        static_cast<int>(heal.error().code()));
                 }
-            } else if (r.has_value() && r->status == Errc::NotFound) {
-                // Replica doesn't have the key — stale, needs repair.
-                state->needs_repair = true;
+                sendRepairFanOut(key, state->replicas, *result);
             }
-
-            --state->pending;
-            if (state->acks >= R) {
-                state->done_flag = true;
-                if (state->best_entry.has_value()) {
-                    if (state->needs_repair) {
-                        Logger::info("cinder replication: repair sent key={} version={}",
-                            key,
-                            state->best_entry->version);
-                        for (const auto& target : state->replicas) {
-                            net::Request repair;
-                            repair.opcode = net::Opcode::Replicate;
-                            repair.key = key;
-                            repair.value = state->best_entry->value;
-                            repair.version = state->best_entry->version;
-                            repair.writer_node_hash = state->best_entry->writer_node_hash;
-                            if (state->best_entry->has_ttl) {
-                                repair.expires_at =
-                                    toSystemExpiry(clock_, state->best_entry->expires_at);
-                            }
-                            transport_.sendAsync(target, repair, [](Result<void>) {});
-                        }
-                    }
-                    (*state->done)(std::move(*state->best_entry));
-                } else {
-                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
-                }
-            } else if (state->pending == 0) {
-                state->done_flag = true;
-                if (state->best_entry.has_value()) {
-                    (*state->done)(std::move(*state->best_entry));
-                } else {
-                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
-                }
+            if (result.has_value()) {
+                (*state->done)(std::move(*result));
+            } else {
+                (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
             }
         });
     }
@@ -243,22 +277,76 @@ ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
 }
 
 void
+ReplicationManager::sendRepairFanOut(
+    const std::string& key, const std::vector<NodeId>& targets, const VersionedEntry& winner) {
+    Logger::info("cinder replication: repair fan-out key={} version={} targets={}",
+        key,
+        winner.version,
+        targets.size());
+
+    net::Request repair;
+    repair.opcode = net::Opcode::Replicate;
+    repair.key = key;
+    repair.value = winner.value;
+    repair.version = winner.version;
+    repair.writer_node_hash = winner.writer_node_hash;
+    if (winner.has_ttl) {
+        repair.expires_at = toSystemExpiry(clock_, winner.expires_at);
+    }
+    for (const auto& target : targets) {
+        transport_.sendAsync(target, repair, [](Result<void>) {});
+    }
+}
+
+void
 ReplicationManager::replayHints(ReplayCallback on_done) {
+    // Single-consumer: a replay already in flight (overlapping timer ticks or
+    // concurrent pool threads) reports zero rather than double-sending hints.
+    bool expected = false;
+    if (!replaying_.compare_exchange_strong(expected, true)) {
+        on_done(0);
+        return;
+    }
+
     auto now = clock_.now();
     auto state = std::make_shared<ReplayState>();
-    state->done = std::make_shared<ReplayCallback>(std::move(on_done));
+    state->done =
+        std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
+        replaying_.store(false);
+        done(n);
+    });
 
     bool has_hints = false;
     hints_.replay([&](const HintQueue::Hint& hint) {
         has_hints = true;
-        ++state->pending;
+        {
+            std::scoped_lock lock(state->mu);
+            ++state->pending;
+        }
+
         transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
             if (r.has_value()) {
                 hints_.remove(hint.target, hint.req);
-                ++state->replayed;
             }
-            if (--state->pending == 0) {
-                (*state->done)(state->replayed);
+
+            bool finish = false;
+            size_t replayed = 0;
+            {
+                std::scoped_lock lock(state->mu);
+                if (r.has_value()) {
+                    ++state->replayed;
+                }
+
+                --state->pending;
+                if (state->pending == 0 && !state->decided) {
+                    state->decided = true;
+                    finish = true;
+                    replayed = state->replayed;
+                }
+            }
+
+            if (finish) {
+                (*state->done)(replayed);
             }
         });
     }, now);

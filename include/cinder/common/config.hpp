@@ -34,6 +34,9 @@ struct Config {
     int gossip_interval_ms = 1'000;
     int quarantine_interval_ms = 10'000;
 
+    // RPC
+    int rpc_timeout_ms = 5'000;
+
     // Persistence
     bool persistence_enabled = false;
     std::string data_dir;

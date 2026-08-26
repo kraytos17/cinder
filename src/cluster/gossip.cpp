@@ -22,25 +22,52 @@ GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable
       gossip_interval_(gossip_interval) {}
 
 void
-GossipManager::start() {
-    peers_.clear();
-    for (const auto& info : table_.snapshot()) {
-        if (info.id != self_) {
-            peers_.push_back(info.id);
-        }
+GossipManager::leave() {
+    // Bump incarnation so the Dead rumor about self overrides any stale Alive
+    // rumor held by peers.
+    table_.markDead(self_);
+
+    Logger::info("cinder gossip: broadcasting leave to all peers");
+    std::vector<NodeId> targets;
+    {
+        std::scoped_lock lk(peers_mutex_);
+        targets = peers_;
+    }
+
+    for (const auto& peer : targets) {
+        sendView(peer);
     }
 }
 
 void
-GossipManager::tick() {
-    if (peers_.empty()) {
-        return;
+GossipManager::start() {
+    {
+        std::scoped_lock lk(peers_mutex_);
+        rebuildPeersLocked();
     }
 
-    static thread_local std::mt19937 rng(
-        static_cast<uint32_t>(clock_.now().time_since_epoch().count()));
-    std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
-    auto target = peers_[dist(rng)];
+    // Late joiners discovered via gossip/failure-detection must be added
+    // dynamically after start(); each arrival fires this callback.
+    table_.onChange([this] {
+        std::scoped_lock lk(peers_mutex_);
+        rebuildPeersLocked();
+    });
+}
+
+void
+GossipManager::tick() {
+    NodeId target;
+    {
+        std::scoped_lock lk(peers_mutex_);
+        if (peers_.empty()) {
+            return;
+        }
+
+        static thread_local std::mt19937 rng(
+            static_cast<uint32_t>(clock_.now().time_since_epoch().count()));
+        std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
+        target = peers_[dist(rng)];
+    }
     Logger::debug("cinder gossip: gossip round target={}", target);
     sendView(target);
 }
@@ -52,6 +79,17 @@ GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
     for (const auto& rumor : rumors) {
         table_.applyRumor(from, rumor);
     }
+}
+
+void
+GossipManager::rebuildPeersLocked() {
+    peers_.clear();
+    for (const auto& info : table_.snapshot()) {
+        if (info.id != self_) {
+            peers_.push_back(info.id);
+        }
+    }
+    std::sort(peers_.begin(), peers_.end());
 }
 
 void

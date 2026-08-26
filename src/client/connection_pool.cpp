@@ -39,21 +39,25 @@ ConnectionPool::~ConnectionPool() {
 
 auto
 ConnectionPool::send(const NodeId& node_id, const net::Request& req) -> Result<net::Response> {
-    auto entry_res = getOrConnect(node_id);
-    if (!entry_res.has_value()) {
-        return err<net::Response>(entry_res.error());
+    PoolEntry* entry = nullptr;
+    {
+        std::scoped_lock lock(mu_);
+        auto entry_res = getOrConnect(node_id);
+        if (!entry_res.has_value()) {
+            return err<net::Response>(entry_res.error());
+        }
+        entry = entry_res.value();
     }
 
-    auto& entry = *entry_res.value();
-    auto send_res = sendFramed(entry, req);
+    auto send_res = sendFramed(*entry, req);
     if (!send_res.has_value()) {
-        entry.connected = false;
+        entry->connected = false;
         return err<net::Response>(send_res.error());
     }
 
-    auto recv_res = recvFramed(entry);
+    auto recv_res = recvFramed(*entry);
     if (!recv_res.has_value()) {
-        entry.connected = false;
+        entry->connected = false;
         return err<net::Response>(recv_res.error());
     }
     return ok(std::move(recv_res.value()));
@@ -66,27 +70,30 @@ ConnectionPool::sendBatch(const NodeId& node_id, const std::vector<net::Request>
         return ok(std::vector<net::Response>{});
     }
 
-    auto entry_res = getOrConnect(node_id);
-    if (!entry_res.has_value()) {
-        return err<std::vector<net::Response>>(entry_res.error());
+    PoolEntry* entry = nullptr;
+    {
+        std::scoped_lock lock(mu_);
+        auto entry_res = getOrConnect(node_id);
+        if (!entry_res.has_value()) {
+            return err<std::vector<net::Response>>(entry_res.error());
+        }
+        entry = entry_res.value();
     }
 
-    auto& entry = *entry_res.value();
     for (const auto& req : reqs) {
-        auto send_res = sendFramed(entry, req);
+        auto send_res = sendFramed(*entry, req);
         if (!send_res.has_value()) {
-            entry.connected = false;
+            entry->connected = false;
             return err<std::vector<net::Response>>(send_res.error());
         }
     }
 
-    // Read every response in the same order.
     std::vector<net::Response> responses;
     responses.reserve(reqs.size());
     for (size_t i = 0; i < reqs.size(); i++) {
-        auto recv_res = recvFramed(entry);
+        auto recv_res = recvFramed(*entry);
         if (!recv_res.has_value()) {
-            entry.connected = false;
+            entry->connected = false;
             return err<std::vector<net::Response>>(recv_res.error());
         }
         responses.push_back(std::move(recv_res.value()));
@@ -96,12 +103,15 @@ ConnectionPool::sendBatch(const NodeId& node_id, const std::vector<net::Request>
 
 void
 ConnectionPool::shutdown() {
+    std::scoped_lock lock(mu_);
     for (auto& [id, entry] : connections_) {
         if (entry.connected) {
             std::error_code ec;
 #ifdef CINDER_ENABLE_TLS
             if (entry.use_tls && entry.stream) {
                 entry.stream->shutdown(ec);
+                entry.stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+                entry.stream->lowest_layer().close(ec);
             } else {
                 entry.socket.shutdown(tcp::socket::shutdown_both, ec);
                 entry.socket.close(ec);

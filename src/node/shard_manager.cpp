@@ -115,6 +115,15 @@ ShardManager::makeReplicateRequest(const std::string& key, const VersionedEntry&
 
 void
 ShardManager::migrateKey(const std::string& key, const VersionedEntry& entry, const NodeId& owner) {
+    auto info = table_.get(owner);
+    if (info.has_value() && info->state != NodeState::Alive) {
+        Logger::debug("cinder shard_manager: skip migrate key={} owner={} state={}",
+            key,
+            owner,
+            static_cast<int>(info->state));
+        return;
+    }
+
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [this, key](Result<void> r) {
         if (r.has_value()) {
@@ -126,6 +135,14 @@ ShardManager::migrateKey(const std::string& key, const VersionedEntry& entry, co
 void
 ShardManager::pushReplica(
     const std::string& key, const VersionedEntry& entry, const NodeId& owner) {
+    auto info = table_.get(owner);
+    if (info.has_value() && info->state != NodeState::Alive) {
+        Logger::debug("cinder shard_manager: skip replica key={} owner={} state={}",
+            key,
+            owner,
+            static_cast<int>(info->state));
+        return;
+    }
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [](Result<void> /*r*/) {});
 }

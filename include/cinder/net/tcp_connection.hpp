@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <deque>
 #include <memory>
-#include <string>
 #include <string_view>
 #include <vector>
 
@@ -55,6 +54,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     auto operator=(TcpConnection&&) -> TcpConnection& = delete;
 
     void start();
+    void startOnStrand();
 
     [[nodiscard]] auto isAlive() const -> bool { return socket_.is_open(); }
 
@@ -86,6 +86,14 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     size_t payload_len_ = 0;
     bool writing_ = false;
     bool reading_ = false;
+
+    // Serializes this connection's entire handler chain (read state machine,
+    // write queue, encode scratch). With a pooled io_context the repl_* quorum
+    // callbacks and timer-driven completions land on arbitrary threads; every
+    // async handler is bound to this strand and cross-component continuations
+    // are posted onto it, so reading_/writing_/write_queue_/encode_buf_/read_buf_
+    // are only ever touched on-strand.
+    asio::strand<asio::any_io_executor> strand_;
 
     CacheStore& store_;
     const ConsistentHashRing& ring_;

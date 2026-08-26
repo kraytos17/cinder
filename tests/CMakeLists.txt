@@ -22,6 +22,9 @@ cinder_add_test(cinder_unit_tests
     unit/membership_test.cpp
     unit/config_test.cpp
     unit/persistence_test.cpp
+    unit/tcp_server_stress_test.cpp
+    unit/rpc_timeout_test.cpp
+    sim/sim_clock.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
 

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <gtest/gtest.h>
 #include <set>
 #include <string>
@@ -130,6 +131,56 @@ TEST(ConsistentHashRingTest, ConcurrentReads) {
     for (auto& th : threads) {
         th.join();
     }
+}
+
+// Readers hammering the ring while a writer churns membership: every response
+// must be internally consistent (non-empty, distinct replicas, drawn from the
+// node set of SOME snapshot). Exercises the RCU snapshot + CAS publish path
+// under TSan.
+TEST(ConsistentHashRingTest, ConcurrentReadersDuringMembershipChurn) {
+    ConsistentHashRing ring(64);
+    ring.addNode("n0");
+    ring.addNode("n1");
+
+    constexpr int K_READER_THREADS = 4;
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> readers;
+    readers.reserve(K_READER_THREADS);
+    for (int t = 0; t < K_READER_THREADS; t++) {
+        readers.emplace_back([&ring, &stop, t]() {
+            for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
+                auto key = "k" + std::to_string(t) + "-" + std::to_string(i);
+                auto primary = ring.getNode(key);
+                EXPECT_FALSE(primary.empty());
+
+                auto replicas = ring.getNodes(key, 2);
+                EXPECT_EQ(replicas.size(), 2U);
+                EXPECT_NE(replicas[0], replicas[1]);
+            }
+        });
+    }
+
+    // Writer: add/remove a rotating cast of nodes until readers have had a
+    // good workout. Every published snapshot keeps n0/n1 present.
+    std::thread writer([&ring, &stop]() {
+        for (int round = 0; round < 200; round++) {
+            auto name = "churn" + std::to_string(round % 8);
+            ring.addNode(name);
+            std::this_thread::yield();
+            ring.removeNode(name);
+        }
+        stop.store(true, std::memory_order_relaxed);
+    });
+
+    writer.join();
+    for (auto& th : readers) {
+        th.join();
+    }
+
+    // Post-churn invariants: churn nodes are gone, seeds remain.
+    auto key = std::string_view("final");
+    auto primary = ring.getNode(key);
+    EXPECT_TRUE(primary == "n0" || primary == "n1");
 }
 
 TEST(ConsistentHashRingTest, GetNodesAllDistinct) {

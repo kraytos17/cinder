@@ -24,6 +24,7 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
 #endif
     )
     : socket_(std::move(socket)),
+      strand_(socket_.get_executor()),
       store_(store),
       ring_(ring),
       clock_(clock),
@@ -56,17 +57,25 @@ TcpConnection::~TcpConnection() {
 
 void
 TcpConnection::start() {
+    // Called from the accept loop on an arbitrary pool thread; all connection
+    // state mutation happens on-strand.
+    auto self = shared_from_this();
+    asio::post(strand_, [self]() mutable { self->startOnStrand(); });
+}
+
+void
+TcpConnection::startOnStrand() {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_stream_) {
-        ssl_stream_->async_handshake(
-            asio::ssl::stream_base::server, [this, self = shared_from_this()](std::error_code ec) {
+        ssl_stream_->async_handshake(asio::ssl::stream_base::server,
+            asio::bind_executor(strand_, [this, self = shared_from_this()](std::error_code ec) {
             if (ec) {
                 std::error_code close_ec;
                 socket_.close(close_ec);
                 return;
             }
             maybeRead();
-        });
+        }));
         return;
     }
 #endif
@@ -88,23 +97,23 @@ TcpConnection::doReadHeader() {
     if (ssl_stream_) {
         async_read(*ssl_stream_,
             buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
-            [this, self](std::error_code ec, size_t) {
+            asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
             if (ec) {
                 return;
             }
             onHeader(ec, K_FRAME_HEADER_SIZE);
-        });
+        }));
         return;
     }
 #endif
     async_read(socket_,
         buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
-        [this, self](std::error_code ec, size_t) {
+        asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
         if (ec) {
             return;
         }
         onHeader(ec, K_FRAME_HEADER_SIZE);
-    });
+    }));
 }
 
 void
@@ -132,13 +141,15 @@ TcpConnection::doReadPayload(size_t len) {
     if (ssl_stream_) {
         async_read(*ssl_stream_,
             buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
-            [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
+            asio::bind_executor(strand_,
+                [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); }));
         return;
     }
 #endif
     async_read(socket_,
         buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
-        [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); });
+        asio::bind_executor(
+            strand_, [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); }));
 }
 
 void
@@ -200,15 +211,19 @@ TcpConnection::handleRequest(const Request& req) {
                     replicas,
                     replica_factor_,
                     [this, self](Result<VersionedEntry> result) {
-                    Response async_res;
-                    if (result.has_value()) {
-                        async_res.status = Errc::OK;
-                        async_res.value = std::move(result->value);
-                    } else {
-                        async_res.status = result.error().code();
-                    }
-                    sendResponse(async_res);
-                    maybeRead();
+                    // Quorum completion lands on an arbitrary pool thread —
+                    // hop back onto this connection's strand.
+                    asio::post(strand_, [this, self, result = std::move(result)]() mutable {
+                        Response async_res;
+                        if (result.has_value()) {
+                            async_res.status = Errc::OK;
+                            async_res.value = std::move(result->value);
+                        } else {
+                            async_res.status = result.error().code();
+                        }
+                        sendResponse(async_res);
+                        maybeRead();
+                    });
                 });
                 return;
             }
@@ -234,6 +249,9 @@ TcpConnection::handleRequest(const Request& req) {
                 res.value = std::move(entry->value);
                 res.version = entry->version;
                 res.writer_node_hash = entry->writer_node_hash;
+                if (entry->has_ttl) {
+                    res.expires_at = toSystemExpiry(clock_, entry->expires_at);
+                }
             } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
                 sendResponse(
                     {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});
@@ -261,12 +279,16 @@ TcpConnection::handleRequest(const Request& req) {
                     replicas,
                     mode_,
                     [this, self](Result<void> result) {
-                    Response async_res{
-                        .status = result.has_value() ? Errc::OK : result.error().code(),
-                        .value = std::nullopt,
-                    };
-                    sendResponse(async_res);
-                    maybeRead();
+                    // Quorum completion lands on an arbitrary pool thread —
+                    // hop back onto this connection's strand.
+                    asio::post(strand_, [this, self, result]() {
+                        Response async_res{
+                            .status = result.has_value() ? Errc::OK : result.error().code(),
+                            .value = std::nullopt,
+                        };
+                        sendResponse(async_res);
+                        maybeRead();
+                    });
                 });
                 return; // response sent asynchronously from the write callback
             } else {
@@ -345,8 +367,9 @@ TcpConnection::doWrite() {
     auto& buf = write_queue_.front();
 #ifdef CINDER_ENABLE_TLS
     if (ssl_stream_) {
-        async_write(
-            *ssl_stream_, buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
+        async_write(*ssl_stream_,
+            buffer(buf.data(), buf.size()),
+            asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
             if (ec) {
                 Logger::warn("cinder tcp_connection: tls write failed: {}", ec.message());
                 write_queue_.clear();
@@ -362,11 +385,13 @@ TcpConnection::doWrite() {
                 writing_ = false;
                 maybeRead();
             }
-        });
+        }));
         return;
     }
 #endif
-    async_write(socket_, buffer(buf.data(), buf.size()), [this, self](std::error_code ec, size_t) {
+    async_write(socket_,
+        buffer(buf.data(), buf.size()),
+        asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
         if (ec) {
             Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
             write_queue_.clear();
@@ -383,6 +408,6 @@ TcpConnection::doWrite() {
             writing_ = false;
             maybeRead();
         }
-    });
+    }));
 }
 } // namespace cinder::net

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 #include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
@@ -18,8 +19,11 @@ namespace cinder {
 // or missing reply (within suspect_timeout) marks it Suspect, and a Suspect that
 // persists past suspect_timeout is marked Dead.
 //
-// All state lives on the node's io thread (the periodic timer fires there), so
-// no internal locking is needed beyond what MembershipTable provides.
+// Thread-safety: tick() (timer handler) and onProbeResult() (transport
+// completion) may run on different io-pool threads once the server goes
+// multi-threaded, so all probe/round-robin state is guarded by state_mutex_.
+// MembershipTable mutations and sendAsync() happen outside the lock — the
+// transport may complete callbacks synchronously and re-enter this class.
 class FailureDetector {
   public:
 
@@ -43,13 +47,17 @@ class FailureDetector {
     };
 
     void onProbeResult(const NodeId& peer, bool acked);
-    void escalateSuspects();
+    void rebuildPeersLocked(); // populates peers_ from table snapshot (caller holds state_mutex_)
+    // Caller must hold state_mutex_. Returns peers to mark Dead; the caller
+    // performs MembershipTable mutations outside the lock.
+    auto escalateSuspectsLocked() -> std::vector<NodeId>;
 
     Clock& clock_;
     Transport& transport_;
     MembershipTable& table_;
     NodeId self_;
     milliseconds suspect_timeout_;
+    mutable std::mutex state_mutex_;
     std::vector<NodeId> peers_;
     size_t next_peer_ = 0;
     std::unordered_map<NodeId, ProbeState> probes_;

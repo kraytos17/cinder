@@ -70,7 +70,7 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
                 bool incarnation_changed = local.incarnation != rumor.incarnation;
                 local.state = rumor.state;
                 local.incarnation = rumor.incarnation;
-                if (!local.host.empty() && rumor.host.empty()) {
+                if (local.host.empty() && !rumor.host.empty()) {
                     local.host = rumor.host;
                 }
                 if (local.port == 0 && rumor.port != 0) {

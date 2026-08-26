@@ -21,35 +21,65 @@ ConsistentHashRing::ConsistentHashRing(int vnodes_per_node)
 
 void
 ConsistentHashRing::addNode(const NodeId& node_id) {
-    auto old = snapshot_.load();
-    for (const auto& existing : old->physical_nodes) {
-        if (existing == node_id) {
-            return; // already present — idempotent
+    // Copy-on-write with a CAS publish: concurrent mutators retry against the
+    // winner instead of losing updates. Readers are unaffected — they keep
+    // working on whichever immutable snapshot they loaded.
+    while (true) {
+        auto old = snapshot_.load();
+        bool present = false;
+        for (const auto& existing : old->physical_nodes) {
+            if (existing == node_id) {
+                present = true;
+                break;
+            }
         }
+        if (present) {
+            return;
+        }
+
+        auto snap = std::make_shared<RingSnapshot>();
+        snap->ring.reserve(old->ring.size() + static_cast<size_t>(vnodes_per_node_));
+        snap->ring = old->ring;
+        snap->physical_nodes = old->physical_nodes;
+        snap->physical_nodes.push_back(node_id);
+        for (int i = 0; i < vnodes_per_node_; i++) {
+            auto h = hashVnode(node_id, i);
+            snap->ring.emplace_back(h, node_id);
+        }
+
+        std::sort(snap->ring.begin(), snap->ring.end());
+        if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
+            return;
+        }
+        // Another mutator published first — retry on its snapshot.
     }
-
-    auto snap = std::make_shared<RingSnapshot>();
-    snap->ring.reserve(old->ring.size() + static_cast<size_t>(vnodes_per_node_));
-    snap->ring = old->ring;
-    snap->physical_nodes = old->physical_nodes;
-    snap->physical_nodes.push_back(node_id);
-
-    for (int i = 0; i < vnodes_per_node_; i++) {
-        auto h = hashVnode(node_id, i);
-        snap->ring.emplace_back(h, node_id);
-    }
-
-    std::sort(snap->ring.begin(), snap->ring.end());
-    snapshot_.store(std::move(snap));
 }
 
 void
 ConsistentHashRing::removeNode(std::string_view node_id) {
-    auto old = snapshot_.load();
-    auto snap = std::make_shared<RingSnapshot>(*old);
-    std::erase_if(snap->ring, [&](const auto& entry) { return entry.second == node_id; });
-    std::erase_if(snap->physical_nodes, [&](const auto& id) { return id == node_id; });
-    snapshot_.store(std::move(snap));
+    while (true) {
+        auto old = snapshot_.load();
+        auto snap = std::make_shared<RingSnapshot>(*old);
+        std::erase_if(snap->ring, [&](const auto& entry) { return entry.second == node_id; });
+        std::erase_if(snap->physical_nodes, [&](const auto& id) { return id == node_id; });
+
+        if (snap->ring.size() == old->ring.size()
+            && snap->physical_nodes.size() == old->physical_nodes.size()) {
+            bool changed = false;
+            for (const auto& id : old->physical_nodes) {
+                if (id == node_id) {
+                    changed = true;
+                    break;
+                }
+            }
+            if (!changed) {
+                return;
+            }
+        }
+        if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
+            return;
+        }
+    }
 }
 
 auto

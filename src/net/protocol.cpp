@@ -210,6 +210,9 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     if (has_version_meta) {
         flags |= 0x01U;
     }
+    if (res.expires_at.has_value()) {
+        flags |= K_FLAG_HAS_EXPIRES_AT;
+    }
 
     size_t payload_size = sizeof(uint8_t); // status
     payload_size += sizeof(uint8_t);       // flags
@@ -217,6 +220,9 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     if (has_version_meta) {
         payload_size += sizeof(uint64_t); // version
         payload_size += sizeof(uint64_t); // writer_node_hash
+    }
+    if (res.expires_at.has_value()) {
+        payload_size += sizeof(uint64_t);
     }
     if (res.value.has_value()) {
         payload_size += res.value->size();
@@ -236,6 +242,10 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     if (has_version_meta) {
         w.write(res.version);
         w.write(res.writer_node_hash);
+    }
+    if (res.expires_at.has_value()) {
+        w.write(static_cast<uint64_t>(
+            duration_cast<milliseconds>(res.expires_at->time_since_epoch()).count()));
     }
 
     w.write(static_cast<uint32_t>(res.value.has_value() ? 1 : 0));
@@ -280,6 +290,9 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
     if (flags & 0x01U) {
         res.version = mustRead<uint64_t>(r);
         res.writer_node_hash = mustRead<uint64_t>(r);
+    }
+    if (flags & K_FLAG_HAS_EXPIRES_AT) {
+        res.expires_at = system_clock::time_point(milliseconds(mustRead<uint64_t>(r)));
     }
 
     auto has_val = mustRead<uint32_t>(r);

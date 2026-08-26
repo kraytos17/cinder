@@ -31,10 +31,13 @@ main(int argc, char* argv[]) -> int {
     bool persistence_enabled = false;
     std::string data_dir;
     int snapshot_interval_s = 60;
+    int io_threads = 0;
     bool tls_enabled = false;
     std::string tls_cert_file;
     std::string tls_key_file;
     std::string tls_ca_file;
+    std::string eviction_policy = "lru";
+    int rpc_timeout_ms = 5'000;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -53,10 +56,18 @@ main(int argc, char* argv[]) -> int {
     app.add_flag("--enable-persistence", persistence_enabled, "Enable WAL + snapshot persistence");
     app.add_option("--data-dir", data_dir, "Directory for WAL and snapshot files");
     app.add_option("--snapshot-interval", snapshot_interval_s, "Snapshot interval (seconds)");
+    app.add_option(
+        "--io-threads", io_threads, "Worker threads running the event loop (0 = auto: min(4, hw))");
+
     app.add_flag("--tls", tls_enabled, "Enable TLS encryption");
     app.add_option("--tls-cert", tls_cert_file, "Path to TLS certificate chain (PEM)");
     app.add_option("--tls-key", tls_key_file, "Path to TLS private key (PEM)");
     app.add_option("--tls-ca", tls_ca_file, "Path to CA certificate for peer verification (PEM)");
+    app.add_option("--eviction-policy", eviction_policy, "Eviction policy: lru|lfu")
+        ->check(CLI::IsMember({"lru", "lfu"}));
+
+    app.add_option(
+        "--rpc-timeout", rpc_timeout_ms, "Per-RPC deadline in milliseconds (0 = no timeout)");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -97,10 +108,13 @@ main(int argc, char* argv[]) -> int {
     options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
     options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
     options.snapshot_interval_s = snapshot_interval_s;
+    options.io_threads = io_threads;
     options.tls_enabled = tls_enabled || cfg.tls.enabled;
     options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;
     options.tls_key_file = tls_key_file.empty() ? cfg.tls.key_file : tls_key_file;
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
+    options.eviction_policy = eviction_policy;
+    options.rpc_timeout = milliseconds(rpc_timeout_ms);
 
     if (!peers.empty()) {
         cinder::Config peer_cfg;

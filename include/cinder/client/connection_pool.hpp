@@ -1,6 +1,7 @@
 #pragma once
 
 #include <asio.hpp>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -91,6 +92,7 @@ class ConnectionPool {
 #ifdef CINDER_ENABLE_TLS
     asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
+    mutable std::mutex mu_;
     std::unordered_map<NodeId, PoolEntry> connections_;
     std::unordered_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
 };

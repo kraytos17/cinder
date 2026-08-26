@@ -100,5 +100,38 @@ TEST(LruStoreTest, LruOrder) {
     EXPECT_TRUE(store.get("d").has_value());
     EXPECT_FALSE(store.get("b").has_value());
 }
+
+TEST(LruStoreTest, ConcurrentGetPutRemoveStress) {
+    // Small capacity forces constant eviction churn so the exclusive-lock
+    // paths in get()/getVersioned() contend heavily. Run under the tsan
+    // preset: this test exists to catch lock-downgrade regressions.
+    LruStore store(4'096);
+    constexpr int K_THREADS = 4;
+    constexpr int K_ITERS = 5'000;
+
+    std::vector<std::jthread> threads;
+    for (int t = 0; t < K_THREADS; ++t) {
+        threads.emplace_back([&store, t] {
+            for (int i = 0; i < K_ITERS; ++i) {
+                auto key = "k" + std::to_string((t * K_ITERS + i) % 512);
+                switch (i % 4) {
+                    case 0:
+                        EXPECT_TRUE(store.put(key, "v" + std::to_string(i)).has_value());
+                        break;
+                    case 1:
+                        (void)store.getVersioned(key);
+                        break;
+                    case 2:
+                        (void)store.remove(key);
+                        break;
+                    default:
+                        (void)store.get(key);
+                        break;
+                }
+                EXPECT_LE(store.size(), 512U + K_THREADS);
+            }
+        });
+    }
+}
 } // namespace
 } // namespace cinder

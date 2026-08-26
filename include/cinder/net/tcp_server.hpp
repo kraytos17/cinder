@@ -53,6 +53,8 @@ class TcpServer {
 
     void doAccept();
 
+    asio::strand<io_context::executor_type> strand_;
+    bool stopping_ = false;
     tcp::acceptor acceptor_;
     CacheStore& store_;
     const ConsistentHashRing& ring_;

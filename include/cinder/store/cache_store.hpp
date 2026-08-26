@@ -66,6 +66,12 @@ class CacheStore {
         return clock_ ? clock_->now() : steady_clock::now();
     }
 
+    // Wall-clock milliseconds for a steady expiry, honoring the injected
+    // clock so WAL bytes are deterministic under SimClock.
+    auto expiryToSystemMs(steady_clock::time_point t) const -> uint64_t {
+        return toSystemMsOrDefault(clock_, t);
+    }
+
   private:
 
     Clock* clock_ = nullptr;

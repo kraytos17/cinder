@@ -4,7 +4,9 @@
 #include <chrono>
 #include <utility>
 
+using std::chrono::ceil;
 using std::chrono::milliseconds;
+using std::chrono::seconds;
 
 namespace cinder {
 
@@ -20,7 +22,7 @@ LfuStore::expiryTicks(steady_clock::time_point expires_at) const -> size_t {
     if (remaining <= std::chrono::seconds(0)) {
         return 1;
     }
-    auto ticks = std::chrono::ceil<std::chrono::seconds>(remaining).count();
+    auto ticks = ceil<seconds>(remaining).count();
     return static_cast<size_t>(ticks) < 1 ? 1 : static_cast<size_t>(ticks);
 }
 
@@ -29,7 +31,8 @@ LfuStore::put(const std::string& key, std::string value, std::optional<milliseco
     -> Result<void> {
     VersionedEntry entry;
     entry.value = std::move(value);
-    entry.version = next_version_++;
+    // Mint under the lock — see LruStore::put.
+    entry.version = mintVersion();
     if (ttl.has_value()) {
         entry.expires_at = now() + *ttl;
         entry.has_ttl = true;
@@ -56,7 +59,6 @@ LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         // Lamport bump: advance past any observed (incl. replicated) version so
         // this node wins LWW if it later coordinates the same key.
         next_version_ = std::max(next_version_, entry.version + 1);
-
         current_bytes_ -= node->entry.value.size();
         node->entry = std::move(entry);
         current_bytes_ += node->entry.value.size();
@@ -124,7 +126,7 @@ LfuStore::forEach(
 
 auto
 LfuStore::get(const std::string& key) -> std::optional<std::string> {
-    std::shared_lock lock(mutex_);
+    std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -147,7 +149,7 @@ LfuStore::get(const std::string& key) -> std::optional<std::string> {
 
 auto
 LfuStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
-    std::shared_lock lock(mutex_);
+    std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {

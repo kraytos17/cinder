@@ -10,7 +10,6 @@
 #include "cinder/store/wal.hpp"
 
 namespace cinder {
-using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 
 namespace {
@@ -19,9 +18,10 @@ constexpr const char* K_SNAPSHOT_PREFIX = "snapshot_";
 constexpr const char* K_SNAPSHOT_SUFFIX = ".dat";
 } // namespace
 
-PersistenceManager::PersistenceManager(Options opts, CacheStore& store)
+PersistenceManager::PersistenceManager(Options opts, CacheStore& store, Clock* clock)
     : opts_(std::move(opts)),
-      store_(store) {}
+      store_(store),
+      clock_(clock) {}
 
 auto
 PersistenceManager::recover() -> Result<void> {
@@ -44,23 +44,30 @@ PersistenceManager::recover() -> Result<void> {
 
         auto& data = result.value();
         for (auto& entry : data.entries) {
-            // Skip already-expired entries
-            if (entry.has_ttl && entry.expires_at_ms > 0) {
-                auto now_ms = static_cast<uint64_t>(
-                    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count());
-                if (entry.expires_at_ms <= now_ms) {
-                    continue;
-                }
-            }
-
             VersionedEntry ve;
             ve.value = std::move(entry.value);
             ve.version = entry.version;
             ve.writer_node_hash = entry.writer_node_hash;
             ve.has_ttl = entry.has_ttl;
-            if (entry.has_ttl) {
-                ve.expires_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
+
+            if (entry.has_ttl && entry.expires_at_ms > 0) {
+                // Preserve the entry's remaining wall-clock lifetime across
+                // restart: convert the stored absolute expiry back onto the
+                // local (possibly simulated) steady basis instead of expiring
+                // it immediately.
+                const uint64_t now_ms = nowSystemMs(clock_);
+                if (entry.expires_at_ms <= now_ms) {
+                    continue; // skip expired
+                }
+
+                auto remaining_ms =
+                    milliseconds{static_cast<int64_t>(entry.expires_at_ms - now_ms)};
+                if (remaining_ms.count() < 1) {
+                    remaining_ms = milliseconds{1};
+                }
+                ve.expires_at = clock().now() + remaining_ms;
             }
+
             [[maybe_unused]] auto res = store_.putVersioned(entry.key, std::move(ve));
         }
 
@@ -78,32 +85,53 @@ PersistenceManager::recover() -> Result<void> {
     }
 
     loading_ = false;
-
-    // Open fresh WAL for writes
     auto new_wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
     wal_ = std::make_unique<WalWriter>(new_wal_path.string());
     wal_entry_count_ = 0;
-
     return ok();
 }
 
 void
 PersistenceManager::onWrite(const WalEntry& entry) {
-    if (loading_ || !wal_) {
+    // Enqueue-only: store writers invoke this while holding THEIR OWN lock,
+    // so this path must never take mutex_ — that would
+    // invert against compact()'s mutex_-then-forEach(store) ordering. Entries
+    // land in pending_wal_ and are appended by drainQueueLocked() from
+    // flush/compact/shutdown. loading_ is checked at drain time, so entries
+    // pushed during recovery are simply discarded with the queue.
+    std::scoped_lock lock(queue_mutex_);
+    if (loading_.load(std::memory_order_acquire)) {
         return;
     }
+    pending_wal_.push_back(entry);
+}
 
-    std::scoped_lock lock(mutex_);
-    if (auto result = wal_->append(entry); !result.has_value()) {
-        Logger::error("WAL append failed: {}", result.error().message());
+void
+PersistenceManager::drainQueueLocked() {
+    // Caller holds mutex_. Swap the batch out under queue_mutex_, then append
+    // without holding queue_mutex_
+    std::deque<WalEntry> batch;
+    {
+        std::scoped_lock lock(queue_mutex_);
+        if (pending_wal_.empty()) {
+            return;
+        }
+        batch.swap(pending_wal_);
     }
-    ++wal_entry_count_;
+
+    for (auto& entry : batch) {
+        if (auto result = wal_->append(entry); !result.has_value()) {
+            Logger::error("WAL append failed: {}", result.error().message());
+        }
+        ++wal_entry_count_;
+    }
 }
 
 void
 PersistenceManager::flush() {
     std::scoped_lock lock(mutex_);
     if (wal_) {
+        drainQueueLocked();
         wal_->flush();
     }
 }
@@ -114,15 +142,27 @@ PersistenceManager::compact() -> Result<void> {
         return ok();
     }
 
+    // Safe under pooling: onWrite only ever touches queue_mutex_, so holding
+    // mutex_ across createSnapshot()'s store traversal cannot cycle with
+    // store writers anymore. Drain ordering guarantees no loss:
+    //   1. drain pending entries into the CURRENT WAL (durable pre-truncate)
+    //   2. snapshot the store (captures every entry applied before step 2)
+    //   3. final drain, then swap writers; anything enqueued between steps
+    //      lands in the fresh WAL (duplicate application is idempotent).
     std::scoped_lock lock(mutex_);
+    if (wal_) {
+        drainQueueLocked();
+    }
 
     auto result = createSnapshot();
     if (!result.has_value()) {
         return err(result.error());
     }
+    if (wal_) {
+        drainQueueLocked();
+        wal_.reset();
+    }
 
-    // Truncate WAL
-    wal_.reset();
     auto wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
     std::error_code ec;
     std::filesystem::remove(wal_path, ec);
@@ -140,6 +180,7 @@ PersistenceManager::shutdown() {
 
     std::scoped_lock lock(mutex_);
     if (wal_) {
+        drainQueueLocked();
         wal_->flush();
     }
     [[maybe_unused]] auto snap_result = createSnapshot();
@@ -150,9 +191,8 @@ PersistenceManager::createSnapshot() -> Result<void> {
     auto filename = K_SNAPSHOT_PREFIX
                     + std::to_string(system_clock::now().time_since_epoch().count())
                     + K_SNAPSHOT_SUFFIX;
-    auto snap_path = std::filesystem::path(opts_.data_dir) / filename;
 
-    // Collect all entries from store
+    auto snap_path = std::filesystem::path(opts_.data_dir) / filename;
     std::vector<SnapshotEntry> all_entries;
     Version next_version = 0;
 
@@ -163,12 +203,9 @@ PersistenceManager::createSnapshot() -> Result<void> {
         se.version = ve.version;
         se.writer_node_hash = ve.writer_node_hash;
         se.has_ttl = ve.has_ttl;
+
         if (ve.has_ttl) {
-            RealClock real_clock;
-            auto sys = toSystemExpiry(real_clock, ve.expires_at);
-            se.expires_at_ms = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(sys.time_since_epoch())
-                    .count());
+            se.expires_at_ms = toSystemMsOrDefault(clock_, ve.expires_at);
         } else {
             se.expires_at_ms = 0;
         }
@@ -200,17 +237,21 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
         ve.version = entry->version;
         ve.writer_node_hash = entry->writer_node_hash;
         ve.has_ttl = entry->has_ttl;
+
         if (entry->has_ttl && entry->expires_at_ms > 0) {
-            auto now_ms =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                        .count());
+            // Preserve remaining wall-clock lifetime across restart (see
+            // recover()).
+            const uint64_t now_ms = nowSystemMs(clock_);
             if (entry->expires_at_ms <= now_ms) {
                 continue; // skip expired
             }
-            ve.expires_at = std::chrono::steady_clock::now() + std::chrono::milliseconds(1);
-        }
 
+            auto remaining_ms = milliseconds{static_cast<int64_t>(entry->expires_at_ms - now_ms)};
+            if (remaining_ms.count() < 1) {
+                remaining_ms = milliseconds{1};
+            }
+            ve.expires_at = clock().now() + remaining_ms;
+        }
         if (entry->op == WalEntry::Op::Set) {
             [[maybe_unused]] auto put_res = store_.putVersioned(entry->key, std::move(ve));
         } else if (entry->op == WalEntry::Op::Del) {
@@ -218,7 +259,6 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
         }
         ++replayed;
     }
-
     if (replayed > 0) {
         Logger::info("replayed {} WAL entries", replayed);
     }

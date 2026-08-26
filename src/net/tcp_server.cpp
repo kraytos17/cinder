@@ -20,7 +20,8 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
     asio::ssl::context* ssl_ctx
 #endif
     )
-    : acceptor_(io, tcp::endpoint(tcp::v4(), port)),
+    : strand_(asio::make_strand(io)),
+      acceptor_(io, tcp::endpoint(tcp::v4(), port)),
       store_(store),
       ring_(ring),
       clock_(clock),
@@ -45,21 +46,25 @@ TcpServer::~TcpServer() {
 
 auto
 TcpServer::start() -> Result<void> {
-    doAccept();
+    asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
     return ok();
 }
 
 void
 TcpServer::shutdown() {
-    acceptor_.close();
-    connections_.clear();
+    asio::post(asio::bind_executor(strand_, [this] {
+        stopping_ = true;
+        std::error_code ec;
+        acceptor_.close(ec);
+        connections_.clear();
+    }));
 }
 
 void
 TcpServer::doAccept() {
-    acceptor_.async_accept([this](std::error_code ec, tcp::socket socket) {
+    acceptor_.async_accept(
+        asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
-            // Prune dead connections before accepting a new one.
             std::erase_if(connections_,
                 [](const std::shared_ptr<TcpConnection>& c) { return !c->isAlive(); });
 
@@ -83,9 +88,9 @@ TcpServer::doAccept() {
         } else if (ec != asio::error::operation_aborted) {
             Logger::warn("cinder tcp_server: accept error: {}", ec.message());
         }
-        if (acceptor_.is_open()) {
+        if (!stopping_ && acceptor_.is_open()) {
             doAccept();
         }
-    });
+    }));
 }
 } // namespace cinder::net

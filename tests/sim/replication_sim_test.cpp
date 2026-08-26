@@ -357,8 +357,8 @@ class ReadRepairCluster {
     ReadRepairCluster() {
         bus.registerHandler("node1", applyHandler(store1, clock));
         bus.registerHandler("node2", applyHandler(store2, clock));
-        bus.registerRequestHandler("node1", versionedHandler(store1));
-        bus.registerRequestHandler("node2", versionedHandler(store2));
+        bus.registerRequestHandler("node1", versionedHandler(store1, clock));
+        bus.registerRequestHandler("node2", versionedHandler(store2, clock));
     }
 
   private:
@@ -382,8 +382,8 @@ class ReadRepairCluster {
         };
     }
 
-    static auto versionedHandler(LruStore& store) -> SimBus::RequestHandler {
-        return [&store](const NodeId&, const net::Request& req) -> net::Response {
+    static auto versionedHandler(LruStore& store, SimClock& clock) -> SimBus::RequestHandler {
+        return [&store, &clock](const NodeId&, const net::Request& req) -> net::Response {
             if (req.opcode != net::Opcode::GetVersioned) {
                 return {.status = Errc::InvalidArgument, .value = std::nullopt};
             }
@@ -392,10 +392,14 @@ class ReadRepairCluster {
             if (!entry.has_value()) {
                 return {.status = Errc::NotFound, .value = std::nullopt};
             }
-            return {.status = Errc::OK,
+            net::Response resp{.status = Errc::OK,
                 .value = entry->value,
                 .version = entry->version,
                 .writer_node_hash = entry->writer_node_hash};
+            if (entry->has_ttl) {
+                resp.expires_at = toSystemExpiry(clock, entry->expires_at);
+            }
+            return resp;
         };
     }
 };
@@ -505,6 +509,92 @@ TEST(ReadRepairSimTest, ReadRepairFallsBackToLocalOnReplicaFailure) {
     auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->value, "local-v");
+}
+
+TEST(ReadRepairSimTest, QuorumFailureStillRepairsStaleReplica) {
+    ReadRepairCluster c;
+
+    // Seed node1 with v2, node2 with stale v1.
+    VersionedEntry e1;
+    e1.value = "v2";
+    e1.version = 2;
+    e1.writer_node_hash = 100;
+    ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
+
+    VersionedEntry e2;
+    e2.value = "v1-stale";
+    e2.version = 1;
+    e2.writer_node_hash = 200;
+    ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
+
+    // R=3 with only 1 replica: acks = local(1) + node2(1) = 2 < 3 → quorum fails.
+    // Old: repair skipped. New: repair still fanned out.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 3);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "v2");
+    EXPECT_EQ(result->version, 2);
+
+    // Repair Replicate from node1 arrives at node2.
+    c.bus.deliver();
+    EXPECT_EQ(c.store2.get("key1"), "v2");
+    EXPECT_EQ(c.store2.getVersioned("key1")->version, 2);
+}
+
+TEST(ReadRepairSimTest, QuorumFailureNotFoundStillRepairs) {
+    ReadRepairCluster c;
+
+    // node1 has the key, node2 does not (NotFound → needs_repair).
+    VersionedEntry e1;
+    e1.value = "only-local";
+    e1.version = 1;
+    e1.writer_node_hash = 100;
+    ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
+
+    // R=3 with 1 replica: local acks(1) + NotFound(0) = 1 < 3 → quorum fails.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 3);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "only-local");
+
+    // Repair fanned out — node2 now has the key.
+    c.bus.deliver();
+    EXPECT_EQ(c.store2.get("key1"), "only-local");
+    EXPECT_EQ(c.store2.getVersioned("key1")->version, 1);
+}
+
+TEST(ReadRepairSimTest, ReadRepairPreservesTtl) {
+    ReadRepairCluster c;
+
+    // Seed node1 with a TTL'd entry at version 2.
+    VersionedEntry e1;
+    e1.value = "ttl-v2";
+    e1.version = 2;
+    e1.writer_node_hash = 100;
+    e1.has_ttl = true;
+    e1.expires_at = c.clock.now() + 10s;
+    ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
+
+    // Seed node2 with a stale v1 without TTL.
+    VersionedEntry e2;
+    e2.value = "stale-v1";
+    e2.version = 1;
+    e2.writer_node_hash = 200;
+    ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
+
+    // Quorum read from node1 with R=2: local wins (v2 has_ttl), node2 is stale.
+    auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->value, "ttl-v2");
+    EXPECT_EQ(result->version, 2);
+    EXPECT_TRUE(result->has_ttl);
+
+    // Self-heal: local entry is already the winner, putVersioned is a no-op.
+    // Repair fan-out: node2 receives the TTL'd entry.
+    c.bus.deliver();
+    auto node2_entry = c.store2.getVersioned("key1");
+    ASSERT_TRUE(node2_entry.has_value());
+    EXPECT_EQ(node2_entry->value, "ttl-v2");
+    EXPECT_EQ(node2_entry->version, 2);
+    EXPECT_TRUE(node2_entry->has_ttl);
 }
 } // namespace
 } // namespace cinder

@@ -73,8 +73,7 @@ template <typename T> class SlabAllocator {
         }
 
         [[nodiscard]] auto allocatedCount() const -> size_t {
-            std::scoped_lock lock(mutex_);
-            return slab_size_ * slots_per_slab_;
+            return total_slots_.load(std::memory_order_relaxed);
         }
 
         [[nodiscard]] auto freeCount() const -> size_t {
@@ -114,7 +113,7 @@ template <typename T> class SlabAllocator {
             }
 
             free_count_.fetch_add(n, std::memory_order_relaxed);
-            slab_size_ = n;
+            total_slots_.fetch_add(n, std::memory_order_relaxed);
             // Pop one for the caller.
             head = free_head_.load(std::memory_order_acquire);
             if (head) {
@@ -128,8 +127,8 @@ template <typename T> class SlabAllocator {
         std::vector<std::byte*> slabs_;
         std::atomic<FreeBlock*> free_head_{nullptr};
         std::atomic<size_t> free_count_{0};
+        std::atomic<size_t> total_slots_{0};
         size_t slots_per_slab_ = K_DEFAULT_SLOTS_PER_SLAB;
-        size_t slab_size_ = 0;
         mutable std::mutex mutex_; // only guards slab growth
     };
 

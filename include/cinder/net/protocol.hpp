@@ -96,6 +96,9 @@ struct Response {
     // Present only on GetVersioned responses — carry LWW metadata.
     Version version = 0;
     uint64_t writer_node_hash = 0;
+    // Absolute wall-clock expiry — carried in GetVersioned responses so read-repair
+    // and quorum reads preserve TTL semantics across nodes.
+    std::optional<system_clock::time_point> expires_at = std::nullopt;
 };
 
 auto

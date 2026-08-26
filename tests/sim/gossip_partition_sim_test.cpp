@@ -213,5 +213,156 @@ TEST(GossipPartitionSimTest, OnChangeReentrantSnapshot) {
     EXPECT_GE(notifications, 2);
 }
 
+TEST(GossipPartitionSimTest, LateJoinerGetsGossipAndProbes) {
+    SimClock clock;
+    SimBus bus(clock, 42);
+
+    // node1 + node2: fully seeded and started.
+    auto n1 = std::make_unique<GossipNode>(clock, bus, "node1", "node1");
+    auto n2 = std::make_unique<GossipNode>(clock, bus, "node2", "node2");
+    std::vector<ClusterConfig::NodeConfig> seed_peers{
+        {"node1", "127.0.0.1", 17'900},
+        {"node2", "127.0.0.1", 17'901},
+    };
+
+    n1->table.seed(seed_peers);
+    n2->table.seed(seed_peers);
+    n1->detector.start();
+    n1->gossip.start();
+    n2->detector.start();
+    n2->gossip.start();
+
+    // node3: late joiner — constructed (onMessage registered) but NOT seeded
+    // and NOT started (no detector/gossip ticks). Bus is up so sendAsync
+    // succeeds.
+    auto n3 = std::make_unique<GossipNode>(clock, bus, "node3", "node3");
+
+    // Simulate late join: node3 announces itself to node1 via applyRumor.
+    // MembershipTable::fireCallbacks fires onChange → both managers rebuild
+    // peers_ to include "node3".
+    NodeInfo late;
+    late.id = "node3";
+    late.host = "127.0.0.1";
+    late.port = 17'902;
+    late.state = NodeState::Alive;
+    late.incarnation = 1;
+    n1->table.applyRumor("node3", late);
+
+    // Verify onChange rebuilt peers: snapshot node1's gossip peers indirectly
+    // by checking that the table knows about node3.
+    ASSERT_TRUE(n1->table.get("node3").has_value());
+    EXPECT_EQ(n1->table.get("node3")->state, NodeState::Alive);
+
+    // Tick several rounds. FD round-robin alternates [node2, node3] so two
+    // ticks cover both. Gossip uses random selection; a handful of rounds
+    // ensures node3 is hit at least once.
+    for (int i = 0; i < 6; ++i) {
+        clock.advance(1s);
+        n1->detector.tick();
+        n1->gossip.tick();
+        n2->detector.tick();
+        n2->gossip.tick();
+        bus.deliver();
+    }
+
+    // node3 received a gossip view and learned about node1.
+    auto node3_sees_n1 = n3->table.get("node1");
+    ASSERT_TRUE(node3_sees_n1.has_value()) << "late joiner never received gossip view";
+    EXPECT_EQ(node3_sees_n1->state, NodeState::Alive);
+
+    // node1 successfully probed node3 (node3 was up on the bus, so probe
+    // succeeded) — node3 remains Alive in node1's table.
+    auto n1_sees_n3 = n1->table.get("node3");
+    ASSERT_TRUE(n1_sees_n3.has_value());
+    EXPECT_EQ(n1_sees_n3->state, NodeState::Alive);
+}
+
+// Late joiner that goes down immediately: probe fails → suspect → dead.
+TEST(GossipPartitionSimTest, LateJoinerGoesDownImmediately) {
+    SimClock clock;
+    SimBus bus(clock, 99);
+
+    auto n1 = std::make_unique<GossipNode>(clock, bus, "node1", "node1");
+    std::vector<ClusterConfig::NodeConfig> seed_peers{
+        {"node1", "127.0.0.1", 17'900},
+    };
+
+    n1->table.seed(seed_peers);
+    n1->detector.start();
+    n1->gossip.start();
+    auto n3 = std::make_unique<GossipNode>(clock, bus, "node3", "node3");
+
+    // Late join via rumor.
+    NodeInfo late;
+    late.id = "node3";
+    late.host = "127.0.0.1";
+    late.port = 17'902;
+    late.state = NodeState::Alive;
+    late.incarnation = 1;
+    n1->table.applyRumor("node3", late);
+
+    // Bring node3 down before the first probe.
+    bus.setNodeDown("node3");
+
+    // Tick: FD picks node3 (only peer), probe fails → suspect.
+    clock.advance(1s);
+    n1->detector.tick();
+    bus.deliver();
+
+    auto info = n1->table.get("node3");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->state, NodeState::Suspect);
+
+    // Advance past suspect timeout → escalation marks dead.
+    clock.advance(4s);
+    n1->detector.tick();
+    bus.deliver();
+    info = n1->table.get("node3");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->state, NodeState::Dead);
+}
+
+// Graceful leave: node3 calls leave() → broadcasts self as Dead to all peers.
+// After delivery, node1 sees node3 as Dead immediately — no probe/suspect cycle.
+TEST(GossipPartitionSimTest, GracefulLeaveBroadcastsDead) {
+    SimClock clock;
+    SimBus bus(clock, 42);
+
+    auto n1 = std::make_unique<GossipNode>(clock, bus, "node1", "node1");
+    auto n2 = std::make_unique<GossipNode>(clock, bus, "node2", "node2");
+    auto n3 = std::make_unique<GossipNode>(clock, bus, "node3", "node3");
+
+    std::vector<ClusterConfig::NodeConfig> seed_peers{
+        {"node1", "127.0.0.1", 17'900},
+        {"node2", "127.0.0.1", 17'901},
+        {"node3", "127.0.0.1", 17'902},
+    };
+    n1->table.seed(seed_peers);
+    n2->table.seed(seed_peers);
+    n3->table.seed(seed_peers);
+    n1->detector.start();
+    n1->gossip.start();
+    n2->detector.start();
+    n2->gossip.start();
+    n3->detector.start();
+    n3->gossip.start();
+
+    // Confirm node3 is alive in all tables before leave.
+    EXPECT_EQ(n1->table.get("node3")->state, NodeState::Alive);
+    EXPECT_EQ(n2->table.get("node3")->state, NodeState::Alive);
+
+    // Node3 broadcasts leave.
+    n3->gossip.leave();
+
+    // Deliver the leave gossip to node1 and node2.
+    bus.deliver();
+
+    // node1 and node2 see node3 as Dead immediately.
+    EXPECT_EQ(n1->table.get("node3")->state, NodeState::Dead);
+    EXPECT_EQ(n2->table.get("node3")->state, NodeState::Dead);
+
+    // node3's own table: markDead was called internally.
+    EXPECT_EQ(n3->table.get("node3")->state, NodeState::Dead);
+}
 } // namespace
 } // namespace cinder

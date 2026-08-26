@@ -31,7 +31,9 @@ LruStore::put(const std::string& key, std::string value, std::optional<milliseco
     -> Result<void> {
     VersionedEntry entry;
     entry.value = std::move(value);
-    entry.version = next_version_++;
+    // Mint under the lock — an unlocked ++ here races the Lamport bump in
+    // putVersioned() and can hand duplicate versions to concurrent writers.
+    entry.version = mintVersion();
     if (ttl.has_value()) {
         entry.expires_at = now() + *ttl;
         entry.has_ttl = true;
@@ -79,8 +81,7 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
             we.writer_node_hash = node->entry.writer_node_hash;
             we.has_ttl = node->entry.has_ttl;
             if (node->entry.has_ttl) {
-                RealClock real_clock;
-                we.expires_at_ms = toSystemMs(real_clock, node->entry.expires_at);
+                we.expires_at_ms = expiryToSystemMs(node->entry.expires_at);
             } else {
                 we.expires_at_ms = 0;
             }
@@ -122,8 +123,7 @@ LruStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<v
         we.writer_node_hash = stored_writer_hash;
         we.has_ttl = has_ttl;
         if (has_ttl) {
-            RealClock real_clock;
-            we.expires_at_ms = toSystemMs(real_clock, expires_at);
+            we.expires_at_ms = expiryToSystemMs(expires_at);
         } else {
             we.expires_at_ms = 0;
         }
@@ -162,7 +162,7 @@ LruStore::forEach(
 
 auto
 LruStore::get(const std::string& key) -> std::optional<std::string> {
-    std::shared_lock lock(mutex_);
+    std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {
@@ -184,7 +184,7 @@ LruStore::get(const std::string& key) -> std::optional<std::string> {
 
 auto
 LruStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
-    std::shared_lock lock(mutex_);
+    std::scoped_lock lock(mutex_);
 
     auto it = index_.find(key);
     if (it == index_.end()) {

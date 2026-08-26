@@ -3,10 +3,21 @@
 #include <csignal>
 
 #include "cinder/common/logger.hpp"
+#include "cinder/store/lfu_store.hpp"
+#include "cinder/store/lru_store.hpp"
 
 using std::chrono::seconds;
 
 namespace cinder {
+namespace {
+auto
+makeStore(const CacheNodeServerOptions& opts, Clock* clock) -> std::unique_ptr<CacheStore> {
+    if (opts.eviction_policy == "lfu") {
+        return std::make_unique<LfuStore>(opts.capacity, clock);
+    }
+    return std::make_unique<LruStore>(opts.capacity, clock);
+}
+} // namespace
 
 #ifdef CINDER_ENABLE_TLS
 namespace {
@@ -32,10 +43,11 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     : node_id_(options.node_id),
       ping_interval_(options.ping_interval),
       quarantine_interval_(options.quarantine_interval),
+      io_threads_(options.io_threads),
 #ifdef CINDER_ENABLE_TLS
       ssl_ctx_(initSslContext(options)),
 #endif
-      store_(options.capacity),
+      store_(makeStore(options, &clock_)),
       persistence_(
           PersistenceManager::Options{
               .data_dir = options.data_dir,
@@ -43,20 +55,20 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
               .snapshot_interval_s = options.snapshot_interval_s,
               .max_wal_entries = options.max_wal_entries,
           },
-          store_),
+          *store_, &clock_),
       transport_(io_
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
 #endif
           ),
-      repl_(store_, options.node_id, clock_, transport_),
+      repl_(*store_, options.node_id, clock_, transport_),
       table_(options.node_id),
       detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
       gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
-      shard_(store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
+      shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
-      server_(io_, options.port, store_, ring_, options.node_id, clock_, &repl_,
+      server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_
 #ifdef CINDER_ENABLE_TLS
           ,
@@ -84,10 +96,12 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     }
 
     transport_.setConfig(config);
+    transport_.setRpcTimeout(options.rpc_timeout);
     table_.onChange([this] { rebuildRing(); });
     if (persistence_.enabled()) {
-        store_.setPersistence(&persistence_);
+        store_->setPersistence(&persistence_);
     }
+    Logger::info("eviction policy: {}", options.eviction_policy);
 }
 
 auto
@@ -104,7 +118,7 @@ CacheNodeServer::run() {
             Logger::error("persistence recovery failed: {}", res.error().message());
             return;
         }
-        Logger::info("recovered {} entries from disk", store_.size());
+        Logger::info("recovered {} entries from disk", store_->size());
     }
 
     signals_.async_wait([this](std::error_code, int) {
@@ -121,7 +135,33 @@ CacheNodeServer::run() {
     if (persistence_.enabled()) {
         scheduleCompact();
     }
-    io_.run();
+
+    unsigned workers = io_threads_ > 0 ? static_cast<unsigned>(io_threads_) : 1;
+    if (io_threads_ == 0) {
+        auto hw = std::thread::hardware_concurrency();
+        workers = hw == 0 ? 1 : std::min(4U, hw);
+    }
+
+    Logger::info("cinder node: io threads={}", workers);
+    if (workers <= 1) {
+        io_.run();
+    } else {
+        std::vector<std::thread> pool;
+        pool.reserve(workers - 1);
+        for (unsigned i = 1; i < workers; ++i) {
+            pool.emplace_back([this]() { io_.run(); });
+        }
+
+        io_.run(); // this thread participates too
+        for (auto& w : pool) {
+            w.join();
+        }
+        // Catch stragglers: handlers that enqueued WAL writes while the pool
+        // was winding down after persistence_.shutdown() ran.
+        if (persistence_.enabled()) {
+            persistence_.flush();
+        }
+    }
 }
 
 void
@@ -135,7 +175,16 @@ CacheNodeServer::shutdown() {
     if (persistence_.enabled()) {
         persistence_.shutdown();
     }
+
+    // Broadcast leave to peers before tearing down transport so they don't
+    // suspect-mark this node during the shutdown window.
+    gossip_.leave();
+    // Drain pending handlers so leave gossip is sent before transport teardown.
+    while (io_.poll() > 0) {
+    }
+
     server_.shutdown();
+    transport_.shutdown();
     io_.stop();
 }
 
@@ -191,7 +240,7 @@ CacheNodeServer::scheduleEvict() {
             return;
         }
 
-        store_.evictExpired();
+        store_->evictExpired();
         scheduleEvict();
     });
 }

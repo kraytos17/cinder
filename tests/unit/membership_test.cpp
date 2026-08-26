@@ -38,6 +38,44 @@ TEST(MembershipTest, StaleRumorIgnored) {
     EXPECT_EQ(table.get("node2")->incarnation, 5);
 }
 
+TEST(MembershipTest, HostAdoptedFromRumor) {
+    MembershipTable table("node1");
+
+    // Gossip-discovered node whose address was unknown to the forwarding peer.
+    table.applyRumor("node1", makeInfo("node3", NodeState::Alive, 0));
+    ASSERT_TRUE(table.get("node3").has_value());
+    EXPECT_EQ(table.get("node3")->host, "");
+
+    // A later rumor carries the reachable address → must be adopted.
+    NodeInfo addressed = makeInfo("node3", NodeState::Alive, 1);
+    addressed.host = "10.0.0.7";
+    addressed.port = 9'001;
+    table.applyRumor("node1", addressed);
+
+    auto n3 = table.get("node3");
+    ASSERT_TRUE(n3.has_value());
+    EXPECT_EQ(n3->host, "10.0.0.7");
+    EXPECT_EQ(n3->port, 9'001);
+}
+
+TEST(MembershipTest, KnownHostNotClobbered) {
+    MembershipTable table("node1");
+
+    NodeInfo addressed = makeInfo("node2", NodeState::Alive, 0);
+    addressed.host = "10.0.0.5";
+    addressed.port = 9'000;
+    table.applyRumor("node1", addressed);
+
+    // A rumor with no address must never blank out a known-good one.
+    table.applyRumor("node1", makeInfo("node2", NodeState::Suspect, 5));
+    auto n2 = table.get("node2");
+
+    ASSERT_TRUE(n2.has_value());
+    EXPECT_EQ(n2->state, NodeState::Suspect);
+    EXPECT_EQ(n2->host, "10.0.0.5");
+    EXPECT_EQ(n2->port, 9'000);
+}
+
 TEST(MembershipTest, SelfRumorRefuted) {
     MembershipTable table("node1");
     table.seed({{"node2", "127.0.0.1", 17'901}});

@@ -12,10 +12,11 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with versioned LWW conflict resolution and hinted handoff for down replicas
 - **Failover reads** — a replica serves local reads, so data stays available if the primary dies
 - **Read repair** — quorum reads compare replica versions (LWW) and asynchronously write back the winning value to stale replicas
-- **SWIM-style membership** — failure detection (Ping → suspect → dead), incarnation-guarded gossip, and automatic ring rebuild on membership change
-- **Automatic rebalancing** — when a node joins the ring, keys migrate to their new owners; a re-join quarantine defers migrations to a node until it is healthy, then retries automatically once the window clears
+- **SWIM-style membership** — failure detection (Ping → suspect → dead), incarnation-guarded gossip, and automatic ring rebuild on membership change; **graceful-leave** broadcasts Dead to all peers before shutdown
+- **Automatic rebalancing** — when a node joins the ring, keys migrate to their new owners; a re-join quarantine defers migrations to a node until it is healthy, then retries automatically once the window clears; shard manager liveness check skips sends to suspect/dead targets
 - **Smart client library** (`CacheClient` + `ConnectionPool`) — routes via the ring, follows `moved to` redirects with a single retry, and pipelines reads with `multiGet`
-- **Transport coroutines** — `TcpTransport` uses `asio::co_spawn` + `asio::awaitable` for clean async request-response without manual callback chains
+- **Transport coroutines** — `TcpTransport` uses `asio::co_spawn` + `asio::awaitable` for clean async request-response without manual callback chains; per-node connection caching with per-node strands and **configurable RPC deadlines**
+- **Thread-pool event loop** — configurable `--io-threads` for N-worker `io_context`; auto-detects hardware concurrency when unset
 - **Slab allocator** — `SlabAllocator<Node>` for LRU/LFU store lists; standard-conforming with `rebind` support, 256-slot slabs, free-list recycling
 - **Structured logging** — spdlog-backed `Logger` with configurable `Stdout`/`Stderr` sink; subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`)
@@ -118,6 +119,12 @@ persistence:
   data_dir: /var/lib/cinder
   snapshot_interval_s: 60
   max_wal_entries: 10000
+
+tls:
+  enabled: false
+  cert_file: /etc/cinder/cert.pem
+  key_file: /etc/cinder/key.pem
+  ca_file: /etc/cinder/ca.pem
 
 logging:
   level: info
@@ -241,6 +248,9 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 | `--suspect-timeout` | `3000` | Time a suspect persists before being marked dead (ms) |
 | `--gossip-interval` | `1000` | Membership gossip dissemination interval (ms) |
 | `--quarantine-interval` | `10000` | Re-join quarantine before a node receives migrated keys (ms, `0` = off) |
+| `--io-threads` | `0` | Worker threads running the event loop (`0` = auto: min(4, hw)) |
+| `--eviction-policy` | `lru` | Eviction policy: `lru` \| `lfu` |
+| `--rpc-timeout` | `5000` | Per-RPC deadline in milliseconds (`0` = no timeout) |
 | `--log-level` | `info` | Log level: `trace` \| `debug` \| `info` \| `warn` \| `error` |
 | `--enable-persistence` | off | Enable WAL + snapshot persistence |
 | `--data-dir` | `""` | Directory for WAL and snapshot files |
@@ -253,24 +263,25 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
-130 unit tests (13 suites):   Result, LruStore, LfuStore, TtlWheel, Protocol,
-                              ConsistentHashRing, CacheClient routing + redirects,
-                              VersionedStore (LRU/LFU), parsePeer, Membership,
-                              Config, Persistence
- 27 sim tests (4 suites):     replication (async/quorum/hinted-handoff/read-repair),
-                              gossip partition (suspect/dead/incarnation/degraded),
-                              rebalancing (keys migrate on join, quarantine)
- 16 integration tests:        SetGetDelPing, TTLExpiry, CapacityEviction, LargeValue,
-                              replica failover (fanout, failover read, quorum,
-                              hinted handoff, 3-node fanout, TTL-over-wire),
-                              rebalance on join, rebalance RF=2, read repair, multi-get
-  5 cli tests:                Ping, SetGet, GetNotFound, ConnectRefused, Del
-  3 TLS tests (TLS builds):   SetGetOverTls, PingOverTls, PlaintextRejected
+141 unit tests (15 suites):    Result, LruStore, LfuStore, TtlWheel, Protocol,
+                               ConsistentHashRing, CacheClient routing + redirects,
+                               VersionedStore (LRU/LFU), parsePeer, Membership,
+                               Config, Persistence, TcpServerStrandStress, RpcTimeout
+ 33 sim tests (4 suites):      replication (async/quorum/hinted-handoff/read-repair),
+                               gossip partition (suspect/dead/incarnation/degraded/
+                               graceful-leave, late-joiner), rebalancing (keys migrate
+                               on join, quarantine, replicas spread to all new owners)
+ 19 integration tests:         SetGetDelPing, TTLExpiry, CapacityEviction, LargeValue,
+                               replica failover (fanout, failover read, quorum,
+                               hinted handoff, 3-node fanout, TTL-over-wire),
+                               rebalance on join, rebalance RF=2, read repair, multi-get
+  5 cli tests:                 Ping, SetGet, GetNotFound, ConnectRefused, Del
+  3 TLS tests (TLS builds):    SetGetOverTls, PingOverTls, PlaintextRejected
 ```
 
 ```bash
-make test-unit         # 130 fast in-process tests
-make test-sim          # 27 deterministic simulation tests (SimClock/SimBus)
+make test-unit         # 141 fast in-process tests
+make test-sim          # 33 deterministic simulation tests (SimClock/SimBus)
 make test-integration  # forks real cinderd processes (RUN_SERIAL)
 make test-cli          # forks cinderd + cinder-cli
 make test-all          # run every test binary against the current preset
@@ -311,9 +322,9 @@ cinder/
 │   ├── cinderd_main.cpp         # Server entry point
 │   └── cinder_cli.cpp           # CLI client (get/set/del/ping)
 ├── tests/
-│   ├── unit/                    # 130 unit tests (GoogleTest)
-│   ├── integration/             # 16 integration + 5 CLI + 3 TLS tests (fork real cinderd)
-│   ├── sim/                     # 27 deterministic simulation tests (SimClock/SimBus)
+│   ├── unit/                    # 141 unit tests (GoogleTest)
+│   ├── integration/             # 19 integration + 5 CLI + 3 TLS tests (fork real cinderd)
+│   ├── sim/                     # 33 deterministic simulation tests (SimClock/SimBus)
 │   └── fixtures/                # Test certificates (ca.pem, server.pem, server-key.pem)
 └── benchmarks/                  # throughput, allocator, and ring benchmarks
 ```

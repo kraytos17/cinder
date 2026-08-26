@@ -277,7 +277,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(asio)
 add_library(asio INTERFACE)
-target_include_directories(asio INTERFACE ${asio_SOURCE_DIR}/asio/include)
+target_include_directories(asio SYSTEM INTERFACE ${asio_SOURCE_DIR}/asio/include)
 target_compile_definitions(asio INTERFACE
     ASIO_STANDALONE
     ASIO_NO_DEPRECATED
@@ -308,6 +308,11 @@ FetchContent_Declare(
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
 
+# SYSTEM quiets how *consumers* see these headers, not the dep compiling its
+# own sources — spdlog's bundled fmt spams -Wstringop-overflow under GCC.
+# Vendored code is explicitly out of lint scope: hard-mute it.
+target_compile_options(spdlog PRIVATE -w)
+
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
@@ -332,6 +337,9 @@ FetchContent_Declare(
 )
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
+if(TARGET yaml-cpp)
+    target_compile_options(yaml-cpp PRIVATE -w)
+endif()
 
 # mimalloc — global allocator override. Disabled automatically under any
 # sanitizer build: ASan/TSan/MSan each install their own allocation hooks,
@@ -388,6 +396,9 @@ if(CINDER_BUILD_TESTS)
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
+    if(TARGET gtest AND TARGET gtest_main)
+        target_compile_options(gtest gtest_main PRIVATE -w)
+    endif()
 endif()
 
 if(CINDER_BUILD_BENCHMARKS)

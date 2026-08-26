@@ -21,8 +21,6 @@ class Clock {
 
     virtual auto now() const -> steady_clock::time_point = 0;
 
-    // Wall-clock time. Defaults to system_clock::now(); tests override for
-    // determinism (see SimClock).
     virtual auto nowSystem() const -> system_clock::time_point { return system_clock::now(); }
 };
 
@@ -54,5 +52,20 @@ inline auto
 toSystemMs(const Clock& clock, steady_clock::time_point t) -> uint64_t {
     auto sys = toSystemExpiry(clock, t);
     return static_cast<uint64_t>(duration_cast<milliseconds>(sys.time_since_epoch()).count());
+}
+
+// Null-tolerant variants for call sites holding an optional injected Clock*.
+inline auto
+toSystemMsOrDefault(const Clock* clock, steady_clock::time_point t) -> uint64_t {
+    RealClock fallback;
+    return toSystemMs(clock != nullptr ? *clock : static_cast<const Clock&>(fallback), t);
+}
+
+inline auto
+nowSystemMs(const Clock* clock) -> uint64_t {
+    RealClock fallback;
+    const Clock& c = clock != nullptr ? *clock : static_cast<const Clock&>(fallback);
+    return static_cast<uint64_t>(
+        duration_cast<milliseconds>(c.nowSystem().time_since_epoch()).count());
 }
 } // namespace cinder

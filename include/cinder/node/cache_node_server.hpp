@@ -4,6 +4,7 @@
 #include <charconv>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -24,7 +25,7 @@
 #include "cinder/net/tcp_transport.hpp"
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/node/shard_manager.hpp"
-#include "cinder/store/lru_store.hpp"
+#include "cinder/store/cache_store.hpp"
 #include "cinder/store/persistence.hpp"
 
 using asio::io_context;
@@ -51,11 +52,17 @@ struct CacheNodeServerOptions {
     bool persistence_enabled = false;
     size_t snapshot_interval_s = 60;
     size_t max_wal_entries = 10'000;
+    // Concurrency: worker threads running the io_context. 0 = auto
+    // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
+    int io_threads = 0;
     // TLS
     bool tls_enabled = false;
     std::string tls_cert_file;
     std::string tls_key_file;
     std::string tls_ca_file;
+    std::string eviction_policy = "lru";
+    // RPC deadline — max time for a single peer RPC before cancellation.
+    milliseconds rpc_timeout{5'000};
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -122,11 +129,12 @@ class CacheNodeServer {
     NodeId node_id_;
     milliseconds ping_interval_{1'000};
     milliseconds quarantine_interval_{10'000};
+    int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::context> ssl_ctx_;
 #endif
-    LruStore store_;
     RealClock clock_;
+    std::unique_ptr<CacheStore> store_;
     PersistenceManager persistence_;
     ConsistentHashRing ring_;
     TcpTransport transport_;

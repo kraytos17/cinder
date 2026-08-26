@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <mutex>
 #include <string_view>
 
 #include "cinder/cluster/clock.hpp"
@@ -34,12 +35,15 @@ class GossipManager {
     void start();
     void tick(); // send this node's view to a random peer; exposed for the sim harness
     void handleMessage(const NodeId& from, const net::Request& req);
+    // Broadcast self as Dead to every peer so they don't suspect during teardown.
+    void leave();
 
     [[nodiscard]] auto gossipInterval() const -> milliseconds { return gossip_interval_; }
 
   private:
 
     void sendView(const NodeId& to);
+    void rebuildPeersLocked(); // populates peers_ from table snapshot
     static auto encodeView(const std::vector<NodeInfo>& view) -> std::string;
     static auto decodeView(std::string_view value) -> std::vector<NodeInfo>;
 
@@ -48,6 +52,7 @@ class GossipManager {
     MembershipTable& table_;
     NodeId self_;
     milliseconds gossip_interval_;
+    mutable std::mutex peers_mutex_; // guards peers_ only
     std::vector<NodeId> peers_;
 };
 } // namespace cinder
