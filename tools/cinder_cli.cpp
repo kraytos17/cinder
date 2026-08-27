@@ -3,6 +3,7 @@
 #include <CLI/CLI.hpp>
 #include <print>
 #include <string>
+#include <thread>
 
 #ifdef CINDER_ENABLE_TLS
 #include <asio/ssl.hpp>
@@ -103,8 +104,15 @@ main(int argc, char* argv[]) -> int {
 #endif
     );
 
+    std::jthread io_thread([&io](std::stop_token) {
+        auto work = asio::make_work_guard(io);
+        io.run();
+    });
+
     cinder::Logger::debug("sending {} to {}:{}", cmd, host, port);
     auto res = pool.send("server", req);
+
+    io.stop();
     if (!res.has_value()) {
         cinder::Logger::error("request failed: {}", res.error().message());
         return 1;

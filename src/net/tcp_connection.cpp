@@ -371,7 +371,13 @@ TcpConnection::doWrite() {
             buffer(buf.data(), buf.size()),
             asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
             if (ec) {
-                Logger::warn("cinder tcp_connection: tls write failed: {}", ec.message());
+                if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
+                    || ec == asio::error::operation_aborted) {
+                    Logger::debug("cinder tcp_connection: tls write failed: {}", ec.message());
+                } else {
+                    Logger::warn("cinder tcp_connection: tls write failed: {}", ec.message());
+                }
+
                 write_queue_.clear();
                 writing_ = false;
                 return;
@@ -393,7 +399,13 @@ TcpConnection::doWrite() {
         buffer(buf.data(), buf.size()),
         asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
         if (ec) {
-            Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
+            if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
+                || ec == asio::error::operation_aborted) {
+                Logger::debug("cinder tcp_connection: write failed: {}", ec.message());
+            } else {
+                Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
+            }
+
             write_queue_.clear();
             writing_ = false;
             return;

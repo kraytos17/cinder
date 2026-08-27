@@ -9,6 +9,9 @@
 
 namespace cinder {
 
+constexpr uint32_t K_WAL_MAGIC = 0x57414C30; // "WAL0"
+constexpr uint32_t K_WAL_FORMAT_VERSION = 1;
+
 struct WalEntry {
     enum class Op : uint8_t {
         Set = 1,
@@ -60,5 +63,7 @@ class WalReader {
   private:
 
     std::ifstream in_;
+    bool has_checksums_ = false;
+    bool header_checked_ = false;
 };
 } // namespace cinder

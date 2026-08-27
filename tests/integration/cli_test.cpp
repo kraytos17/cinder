@@ -106,7 +106,7 @@ TEST(CliTest, GetNotFound) {
 
 TEST(CliTest, ConnectRefused) {
     auto [out, err] = runCli(9'999, {"ping"});
-    EXPECT_TRUE(err.contains("connect failed"));
+    EXPECT_TRUE(err.contains("Connection refused"));
     EXPECT_TRUE(out.empty());
 }
 

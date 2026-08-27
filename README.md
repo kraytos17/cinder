@@ -4,10 +4,10 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 
 ## Features
 
-- **In-memory cache store** with LRU / LFU eviction + TTL expiry
+- **In-memory cache store** with LRU / LFU eviction + TTL expiry; a min-heap handles long TTLs (> 256 ticks) without repeated wheel reinsertion; policy-templated `EvictionStoreBase` CRTP base eliminates duplication and ensures WAL durability for both eviction policies
 - **Binary wire protocol** over TCP — length-prefixed frames with magic/version/opcode validation, big-endian fields; frame layout and opcode range are derived and verified at compile time (consteval + static_assert)
 - **Async TCP server** using Asio, with per-connection backpressure and reusable write buffers
-- **Consistent hash ring** — xxHash3 virtual nodes, immutable-snapshot atomic swap, lock-free reads, binary search over sorted vector
+- **Consistent hash ring** — xxHash3 virtual nodes, immutable-snapshot atomic swap, lock-free reads, binary search over sorted vector; cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
 - **Cluster-aware routing** — each node owns a hash-ring range; non-owned keys return a redirect
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with versioned LWW conflict resolution and hinted handoff for down replicas
 - **Failover reads** — a replica serves local reads, so data stays available if the primary dies
@@ -17,10 +17,11 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Smart client library** (`CacheClient` + `ConnectionPool`) — routes via the ring, follows `moved to` redirects with a single retry, and pipelines reads with `multiGet`
 - **Transport coroutines** — `TcpTransport` uses `asio::co_spawn` + `asio::awaitable` for clean async request-response without manual callback chains; per-node connection caching with per-node strands and **configurable RPC deadlines**
 - **Thread-pool event loop** — configurable `--io-threads` for N-worker `io_context`; auto-detects hardware concurrency when unset
-- **Slab allocator** — `SlabAllocator<Node>` for LRU/LFU store lists; standard-conforming with `rebind` support, 256-slot slabs, free-list recycling
+- **Slab allocator** — `SlabAllocator<Node>` for LRU/LFU store lists; standard-conforming with `rebind` support, 256-slot slabs, free-list recycling; uses `std::start_lifetime_as` for well-defined type-punning on the free-list overlay
 - **Structured logging** — spdlog-backed `Logger` with configurable `Stdout`/`Stderr` sink; subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`)
-- **Persistence** — append-only WAL + periodic snapshot; crash recovery replays WAL from last snapshot; atomic snapshot via write-to-temp + rename
+- **Persistence** — append-only WAL + periodic snapshot; crash recovery replays WAL from last snapshot; atomic snapshot via write-to-temp + rename; WAL entries carry XXH3 checksums for corruption detection (backward-compatible with older headerless WAL files)
+- **Error provenance** — `Error::wrap()` chains error origins across call layers; monadic `std::expected` used consistently for control flow (`.and_then()`, `.transform()`, `.or_else()`)
 - **TLS encryption** — compile-time opt-in (`CINDER_ENABLE_TLS`) with TLS 1.2; self-signed certs for testing, CA verification for production; server and client both support TLS
 
 ## Build
@@ -208,9 +209,9 @@ cinderd --port 7000 --node-id node1 \
 cinderd --config cinderd.yaml
 ```
 
-- **WAL** (write-ahead log): every `SET`/`DEL` is appended to `wal.log` before the store mutation is visible.
+- **WAL** (write-ahead log): every `SET`/`DEL` is appended to `wal.log` before the store mutation is visible. Each entry carries an XXH3-64 checksum; the WAL file begins with a magic header (`WAL0`) and format version for forward-compatible detection.
 - **Snapshot**: periodic compaction (default every 60s) serializes the full store to `snapshot_<epoch>.dat`, then truncates the WAL.
-- **Recovery**: on startup, loads the latest snapshot and replays any WAL entries written after it.
+- **Recovery**: on startup, loads the latest snapshot and replays any WAL entries written after it. Old-format WAL files (no checksums) are replayed transparently.
 - **Crash safety**: ungraceful shutdown loses only WAL entries not yet flushed; the next startup replays from the last snapshot.
 
 ### Smart client (in-process)
@@ -263,7 +264,7 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
-141 unit tests (15 suites):    Result, LruStore, LfuStore, TtlWheel, Protocol,
+148 unit tests (15 suites):    Result, LruStore, LfuStore, TtlWheel, Protocol,
                                ConsistentHashRing, CacheClient routing + redirects,
                                VersionedStore (LRU/LFU), parsePeer, Membership,
                                Config, Persistence, TcpServerStrandStress, RpcTimeout
@@ -280,7 +281,7 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ```
 
 ```bash
-make test-unit         # 141 fast in-process tests
+make test-unit         # 148 fast in-process tests
 make test-sim          # 33 deterministic simulation tests (SimClock/SimBus)
 make test-integration  # forks real cinderd processes (RUN_SERIAL)
 make test-cli          # forks cinderd + cinder-cli
@@ -309,9 +310,9 @@ cinder/
 ├── .gitignore
 ├── include/cinder/
 │   ├── common/                  # Core types, Result<T>, Logger, Config, SlabAllocator
-│   ├── store/                   # CacheStore, LruStore, LfuStore, TtlWheel,
-│   │   └── detail/              #   WalWriter/Reader, SnapshotWriter/Reader,
-│   │       └── io_utils.hpp     #   PersistenceManager, binary I/O helpers
+│   ├── store/                   # CacheStore, LruStore, LfuStore, TtlWheel (heap-backed long TTLs),
+│   │   └── detail/              #   EvictionStoreBase (CRTP policy base), WalWriter/Reader (XXH3 checksums),
+│   │       └── io_utils.hpp     #   SnapshotWriter/Reader, PersistenceManager, binary I/O helpers
 │   ├── hashing/                 # ConsistentHashRing (xxHash3, immutable snapshots)
 │   ├── net/                     # Wire protocol, TCP server/connection, async transport
 │   ├── client/                  # CacheClient, ConnectionPool, ClusterConfig
@@ -322,11 +323,14 @@ cinder/
 │   ├── cinderd_main.cpp         # Server entry point
 │   └── cinder_cli.cpp           # CLI client (get/set/del/ping)
 ├── tests/
-│   ├── unit/                    # 141 unit tests (GoogleTest)
+│   ├── unit/                    # 148 unit tests (GoogleTest)
 │   ├── integration/             # 19 integration + 5 CLI + 3 TLS tests (fork real cinderd)
 │   ├── sim/                     # 33 deterministic simulation tests (SimClock/SimBus)
 │   └── fixtures/                # Test certificates (ca.pem, server.pem, server-key.pem)
-└── benchmarks/                  # throughput, allocator, and ring benchmarks
+├── benchmarks/                  # throughput, allocator, and ring benchmarks
+└── docs/
+    ├── protocol.md              # Wire protocol v3 (opcodes, payload format, hex dump)
+    └── rebalance.md             # Membership, failure detection, rebalance, quarantine
 ```
 
 ## Tooling
@@ -349,7 +353,7 @@ make help            # all targets
 ## Dependencies
 
 - [Asio](https://think-async.com/Asio/) — networking (standalone, no Boost)
-- [xxHash](https://xxhash.com/) — fast hashing for the consistent hash ring
+- [xxHash](https://xxhash.com/) — fast hashing for the consistent hash ring and WAL entry checksums
 - [spdlog](https://github.com/gabime/spdlog) — structured logging
 - [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML configuration file parsing
 - [CLI11](https://github.com/CLIUtils/CLI11) — command-line parsing

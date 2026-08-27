@@ -89,7 +89,9 @@ ConsistentHashRing::getNode(std::string_view key) const -> NodeId {
     auto it = std::lower_bound(snap->ring.begin(),
         snap->ring.end(),
         h,
-        [](const std::pair<uint64_t, NodeId>& entry, uint64_t val) { return entry.first < val; });
+        [](const std::pair<uint64_t, NodeId>& entry, uint64_t val) static {
+        return entry.first < val;
+    });
 
     if (it == snap->ring.end()) {
         it = snap->ring.begin();
@@ -104,14 +106,14 @@ ConsistentHashRing::getNodes(std::string_view key, int replica_count) const -> s
     auto it = std::lower_bound(snap->ring.begin(),
         snap->ring.end(),
         h,
-        [](const std::pair<uint64_t, NodeId>& entry, uint64_t val) { return entry.first < val; });
+        [](const std::pair<uint64_t, NodeId>& entry, uint64_t val) static {
+        return entry.first < val;
+    });
 
     if (it == snap->ring.end()) {
         it = snap->ring.begin();
     }
 
-    // Replica counts are tiny (2–3), so a small fixed array + linear dedup
-    // beats an unordered_set allocation on every lookup.
     constexpr size_t K_MAX_REPLICAS = 32;
     std::array<NodeId, K_MAX_REPLICAS> seen{};
     size_t seen_count = 0;

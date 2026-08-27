@@ -13,6 +13,16 @@ using asio::buffer;
 using asio::error_code;
 using asio::io_context;
 
+namespace {
+auto
+rpcError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Error {
+    if (timed_out) {
+        return cinder::Error(cinder::Errc::Timeout, "RPC deadline exceeded");
+    }
+    return cinder::Error(cinder::Errc::NotReady, std::string(phase) + ": " + ec.message());
+}
+} // namespace
+
 namespace cinder {
 
 TcpTransport::TcpTransport(io_context& io
@@ -67,14 +77,14 @@ void
 TcpTransport::setConfig(const ClusterConfig& config) {
     std::scoped_lock lock(mu_);
     for (const auto& n : config.nodes) {
-        addrs_[n.id] = n;
+        addrs_.insert_or_assign(n.id, n);
     }
 }
 
 void
 TcpTransport::addAddr(const NodeId& id, const std::string& host, uint16_t port) {
     std::scoped_lock lock(mu_);
-    addrs_[id] = {id, host, port};
+    addrs_.insert_or_assign(id, ClusterConfig::NodeConfig{id, host, port});
 }
 
 void
@@ -111,6 +121,8 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     // operation_aborted.
     bool timed_out = false;
     asio::steady_timer timer(ex, rpc_timeout_);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsubobject-linkage"
     timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
         if (!timer_ec) {
             timed_out = true;
@@ -125,13 +137,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
         }
     });
-
-    auto rpc_err = [&timed_out](const char* phase, const std::error_code& err_ec) {
-        if (timed_out) {
-            return Error(Errc::Timeout, "RPC deadline exceeded");
-        }
-        return Error(Errc::NotReady, std::string(phase) + ": " + err_ec.message());
-    };
+#pragma GCC diagnostic pop
 
     if (!conn.connected) {
         tcp::resolver resolver(ex);
@@ -139,7 +145,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(rpc_err("resolve", ec));
+            co_return err<net::Response>(rpcError(timed_out, "resolve", ec));
         }
 #ifdef CINDER_ENABLE_TLS
         if (ssl_ctx_) {
@@ -148,27 +154,27 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
                 conn.stream->lowest_layer(), endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(rpc_err("connect", ec));
+                co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
 
             co_await conn.stream->async_handshake(
                 asio::ssl::stream_base::client, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(rpc_err("tls handshake", ec));
+                co_return err<net::Response>(rpcError(timed_out, "tls handshake", ec));
             }
         } else {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(rpc_err("connect", ec));
+                co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
         }
 #else
         co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(rpc_err("connect", ec));
+            co_return err<net::Response>(rpcError(timed_out, "connect", ec));
         }
 #endif
         conn.connected = true;
@@ -185,7 +191,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
-        co_return err<net::Response>(rpc_err("write", ec));
+        co_return err<net::Response>(rpcError(timed_out, "write", ec));
     }
 
     std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
@@ -200,7 +206,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
-        co_return err<net::Response>(rpc_err("read header", ec));
+        co_return err<net::Response>(rpcError(timed_out, "read header", ec));
     }
     if (header[0] != std::byte{net::K_MAGIC}) {
         conn.connected = false;
@@ -235,7 +241,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(rpc_err("read payload", ec));
+            co_return err<net::Response>(rpcError(timed_out, "read payload", ec));
         }
     }
     timer.cancel();

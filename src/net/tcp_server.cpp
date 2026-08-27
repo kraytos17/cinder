@@ -66,7 +66,7 @@ TcpServer::doAccept() {
         asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
             std::erase_if(connections_,
-                [](const std::shared_ptr<TcpConnection>& c) { return !c->isAlive(); });
+                [](const std::shared_ptr<TcpConnection>& c) static { return !c->isAlive(); });
 
             auto conn = std::make_shared<TcpConnection>(std::move(socket),
                 store_,

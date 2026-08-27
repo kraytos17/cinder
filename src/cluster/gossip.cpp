@@ -1,5 +1,6 @@
 #include "cinder/cluster/gossip.hpp"
 
+#include <charconv>
 #include <random>
 #include <string>
 #include <string_view>
@@ -151,12 +152,14 @@ parseEntry(std::string_view entry, NodeInfo& out) -> bool {
     out.id = std::string(entry.substr(0, at));
     out.host = std::string(entry.substr(at + 1, colon1 - at - 1));
     auto port_str = entry.substr(colon1 + 1, colon2 - colon1 - 1);
-    try {
-        out.port = static_cast<uint16_t>(std::stoi(std::string(port_str)));
-    } catch (...) {
+    uint16_t port = 0;
+    auto [port_end, port_ec] =
+        std::from_chars(port_str.data(), port_str.data() + port_str.size(), port);
+    if (port_ec != std::errc{} || port_end != port_str.data() + port_str.size()) {
         return false;
     }
 
+    out.port = port;
     auto state_str = entry.substr(colon2 + 1, colon3 - colon2 - 1);
     if (state_str == "alive") {
         out.state = NodeState::Alive;
@@ -169,11 +172,13 @@ parseEntry(std::string_view entry, NodeInfo& out) -> bool {
     }
 
     auto inc_str = entry.substr(colon3 + 1);
-    try {
-        out.incarnation = static_cast<uint64_t>(std::stoull(std::string(inc_str)));
-    } catch (...) {
+    uint64_t incarnation = 0;
+    auto [inc_end, inc_ec] =
+        std::from_chars(inc_str.data(), inc_str.data() + inc_str.size(), incarnation);
+    if (inc_ec != std::errc{} || inc_end != inc_str.data() + inc_str.size()) {
         return false;
     }
+    out.incarnation = incarnation;
     return true;
 }
 } // namespace

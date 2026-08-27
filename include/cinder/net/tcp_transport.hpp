@@ -1,9 +1,9 @@
 #pragma once
 
 #include <asio.hpp>
+#include <flat_map>
 #include <memory>
 #include <mutex>
-#include <unordered_map>
 
 #ifdef CINDER_ENABLE_TLS
 #include <asio/ssl.hpp>
@@ -95,7 +95,7 @@ class TcpTransport final : public Transport {
     std::chrono::milliseconds rpc_timeout_{5'000};
     bool stopping_ = false;
     std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
-    std::unordered_map<NodeId, ClusterConfig::NodeConfig> addrs_;
+    std::flat_map<NodeId, ClusterConfig::NodeConfig> addrs_;
     MessageHandler handler_;
 };
 } // namespace cinder

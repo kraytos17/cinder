@@ -2,9 +2,7 @@
 
 #include <chrono>
 #include <cstddef>
-#include <functional>
 #include <list>
-#include <optional>
 #include <shared_mutex>
 #include <string>
 #include <unordered_map>
@@ -12,7 +10,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/types.hpp"
-#include "cinder/store/cache_store.hpp"
+#include "cinder/store/detail/eviction_store_base.hpp"
 #include "cinder/store/ttl_wheel.hpp"
 
 using std::chrono::milliseconds;
@@ -20,53 +18,48 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
-class LfuStore : public CacheStore {
+struct LfuNode {
+    size_t freq = 1;
+    std::string key;
+    VersionedEntry entry;
+};
+
+class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
+    friend class EvictionStoreBase<LfuStore, LfuNode>;
+
   public:
+
+    using ListIt = std::list<LfuNode, SlabAllocator<LfuNode>>::iterator;
 
     explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
-    auto put(const std::string& key, std::string value,
-        std::optional<milliseconds> ttl = std::nullopt) -> Result<void> override;
-    auto get(const std::string& key) -> std::optional<std::string> override;
-    auto remove(const std::string& key) -> bool override;
-    auto size() const -> size_t override;
-    auto evictExpired() -> size_t override;
-    auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> override;
-    auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> override;
-    auto mintVersion() -> Version override;
-    void forEach(
-        std::move_only_function<void(const std::string&, const VersionedEntry&)> /*unused*/)
-        const override;
-
   private:
 
-    struct Node {
-        size_t freq = 1; // touched on every get() — keep in first cache line
-        std::string key;
-        VersionedEntry entry;
-    };
+    static auto nodeKey(const LfuNode& n) -> const std::string& { return n.key; }
 
-    using ListIt = std::list<Node, SlabAllocator<Node>>::iterator;
+    static auto nodeEntry(LfuNode& n) -> VersionedEntry& { return n.entry; }
+
+    static auto nodeEntry(const LfuNode& n) -> const VersionedEntry& { return n.entry; }
+
+    static auto nodeSize(const LfuNode& n) -> size_t {
+        return n.key.size() + n.entry.value.size() + sizeof(LfuNode);
+    }
+
+    void applyExisting(ListIt it, VersionedEntry entry);
+    auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
+    void onAccess(ListIt it);
+    void onEvictExpired(ListIt it);
+    void evictOne();
 
     void incrementFreq(ListIt it);
     void removeFromFreqBucket(ListIt it);
     void removeFromFreqBucket(ListIt it, size_t freq);
-    void evictIfNeeded();
-    void evictOne();
-
-    // Wheel slot for an absolute expiry: at least 1 tick ahead of the current
-    // cursor, so sub-second TTLs are reaped on the very next evictExpired.
-    auto expiryTicks(steady_clock::time_point expires_at) const -> size_t;
 
     mutable std::shared_mutex mutex_;
-    std::list<Node, SlabAllocator<Node>> lfu_list_;
+    std::list<LfuNode, SlabAllocator<LfuNode>> list_;
     std::unordered_map<std::string, ListIt> index_;
     TtlWheel wheel_;
     std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
     size_t min_freq_ = 1;
-    size_t capacity_bytes_;
-    steady_clock::time_point last_evict_;
-    size_t current_bytes_ = 0;
-    Version next_version_; // seeded from the clock in the ctor (restart-safe)
 };
 } // namespace cinder

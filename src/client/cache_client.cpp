@@ -9,9 +9,16 @@ CacheClient::CacheClient(ClusterConfig config)
     for (const auto& n : config.nodes) {
         ring_.addNode(n.id);
     }
+
+    io_work_ = std::make_unique<asio::executor_work_guard<asio::io_context::executor_type>>(
+        asio::make_work_guard(io_ctx_));
+    io_thread_ = std::jthread([this](std::stop_token) { io_ctx_.run(); });
 }
 
-CacheClient::~CacheClient() = default;
+CacheClient::~CacheClient() {
+    io_work_ = nullptr;
+    io_ctx_.stop();
+}
 
 auto
 CacheClient::routePrimary(std::string_view key) const -> NodeId {
@@ -49,11 +56,9 @@ CacheClient::set(const std::string& key, const std::string& value, std::optional
 auto
 CacheClient::get(const std::string& key) -> std::optional<std::string> {
     net::Request req{net::Opcode::Get, key, {}, std::nullopt};
-    auto res = sendToOwner(key, req);
-    if (!res.has_value()) {
-        return std::nullopt;
-    }
-    return std::move(res.value().value);
+    return sendToOwner(key, req).transform([](net::Response res) {
+        return std::move(res.value);
+    }).value_or(std::nullopt);
 }
 
 auto

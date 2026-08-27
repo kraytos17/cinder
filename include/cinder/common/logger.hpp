@@ -22,7 +22,7 @@ enum class LogSink : uint8_t {
 class Logger {
   public:
 
-    static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Info,
+    static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Debug,
         LogSink sink = LogSink::Stdout);
     static void shutdown();
 

@@ -1,14 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <flat_map>
 #include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
-#include "cinder/client/connection_pool.hpp"
+#include "cinder/common/cluster_config.hpp"
 #include "cinder/common/types.hpp"
 
 using std::chrono::milliseconds;
@@ -35,7 +35,7 @@ struct NodeInfo {
 // for every known node. Rumor application is incarnation-guarded: a rumor is
 // applied only if its incarnation >= the locally known one. A node that hears a
 // Suspect/Dead rumor about itself refutes it by bumping its own incarnation and
-// forcing itself Alive (SWIM's "alive with higher incarnation" recovery).
+// forcing itself Alive.
 class MembershipTable {
   public:
 
@@ -78,14 +78,14 @@ class MembershipTable {
 
   private:
 
-    // Invoke the change observers WITHOUT holding mutex_, so observers may
-    // safely re-enter the table (e.g. take a snapshot) without self-deadlocking.
+    // Invoke the change observers without holding mutex_, so observers may
+    // safely re-enter the table without self-deadlocking.
     void fireCallbacks();
     bool refuteSelfRumor(const NodeInfo& rumor);
 
     mutable std::mutex mutex_;
     NodeId self_;
-    std::unordered_map<NodeId, NodeInfo> nodes_;
+    std::flat_map<NodeId, NodeInfo> nodes_;
     std::vector<ChangeCallback> cbs_;
 };
 } // namespace cinder

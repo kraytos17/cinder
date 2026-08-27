@@ -4,6 +4,7 @@
 #include <chrono>
 #include <optional>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -30,7 +31,7 @@ class CacheClient {
     auto get(const std::string& key) -> std::optional<std::string>;
     auto remove(const std::string& key) -> bool;
 
-    // Fetch many keys in one round trip per owner node (client-side pipelining).
+    // Fetch many keys in one round trip per owner node.
     // Returns a map of key → value for keys that were found; missing/errored
     // keys are absent.
     auto multiGet(const std::vector<std::string>& keys)
@@ -42,6 +43,8 @@ class CacheClient {
     auto sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response>;
 
     io_context io_ctx_;
+    std::unique_ptr<asio::executor_work_guard<asio::io_context::executor_type>> io_work_;
+    std::jthread io_thread_;
     ConsistentHashRing ring_;
     ConnectionPool pool_;
 };

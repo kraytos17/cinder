@@ -11,14 +11,18 @@ namespace cinder {
 
 MembershipTable::MembershipTable(NodeId self)
     : self_(std::move(self)) {
-    nodes_[self_] = {.id = self_, .host = {}, .state = NodeState::Alive, .incarnation = 0};
+    nodes_.insert_or_assign(
+        self_, NodeInfo{.id = self_, .host = {}, .state = NodeState::Alive, .incarnation = 0});
 }
 
 void
 MembershipTable::setSelfAddress(const std::string& host, uint16_t port) {
     std::scoped_lock lock(mutex_);
-    nodes_[self_].host = host;
-    nodes_[self_].port = port;
+    auto it = nodes_.find(self_);
+    if (it != nodes_.end()) {
+        it->second.host = host;
+        it->second.port = port;
+    }
 }
 
 void
@@ -35,7 +39,7 @@ MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
         info.port = peer.port;
         info.state = NodeState::Alive;
         info.joined_at = steady_clock::now();
-        nodes_[peer.id] = info;
+        nodes_.insert_or_assign(peer.id, info);
     }
 }
 
@@ -53,7 +57,7 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
 
             NodeInfo fresh = rumor;
             fresh.joined_at = steady_clock::now();
-            nodes_[rumor.id] = fresh;
+            nodes_.insert_or_assign(rumor.id, fresh);
             changed = true; // newly-discovered node — observers must rebuild
         } else {
             NodeInfo& local = it->second;
@@ -259,7 +263,12 @@ MembershipTable::fireCallbacks() {
 
 bool
 MembershipTable::refuteSelfRumor(const NodeInfo& rumor) {
-    NodeInfo& self = nodes_[self_];
+    auto it = nodes_.find(self_);
+    if (it == nodes_.end()) {
+        return false;
+    }
+
+    NodeInfo& self = it->second;
     bool changed = false;
     if (self.incarnation <= rumor.incarnation) {
         self.incarnation = rumor.incarnation + 1;

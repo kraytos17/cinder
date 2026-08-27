@@ -50,21 +50,18 @@ template <typename T> class SlabAllocator {
         }
 
         auto allocate() -> T* {
-            // Lock-free fast path: pop from the free list via CAS.
             FreeBlock* head = free_head_.load(std::memory_order_acquire);
             while (head) {
                 if (free_head_.compare_exchange_weak(
                         head, head->next, std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    return reinterpret_cast<T*>(head);
+                    return std::start_lifetime_as<T>(head);
                 }
             }
-            // Free list empty — need to grow (requires mutex for slab allocation).
             return grow();
         }
 
         void deallocate(T* ptr) noexcept {
-            // Lock-free push onto the free list via CAS.
-            auto* block = reinterpret_cast<FreeBlock*>(ptr);
+            auto* block = std::start_lifetime_as<FreeBlock>(ptr);
             FreeBlock* head = free_head_.load(std::memory_order_acquire);
             do {
                 block->next = head;
@@ -82,7 +79,6 @@ template <typename T> class SlabAllocator {
 
       private:
 
-        // A free-list node overlaying the slot memory.
         struct FreeBlock {
             FreeBlock* next = nullptr;
         };
@@ -94,7 +90,7 @@ template <typename T> class SlabAllocator {
             if (head) {
                 if (free_head_.compare_exchange_strong(
                         head, head->next, std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    return reinterpret_cast<T*>(head);
+                    return std::start_lifetime_as<T>(head);
                 }
             }
 
@@ -105,21 +101,19 @@ template <typename T> class SlabAllocator {
                 static_cast<std::byte*>(::operator new(slab_bytes, std::align_val_t{alignof(T)}));
 
             slabs_.push_back(raw);
-            // Push all new slots onto the free list (lock-free, only we are here).
             for (size_t i = n; i > 0; --i) {
-                auto* block = reinterpret_cast<FreeBlock*>(raw + (i - 1) * sizeof(T));
+                auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
                 block->next = free_head_.load(std::memory_order_relaxed);
                 free_head_.store(block, std::memory_order_release);
             }
 
             free_count_.fetch_add(n, std::memory_order_relaxed);
             total_slots_.fetch_add(n, std::memory_order_relaxed);
-            // Pop one for the caller.
             head = free_head_.load(std::memory_order_acquire);
             if (head) {
                 free_head_.store(head->next, std::memory_order_release);
                 free_count_.fetch_sub(1, std::memory_order_relaxed);
-                return reinterpret_cast<T*>(head);
+                return std::start_lifetime_as<T>(head);
             }
             return nullptr; // unreachable
         }
@@ -132,11 +126,9 @@ template <typename T> class SlabAllocator {
         mutable std::mutex mutex_; // only guards slab growth
     };
 
-    // Default constructor — creates a fresh pool.
     SlabAllocator()
         : pool_(std::make_shared<Pool>()) {}
 
-    // Rebinding copy constructor — shares the pool.
     template <typename U>
     explicit SlabAllocator(const SlabAllocator<U>& other) noexcept
         : pool_(other.getPool()) {}
@@ -175,7 +167,6 @@ template <typename T> class SlabAllocator {
         return !(*this == other);
     }
 
-    // Access the shared pool (needed for rebound-constructor).
     [[nodiscard]] auto getPool() const -> std::shared_ptr<Pool> { return pool_; }
 
   private:

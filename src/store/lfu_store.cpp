@@ -1,235 +1,56 @@
 #include "cinder/store/lfu_store.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <utility>
-
-using std::chrono::ceil;
-using std::chrono::milliseconds;
-using std::chrono::seconds;
 
 namespace cinder {
 
 LfuStore::LfuStore(size_t capacity_bytes, Clock* clock)
-    : CacheStore(clock),
-      capacity_bytes_(capacity_bytes),
-      last_evict_(now()),
-      next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
+    : EvictionStoreBase(capacity_bytes, clock) {}
 
-auto
-LfuStore::expiryTicks(steady_clock::time_point expires_at) const -> size_t {
-    auto remaining = expires_at - now();
-    if (remaining <= std::chrono::seconds(0)) {
-        return 1;
-    }
-    auto ticks = ceil<seconds>(remaining).count();
-    return static_cast<size_t>(ticks) < 1 ? 1 : static_cast<size_t>(ticks);
+void
+LfuStore::applyExisting(ListIt it, VersionedEntry entry) {
+    it->entry = std::move(entry);
+    incrementFreq(it);
 }
 
 auto
-LfuStore::put(const std::string& key, std::string value, std::optional<milliseconds> ttl)
-    -> Result<void> {
-    VersionedEntry entry;
-    entry.value = std::move(value);
-    // Mint under the lock — see LruStore::put.
-    entry.version = mintVersion();
-    if (ttl.has_value()) {
-        entry.expires_at = now() + *ttl;
-        entry.has_ttl = true;
-    }
-    return putVersioned(key, std::move(entry));
-}
-
-auto
-LfuStore::putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> {
-    std::scoped_lock lock(mutex_);
-
-    auto it = index_.find(key);
-    if (it != index_.end()) {
-        auto& node = it->second;
-        // Idempotent apply: reject stale/equal-lower writes (replay-safe).
-        if (entry.version < node->entry.version) {
-            return ok();
-        }
-        if (entry.version == node->entry.version
-            && entry.writer_node_hash < node->entry.writer_node_hash) {
-            return ok();
-        }
-
-        // Lamport bump: advance past any observed (incl. replicated) version so
-        // this node wins LWW if it later coordinates the same key.
-        next_version_ = std::max(next_version_, entry.version + 1);
-        current_bytes_ -= node->entry.value.size();
-        node->entry = std::move(entry);
-        current_bytes_ += node->entry.value.size();
-        incrementFreq(node);
-        evictIfNeeded();
-        if (node->entry.has_ttl) {
-            wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
-        } else {
-            wheel_.remove(node->key);
-        }
-        return ok();
-    }
-
-    size_t entry_size = key.size() + entry.value.size() + sizeof(Node);
-    if (entry_size > capacity_bytes_) {
-        return err(Error(Errc::CapacityExceeded, "value exceeds capacity"));
-    }
-
-    next_version_ = std::max(next_version_, entry.version + 1);
-    bool has_ttl = entry.has_ttl;
-    auto expires_at = entry.expires_at;
-
-    lfu_list_.push_front({.freq = 1, .key = key, .entry = std::move(entry)});
-    index_[key] = lfu_list_.begin();
-    freq_buckets_[1].push_back(lfu_list_.begin());
+LfuStore::insertNew(const std::string& key, VersionedEntry entry) -> ListIt {
+    list_.push_front({.freq = 1, .key = key, .entry = std::move(entry)});
+    index_[key] = list_.begin();
+    freq_buckets_[1].push_back(list_.begin());
     min_freq_ = 1;
-    current_bytes_ += entry_size;
-
-    evictIfNeeded();
-    if (has_ttl) {
-        wheel_.insert(key, expiryTicks(expires_at));
-    } else {
-        wheel_.remove(key);
-    }
-    return ok();
-}
-
-auto
-LfuStore::mintVersion() -> Version {
-    std::scoped_lock lock(mutex_);
-    return next_version_++;
+    return list_.begin();
 }
 
 void
-LfuStore::forEach(
-    std::move_only_function<void(const std::string&, const VersionedEntry&)> fn) const {
-    // Snapshot under the lock, then invoke the visitor outside it — the visitor
-    // may safely call store mutators without self-deadlocking.
-    std::vector<std::pair<std::string, VersionedEntry>> items;
-    {
-        std::shared_lock lock(mutex_);
-        items.reserve(lfu_list_.size());
-        auto current = now();
-        for (const auto& node : lfu_list_) {
-            if (node.entry.has_ttl && node.entry.expires_at <= current) {
-                continue; // expired — skip
-            }
-            items.emplace_back(node.key, node.entry);
-        }
-    }
-    for (const auto& [key, entry] : items) {
-        fn(key, entry);
-    }
+LfuStore::onAccess(ListIt it) {
+    incrementFreq(it);
 }
 
-auto
-LfuStore::get(const std::string& key) -> std::optional<std::string> {
-    std::scoped_lock lock(mutex_);
-
-    auto it = index_.find(key);
-    if (it == index_.end()) {
-        return std::nullopt;
-    }
-
-    auto& node = it->second;
-    if (node->entry.has_ttl && node->entry.expires_at <= now()) {
-        current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
-        wheel_.remove(key);
-        removeFromFreqBucket(node);
-        lfu_list_.erase(node);
-        index_.erase(it);
-        return std::nullopt;
-    }
-
-    incrementFreq(node);
-    return node->entry.value;
+void
+LfuStore::onEvictExpired(ListIt it) {
+    removeFromFreqBucket(it);
 }
 
-auto
-LfuStore::getVersioned(const std::string& key) -> std::optional<VersionedEntry> {
-    std::scoped_lock lock(mutex_);
-
-    auto it = index_.find(key);
-    if (it == index_.end()) {
-        return std::nullopt;
+void
+LfuStore::evictOne() {
+    auto bucket_it = freq_buckets_.find(min_freq_);
+    if (bucket_it == freq_buckets_.end() || bucket_it->second.empty()) {
+        return;
     }
 
-    auto& node = it->second;
-    if (node->entry.has_ttl && node->entry.expires_at <= now()) {
-        current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
-        wheel_.remove(key);
-        removeFromFreqBucket(node);
-        lfu_list_.erase(node);
-        index_.erase(it);
-        return std::nullopt;
-    }
-    return node->entry;
-}
-
-auto
-LfuStore::remove(const std::string& key) -> bool {
-    std::scoped_lock lock(mutex_);
-
-    auto it = index_.find(key);
-    if (it == index_.end()) {
-        return false;
+    auto node_it = bucket_it->second.front();
+    bucket_it->second.erase(bucket_it->second.begin());
+    if (bucket_it->second.empty()) {
+        freq_buckets_.erase(bucket_it);
+        min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
     }
 
-    auto& node = it->second;
-    current_bytes_ -= key.size() + node->entry.value.size() + sizeof(Node);
-    wheel_.remove(key);
-
-    removeFromFreqBucket(node);
-    lfu_list_.erase(node);
-    index_.erase(it);
-    return true;
-}
-
-auto
-LfuStore::size() const -> size_t {
-    std::shared_lock lock(mutex_);
-    return index_.size();
-}
-
-auto
-LfuStore::evictExpired() -> size_t {
-    std::scoped_lock lock(mutex_);
-
-    auto current = now();
-    // Advance the wheel to catch up with elapsed wall time (always ≥ 1 tick so
-    // a freshly-inserted sub-second TTL fires on the very next call).
-    auto elapsed = current - last_evict_;
-    auto elapsed_ticks = std::chrono::floor<std::chrono::seconds>(elapsed).count();
-    size_t ticks = elapsed_ticks < 1 ? 1 : static_cast<size_t>(elapsed_ticks);
-    ticks = std::min(ticks, TtlWheel::K_SLOT_COUNT);
-    last_evict_ = current;
-
-    size_t evicted = 0;
-    for (size_t i = 0; i < ticks; ++i) {
-        wheel_.tick([&](const std::string& key) {
-            auto it = index_.find(key);
-            if (it == index_.end()) {
-                return; // already removed
-            }
-
-            auto& node = it->second;
-            if (node->entry.has_ttl && node->entry.expires_at <= current) {
-                current_bytes_ -= node->key.size() + node->entry.value.size() + sizeof(Node);
-                auto list_it = node;
-                removeFromFreqBucket(list_it);
-                index_.erase(it);
-                lfu_list_.erase(list_it);
-                ++evicted;
-            } else {
-                // Fired early (wheel wrap, sub-second drift): re-schedule so the
-                // key is still reaped at its true expiry.
-                wheel_.insert(node->key, expiryTicks(node->entry.expires_at));
-            }
-        });
-    }
-    return evicted;
+    current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
+    wheel_.remove(node_it->key);
+    index_.erase(node_it->key);
+    list_.erase(node_it);
 }
 
 void
@@ -263,32 +84,5 @@ LfuStore::removeFromFreqBucket(ListIt it, size_t freq) {
             }
         }
     }
-}
-
-void
-LfuStore::evictIfNeeded() {
-    while (current_bytes_ > capacity_bytes_ && !lfu_list_.empty()) {
-        evictOne();
-    }
-}
-
-void
-LfuStore::evictOne() {
-    auto bucket_it = freq_buckets_.find(min_freq_);
-    if (bucket_it == freq_buckets_.end() || bucket_it->second.empty()) {
-        return;
-    }
-
-    auto node_it = bucket_it->second.front();
-    bucket_it->second.erase(bucket_it->second.begin());
-    if (bucket_it->second.empty()) {
-        freq_buckets_.erase(bucket_it);
-        min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
-    }
-
-    current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(Node);
-    wheel_.remove(node_it->key);
-    index_.erase(node_it->key);
-    lfu_list_.erase(node_it);
 }
 } // namespace cinder

@@ -133,8 +133,10 @@ TEST_F(PersistenceTest, WalTruncate) {
         writer.flush();
     }
 
+    // Header is present but no entries — next() should return nullopt.
     WalReader reader(wal_path);
-    EXPECT_FALSE(reader.hasMore());
+    auto entry = reader.next();
+    EXPECT_FALSE(entry.has_value());
 }
 
 TEST_F(PersistenceTest, WalEmptyFile) {
@@ -144,6 +146,123 @@ TEST_F(PersistenceTest, WalEmptyFile) {
     }
 
     WalReader reader(wal_path);
+    EXPECT_FALSE(reader.hasMore());
+}
+
+TEST_F(PersistenceTest, WalChecksumDetectsCorruption) {
+    auto wal_path = (test_dir_ / "wal.log").string();
+    {
+        WalWriter writer(wal_path);
+        ASSERT_TRUE(writer
+                .append({.op = WalEntry::Op::Set,
+                    .key = "k1",
+                    .value = "v1",
+                    .version = 1,
+                    .writer_node_hash = 10,
+                    .expires_at_ms = 0,
+                    .has_ttl = false})
+                .has_value());
+        ASSERT_TRUE(writer
+                .append({.op = WalEntry::Op::Set,
+                    .key = "k2",
+                    .value = "v2",
+                    .version = 2,
+                    .writer_node_hash = 20,
+                    .expires_at_ms = 0,
+                    .has_ttl = false})
+                .has_value());
+        ASSERT_TRUE(writer
+                .append({.op = WalEntry::Op::Set,
+                    .key = "k3",
+                    .value = "v3",
+                    .version = 3,
+                    .writer_node_hash = 30,
+                    .expires_at_ms = 0,
+                    .has_ttl = false})
+                .has_value());
+    }
+
+    // Flip a byte in the second entry's value (offset past header + first entry).
+    // The header is 8 bytes. Entry 1: 1+4+2+4+2+8+8+8+1+8 = 46 bytes.
+    // So entry 2 starts at offset 54. Its value starts after
+    // op(1)+key_len(4)+key(2)+val_len(4) = 11 bytes into entry 2.
+    // Flip at offset 54+11 = 65.
+    {
+        std::fstream f(wal_path, std::ios::binary | std::ios::in | std::ios::out);
+        f.seekg(65);
+        char byte = 0;
+
+        f.get(byte);
+        f.seekg(65);
+        f.put(static_cast<char>(0xFFU ^ static_cast<unsigned char>(byte)));
+    }
+
+    // Reader should return entry 1 OK, then stop at the corrupt entry 2.
+    WalReader reader(wal_path);
+    auto e1 = reader.next();
+    ASSERT_TRUE(e1.has_value());
+    EXPECT_EQ(e1->key, "k1");
+    EXPECT_EQ(e1->value, "v1");
+
+    auto e2 = reader.next();
+    EXPECT_FALSE(e2.has_value()); // checksum mismatch
+}
+
+TEST_F(PersistenceTest, WalOldFormatBackwardCompat) {
+    auto wal_path = (test_dir_ / "wal.log").string();
+
+    // Write a WAL in the old format (no header, no checksum) using raw I/O.
+    {
+        std::ofstream out(wal_path, std::ios::binary | std::ios::trunc);
+        auto write_u8 = [&](uint8_t v) {
+            out.write(reinterpret_cast<const char*>(&v), 1);
+        };
+        auto write_u32 = [&](uint32_t v) {
+            out.write(reinterpret_cast<const char*>(&v), 4);
+        };
+        auto write_u64 = [&](uint64_t v) {
+            out.write(reinterpret_cast<const char*>(&v), 8);
+        };
+
+        // Entry 1
+        write_u8(1); // Set
+        write_u32(2);
+        out.write("ab", 2);
+        write_u32(3);
+        out.write("xyz", 3);
+        write_u64(100);
+        write_u64(42);
+        write_u64(0);
+        write_u8(0);
+
+        // Entry 2
+        write_u8(2); // Del
+        write_u32(1);
+        out.write("x", 1);
+        write_u32(0);
+        write_u64(200);
+        write_u64(99);
+        write_u64(5'000);
+        write_u8(1);
+    }
+
+    // Reader should handle old format gracefully (no checksums).
+    WalReader reader(wal_path);
+    auto e1 = reader.next();
+    ASSERT_TRUE(e1.has_value());
+    EXPECT_EQ(e1->op, WalEntry::Op::Set);
+    EXPECT_EQ(e1->key, "ab");
+    EXPECT_EQ(e1->value, "xyz");
+    EXPECT_EQ(e1->version, 100);
+    EXPECT_FALSE(e1->has_ttl);
+
+    auto e2 = reader.next();
+    ASSERT_TRUE(e2.has_value());
+    EXPECT_EQ(e2->op, WalEntry::Op::Del);
+    EXPECT_EQ(e2->key, "x");
+    EXPECT_TRUE(e2->has_ttl);
+    EXPECT_EQ(e2->expires_at_ms, 5'000);
+
     EXPECT_FALSE(reader.hasMore());
 }
 

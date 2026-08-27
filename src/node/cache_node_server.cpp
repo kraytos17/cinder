@@ -176,14 +176,20 @@ CacheNodeServer::shutdown() {
         persistence_.shutdown();
     }
 
-    // Broadcast leave to peers before tearing down transport so they don't
-    // suspect-mark this node during the shutdown window.
-    gossip_.leave();
-    // Drain pending handlers so leave gossip is sent before transport teardown.
+    // Close server first so no new requests are accepted and in-flight writes
+    // complete before peers are notified of shutdown. This prevents broken-pipe
+    // errors: peers would otherwise close their connections after receiving the
+    // leave gossip while the server still has pending response writes.
+    server_.shutdown();
     while (io_.poll() > 0) {
     }
 
-    server_.shutdown();
+    // Now broadcast leave — peers will close their connections, but our server
+    // is already closed so there are no pending writes to fail.
+    gossip_.leave();
+    while (io_.poll() > 0) {
+    }
+
     transport_.shutdown();
     io_.stop();
 }
