@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <span>
 #include <utility>
 
@@ -45,15 +46,12 @@ constexpr std::array<std::byte, 4> K_NET_BE_BYTES = {
 
 static_assert(readBe32(K_NET_BE_BYTES.data()) == 0x01020304U);
 
-// Reads a value from the ByteReader after the frame has been pre-validated.
-// The frame size, magic, version, and payload_len have already been checked,
-// so every subsequent read is guaranteed to succeed. On programmer error
-// (incorrect size calculation), this throws std::bad_expected_access.
+// Reads a value from the ByteReader. Returns an error if the read fails
+// (truncated input), propagating the failure to the caller.
 template <typename T>
 static auto
-mustRead(ByteReader& r) -> T {
-    auto val = r.read<T>();
-    return std::move(val).value();
+mustRead(ByteReader& r) -> Result<T> {
+    return r.read<T>();
 }
 
 auto
@@ -117,7 +115,6 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
 
     w.write(static_cast<uint32_t>(req.key.size()));
     w.writeString(req.key);
-
     w.write(static_cast<uint32_t>(req.value.size()));
     if (!req.value.empty()) {
         w.writeString(req.value);
@@ -146,49 +143,99 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
     }
 
     ByteReader r(frame);
-    // Skip header (magic + version + opcode + payload_len) — already validated above.
-    mustRead<uint8_t>(r); // magic
-    mustRead<uint8_t>(r); // version
+    {
+        auto v = mustRead<uint8_t>(r);
+        if (!v) {
+            return err<Request>(v.error());
+        }
+    } // magic
+    {
+        auto v = mustRead<uint8_t>(r);
+        if (!v) {
+            return err<Request>(v.error());
+        }
+    } // version
 
     Request req;
     auto raw_opcode = mustRead<uint8_t>(r);
-    if (raw_opcode < std::to_underlying(Opcode::Get)
-        || raw_opcode > std::to_underlying(Opcode::GetVersioned)) {
+    if (!raw_opcode) {
+        return err<Request>(raw_opcode.error());
+    }
+    if (*raw_opcode < std::to_underlying(Opcode::Get)
+        || *raw_opcode > std::to_underlying(Opcode::GetVersioned)) {
         return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
 
-    req.opcode = static_cast<Opcode>(raw_opcode);
-    mustRead<uint32_t>(r); // payload_len — already validated
+    req.opcode = static_cast<Opcode>(*raw_opcode);
+    {
+        auto v = mustRead<uint32_t>(r);
+        if (!v) {
+            return err<Request>(v.error());
+        }
+    }
 
     auto flags = mustRead<uint8_t>(r);
-    bool has_ttl = (flags & K_FLAG_HAS_TTL) != 0;
-    bool has_expires_at = (flags & K_FLAG_HAS_EXPIRES_AT) != 0;
+    if (!flags) {
+        return err<Request>(flags.error());
+    }
+
+    bool has_ttl = (*flags & K_FLAG_HAS_TTL) != 0;
+    bool has_expires_at = (*flags & K_FLAG_HAS_EXPIRES_AT) != 0;
     if (has_ttl) {
-        req.ttl = milliseconds(mustRead<uint32_t>(r));
+        auto ttl = mustRead<uint32_t>(r);
+        if (!ttl) {
+            return err<Request>(ttl.error());
+        }
+        req.ttl = milliseconds(*ttl);
     }
     if (has_expires_at) {
-        req.expires_at = system_clock::time_point(milliseconds(mustRead<uint64_t>(r)));
+        auto expires_at = mustRead<uint64_t>(r);
+        if (!expires_at) {
+            return err<Request>(expires_at.error());
+        }
+        // Guard against overflow when milliseconds → nanoseconds (×1'000'000)
+        // inside the system_clock::time_point conversion.
+        constexpr auto K_MAX_MS = std::numeric_limits<int64_t>::max() / 1'000'000;
+        if (*expires_at > K_MAX_MS) {
+            return err<Request>(Error(Errc::InvalidArgument, "expires_at overflow"));
+        }
+        req.expires_at = system_clock::time_point(milliseconds(*expires_at));
     }
 
-    req.version = mustRead<uint64_t>(r);
-    req.writer_node_hash = mustRead<uint64_t>(r);
+    auto version = mustRead<uint64_t>(r);
+    if (!version) {
+        return err<Request>(version.error());
+    }
 
+    req.version = *version;
+    auto writer_node_hash = mustRead<uint64_t>(r);
+    if (!writer_node_hash) {
+        return err<Request>(writer_node_hash.error());
+    }
+
+    req.writer_node_hash = *writer_node_hash;
     auto key_len = mustRead<uint32_t>(r);
-    if (key_len > 0) {
-        auto key_bytes = r.readBytes(key_len);
+    if (!key_len) {
+        return err<Request>(key_len.error());
+    }
+    if (*key_len > 0) {
+        auto key_bytes = r.readBytes(*key_len);
         if (!key_bytes) {
             return err<Request>(key_bytes.error());
         }
-        req.key.assign(reinterpret_cast<const char*>(key_bytes->data()), key_len);
+        req.key.assign(reinterpret_cast<const char*>(key_bytes->data()), *key_len);
     }
 
     auto val_len = mustRead<uint32_t>(r);
-    if (val_len > 0) {
-        auto val_bytes = r.readBytes(val_len);
+    if (!val_len) {
+        return err<Request>(val_len.error());
+    }
+    if (*val_len > 0) {
+        auto val_bytes = r.readBytes(*val_len);
         if (!val_bytes) {
             return err<Request>(val_bytes.error());
         }
-        req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), val_len);
+        req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), *val_len);
     }
     return ok(std::move(req));
 }
@@ -274,29 +321,78 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
 
     ByteReader r(frame);
     // Skip header — already validated above.
-    mustRead<uint8_t>(r);  // magic
-    mustRead<uint8_t>(r);  // version
-    mustRead<uint8_t>(r);  // opcode (unused for responses)
-    mustRead<uint32_t>(r); // payload_len
+    {
+        auto v = mustRead<uint8_t>(r);
+        if (!v) {
+            return err<Response>(v.error());
+        }
+    } // magic
+    {
+        auto v = mustRead<uint8_t>(r);
+        if (!v) {
+            return err<Response>(v.error());
+        }
+    } // version
+    {
+        auto v = mustRead<uint8_t>(r);
+        if (!v) {
+            return err<Response>(v.error());
+        }
+    } // opcode (unused for responses)
+    {
+        auto v = mustRead<uint32_t>(r);
+        if (!v) {
+            return err<Response>(v.error());
+        }
+    } // payload_len
 
     Response res;
-    res.status = static_cast<Errc>(mustRead<uint8_t>(r));
+    auto status = mustRead<uint8_t>(r);
+    if (!status) {
+        return err<Response>(status.error());
+    }
 
+    res.status = static_cast<Errc>(*status);
     // Flags byte — present from protocol v3 onwards. Bit 0 = version metadata.
     uint8_t flags = 0;
     if (r.remaining() > 0) {
-        flags = mustRead<uint8_t>(r);
+        auto flags_raw = mustRead<uint8_t>(r);
+        if (!flags_raw) {
+            return err<Response>(flags_raw.error());
+        }
+        flags = *flags_raw;
     }
     if (flags & 0x01U) {
-        res.version = mustRead<uint64_t>(r);
-        res.writer_node_hash = mustRead<uint64_t>(r);
+        auto version = mustRead<uint64_t>(r);
+        if (!version) {
+            return err<Response>(version.error());
+        }
+
+        res.version = *version;
+        auto writer_node_hash = mustRead<uint64_t>(r);
+        if (!writer_node_hash) {
+            return err<Response>(writer_node_hash.error());
+        }
+        res.writer_node_hash = *writer_node_hash;
     }
     if (flags & K_FLAG_HAS_EXPIRES_AT) {
-        res.expires_at = system_clock::time_point(milliseconds(mustRead<uint64_t>(r)));
+        auto expires_at = mustRead<uint64_t>(r);
+        if (!expires_at) {
+            return err<Response>(expires_at.error());
+        }
+
+        constexpr auto K_MAX_MS = std::numeric_limits<int64_t>::max() / 1'000'000;
+        if (*expires_at > K_MAX_MS) {
+            return err<Response>(Error(Errc::InvalidArgument, "expires_at overflow"));
+        }
+        res.expires_at = system_clock::time_point(milliseconds(*expires_at));
     }
 
     auto has_val = mustRead<uint32_t>(r);
-    if (has_val) {
+    if (!has_val) {
+        return err<Response>(has_val.error());
+    }
+    if (*has_val) {
         size_t val_len = r.remaining();
         if (val_len > 0) {
             auto val_bytes = r.readBytes(val_len);

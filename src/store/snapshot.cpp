@@ -82,6 +82,20 @@ SnapshotReader::readAll() -> Result<SnapshotData> {
         return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot entry count"));
     }
 
+    // Validate entry_count against remaining file bytes. Each entry requires
+    // at least 41 bytes (key_len + val_len + version + writer_hash +
+    // expires_ms + has_ttl + freq, excluding variable-length key/value).
+    constexpr size_t K_MIN_ENTRY_BYTES = 41;
+    auto pos = in_.tellg();
+    in_.seekg(0, std::ios::end);
+
+    auto file_size = in_.tellg();
+    in_.seekg(pos);
+    auto remaining = static_cast<uint64_t>(file_size - pos);
+    if (static_cast<uint64_t>(entry_count.value()) > remaining / K_MIN_ENTRY_BYTES) {
+        return err<SnapshotData>(Error(Errc::InvalidArgument, "entry_count exceeds file size"));
+    }
+
     SnapshotData data;
     data.next_version = next_ver.value();
     data.entries.reserve(entry_count.value());

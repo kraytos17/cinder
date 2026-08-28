@@ -62,6 +62,9 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
 
     auto local_res = local_.putVersioned(key, std::move(entry));
     if (!local_res.has_value()) {
+        Logger::warn("cinder replication: local write failed key={} reason={}",
+            key,
+            local_res.error().message());
         on_done(local_res);
         return;
     }
@@ -134,8 +137,15 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
             }
 
             if (succeed) {
+                Logger::debug("cinder replication: quorum write succeeded key={} acks={}",
+                    req.key,
+                    state->acks);
                 (*state->done)(ok());
             } else if (fail) {
+                Logger::warn("cinder replication: quorum write failed key={} acks={} needed={}",
+                    req.key,
+                    state->acks,
+                    w);
                 (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
             }
         });
@@ -160,6 +170,9 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     size_t R, ReadCallback on_done) {
     // Local read — always attempted first.
     auto local_entry = local_.getVersioned(key);
+    if (!local_entry.has_value()) {
+        Logger::debug("cinder replication: local read miss key={}", key);
+    }
     if (replica_nodes.empty() || R <= 1) {
         // No replicas or trivial quorum: return whatever the local store has.
         if (local_entry.has_value()) {
@@ -312,6 +325,7 @@ ReplicationManager::replayHints(ReplayCallback on_done) {
     auto state = std::make_shared<ReplayState>();
     state->done =
         std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
+        Logger::info("cinder replication: replay completed replayed={}", n);
         replaying_.store(false);
         done(n);
     });

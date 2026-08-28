@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <generator>
 #include <list>
 #include <optional>
 #include <shared_mutex>
@@ -12,6 +13,7 @@
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/logger.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
@@ -44,9 +46,9 @@ namespace cinder {
 //   void onEvictExpired(ListIt it)
 //   void evictOne()
 //
-template <typename Derived, typename Node>
-class EvictionStoreBase : public CacheStore {
+template <typename Derived, typename Node> class EvictionStoreBase : public CacheStore {
   public:
+
     using ListIt = std::list<Node, SlabAllocator<Node>>::iterator;
 
     explicit EvictionStoreBase(size_t capacity_bytes, Clock* clock = nullptr)
@@ -123,8 +125,7 @@ class EvictionStoreBase : public CacheStore {
         }
 
         auto& node = it->second;
-        if (Derived::nodeEntry(*node).has_ttl
-            && Derived::nodeEntry(*node).expires_at <= now()) {
+        if (Derived::nodeEntry(*node).has_ttl && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
             self.wheel_.remove(Derived::nodeKey(*node));
@@ -146,8 +147,7 @@ class EvictionStoreBase : public CacheStore {
         }
 
         auto& node = it->second;
-        if (Derived::nodeEntry(*node).has_ttl
-            && Derived::nodeEntry(*node).expires_at <= now()) {
+        if (Derived::nodeEntry(*node).has_ttl && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
             self.wheel_.remove(Derived::nodeKey(*node));
@@ -225,8 +225,8 @@ class EvictionStoreBase : public CacheStore {
                 } else {
                     // Fired early (wheel wrap, sub-second drift): re-schedule so the
                     // key is still reaped at its true expiry.
-                    self.wheel_.insert(Derived::nodeKey(*node),
-                        expiryTicks(Derived::nodeEntry(*node).expires_at));
+                    self.wheel_.insert(
+                        Derived::nodeKey(*node), expiryTicks(Derived::nodeEntry(*node).expires_at));
                 }
             });
         }
@@ -237,6 +237,29 @@ class EvictionStoreBase : public CacheStore {
         Derived& self = d();
         std::scoped_lock lock(self.mutex_);
         return next_version_++;
+    }
+
+    auto liveEntries() const
+        -> std::generator<std::pair<const std::string&, const VersionedEntry&>> override {
+        const Derived& self = d();
+        std::vector<std::pair<std::string, VersionedEntry>> items;
+        {
+            std::shared_lock lock(self.mutex_);
+            items.reserve(self.list_.size());
+            auto snap_time = now();
+            for (const auto& node : self.list_) {
+                if (Derived::nodeEntry(node).has_ttl
+                    && Derived::nodeEntry(node).expires_at <= snap_time) {
+                    continue; // expired — skip
+                }
+                items.emplace_back(Derived::nodeKey(node), Derived::nodeEntry(node));
+            }
+        }
+
+        // Yield from snapshot — lock is released.
+        for (const auto& [key, entry] : items) {
+            co_yield std::pair<const std::string&, const VersionedEntry&>{key, entry};
+        }
     }
 
     void forEach(
@@ -285,10 +308,8 @@ class EvictionStoreBase : public CacheStore {
 
   private:
 
-    [[nodiscard]] auto d() const -> const Derived& {
-        return *static_cast<const Derived*>(this);
-    }
-    
+    [[nodiscard]] auto d() const -> const Derived& { return *static_cast<const Derived*>(this); }
+
     [[nodiscard]] auto d() -> Derived& { return *static_cast<Derived*>(this); }
 
     void updateWheel(ListIt it) {
@@ -333,6 +354,8 @@ class EvictionStoreBase : public CacheStore {
     void evictIfNeeded() {
         Derived& self = d();
         while (current_bytes_ > capacity_bytes_ && !self.list_.empty()) {
+            Logger::trace(
+                "cinder store: evicting to fit bytes={}/{}", current_bytes_, capacity_bytes_);
             self.evictOne();
         }
     }

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "cinder/common/logger.hpp"
+
 namespace cinder {
 
 void
@@ -17,7 +19,9 @@ TtlWheel::insert(const std::string& key, size_t ttl_ticks) {
         wheel_[slot].insert(key);
         key_to_slot_[key] = slot;
     } else {
-        heap_.push_back({tick_count_ + ttl_ticks, key});
+        auto absolute_tick = tick_count_ + ttl_ticks;
+        Logger::trace("cinder ttl_wheel: heap insert key={} absolute_tick={}", key, absolute_tick);
+        heap_.push_back({absolute_tick, key});
         std::push_heap(heap_.begin(), heap_.end(), [](const HeapEntry& a, const HeapEntry& b) {
             return a.absolute_tick > b.absolute_tick;
         });

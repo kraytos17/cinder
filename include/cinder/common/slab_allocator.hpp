@@ -8,6 +8,8 @@
 #include <mutex>
 #include <vector>
 
+#include "cinder/common/logger.hpp"
+
 namespace cinder {
 
 // A standard-conforming pool allocator backed by fixed-size slabs. Each slab
@@ -101,6 +103,7 @@ template <typename T> class SlabAllocator {
                 static_cast<std::byte*>(::operator new(slab_bytes, std::align_val_t{alignof(T)}));
 
             slabs_.push_back(raw);
+            Logger::debug("cinder slab: growing pool total_slabs={}", slabs_.size());
             for (size_t i = n; i > 0; --i) {
                 auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
                 block->next = free_head_.load(std::memory_order_relaxed);

@@ -28,6 +28,7 @@ MembershipTable::setSelfAddress(const std::string& host, uint16_t port) {
 void
 MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
     std::scoped_lock lock(mutex_);
+    Logger::info("cinder membership: seeded {} peers", peers.size());
     for (const auto& peer : peers) {
         if (peer.id == self_) {
             continue;
@@ -62,6 +63,11 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
         } else {
             NodeInfo& local = it->second;
             if (rumor.incarnation < local.incarnation) {
+                Logger::trace(
+                    "cinder membership: stale rumor ignored id={} rumor_inc={} local_inc={}",
+                    rumor.id,
+                    rumor.incarnation,
+                    local.incarnation);
                 return; // stale rumor — ignore
             }
             if (rumor.incarnation == local.incarnation && rumor.state == local.state) {
@@ -144,6 +150,9 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         }
         // A node recovering from Dead/Suspect starts a fresh quarantine window.
         if (info.state != NodeState::Alive) {
+            Logger::info("cinder membership: node recovered from {} id={}",
+                (info.state == NodeState::Suspect ? "suspect" : "dead"),
+                id);
             info.joined_at = steady_clock::now();
         }
 
@@ -269,9 +278,14 @@ MembershipTable::refuteSelfRumor(const NodeInfo& rumor) {
     }
 
     NodeInfo& self = it->second;
+    uint64_t new_incarnation = std::max(self.incarnation, rumor.incarnation) + 1;
+    Logger::warn("cinder membership: refuting self-rumor id={} rumor_inc={} new_inc={}",
+        rumor.id,
+        rumor.incarnation,
+        new_incarnation);
     bool changed = false;
     if (self.incarnation <= rumor.incarnation) {
-        self.incarnation = rumor.incarnation + 1;
+        self.incarnation = new_incarnation;
         changed = true;
     }
     if (self.state != NodeState::Alive) {

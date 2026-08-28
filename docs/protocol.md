@@ -8,7 +8,8 @@ All multi-byte integers are **big-endian** (network byte order).
 
 ## Frame Header (7 bytes)
 
-Every message starts with a fixed 7-byte header:
+Every message starts with a fixed 7-byte header. The size is derived at
+compile time via `consteval` and verified with `static_assert`:
 
 ```
 Offset  Size  Field        Description
@@ -25,8 +26,10 @@ Maximum total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB). Enforced
 on both encode and decode; the decoder rejects any frame whose `payload_len`
 exceeds this before reading the body.
 
-The opcode byte is validated on decode: any value outside `GET..GET_VERSIONED`
-(1..8) is rejected as an unknown opcode.
+The opcode byte is validated on decode: any value outside `Get..GetVersioned`
+(1..8) is rejected as an unknown opcode. A `consteval` function
+`opcodeRangeCoverage()` verifies at compile time that the opcode range is
+contiguous with no gaps.
 
 ## Request Payload — common format
 
@@ -56,8 +59,11 @@ value            M     always (may be empty)
   milliseconds, sent by the **primary** on `REPLICATE`/`HINT`. Because it is
   absolute, every replica expires the key at the same instant regardless of
   delivery delay. Replicas convert it to their local steady-clock basis before
-  storing.
-- **`version`** (uint64, big-endian) — logical version for LWW conflict
+  storing. **Overflow guard**: values above `int64_t::max() / 1,000,000`
+  (~9.2 × 10¹² ms ≈ year 2262) are rejected to prevent undefined behavior when
+  the `milliseconds` → `time_point` conversion multiplies by 1,000,000 for
+  nanosecond resolution.
+- **`version`** (uint64, big-endian) — monotonic version for LWW conflict
   resolution. Meaningful on `SET`/`REPLICATE`/`HINT`; 0 elsewhere.
 - **`writer_node_hash`** (uint64, big-endian) — stable per-node writer hash used
   to break version ties. Meaningful on writes; 0 elsewhere.
@@ -105,7 +111,7 @@ The header opcode byte is always `0x00` on responses.
 | 0 | OK | Success |
 | 1 | NotFound | Key not in cache |
 | 2 | CapacityExceeded | Value exceeds capacity |
-| 3 | InvalidArgument | Malformed request |
+| 3 | InvalidArgument | Malformed request (truncated payload, opcode out of range, `expires_at` overflow, `mustRead` failure) |
 | 4 | TtlExpired | Key expired |
 | 5 | NotSupported | Unsupported operation |
 | 6 | InternalError | Server internal error |
@@ -114,6 +120,13 @@ The header opcode byte is always `0x00` on responses.
 
 `NotReady` is used both for ownership redirects (the server replies
 `"moved to <node-id>"` in the value field) and for failed quorum writes.
+
+## Decode Safety
+
+The decode path uses `mustRead<T>()` which returns `Result<T>` instead of
+throwing. This prevents `std::bad_expected_access` on adversarial or malformed
+frames — truncated payloads, oversized integers, and corrupted headers are all
+handled as `Result` errors that propagate up through the connection handler.
 
 ## Example: SET "foo" "bar" with 30s TTL
 
@@ -158,3 +171,8 @@ Hex dump (response):
 - Response decoding: `net::decodeResponse(span<const byte>) -> Result<Response>`
 
 All defined in `include/cinder/net/protocol.hpp` and `src/net/protocol.cpp`.
+
+Decoded requests are delivered to the `TcpConnection::handleRequest()` handler,
+which dispatches by opcode to the appropriate store/replication/gossip handler.
+Each connection is serialized on its own `asio::strand`, so concurrent requests
+on the same connection do not interleave.

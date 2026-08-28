@@ -46,6 +46,11 @@ TcpServer::~TcpServer() {
 
 auto
 TcpServer::start() -> Result<void> {
+    std::error_code ec;
+    auto ep = acceptor_.local_endpoint(ec);
+    if (!ec) {
+        Logger::info("cinder tcp_server: listening on port={}", ep.port());
+    }
     asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
     return ok();
 }

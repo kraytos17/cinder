@@ -8,10 +8,10 @@ ARGS     ?=
 SERVER = cinderd
 CLI    = cinder-cli
 
-# Auto-detect from CMakePresets.json; fallback keeps a manual DRY list.
 PRESETS := $(shell jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ')
 ifeq ($(strip $(PRESETS)),)
-PRESETS := debug debug-tls debug-clang release release-clang sanitized asan asan-clang msan tsan ubsan ci ci-gcc fast
+
+PRESETS := debug debug-tls debug-clang release release-clang sanitized asan asan-clang msan tsan ubsan ci ci-gcc fast fuzz
 endif
 
 TEST_BINS      := cinder_unit_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests
@@ -21,7 +21,6 @@ ASAN_ENV  = ASAN_OPTIONS="detect_leaks=1:abort_on_error=1:check_initialization_o
 TSAN_ENV  = TSAN_OPTIONS="halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=$(PWD)/suppressions/tsan.supp"
 UBSAN_ENV = UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1:suppressions=$(PWD)/suppressions/ubsan.supp"
 
-# Every name in PRESETS becomes: make <preset>  →  PRESET=<preset> && build
 define MAKE_PRESET
 .PHONY: $(1)
 $(1): build
@@ -63,21 +62,26 @@ kill-stale:
 		echo "==> no stale cinderd processes found"; \
 	fi
 
-.PHONY: test test-unit test-sim test-cli test-integration test-all
+# ---------------------------------------------------------------------------
+# Test binaries — one line per binary instead of one full recipe per binary.
+# TEST_TARGETS: "make-target:binary-name:extra-prereqs" triples.
+# ---------------------------------------------------------------------------
+TEST_TARGETS := \
+	unit:cinder_unit_tests: \
+	sim:cinder_sim_tests: \
+	cli:cinder_cli_tests: \
+	integration:cinder_integration_tests:kill-stale
+
+define RUN_TEST_BIN
+.PHONY: test-$(1)
+test-$(1): build $(3)
+	"$$(TESTS_DIR)/$(2)" --gtest_also_run_disabled_tests $$(ARGS)
+endef
+$(foreach t,$(TEST_TARGETS),$(eval $(call RUN_TEST_BIN,$(word 1,$(subst :, ,$(t))),$(word 2,$(subst :, ,$(t))),$(word 3,$(subst :, ,$(t))))))
+
+.PHONY: test test-all
 test: build
 	ctest --preset $(PRESET) --output-on-failure -j$(JOBS) -- $(ARGS)
-
-test-unit: build
-	"$(TESTS_DIR)/cinder_unit_tests" --gtest_also_run_disabled_tests $(ARGS)
-
-test-sim: build
-	"$(TESTS_DIR)/cinder_sim_tests" --gtest_also_run_disabled_tests $(ARGS)
-
-test-cli: build
-	"$(TESTS_DIR)/cinder_cli_tests" --gtest_also_run_disabled_tests $(ARGS)
-
-test-integration: build kill-stale
-	"$(TESTS_DIR)/cinder_integration_tests" --gtest_also_run_disabled_tests $(ARGS)
 
 test-all: build kill-stale
 	@for bin in $(TEST_BINS); do \
@@ -92,22 +96,34 @@ test-all: build kill-stale
 	@echo "════════════════════════════════════════"
 	@echo "All test suites passed ($(PRESET))."
 
-.PHONY: asan-test tsan-test ubsan-test asan-clang-test
-asan-test: asan kill-stale
-	$(ASAN_ENV) "$(TESTS_DIR)/cinder_unit_tests" --gtest_also_run_disabled_tests $(ARGS)
-	$(ASAN_ENV) "$(TESTS_DIR)/cinder_sim_tests" --gtest_also_run_disabled_tests $(ARGS)
+# ---------------------------------------------------------------------------
+# Sanitizer tests — one template instead of four near-identical targets.
+# SAN_TARGETS: "make-target:preset:ENV_VAR_NAME" triples.
+# ---------------------------------------------------------------------------
+SAN_TARGETS := \
+	asan:asan:ASAN_ENV \
+	tsan:tsan:TSAN_ENV \
+	ubsan:ubsan:UBSAN_ENV \
+	asan-clang:asan-clang:ASAN_ENV
 
-tsan-test: tsan kill-stale
-	$(TSAN_ENV) "$(TESTS_DIR)/cinder_unit_tests" --gtest_also_run_disabled_tests $(ARGS)
-	$(TSAN_ENV) "$(TESTS_DIR)/cinder_sim_tests" --gtest_also_run_disabled_tests $(ARGS)
+define SAN_TEST
+.PHONY: $(1)-test
+$(1)-test: PRESET := $(2)
+$(1)-test: $(2) kill-stale
+	@$(foreach bin,$(SANITIZER_BINS),echo ""; echo "==> $(bin) ($(1))..."; echo "────────────────────────────────────────"; $($(3)) "$$(TESTS_DIR)/$(bin)" --gtest_also_run_disabled_tests $$(ARGS) || { echo "FAILED: $(bin) ($(1))"; exit 1; }; echo "PASSED: $(bin)";)
+endef
+$(foreach s,$(SAN_TARGETS),$(eval $(call SAN_TEST,$(word 1,$(subst :, ,$(s))),$(word 2,$(subst :, ,$(s))),$(word 3,$(subst :, ,$(s))))))
 
-ubsan-test: ubsan kill-stale
-	$(UBSAN_ENV) "$(TESTS_DIR)/cinder_unit_tests" --gtest_also_run_disabled_tests $(ARGS)
-	$(UBSAN_ENV) "$(TESTS_DIR)/cinder_sim_tests" --gtest_also_run_disabled_tests $(ARGS)
+.PHONY: fuzz-test
+# FUZZ_TARGETS: fuzz binary base names. FUZZ_DICT_<name> supplies an optional
+# -dict= flag for targets that ship a libFuzzer dictionary.
+FUZZ_TARGETS := protocol_decode gossip_parse store_put snapshot
+FUZZ_DICT_protocol_decode := -dict=tests/fuzz/corpus/protocol_decode/protocol.dict
 
-asan-clang-test: asan-clang kill-stale
-	$(ASAN_ENV) "$(TESTS_DIR)/cinder_unit_tests" --gtest_also_run_disabled_tests $(ARGS)
-	$(ASAN_ENV) "$(TESTS_DIR)/cinder_sim_tests" --gtest_also_run_disabled_tests $(ARGS)
+fuzz-test: fuzz
+	@$(foreach t,$(FUZZ_TARGETS),echo "==> $(t)_fuzz (10s)..."; echo "────────────────────────────────────────"; build/fuzz/tests/$(t)_fuzz -max_total_time=10 -print_final_stats=1 $(FUZZ_DICT_$(t)) tests/fuzz/corpus/$(t) $(ARGS) || { echo "FAILED: $(t)_fuzz"; exit 1; }; echo "PASSED: $(t)_fuzz"; echo "";)
+	@echo "════════════════════════════════════════"
+	@echo "All fuzz targets passed (fuzz)."
 
 .PHONY: bench
 bench: build
@@ -168,6 +184,9 @@ help:
 	@echo '  make tsan-test              TSan unit+sim'
 	@echo '  make ubsan-test             UBSan unit+sim'
 	@echo '  make asan-clang-test        Clang ASan unit+sim'
+	@echo ''
+	@echo 'Fuzz tests:'
+	@echo '  make fuzz-test              Run all fuzz targets for 10s each'
 	@echo ''
 	@echo 'Other:'
 	@echo '  make bench                  Run throughput benchmark'

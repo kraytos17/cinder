@@ -24,6 +24,9 @@ cinder_add_test(cinder_unit_tests
     unit/persistence_test.cpp
     unit/tcp_server_stress_test.cpp
     unit/rpc_timeout_test.cpp
+    unit/gossip_test.cpp
+    unit/error_provenance_test.cpp
+    unit/lfu_concurrent_test.cpp
     sim/sim_clock.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
@@ -55,6 +58,7 @@ cinder_add_test(cinder_sim_tests
     sim/replication_sim_test.cpp
     sim/gossip_partition_sim_test.cpp
     sim/rebalance_sim_test.cpp
+    sim/concurrent_rebalance_sim_test.cpp
 )
 gtest_discover_tests(cinder_sim_tests PROPERTIES LABELS "sim")
 
@@ -70,3 +74,20 @@ gtest_discover_tests(cinder_cli_tests
     PROPERTIES LABELS "cli"
     DISCOVERY_TIMEOUT 60
 )
+
+# ---------------------------------------------------------------------------
+# Fuzz targets (opt-in via -DCINDER_ENABLE_FUZZER=ON)
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_FUZZER)
+    function(cinder_add_fuzz name)
+        add_executable(${name} ${ARGN})
+        target_link_libraries(${name} PRIVATE cinder::core)
+        target_compile_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer)
+        target_link_options(${name} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endfunction()
+
+    cinder_add_fuzz(protocol_decode_fuzz fuzz/protocol_decode_fuzz.cpp)
+    cinder_add_fuzz(gossip_parse_fuzz fuzz/gossip_parse_fuzz.cpp)
+    cinder_add_fuzz(store_put_fuzz fuzz/store_put_fuzz.cpp)
+    cinder_add_fuzz(snapshot_fuzz fuzz/snapshot_fuzz.cpp)
+endif()

@@ -25,10 +25,10 @@ that drive the state machine:
 ### Transitions
 
 ```
-                  probe fails / timeout
+                   probe fails / timeout
      Alive ──────────────────────────────► Suspect
        ▲                                      │
-       │                 suspect_timeout expires│
+       │                 spect_timeout expires│
        │                                      ▼
        │   gossip: alive (higher incarnation)  Dead
        └──────────────────────────────────────┘
@@ -53,7 +53,9 @@ stale rumor in all peers.
 
 ## Failure Detection
 
-The failure detector runs a SWIM-style probe cycle on a configurable interval:
+The failure detector runs a SWIM-style probe cycle on a configurable interval.
+All probe and round-robin state is guarded by `state_mutex_` to handle
+concurrent probe callbacks and timer ticks across io-pool threads.
 
 1. **Ping**: Each tick, the detector selects a random peer and sends a `Ping`.
 2. **Suspect**: If the Ping does not return within `suspect_timeout`, the peer
@@ -64,9 +66,9 @@ The failure detector runs a SWIM-style probe cycle on a configurable interval:
    `suspect_timeout`) also triggers Suspect marking, separate from the async
    callback path.
 
-The `state_mutex_` in the failure detector serializes concurrent probe callbacks
-and state transitions, preventing races between the probe timeout sweep and the
-async response path.
+The `MembershipTable` mutations and `sendAsync()` happen outside the lock — the
+transport may complete callbacks synchronously and re-enter the failure detector,
+so the lock only serializes probe state, not network I/O.
 
 ## Gossip Dissemination
 
@@ -108,6 +110,22 @@ that rebuild their internal `peers_` vectors under their respective mutexes.
 This ensures peer selection reflects the latest membership without requiring
 periodic full scans.
 
+### Graceful Leave
+
+When a `CacheNodeServer` shuts down:
+
+1. **Timers are cancelled** (replay, gossip, probe, evict, quarantine, compact).
+2. **`gossip_.leave()`** is called:
+   - `markDead(self_)` sets this node's state to Dead and bumps its incarnation.
+   - The full membership view (including self as Dead) is sent to **every known
+     peer** via `sendView()`.
+3. **Pending handlers are drained**: `while (io_.poll() > 0) {}` ensures the
+   leave gossip messages are flushed before the transport is torn down.
+
+This prevents the failure detector on peer nodes from suspect-marking this node
+during the shutdown window — they learn it is Dead via the explicit leave
+broadcast before any probe would time out.
+
 ## Consistent Hash Ring
 
 The `ConsistentHashRing` maps keys to nodes using xxHash3 virtual nodes (150
@@ -115,8 +133,10 @@ per physical node). The ring uses an immutable-snapshot design:
 
 1. A sorted vector of `(hash, NodeId)` pairs represents the ring.
 2. Updates (add/remove) create a new vector and atomically swap it in via
-   `std::atomic`.
+   `std::atomic<std::shared_ptr<const RingSnapshot>>`.
 3. Reads lock-free using binary search over the snapshot.
+4. Mutators use a CAS retry loop, so concurrent mutators merge instead of
+   losing updates.
 
 Cluster-scale lookup maps (`MembershipTable::nodes_`,
 `ConnectionPool::node_addrs_`, `TcpTransport::addrs_`) use `std::flat_map`
@@ -147,8 +167,9 @@ Rebalance is triggered by:
 `rebalance()` operates in two phases to avoid re-entrant deadlocks with
 synchronous transports:
 
-1. **Phase 1 — Enumerate under lock**: `store_.forEach()` iterates every key
-   in the local store. For each key, the desired replica set is computed via
+1. **Phase 1 — Enumerate under lock**: `store_.liveEntries()` (a
+   `std::generator`) snapshots live entries under a shared lock, then yields
+   them outside the lock. For each key, the desired replica set is computed via
    `ring_.getNodes(key, replica_factor_)`. Actions (migrate or push) are
    collected into vectors without sending.
 2. **Phase 2 — Send after unlock**: The store lock is released, then the
@@ -236,22 +257,6 @@ until all deferred keys have been migrated.
 |-----------|---------|-------------|
 | `--quarantine-interval` | `10000` ms | Duration of the quarantine window after a node joins. `0` disables quarantine entirely. |
 
-## Graceful Leave
-
-When a `CacheNodeServer` shuts down:
-
-1. **Timers are cancelled** (replay, gossip, probe, evict, quarantine, compact).
-2. **`gossip_.leave()`** is called:
-   - `markDead(self_)` sets this node's state to Dead and bumps its incarnation.
-   - The full membership view (including self as Dead) is sent to **every known
-     peer** via `sendView()`.
-3. **Pending handlers are drained**: `while (io_.poll() > 0) {}` ensures the
-   leave gossip messages are flushed before the transport is torn down.
-
-This prevents the failure detector on peer nodes from suspect-marking this node
-during the shutdown window — they learn it is Dead via the explicit leave
-broadcast before any probe would time out.
-
 ## Edge Cases
 
 ### Concurrent Rebalance
@@ -299,6 +304,13 @@ If a true partition occurs where a minority partition continues to serve, the
 can help external clients detect the partition. Writes to both partitions are
 resolved by LWW (last-writer-wins via version + writer_node_hash).
 
+## Liveness Checks in Rebalance
+
+During `rebalance()`, the shard manager checks the membership table before
+sending any push or migrate request. If the target node is `Suspect` or `Dead`,
+the send is skipped (the key stays local or the push is deferred). This prevents
+wasted network I/O and avoids sending data to nodes that will not ack.
+
 ## Configuration Reference
 
 | Flag | Default | Description |
@@ -309,6 +321,7 @@ resolved by LWW (last-writer-wins via version + writer_node_hash).
 | `--ping-interval` | `1000` | Failure-detector ping interval (ms) |
 | `--replication-factor` | `1` | Number of copies per key (1 = no replication) |
 | `--consistency` | `async` | Write consistency: `async` or `quorum` |
+| `--rpc-timeout` | `5000` | Per-RPC deadline for peer sends (ms). `0` = no timeout |
 
 All parameters can be set via CLI flags or the YAML configuration file. CLI
 flags override config file values.

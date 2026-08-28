@@ -286,5 +286,195 @@ TEST(ProtocolTest, PlainResponseNoVersionMeta) {
     ASSERT_TRUE(decoded.value().value.has_value());
     EXPECT_EQ(*decoded.value().value, "val");
 }
+
+TEST(ProtocolTest, DecodeOversizedPayload) {
+    // payload_len > K_MAX_MESSAGE_SIZE should return error
+    std::vector<std::byte> frame(K_FRAME_HEADER_SIZE);
+    frame[0] = std::byte{K_MAGIC};
+    frame[1] = std::byte{K_VERSION};
+    frame[2] = std::byte{static_cast<uint8_t>(Opcode::Set)};
+    // Write a huge payload_len (big-endian)
+    uint32_t huge_len = 0xFFFFFFFF;
+    std::memcpy(&frame[3], &huge_len, sizeof(huge_len));
+
+    auto result = decode(frame);
+    EXPECT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code(), Errc::InvalidArgument);
+}
+
+TEST(ProtocolTest, EncodeEmptyKey) {
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "";
+    req.value = "value";
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decode(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().key, "");
+    EXPECT_EQ(decoded.value().value, "value");
+}
+
+TEST(ProtocolTest, EncodeBothTtlAndExpiresAt) {
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "k";
+    req.value = "v";
+    req.ttl = milliseconds(5'000);
+    req.expires_at = system_clock::time_point(milliseconds(1'700'000'000'000));
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decode(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    // Both should be present in decoded request
+    EXPECT_TRUE(decoded.value().ttl.has_value());
+    EXPECT_TRUE(decoded.value().expires_at.has_value());
+}
+
+TEST(ProtocolTest, DecodeTruncatedResponse) {
+    // Response frame cut short after header — decoder should reject it
+    Response res;
+    res.status = Errc::OK;
+    res.value = "hello world";
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    // Truncate to just header + status (no value, no has_val field)
+    std::vector<std::byte> truncated(
+        encoded.value().begin(), encoded.value().begin() + K_FRAME_HEADER_SIZE + 1);
+    // Fix payload_len to match truncation
+    uint32_t trunc_len = 1; // just status byte
+    std::memcpy(&truncated[3], &trunc_len, sizeof(trunc_len));
+
+    auto decoded = decodeResponse(truncated);
+    // Truncated frame is invalid — decoder should reject it
+    EXPECT_FALSE(decoded.has_value());
+}
+
+TEST(ProtocolTest, DecodeResponseNoValue) {
+    Response res;
+    res.status = Errc::NotFound;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().status, Errc::NotFound);
+    EXPECT_FALSE(decoded.value().value.has_value());
+}
+
+TEST(ProtocolTest, DecodeVersionedResponseWithAllFlags) {
+    Response res;
+    res.status = Errc::OK;
+    res.value = "val";
+    res.version = 42;
+    res.writer_node_hash = 99;
+    res.expires_at = system_clock::time_point(milliseconds(1'700'000'000'000));
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+
+    auto decoded = decodeResponse(encoded.value());
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded.value().status, Errc::OK);
+    EXPECT_EQ(decoded.value().version, 42);
+    EXPECT_EQ(decoded.value().writer_node_hash, 99);
+    EXPECT_TRUE(decoded.value().expires_at.has_value());
+}
+
+TEST(ProtocolTest, DecodeTruncatedAfterFlagsNoTtlRoom) {
+    // Header claims payload_len that includes flags byte but not the ttl.
+    // mustRead must return an error, not crash.
+    std::vector<std::byte> frame(K_FRAME_HEADER_SIZE + 2);
+    frame[0] = std::byte{K_MAGIC};
+    frame[1] = std::byte{K_VERSION};
+    frame[2] = std::byte{static_cast<uint8_t>(Opcode::Set)};
+    uint32_t payload_len = 2; // only flags + 1 extra byte
+    std::memcpy(&frame[3], &payload_len, sizeof(payload_len));
+    frame[7] = std::byte{K_FLAG_HAS_TTL}; // flags say TTL is present
+    frame[8] = std::byte{0x00};           // but no room for the 4-byte ttl
+
+    auto result = decode(frame);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(ProtocolTest, DecodeTruncatedAfterOpcode) {
+    // Header says payload_len = 1, but decode needs to read flags (1 byte).
+    // After opcode + payload_len the reader has 0 bytes left.
+    std::vector<std::byte> frame(K_FRAME_HEADER_SIZE + 1);
+    frame[0] = std::byte{K_MAGIC};
+    frame[1] = std::byte{K_VERSION};
+    frame[2] = std::byte{static_cast<uint8_t>(Opcode::Set)};
+    uint32_t payload_len = 1; // one byte only
+    std::memcpy(&frame[3], &payload_len, sizeof(payload_len));
+    frame[7] = std::byte{0x00}; // the one payload byte
+
+    auto result = decode(frame);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(ProtocolTest, DecodeExpiresAtOverflow) {
+    // expires_at = 0xFFFFFFFFFFFFFFFF should be rejected, not overflow.
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "k";
+    req.expires_at = system_clock::time_point(milliseconds(1'700'000'000'000));
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+
+    // Overwrite the expires_at field in the encoded frame with max uint64_t.
+    // The expires_at field starts after header(7) + flags(1) + expires_at present.
+    // We need to find it: header(7) + flags(1) = offset 8, then expires_at(8 bytes).
+    auto& buf = encoded.value();
+    ASSERT_GE(buf.size(), K_FRAME_HEADER_SIZE + 9);
+    uint64_t max_val = 0xFFFFFFFFFFFFFFFF;
+    std::memcpy(&buf[K_FRAME_HEADER_SIZE + 1], &max_val, sizeof(max_val));
+
+    auto result = decode(buf);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(ProtocolTest, DecodeResponseExpiresAtOverflow) {
+    Response res;
+    res.status = Errc::OK;
+    res.expires_at = system_clock::time_point(milliseconds(1'700'000'000'000));
+    res.version = 1;
+    res.writer_node_hash = 1;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.value().size() >= K_FRAME_HEADER_SIZE + 18);
+
+    // Overwrite the expires_at field in the encoded response.
+    // Response layout: header(7) + status(1) + flags(1) + version(8) + writer_hash(8)
+    //   + expires_at(8) + has_val(4) + ...
+    // expires_at is at offset 7 + 1 + 1 + 8 + 8 = 25
+    auto& buf = encoded.value();
+    uint64_t max_val = 0xFFFFFFFFFFFFFFFF;
+    std::memcpy(&buf[K_FRAME_HEADER_SIZE + 18], &max_val, sizeof(max_val));
+
+    auto result = decodeResponse(buf);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(ProtocolTest, DecodeResponseTruncatedAfterStatus) {
+    // Valid header but payload only has status byte — no flags, no has_val.
+    std::vector<std::byte> frame(K_FRAME_HEADER_SIZE + 1);
+    frame[0] = std::byte{K_MAGIC};
+    frame[1] = std::byte{K_VERSION};
+    frame[2] = std::byte{0};
+    uint32_t payload_len = 1; // just status
+    std::memcpy(&frame[3], &payload_len, sizeof(payload_len));
+    frame[7] = std::byte{0x00}; // status = OK
+
+    auto result = decodeResponse(frame);
+    EXPECT_FALSE(result.has_value());
+}
 } // namespace
 } // namespace cinder::net

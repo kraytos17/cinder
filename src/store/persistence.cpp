@@ -30,6 +30,7 @@ PersistenceManager::recover() -> Result<void> {
     }
 
     std::filesystem::create_directories(opts_.data_dir);
+    Logger::debug("cinder persistence: data directory ready path={}", opts_.data_dir);
     loading_ = true;
 
     // Load snapshot if present
@@ -149,9 +150,15 @@ PersistenceManager::compact() -> Result<void> {
     //   2. snapshot the store (captures every entry applied before step 2)
     //   3. final drain, then swap writers; anything enqueued between steps
     //      lands in the fresh WAL (duplicate application is idempotent).
+    Logger::info("cinder persistence: compaction started");
     std::scoped_lock lock(mutex_);
     if (wal_) {
         drainQueueLocked();
+    }
+
+    size_t entry_count = 0;
+    for ([[maybe_unused]] const auto& [k, v] : store_.liveEntries()) {
+        ++entry_count;
     }
 
     auto result = createSnapshot();
@@ -168,7 +175,7 @@ PersistenceManager::compact() -> Result<void> {
     std::filesystem::remove(wal_path, ec);
     wal_ = std::make_unique<WalWriter>(wal_path.string());
     wal_entry_count_ = 0;
-
+    Logger::info("cinder persistence: compaction complete entries={}", entry_count);
     return ok();
 }
 
@@ -195,8 +202,7 @@ PersistenceManager::createSnapshot() -> Result<void> {
     auto snap_path = std::filesystem::path(opts_.data_dir) / filename;
     std::vector<SnapshotEntry> all_entries;
     Version next_version = 0;
-
-    store_.forEach([&](const std::string& key, const VersionedEntry& ve) {
+    for (const auto& [key, ve] : store_.liveEntries()) {
         SnapshotEntry se;
         se.key = key;
         se.value = ve.value;
@@ -215,10 +221,14 @@ PersistenceManager::createSnapshot() -> Result<void> {
             next_version = ve.version + 1;
         }
         all_entries.push_back(std::move(se));
-    });
+    }
 
     SnapshotWriter writer(snap_path.string());
-    return writer.write(next_version, all_entries);
+    auto write_result = writer.write(next_version, all_entries);
+    if (write_result.has_value()) {
+        Logger::debug("cinder persistence: snapshot written entries={}", all_entries.size());
+    }
+    return write_result;
 }
 
 auto
@@ -243,6 +253,7 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
             // recover()).
             const uint64_t now_ms = nowSystemMs(clock_);
             if (entry->expires_at_ms <= now_ms) {
+                Logger::trace("cinder persistence: skipped expired WAL entry key={}", entry->key);
                 continue; // skip expired
             }
 

@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/logger.hpp"
+
 using asio::async_connect;
 using asio::async_read;
 using asio::async_write;
@@ -178,6 +180,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
+        Logger::debug("cinder transport: connected to node={}", conn.addr.host);
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -191,6 +194,11 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
+        if (timed_out) {
+            Logger::warn("cinder transport: RPC timed out node={}", conn.addr.host);
+        } else {
+            Logger::warn("cinder transport: send failed node={} phase={}", conn.addr.host, "write");
+        }
         co_return err<net::Response>(rpcError(timed_out, "write", ec));
     }
 

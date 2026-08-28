@@ -107,8 +107,9 @@ if(CINDER_ENABLE_ASAN)
 endif()
 
 if(CINDER_ENABLE_FUZZER)
-    list(APPEND SANITIZER_FLAGS "-fsanitize=fuzzer")
-    list(APPEND SANITIZER_LINK_FLAGS "-fsanitize=fuzzer")
+    # -fsanitize=fuzzer is applied ONLY to fuzz test targets in tests/CMakeLists.txt,
+    # not globally, to avoid duplicate main() in non-fuzz targets like cinderd.
+    message(STATUS "Cinder: libFuzzer enabled (Clang, implies ASan)")
 endif()
 
 if(CINDER_ENABLE_UBSAN)

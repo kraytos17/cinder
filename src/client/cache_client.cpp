@@ -1,5 +1,7 @@
 #include "cinder/client/cache_client.hpp"
 
+#include "cinder/common/logger.hpp"
+
 using std::chrono::milliseconds;
 
 namespace cinder {
@@ -28,6 +30,7 @@ CacheClient::routePrimary(std::string_view key) const -> NodeId {
 auto
 CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response> {
     auto node = routePrimary(key);
+    Logger::trace("cinder client: route key={} primary={}", key, node);
     auto res = pool_.send(node, req);
     if (!res.has_value() || res.value().status != Errc::NotReady) {
         return res;
@@ -38,6 +41,7 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
     if (!target.has_value() || *target == node) {
         return res;
     }
+    Logger::debug("cinder client: redirect key={} from={} to={}", key, node, *target);
     return pool_.send(*target, req);
 }
 

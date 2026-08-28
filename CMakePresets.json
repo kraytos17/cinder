@@ -166,6 +166,21 @@
             "CMAKE_BUILD_TYPE":"Debug",
             "CINDER_UNITY_BUILD":"ON"
          }
+      },
+      {
+         "name":"fuzz",
+         "displayName":"Fuzz",
+         "description":"Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/fuzz",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_FUZZER":"ON",
+            "CINDER_ENABLE_ASAN":"ON",
+            "CINDER_ENABLE_UBSAN":"ON"
+         }
       }
    ],
    "buildPresets":[
@@ -224,6 +239,10 @@
       {
          "name":"fast",
          "configurePreset":"fast"
+      },
+      {
+         "name":"fuzz",
+         "configurePreset":"fuzz"
       }
    ],
    "testPresets":[
@@ -282,6 +301,10 @@
       {
          "name":"ci-gcc",
          "configurePreset":"ci-gcc"
+      },
+      {
+         "name":"fuzz",
+         "configurePreset":"fuzz"
       }
    ]
 }

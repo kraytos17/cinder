@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/logger.hpp"
+
 using asio::async_connect;
 using asio::async_read;
 using asio::async_write;
@@ -99,6 +101,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT
     if (!conn.connected) {
+        Logger::debug("cinder pool: reconnecting node={}", conn.addr.host);
         tcp::resolver resolver(ex);
         auto endpoints = co_await resolver.async_resolve(
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
@@ -137,6 +140,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
+        Logger::debug("cinder pool: connected to node={}", conn.addr.host);
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -150,6 +154,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
+        Logger::warn("cinder pool: send failed node={} phase={}", conn.addr.host, "write");
         co_return err<net::Response>(poolError("write", ec));
     }
 

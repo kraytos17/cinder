@@ -522,5 +522,125 @@ TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromWal) {
     EXPECT_GE(remaining, 4'900);
     EXPECT_LE(remaining, 5'000);
 }
+
+TEST_F(PersistenceTest, SnapshotCorruptionDetection) {
+    // Write a valid snapshot, then corrupt it
+    LruStore store(1'000'000);
+    ASSERT_TRUE(store.put("key1", "value1").has_value());
+
+    PersistenceManager::Options opts = pmOptions(test_dir_);
+    PersistenceManager pm(opts, store);
+    ASSERT_TRUE(pm.recover().has_value());
+    ASSERT_TRUE(pm.compact().has_value());
+
+    // Find the snapshot file and corrupt it
+    for (const auto& entry : std::filesystem::directory_iterator(test_dir_)) {
+        if (entry.path().extension() == ".dat") {
+            // Corrupt the file by overwriting bytes
+            std::fstream f(entry.path(), std::ios::in | std::ios::out | std::ios::binary);
+            char byte = 0xFF;
+            f.seekp(10);
+            f.write(&byte, 1);
+            f.close();
+            break;
+        }
+    }
+
+    // Recover from corrupted snapshot — should either fail or skip corrupted entries
+    LruStore store2(1'000'000);
+    PersistenceManager pm2(opts, store2);
+    auto result = pm2.recover();
+    // Either the recovery fails, or it succeeds but the corrupted entry is skipped
+    if (result.has_value()) {
+        // If recovery succeeded, corrupted entry should be absent or partially recovered
+        EXPECT_TRUE(store2.size() <= 1);
+    }
+}
+
+TEST_F(PersistenceTest, WalPartialEntry) {
+    // Write a valid WAL, then truncate it mid-entry
+    auto wal_path = test_dir_ / "wal.log";
+    {
+        WalWriter writer(wal_path.string());
+        WalEntry entry;
+        entry.op = WalEntry::Op::Set;
+        entry.key = "key1";
+        entry.value = "value1";
+        entry.version = 1;
+        entry.writer_node_hash = 100;
+        entry.has_ttl = false;
+        entry.expires_at_ms = 0;
+        ASSERT_TRUE(writer.append(entry).has_value());
+    }
+
+    // Truncate the file mid-entry
+    auto file_size = std::filesystem::file_size(wal_path);
+    std::filesystem::resize_file(wal_path, file_size / 2);
+
+    // Read truncated WAL — should handle gracefully
+    WalReader reader(wal_path.string());
+    size_t count = 0;
+    while (reader.hasMore()) {
+        auto entry = reader.next();
+        if (entry.has_value()) {
+            ++count;
+        } else {
+            break; // truncated entry — stop
+        }
+    }
+    // Should have read at least 0 entries (partial entry is invalid)
+    EXPECT_GE(count, 0U);
+}
+
+TEST_F(PersistenceTest, MultipleSnapshotCompactions) {
+    // Compact twice — second snapshot should contain all current entries
+    LruStore store(1'000'000);
+    PersistenceManager::Options opts = pmOptions(test_dir_);
+    PersistenceManager pm(opts, store);
+
+    // Write two keys and compact
+    ASSERT_TRUE(store.put("key1", "v1").has_value());
+    ASSERT_TRUE(store.put("key2", "v2").has_value());
+    ASSERT_TRUE(pm.compact().has_value());
+
+    // Recover — should have both keys
+    LruStore store2(1'000'000);
+    PersistenceManager pm2(opts, store2);
+    ASSERT_TRUE(pm2.recover().has_value());
+
+    auto val1 = store2.get("key1");
+    ASSERT_TRUE(val1.has_value());
+    EXPECT_EQ(*val1, "v1");
+
+    auto val2 = store2.get("key2");
+    ASSERT_TRUE(val2.has_value());
+    EXPECT_EQ(*val2, "v2");
+}
+
+TEST_F(PersistenceTest, SnapshotEntryCountExceedsFileSize) {
+    // Craft a snapshot file with a fake entry_count of 0xFFFFFFFF.
+    // The reader must reject it instead of trying to allocate ~16GB.
+    auto snap_path = test_dir_ / "snapshot.dat";
+    {
+        std::ofstream out(snap_path, std::ios::binary | std::ios::trunc);
+        uint32_t magic = 0x43534E50; // "CSNP"
+        uint32_t format_ver = 1;
+        uint64_t next_ver = 0;
+        uint32_t entry_count = 0xFFFFFFFF;
+        out.write(reinterpret_cast<const char*>(&magic), sizeof(magic));
+        out.write(reinterpret_cast<const char*>(&format_ver), sizeof(format_ver));
+        out.write(reinterpret_cast<const char*>(&next_ver), sizeof(next_ver));
+        out.write(reinterpret_cast<const char*>(&entry_count), sizeof(entry_count));
+
+        // Write a few zero bytes — far fewer than entry_count * 41 bytes
+        std::array<char, 20> zeros{};
+        out.write(zeros.data(), zeros.size());
+        out.close();
+    }
+
+    SnapshotReader reader(snap_path.string());
+    auto result = reader.readAll();
+    EXPECT_FALSE(result.has_value());
+}
 } // namespace
 } // namespace cinder

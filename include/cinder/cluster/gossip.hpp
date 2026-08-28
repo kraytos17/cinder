@@ -56,3 +56,10 @@ class GossipManager {
     std::vector<NodeId> peers_;
 };
 } // namespace cinder
+
+namespace cinder::gossip {
+// Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
+// input. Used by GossipManager::decodeView() and fuzz harnesses.
+auto
+parseEntry(std::string_view entry, NodeInfo& out) -> bool;
+} // namespace cinder::gossip

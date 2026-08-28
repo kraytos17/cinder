@@ -133,5 +133,31 @@ TEST(LruStoreTest, ConcurrentGetPutRemoveStress) {
         });
     }
 }
+
+TEST(LruStoreTest, EmptyKey) {
+    LruStore store(1'024);
+    EXPECT_TRUE(store.put("", "value").has_value());
+    auto result = store.get("");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "value");
+}
+
+TEST(LruStoreTest, MaxSizeValue) {
+    LruStore store(200);
+    // Key (1 byte) + value (50 bytes) + Node overhead should fit in 200 bytes
+    EXPECT_TRUE(store.put("k", std::string(50, 'x')).has_value());
+    EXPECT_EQ(store.size(), 1);
+}
+
+TEST(LruStoreTest, MultipleOverwrites) {
+    LruStore store(1'024);
+    for (int i = 0; i < 100; ++i) {
+        EXPECT_TRUE(store.put("key", "value" + std::to_string(i)).has_value());
+    }
+
+    auto result = store.get("key");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "value99");
+}
 } // namespace
 } // namespace cinder

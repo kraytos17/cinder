@@ -79,6 +79,15 @@ TcpConnection::startOnStrand() {
         return;
     }
 #endif
+    std::error_code ec;
+    auto ep = socket_.remote_endpoint(ec);
+    if (!ec) {
+        Logger::info("cinder tcp_connection: connection opened peer={}:{}",
+            ep.address().to_string(),
+            ep.port());
+    } else {
+        Logger::info("cinder tcp_connection: connection opened peer=<unknown>");
+    }
     maybeRead();
 }
 
@@ -161,11 +170,11 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
 
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
+        Logger::debug("cinder tcp_connection: decode failed");
         Response res{.status = Errc::InvalidArgument, .value = std::nullopt};
         sendResponse(res);
         return;
     }
-
     handleRequest(result.value());
 }
 
@@ -188,6 +197,7 @@ TcpConnection::handleRequest(const Request& req) {
     if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
+            Logger::debug("cinder tcp_connection: redirect key={} to={}", req.key, owner);
             sendResponse({.status = Errc::NotReady, .value = "moved to " + owner});
             maybeRead();
             return;
@@ -295,11 +305,20 @@ TcpConnection::handleRequest(const Request& req) {
                 auto result = store_.put(req.key, req.value, req.ttl);
                 res.status = result.has_value() ? Errc::OK : result.error().code();
             }
+
+            Logger::trace("cinder tcp_connection: opcode={} key={} status={}",
+                static_cast<int>(req.opcode),
+                req.key,
+                static_cast<int>(res.status));
             break;
         }
         case Opcode::Del: {
             store_.remove(req.key);
             res.status = Errc::OK;
+            Logger::trace("cinder tcp_connection: opcode={} key={} status={}",
+                static_cast<int>(req.opcode),
+                req.key,
+                static_cast<int>(res.status));
             break;
         }
         case Opcode::Ping: {

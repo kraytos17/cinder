@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
+#include <generator>
 #include <optional>
 #include <string>
 
@@ -48,10 +49,16 @@ class CacheStore {
     // (direct put() or ReplicationManager). Thread-safe (store mutex).
     virtual auto mintVersion() -> Version = 0;
 
-    // Visit every live (unexpired) entry. The visitor is invoked outside the
-    // store lock over a point-in-time snapshot, so it may safely call store
-    // mutators (e.g. remove) without self-deadlocking. Used by rebalancing to
-    // enumerate keys an old owner must hand over.
+    // Pull-based iteration over live entries. The snapshot is
+    // taken under the store lock; yielded values reference the snapshot
+    // (valid until the generator is destroyed or iterated past). Callers
+    // may safely call store mutators after consuming the generator.
+    virtual auto liveEntries() const
+        -> std::generator<std::pair<const std::string&, const VersionedEntry&>> = 0;
+
+    // Push-based visitor: the visitor is invoked outside the store lock over
+    // a point-in-time snapshot, so it may safely call store mutators
+    // (e.g. remove) without self-deadlocking.
     virtual void forEach(
         std::move_only_function<void(const std::string& key, const VersionedEntry&)>) const = 0;
 

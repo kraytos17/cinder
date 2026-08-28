@@ -108,5 +108,38 @@ TEST(LfuStoreTest, EvictExpired) {
     EXPECT_FALSE(store.get("a").has_value());
     EXPECT_TRUE(store.get("b").has_value());
 }
+
+TEST(LfuStoreTest, EmptyKey) {
+    LfuStore store(1'024);
+    EXPECT_TRUE(store.put("", "value").has_value());
+    auto result = store.get("");
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(*result, "value");
+}
+
+TEST(LfuStoreTest, MaxSizeValue) {
+    LfuStore store(200);
+    EXPECT_TRUE(store.put("k", std::string(50, 'x')).has_value());
+    EXPECT_EQ(store.size(), 1);
+}
+
+TEST(LfuStoreTest, FrequencyResetAfterEviction) {
+    // sizeof(LfuNode) ≈ 96 bytes (std::string SSO overhead)
+    // Each entry: key(1) + value(10) + sizeof(LfuNode) ≈ 107 bytes
+    // Capacity 250 holds 2 entries; 3rd triggers eviction
+    LfuStore store(250);
+    EXPECT_TRUE(store.put("a", std::string(10, 'x')).has_value());
+    EXPECT_TRUE(store.put("b", std::string(10, 'x')).has_value());
+    // Access "a" many times to increase its frequency
+    store.get("a");
+    store.get("a");
+    store.get("a");
+
+    // "c" should evict "b" (freq=1), not "a" (freq=4)
+    EXPECT_TRUE(store.put("c", std::string(10, 'x')).has_value());
+    EXPECT_TRUE(store.get("a").has_value());
+    EXPECT_FALSE(store.get("b").has_value());
+    EXPECT_TRUE(store.get("c").has_value());
+}
 } // namespace
 } // namespace cinder

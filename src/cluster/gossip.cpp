@@ -36,6 +36,7 @@ GossipManager::leave() {
     }
 
     for (const auto& peer : targets) {
+        Logger::debug("cinder gossip: sending leave to peer={}", peer);
         sendView(peer);
     }
 }
@@ -46,6 +47,8 @@ GossipManager::start() {
         std::scoped_lock lk(peers_mutex_);
         rebuildPeersLocked();
     }
+    Logger::info("cinder gossip: started interval={}ms",
+        std::chrono::duration_cast<milliseconds>(gossip_interval_).count());
 
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
@@ -61,6 +64,7 @@ GossipManager::tick() {
     {
         std::scoped_lock lk(peers_mutex_);
         if (peers_.empty()) {
+            Logger::debug("cinder gossip: no peers to gossip to");
             return;
         }
 
@@ -132,12 +136,12 @@ GossipManager::encodeView(const std::vector<NodeInfo>& view) -> std::string {
     return out;
 }
 
-namespace {
+namespace gossip {
 
 // Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
 // input.
 auto
-parseEntry(std::string_view entry, NodeInfo& out) -> bool {
+parseEntry(std::string_view entry, cinder::NodeInfo& out) -> bool {
     auto at = entry.find('@');
     auto colon1 = entry.find(':', at);
     auto colon2 =
@@ -162,11 +166,11 @@ parseEntry(std::string_view entry, NodeInfo& out) -> bool {
     out.port = port;
     auto state_str = entry.substr(colon2 + 1, colon3 - colon2 - 1);
     if (state_str == "alive") {
-        out.state = NodeState::Alive;
+        out.state = cinder::NodeState::Alive;
     } else if (state_str == "suspect") {
-        out.state = NodeState::Suspect;
+        out.state = cinder::NodeState::Suspect;
     } else if (state_str == "dead") {
-        out.state = NodeState::Dead;
+        out.state = cinder::NodeState::Dead;
     } else {
         return false;
     }
@@ -181,11 +185,12 @@ parseEntry(std::string_view entry, NodeInfo& out) -> bool {
     out.incarnation = incarnation;
     return true;
 }
-} // namespace
+} // namespace gossip
 
 auto
 GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
     std::vector<NodeInfo> result;
+    size_t malformed = 0;
     size_t start = 0;
     while (start < value.size()) {
         auto end = value.find(';', start);
@@ -193,14 +198,19 @@ GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
             value.substr(start, end == std::string_view::npos ? value.size() - start : end - start);
         if (!entry.empty()) {
             NodeInfo info;
-            if (parseEntry(entry, info)) {
+            if (gossip::parseEntry(entry, info)) {
                 result.push_back(std::move(info));
+            } else {
+                ++malformed;
             }
         }
         if (end == std::string_view::npos) {
             break;
         }
         start = end + 1;
+    }
+    if (malformed > 0) {
+        Logger::debug("cinder gossip: {} malformed entries rejected", malformed);
     }
     return result;
 }

@@ -23,6 +23,8 @@ FailureDetector::start() {
         std::scoped_lock lock(state_mutex_);
         rebuildPeersLocked();
     }
+    Logger::info("cinder failure_detector: started suspect_timeout={}ms",
+        std::chrono::duration_cast<milliseconds>(suspect_timeout_).count());
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
     table_.onChange([this] {
@@ -89,6 +91,8 @@ FailureDetector::tick() {
                 has_probe = true;
                 break;
             }
+        } else {
+            Logger::debug("cinder failure_detector: no peers to probe");
         }
     }
 
@@ -160,6 +164,7 @@ FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
         }
     }
     for (const auto& peer : to_dead) {
+        Logger::info("cinder failure_detector: suspect\u2192dead peer={}", peer);
         suspect_since_.erase(peer);
     }
     return to_dead;
