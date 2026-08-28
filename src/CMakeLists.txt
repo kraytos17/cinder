@@ -1,6 +1,7 @@
 set(CINDER_CORE_SOURCES
     common/logger.cpp
     common/config.cpp
+    common/metrics.cpp
     store/lru_store.cpp
     store/lfu_store.cpp
     store/ttl_wheel.cpp
@@ -15,6 +16,7 @@ set(CINDER_CORE_SOURCES
     cluster/gossip.cpp
     cluster/failure_detector.cpp
     net/protocol.cpp
+    net/http_parser.cpp
     net/tcp_server.cpp
     net/tcp_connection.cpp
     net/tcp_transport.cpp

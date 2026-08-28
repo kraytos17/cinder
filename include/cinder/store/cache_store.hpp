@@ -16,6 +16,7 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
+class MetricsCollector;
 class PersistenceManager;
 
 class CacheStore {
@@ -65,6 +66,9 @@ class CacheStore {
     // Set the persistence manager for WAL writes. Default no-op for stores
     // that don't support persistence (e.g. simulation stores).
     virtual void setPersistence(PersistenceManager* /*unused*/) {}
+
+    // Set the metrics collector for observability. Default no-op.
+    virtual void setMetrics(MetricsCollector* /*unused*/) {}
 
   protected:
 

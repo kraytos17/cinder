@@ -14,6 +14,7 @@
 #endif
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
@@ -55,6 +56,8 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     void start();
     void startOnStrand();
+
+    void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
     [[nodiscard]] auto isAlive() const -> bool { return socket_.is_open(); }
 
@@ -107,5 +110,6 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     std::deque<std::vector<std::byte>> write_queue_;
     std::vector<std::byte> encode_buf_; // scratch; pre-allocated for typical requests
+    MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder::net

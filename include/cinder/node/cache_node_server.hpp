@@ -19,6 +19,7 @@
 #include "cinder/cluster/failure_detector.hpp"
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/cluster/membership.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_server.hpp"
@@ -63,6 +64,8 @@ struct CacheNodeServerOptions {
     std::string eviction_policy = "lru";
     // RPC deadline — max time for a single peer RPC before cancellation.
     milliseconds rpc_timeout{5'000};
+    // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
+    uint16_t metrics_port = 0;
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -151,5 +154,7 @@ class CacheNodeServer {
     steady_timer quarantine_timer_;
     steady_timer compact_timer_;
     signal_set signals_;
+    MetricsCollector metrics_;
+    uint16_t metrics_port_ = 0;
 };
 } // namespace cinder

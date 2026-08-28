@@ -14,6 +14,7 @@
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
@@ -98,6 +99,13 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             evictIfNeeded();
             updateWheel(node);
             writeWal(key);
+            if (metrics_) {
+                metrics_->shardMetrics().writes.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().current_bytes.store(
+                    current_bytes_, std::memory_order_relaxed);
+                metrics_->shardMetrics().current_entries.store(
+                    self.index_.size(), std::memory_order_relaxed);
+            }
             return ok();
         }
 
@@ -112,6 +120,12 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         evictIfNeeded();
         updateWheel(new_it);
         writeWal(key);
+        if (metrics_) {
+            metrics_->shardMetrics().writes.fetch_add(1, std::memory_order_relaxed);
+            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().current_entries.store(
+                self.index_.size(), std::memory_order_relaxed);
+        }
         return ok();
     }
 
@@ -121,6 +135,9 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
         auto it = self.index_.find(key);
         if (it == self.index_.end()) {
+            if (metrics_) {
+                metrics_->shardMetrics().misses.fetch_add(1, std::memory_order_relaxed);
+            }
             return std::nullopt;
         }
 
@@ -131,9 +148,16 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             self.wheel_.remove(Derived::nodeKey(*node));
             self.list_.erase(node);
             self.index_.erase(it);
+            if (metrics_) {
+                metrics_->shardMetrics().expires_on_read.fetch_add(1, std::memory_order_relaxed);
+            }
             return std::nullopt;
         }
+
         self.onAccess(node);
+        if (metrics_) {
+            metrics_->shardMetrics().hits.fetch_add(1, std::memory_order_relaxed);
+        }
         return Derived::nodeEntry(*node).value;
     }
 
@@ -143,6 +167,9 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
         auto it = self.index_.find(key);
         if (it == self.index_.end()) {
+            if (metrics_) {
+                metrics_->shardMetrics().misses.fetch_add(1, std::memory_order_relaxed);
+            }
             return std::nullopt;
         }
 
@@ -153,7 +180,13 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             self.wheel_.remove(Derived::nodeKey(*node));
             self.list_.erase(node);
             self.index_.erase(it);
+            if (metrics_) {
+                metrics_->shardMetrics().expires_on_read.fetch_add(1, std::memory_order_relaxed);
+            }
             return std::nullopt;
+        }
+        if (metrics_) {
+            metrics_->shardMetrics().hits.fetch_add(1, std::memory_order_relaxed);
         }
         return Derived::nodeEntry(*node);
     }
@@ -184,6 +217,9 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         self.wheel_.remove(Derived::nodeKey(*node));
         self.list_.erase(node);
         self.index_.erase(it);
+        if (metrics_) {
+            metrics_->shardMetrics().deletes.fetch_add(1, std::memory_order_relaxed);
+        }
         return true;
     }
 
@@ -222,6 +258,10 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
                     self.index_.erase(kit);
                     self.list_.erase(list_it);
                     ++evicted;
+                    if (metrics_) {
+                        metrics_->shardMetrics().evictions_ttl.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
                 } else {
                     // Fired early (wheel wrap, sub-second drift): re-schedule so the
                     // key is still reaped at its true expiry.
@@ -229,6 +269,11 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
                         Derived::nodeKey(*node), expiryTicks(Derived::nodeEntry(*node).expires_at));
                 }
             });
+        }
+        if (metrics_ && evicted > 0) {
+            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().current_entries.store(
+                self.index_.size(), std::memory_order_relaxed);
         }
         return evicted;
     }
@@ -286,6 +331,13 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
     void setPersistence(PersistenceManager* pm) final { persistence_ = pm; }
 
+    void setMetrics(MetricsCollector* m) final {
+        metrics_ = m;
+        if (m) {
+            m->shardMetrics().capacity_bytes.store(capacity_bytes_);
+        }
+    }
+
   protected:
 
     // Wheel slot for an absolute expiry: at least 1 tick ahead of the current
@@ -305,6 +357,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
     steady_clock::time_point last_evict_;
     Version next_version_;
     PersistenceManager* persistence_ = nullptr;
+    MetricsCollector* metrics_ = nullptr;
 
   private:
 
@@ -353,10 +406,22 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
     void evictIfNeeded() {
         Derived& self = d();
+        auto entries_before = self.index_.size();
         while (current_bytes_ > capacity_bytes_ && !self.list_.empty()) {
             Logger::trace(
                 "cinder store: evicting to fit bytes={}/{}", current_bytes_, capacity_bytes_);
             self.evictOne();
+        }
+        if (metrics_) {
+            auto entries_after = self.index_.size();
+            if (entries_after < entries_before) {
+                metrics_->shardMetrics().evictions_capacity.fetch_add(
+                    entries_before - entries_after, std::memory_order_relaxed);
+            }
+
+            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().current_entries.store(
+                entries_after, std::memory_order_relaxed);
         }
     }
 };

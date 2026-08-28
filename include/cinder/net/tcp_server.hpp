@@ -11,6 +11,7 @@
 #endif
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
@@ -32,7 +33,8 @@ class TcpServer {
     TcpServer(io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
         std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
-        GossipManager* gossip = nullptr
+        GossipManager* gossip = nullptr, uint16_t metrics_port = 0,
+        MetricsCollector* metrics = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -52,6 +54,7 @@ class TcpServer {
   private:
 
     void doAccept();
+    void doAcceptMetrics();
 
     asio::strand<io_context::executor_type> strand_;
     bool stopping_ = false;
@@ -64,9 +67,11 @@ class TcpServer {
     int replica_factor_;
     ConsistencyMode mode_;
     GossipManager* gossip_;
+    MetricsCollector* metrics_ = nullptr;
 #ifdef CINDER_ENABLE_TLS
     asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
     std::vector<std::shared_ptr<TcpConnection>> connections_;
+    std::unique_ptr<tcp::acceptor> metrics_acceptor_;
 };
 } // namespace cinder::net

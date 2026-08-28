@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 
 namespace cinder {
 
@@ -99,9 +100,15 @@ FailureDetector::tick() {
     for (const auto& peer : timed_out) {
         Logger::info("cinder failure_detector: suspect marked peer={} reason=timeout", peer);
         table_.markSuspect(peer);
+        if (metrics_) {
+            metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     for (const auto& peer : dead) {
         table_.markDead(peer);
+        if (metrics_) {
+            metrics_->clusterMetrics().dead_marked.fetch_add(1, std::memory_order_relaxed);
+        }
     }
     if (!has_probe) {
         return;
@@ -113,6 +120,9 @@ FailureDetector::tick() {
     transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
         onProbeResult(probe_target, r.has_value());
     });
+    if (metrics_) {
+        metrics_->clusterMetrics().probe_sent.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void
@@ -141,12 +151,19 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
         Logger::debug("cinder failure_detector: ping received peer={}", peer);
         auto info = table_.get(peer);
         table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
+        if (metrics_) {
+            metrics_->clusterMetrics().probe_received.fetch_add(1, std::memory_order_relaxed);
+            metrics_->clusterMetrics().alive_marked.fetch_add(1, std::memory_order_relaxed);
+        }
         return;
     }
 
     // Unreachable: suspect now, record when; escalation promotes to Dead later.
     Logger::info("cinder failure_detector: suspect marked peer={} reason=unreachable", peer);
     table_.markSuspect(peer);
+    if (metrics_) {
+        metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 auto

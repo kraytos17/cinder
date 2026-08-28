@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/net/protocol.hpp"
 
 using std::chrono::milliseconds;
@@ -73,8 +74,12 @@ GossipManager::tick() {
         std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
         target = peers_[dist(rng)];
     }
+
     Logger::debug("cinder gossip: gossip round target={}", target);
     sendView(target);
+    if (metrics_) {
+        metrics_->clusterMetrics().gossip_rounds.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void

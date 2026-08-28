@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 
 namespace cinder {
 
@@ -87,9 +88,16 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
                 if (!r.has_value()) {
                     Logger::warn(
                         "cinder replication: replica unreachable node={} key={}", node, req.key);
+                    if (metrics_) {
+                        metrics_->replicationMetrics().replica_unreachable.fetch_add(
+                            1, std::memory_order_relaxed);
+                    }
                     enqueueHint(node, req);
                 }
             });
+        }
+        if (metrics_) {
+            metrics_->replicationMetrics().async_writes.fetch_add(1, std::memory_order_relaxed);
         }
         on_done(ok());
         return;
@@ -113,6 +121,10 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
             if (!r.has_value()) {
                 Logger::warn(
                     "cinder replication: replica unreachable node={} key={}", node, req.key);
+                if (metrics_) {
+                    metrics_->replicationMetrics().replica_unreachable.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
                 enqueueHint(node, req);
             }
 
@@ -140,12 +152,20 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
                 Logger::debug("cinder replication: quorum write succeeded key={} acks={}",
                     req.key,
                     state->acks);
+                if (metrics_) {
+                    metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
                 (*state->done)(ok());
             } else if (fail) {
                 Logger::warn("cinder replication: quorum write failed key={} acks={} needed={}",
                     req.key,
                     state->acks,
                     w);
+                if (metrics_) {
+                    metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
                 (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
             }
         });
@@ -188,6 +208,9 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     req.key = key;
     Logger::debug(
         "cinder replication: quorum read fan-out key={} replicas={}", key, replica_nodes.size());
+    if (metrics_) {
+        metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
+    }
 
     auto state = std::make_shared<ReadQuorumState>();
     state->done = std::make_shared<ReadCallback>(std::move(on_done));
@@ -267,6 +290,10 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
                         key,
                         static_cast<int>(heal.error().code()));
                 }
+                if (metrics_) {
+                    metrics_->replicationMetrics().read_repairs.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
                 sendRepairFanOut(key, state->replicas, *result);
             }
             if (result.has_value()) {
@@ -287,6 +314,9 @@ void
 ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
     Logger::debug("cinder replication: hint enqueued target={} key={}", target, req.key);
     hints_.push({target, req, clock_.now() + K_HINT_TTL});
+    if (metrics_) {
+        metrics_->replicationMetrics().hints_enqueued.fetch_add(1, std::memory_order_relaxed);
+    }
 }
 
 void
@@ -326,6 +356,9 @@ ReplicationManager::replayHints(ReplayCallback on_done) {
     state->done =
         std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
         Logger::info("cinder replication: replay completed replayed={}", n);
+        if (metrics_ && n > 0) {
+            metrics_->replicationMetrics().hints_replayed.fetch_add(n, std::memory_order_relaxed);
+        }
         replaying_.store(false);
         done(n);
     });

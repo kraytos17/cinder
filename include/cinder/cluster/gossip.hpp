@@ -7,6 +7,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/membership.hpp"
 #include "cinder/cluster/transport.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/types.hpp"
 
 using std::chrono::milliseconds;
@@ -38,6 +39,8 @@ class GossipManager {
     // Broadcast self as Dead to every peer so they don't suspect during teardown.
     void leave();
 
+    void setMetrics(MetricsCollector* m) { metrics_ = m; }
+
     [[nodiscard]] auto gossipInterval() const -> milliseconds { return gossip_interval_; }
 
   private:
@@ -54,6 +57,7 @@ class GossipManager {
     milliseconds gossip_interval_;
     mutable std::mutex peers_mutex_; // guards peers_ only
     std::vector<NodeId> peers_;
+    MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder
 

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/net/protocol.hpp"
 
 namespace cinder {
@@ -93,9 +94,16 @@ ShardManager::rebalance() -> bool {
     for (auto& p : migrates) {
         migrateKey(p.key, p.entry, p.primary);
     }
+
     Logger::info("cinder shard_manager: rebalance completed copies={} migrations={}",
         copies.size(),
         migrates.size());
+    if (metrics_) {
+        metrics_->clusterMetrics().rebalance_copies.fetch_add(
+            copies.size(), std::memory_order_relaxed);
+        metrics_->clusterMetrics().rebalance_migrations.fetch_add(
+            migrates.size(), std::memory_order_relaxed);
+    }
     return deferred_count > 0;
 }
 

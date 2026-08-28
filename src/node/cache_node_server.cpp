@@ -69,7 +69,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
-          options.replica_factor, options.mode, &gossip_
+          options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -81,7 +81,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       evict_timer_(io_),
       quarantine_timer_(io_),
       compact_timer_(io_),
-      signals_(io_) {
+      signals_(io_),
+      metrics_port_(options.metrics_port) {
     signals_.add(SIGINT);
     signals_.add(SIGTERM);
     ring_.addNode(options.node_id);
@@ -101,6 +102,12 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     if (persistence_.enabled()) {
         store_->setPersistence(&persistence_);
     }
+
+    store_->setMetrics(&metrics_);
+    repl_.setMetrics(&metrics_);
+    detector_.setMetrics(&metrics_);
+    gossip_.setMetrics(&metrics_);
+    shard_.setMetrics(&metrics_);
     Logger::info("eviction policy: {}", options.eviction_policy);
 }
 
@@ -143,6 +150,9 @@ CacheNodeServer::run() {
     }
 
     Logger::info("cinder node: io threads={}", workers);
+    if (metrics_port_ > 0) {
+        Logger::info("cinder node: metrics endpoint on port={}", metrics_port_);
+    }
     if (workers <= 1) {
         io_.run();
     } else {

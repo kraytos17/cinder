@@ -7,6 +7,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/membership.hpp"
 #include "cinder/cluster/transport.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/types.hpp"
 
 using std::chrono::milliseconds;
@@ -39,6 +40,8 @@ class FailureDetector {
     void start();
     void tick(); // check timeouts, then probe one peer; exposed for the sim harness
 
+    void setMetrics(MetricsCollector* m) { metrics_ = m; }
+
   private:
 
     struct ProbeState {
@@ -62,5 +65,6 @@ class FailureDetector {
     size_t next_peer_ = 0;
     std::unordered_map<NodeId, ProbeState> probes_;
     std::unordered_map<NodeId, steady_clock::time_point> suspect_since_;
+    MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder

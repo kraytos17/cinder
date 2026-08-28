@@ -1,10 +1,13 @@
 #include "cinder/net/tcp_server.hpp"
 
 #include <asio.hpp>
+#include <memory>
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
+#include "cinder/net/http_parser.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::io_context;
@@ -12,9 +15,10 @@ using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode, GossipManager* gossip
+TcpServer::TcpServer(
+    io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
+    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
+    ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port, MetricsCollector* metrics
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -29,7 +33,8 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
       repl_(repl),
       replica_factor_(replica_factor),
       mode_(mode),
-      gossip_(gossip)
+      gossip_(gossip),
+      metrics_(metrics)
 #ifdef CINDER_ENABLE_TLS
       ,
       ssl_ctx_(ssl_ctx)
@@ -37,11 +42,19 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
 {
     std::error_code ec;
     acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
+    if (metrics_port > 0 && metrics_) {
+        metrics_acceptor_ =
+            std::make_unique<tcp::acceptor>(io, tcp::endpoint(tcp::v4(), metrics_port));
+        metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
+    }
 }
 
 TcpServer::~TcpServer() {
     std::error_code ec;
     acceptor_.close(ec);
+    if (metrics_acceptor_) {
+        metrics_acceptor_->close(ec);
+    }
 }
 
 auto
@@ -51,7 +64,15 @@ TcpServer::start() -> Result<void> {
     if (!ec) {
         Logger::info("cinder tcp_server: listening on port={}", ep.port());
     }
+
     asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
+    if (metrics_acceptor_) {
+        auto mep = metrics_acceptor_->local_endpoint(ec);
+        if (!ec) {
+            Logger::info("cinder tcp_server: metrics HTTP listening on port={}", mep.port());
+        }
+        asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
+    }
     return ok();
 }
 
@@ -61,6 +82,9 @@ TcpServer::shutdown() {
         stopping_ = true;
         std::error_code ec;
         acceptor_.close(ec);
+        if (metrics_acceptor_) {
+            metrics_acceptor_->close(ec);
+        }
         connections_.clear();
     }));
 }
@@ -95,6 +119,50 @@ TcpServer::doAccept() {
         }
         if (!stopping_ && acceptor_.is_open()) {
             doAccept();
+        }
+    }));
+}
+
+void
+TcpServer::doAcceptMetrics() {
+    metrics_acceptor_->async_accept(
+        asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
+        if (ec) {
+            if (ec != asio::error::operation_aborted && !stopping_) {
+                Logger::warn("cinder tcp_server: metrics accept error: {}", ec.message());
+                doAcceptMetrics();
+            }
+            return;
+        }
+
+        auto buf = std::make_shared<std::array<char, 4'096>>();
+        asio::async_read(socket,
+            asio::buffer(*buf),
+            asio::transfer_at_least(1),
+            asio::bind_executor(strand_,
+                [this, self = std::make_shared<tcp::socket>(std::move(socket)), buf](
+                    std::error_code read_ec, std::size_t /*n*/) {
+            std::string response;
+            if (!read_ec) {
+                auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));
+                if (req.has_value() && req->method == "GET" && req->path == "/metrics") {
+                    response = formatHttpResponse(metrics_->formatPrometheus());
+                } else {
+                    response = formatHttp404();
+                }
+            } else {
+                response = formatHttp404();
+            }
+
+            asio::async_write(*self,
+                asio::buffer(response),
+                [self](std::error_code /*write_ec*/, std::size_t /*written*/) {
+                std::error_code close_ec;
+                self->close(close_ec);
+            });
+        }));
+        if (!stopping_ && metrics_acceptor_ && metrics_acceptor_->is_open()) {
+            doAcceptMetrics();
         }
     }));
 }

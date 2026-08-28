@@ -6,6 +6,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/membership.hpp"
 #include "cinder/cluster/transport.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
@@ -47,6 +48,8 @@ class ShardManager {
     // the quarantine window (so the caller can retry after it clears).
     auto rebalance() -> bool;
 
+    void setMetrics(MetricsCollector* m) { metrics_ = m; }
+
   private:
 
     auto makeReplicateRequest(const std::string& key, const VersionedEntry& entry) -> net::Request;
@@ -61,5 +64,6 @@ class ShardManager {
     Clock& clock_;
     int replica_factor_;
     milliseconds quarantine_interval_;
+    MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder

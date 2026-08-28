@@ -11,6 +11,7 @@
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/transport.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/node/hint_queue.hpp"
@@ -63,6 +64,8 @@ class ReplicationManager {
     // the count replayed (expired hints are dropped). Call periodically.
     void replayHints(ReplayCallback on_done);
     auto hintCount() const -> size_t;
+
+    void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
   private:
 
@@ -119,5 +122,6 @@ class ReplicationManager {
     // Single-consumer guard for replayHints(): overlapping timer ticks (or
     // pool threads) must not run two replays concurrently.
     std::atomic<bool> replaying_{false};
+    MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder

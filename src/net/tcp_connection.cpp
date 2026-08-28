@@ -5,6 +5,7 @@
 
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/common/logger.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/replication_manager.hpp"
@@ -52,6 +53,9 @@ TcpConnection::~TcpConnection() {
 #endif
         socket_.close(ec);
         Logger::debug("cinder tcp_connection: connection closed");
+    }
+    if (metrics_) {
+        metrics_->connectionMetrics().connections_closed.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -171,6 +175,9 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
         Logger::debug("cinder tcp_connection: decode failed");
+        if (metrics_) {
+            metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
+        }
         Response res{.status = Errc::InvalidArgument, .value = std::nullopt};
         sendResponse(res);
         return;
@@ -183,6 +190,34 @@ TcpConnection::handleRequest(const Request& req) {
     Logger::debug("cinder tcp_connection: request received opcode={} key={}",
         static_cast<int>(req.opcode),
         req.key);
+
+    if (metrics_) {
+        switch (req.opcode) {
+            case Opcode::Get:
+                metrics_->opcodeMetrics().gets.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Set:
+                metrics_->opcodeMetrics().sets.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Del:
+                metrics_->opcodeMetrics().dels.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Ping:
+                metrics_->opcodeMetrics().pings.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Replicate:
+                metrics_->opcodeMetrics().replicates.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Hint:
+                metrics_->opcodeMetrics().hints.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::GetVersioned:
+                metrics_->opcodeMetrics().gets_versioned.fetch_add(1, std::memory_order_relaxed);
+                break;
+            default:
+                break;
+        }
+    }
 
     // Replicate/Hint/Gossip are inter-node messages addressed to this node
     // directly (a replica does not own the key) — skip the ring ownership check.
@@ -198,6 +233,10 @@ TcpConnection::handleRequest(const Request& req) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
             Logger::debug("cinder tcp_connection: redirect key={} to={}", req.key, owner);
+            if (metrics_) {
+                metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
+            }
+
             sendResponse({.status = Errc::NotReady, .value = "moved to " + owner});
             maybeRead();
             return;
