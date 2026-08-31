@@ -38,7 +38,9 @@ class ByteWriter {
 
     void writeBytes(std::span<const std::byte> data) {
         assert(off_ + data.size() <= out_.size());
-        std::memcpy(&out_[off_], data.data(), data.size());
+        if (data.size() > 0) {
+            std::memcpy(&out_[off_], data.data(), data.size());
+        }
         off_ += data.size();
     }
 

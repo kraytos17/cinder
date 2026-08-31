@@ -6,7 +6,8 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 
 - **Eviction store** with LRU and LFU policies, backed by a policy-templated CRTP base (`EvictionStoreBase`) that eliminates duplication across eviction strategies; a 256-slot `TtlWheel` with a min-heap for long TTLs (>256 ticks) reaps expiries without repeated wheel reinsertion
 - **Binary wire protocol** (v3) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 8 opcodes, max 64 MiB messages
-- **Async TCP server** using Asio, per-connection strand serialization, 1 MiB read buffers, write-queue backpressure (max 64 queued writes)
+- **Async TCP server** using Asio, per-connection strand serialization, 1 MiB read buffers, write-queue backpressure (max 64 queued writes **and** 4 MiB in-flight bytes, with the connection closed on overflow), a 30s idle timeout that reaps silent connections, and a hard 10k concurrent-connection cap
+- **Observability** — Prometheus `/metrics` endpoint (counters, gauges, per-opcode request-latency summaries `cinder_request_latency_seconds` with p50/p95/p99/p999) and a `/config` endpoint exposing the live running configuration as JSON
 - **Consistent hash ring** — xxHash3 virtual nodes (150/physical node), immutable-snapshot atomic swap via `std::atomic<shared_ptr>`, lock-free reads with binary search; cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
 - **Cluster-aware routing** — each node owns a hash-ring range; non-owned keys return a `moved to <node>` redirect
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with monotonic versioned LWW conflict resolution; `writer_node_hash` breaks version ties
@@ -21,7 +22,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Thread-pool event loop** — `--io-threads` for N-worker `io_context`; auto-detects `min(4, hardware_concurrency)` when unset
 - **Slab allocator** — `SlabAllocator<Node>` for store lists; 256-slot slabs, lock-free CAS free-list, `std::start_lifetime_as` for well-defined type-punning on the free-list overlay
 - **Structured logging** — spdlog-backed `Logger` with `Stdout`/`Stderr` sink, `std::format`-based API, subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
-- **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`)
+- **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`); **live hot-reload** — the running node watches the config file and applies changed log level, gossip/suspect intervals, and store capacity without a restart
 - **Persistence** — append-only WAL + periodic snapshot; WAL entries carry per-entry XXH3-64 checksums (8-byte `WAL0` header + format version); atomic snapshot via write-to-temp + rename; crash recovery replays WAL from last snapshot; backward-compatible with older headerless WAL files
 - **Error provenance** — `Error::wrap()` chains error origins across call layers with `std::source_location`; full Rule of Five (deep copy of `cause_` chain, move, assignment)
 - **Fuzz harnesses** — 4 libFuzzer targets (protocol decode, gossip parse, store put, snapshot read) with 58+ seed corpus files and a protocol dictionary
@@ -109,6 +110,7 @@ server:
   capacity: 67108864
   replication_factor: 1
   consistency: async
+  metrics_port: 9100        # Prometheus /metrics + /config HTTP endpoint (0 = disabled)
 
 cluster:
   peers: []
@@ -273,23 +275,24 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
- 198 unit tests (16 suites):    Result, LruStore, LfuStore, LfuConcurrent,
+ 224 unit tests (20 suites):    Result, LruStore, LfuStore, LfuConcurrent,
                                 TtlWheel, Protocol, ConsistentHashRing,
                                 CacheClient routing + redirects,
                                 VersionedStore (LRU/LFU), parsePeer,
                                 Membership, Config, Persistence, TcpServer,
-                                RpcTimeout, Gossip, ErrorProvenance
-  35 sim tests (4 suites):      replication (async/quorum/hinted-handoff/read-repair),
-                                gossip partition (suspect/dead/incarnation/degraded/
-                                graceful-leave, late-joiner), rebalancing (keys migrate
-                                on join, quarantine, replicas spread to all new owners,
-                                concurrent rapid join/leave)
-  22 integration tests:         SetGetDelPing, TTLExpiry, CapacityEviction, LargeValue,
-                                replica failover (fanout, failover read, quorum,
-                                hinted handoff, 3-node fanout, TTL-over-wire),
-                                rebalance on join, rebalance RF=2, read repair, multi-get
-  10 CLI tests:                 Ping, SetGet, GetNotFound, ConnectRefused, Del
-                                + TLS (SetGetOverTls, PingOverTls, PlaintextRejected)
+                                RpcTimeout, Gossip, ErrorProvenance, Metrics
+                                (incl. latency histogram), HttpParser
+  35 sim tests (5 suites):      replication (async/quorum/hinted-handoff/read-repair),
+                                read repair, gossip partition (suspect/dead/incarnation/
+                                degraded/graceful-leave, late-joiner), rebalancing (keys
+                                migrate on join, quarantine, replicas spread to all new
+                                owners, concurrent rapid join/leave)
+  19 integration tests (7 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
+                                LargeValue, replica failover (fanout, failover read,
+                                quorum, hinted handoff, 3-node fanout, TTL-over-wire),
+                                rebalance on join, rebalance RF=2, read repair, multi-get,
+                                TLS (SetGetOverTls, PingOverTls, PlaintextRejected)
+   5 CLI tests:                 Ping, SetGet, GetNotFound, ConnectRefused, Del
 ```
 
 ```bash
@@ -383,8 +386,8 @@ cinder/
 │   ├── cinderd_main.cpp         # Server entry point (CLI11, YAML config, TLS setup)
 │   └── cinder_cli.cpp           # CLI client (get/set/del/ping, TLS support)
 ├── tests/
-│   ├── unit/                    # 198 unit tests (GoogleTest)
-│   ├── integration/             # 22 integration + 10 CLI tests (fork real cinderd)
+│   ├── unit/                    # 224 unit tests (GoogleTest)
+│   ├── integration/             # 19 integration + 5 CLI tests (fork real cinderd)
 │   ├── sim/                     # 35 simulation tests (SimClock/SimBus)
 │   ├── fuzz/                    # 4 libFuzzer harnesses + corpus + generate_corpus.py
 │   │   ├── protocol_decode_fuzz.cpp

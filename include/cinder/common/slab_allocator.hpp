@@ -47,7 +47,7 @@ template <typename T> class SlabAllocator {
 
         ~Pool() {
             for (auto* slab : slabs_) {
-                ::operator delete(slab);
+                ::operator delete(slab, std::align_val_t{alignof(T)});
             }
         }
 

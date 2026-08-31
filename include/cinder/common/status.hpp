@@ -31,7 +31,9 @@ class Error {
         : code_(code),
           location_(loc) {
         auto n = std::min(message.size(), msg_buf_.size() - 1);
-        std::memcpy(msg_buf_.data(), message.data(), n);
+        if (n > 0) {
+            std::memcpy(msg_buf_.data(), message.data(), n);
+        }
         msg_len_ = static_cast<uint8_t>(n);
     }
 
