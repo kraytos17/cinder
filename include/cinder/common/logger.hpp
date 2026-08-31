@@ -24,6 +24,7 @@ class Logger {
 
     static void init(std::string_view name = "cinder", LogLevel level = LogLevel::Debug,
         LogSink sink = LogSink::Stdout);
+    static void setLevel(LogLevel level);
     static void shutdown();
 
     template <typename... Args> static void trace(std::format_string<Args...> fmt, Args&&... args) {

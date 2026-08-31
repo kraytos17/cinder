@@ -2,15 +2,17 @@
 
 #include <array>
 #include <asio.hpp>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <string_view>
 #include <vector>
 
 #ifdef CINDER_ENABLE_TLS
 #include <asio/ssl.hpp>
-#include <optional>
 #endif
 
 #include "cinder/cluster/clock.hpp"
@@ -36,11 +38,16 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     // requests; large values are handled by the client library, not the server.
     static constexpr size_t K_BUFFER_SIZE = 1'048'576;
     static constexpr size_t K_MAX_WRITE_QUEUE = 64;
+    // Hard memory ceiling for the outbound queue. When exceeded the connection
+    // is closed instead of buffering unbounded responses for a slow client.
+    static constexpr size_t K_MAX_WRITE_QUEUE_BYTES = 4 * 1'024 * 1'024;
+    // No complete request/response on a connection for this long -> close it.
+    static constexpr auto K_IDLE_TIMEOUT = std::chrono::seconds(30);
 
     TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string_view node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
-        GossipManager* gossip = nullptr
+        GossipManager* gossip = nullptr, std::shared_ptr<std::atomic<size_t>> conn_counter = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -56,6 +63,11 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     void start();
     void startOnStrand();
+
+    // Force-close the socket (cancels pending reads/writes and the idle timer).
+    // Safe to call from any thread; the actual close runs on the connection's
+    // strand so it never races with in-flight handlers.
+    void close();
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
@@ -75,6 +87,10 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     void onWrite(std::error_code ec, size_t bytes);
     void maybeRead();
 
+    void resetIdleTimer();
+    void onIdleTimeout(std::error_code ec);
+    void closeConnection(const char* reason, std::error_code ec = {});
+
     // Async read/write helpers that route through SSL when active.
     template <typename MutableBufferSequence, typename Handler>
     void doAsyncRead(const MutableBufferSequence& buf, Handler handler);
@@ -89,6 +105,11 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     size_t payload_len_ = 0;
     bool writing_ = false;
     bool reading_ = false;
+    // Latency instrumentation: set when a request is dispatched, consumed by
+    // sendResponse() to record per-opcode handling latency. Only touched
+    // on-strand, so no locking required.
+    std::optional<Opcode> pending_opcode_;
+    std::chrono::steady_clock::time_point request_start_{};
 
     // Serializes this connection's entire handler chain (read state machine,
     // write queue, encode scratch). With a pooled io_context the repl_* quorum
@@ -97,6 +118,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     // are posted onto it, so reading_/writing_/write_queue_/encode_buf_/read_buf_
     // are only ever touched on-strand.
     asio::strand<asio::any_io_executor> strand_;
+    asio::steady_timer idle_timer_;
 
     CacheStore& store_;
     const ConsistentHashRing& ring_;
@@ -109,7 +131,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     std::deque<std::vector<std::byte>> write_queue_;
+    size_t write_queue_bytes_ = 0;
     std::vector<std::byte> encode_buf_; // scratch; pre-allocated for typical requests
+    std::shared_ptr<std::atomic<size_t>> conn_counter_;
     MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder::net

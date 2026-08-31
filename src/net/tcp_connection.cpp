@@ -18,7 +18,7 @@ namespace cinder::net {
 
 TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
     std::string_view node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
-    ConsistencyMode mode, GossipManager* gossip
+    ConsistencyMode mode, GossipManager* gossip, std::shared_ptr<std::atomic<size_t>> conn_counter
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -26,6 +26,7 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
     )
     : socket_(std::move(socket)),
       strand_(socket_.get_executor()),
+      idle_timer_(socket_.get_executor()),
       store_(store),
       ring_(ring),
       clock_(clock),
@@ -35,7 +36,8 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       replica_factor_(replica_factor),
       mode_(mode),
       read_buf_{},
-      encode_buf_(512) { // pre-allocate for typical requests
+      encode_buf_(512), // pre-allocate for typical requests
+      conn_counter_(std::move(conn_counter)) {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_ctx) {
         ssl_stream_.emplace(socket_, *ssl_ctx);
@@ -52,7 +54,9 @@ TcpConnection::~TcpConnection() {
         }
 #endif
         socket_.close(ec);
-        Logger::debug("cinder tcp_connection: connection closed");
+    }
+    if (conn_counter_) {
+        conn_counter_->fetch_sub(1, std::memory_order_relaxed);
     }
     if (metrics_) {
         metrics_->connectionMetrics().connections_closed.fetch_add(1, std::memory_order_relaxed);
@@ -92,15 +96,69 @@ TcpConnection::startOnStrand() {
     } else {
         Logger::info("cinder tcp_connection: connection opened peer=<unknown>");
     }
+    resetIdleTimer();
     maybeRead();
 }
 
 void
+TcpConnection::close() {
+    auto self = shared_from_this();
+    asio::post(strand_,
+        [this, self]() { closeConnection("server shutdown", asio::error::operation_aborted); });
+}
+
+void
 TcpConnection::maybeRead() {
-    if (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE) {
+    if (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE
+        && write_queue_bytes_ < K_MAX_WRITE_QUEUE_BYTES) {
         reading_ = true;
         doReadHeader();
     }
+}
+
+void
+TcpConnection::resetIdleTimer() {
+    idle_timer_.expires_after(K_IDLE_TIMEOUT);
+    std::weak_ptr<TcpConnection> weak = shared_from_this();
+    idle_timer_.async_wait(asio::bind_executor(strand_, [weak](std::error_code ec) {
+        if (auto self = weak.lock()) {
+            self->onIdleTimeout(ec);
+        }
+    }));
+}
+
+void
+TcpConnection::onIdleTimeout(std::error_code ec) {
+    if (ec) {
+        return; // canceled or error — connection active or already closed
+    }
+    closeConnection("idle timeout");
+}
+
+void
+TcpConnection::closeConnection(const char* reason, std::error_code ec) {
+    if (!socket_.is_open()) {
+        return;
+    }
+
+    // Broken pipe / connection reset / operation aborted are transient — peers
+    // closing or node shutdown. Log those at debug, real failures at warn.
+    if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
+        || ec == asio::error::operation_aborted) {
+        Logger::debug(
+            "cinder tcp_connection: closing connection reason={} err={}", reason, ec.message());
+    } else {
+        Logger::warn("cinder tcp_connection: closing connection reason={}", reason);
+    }
+
+    idle_timer_.cancel();
+    std::error_code close_ec;
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        ssl_stream_->shutdown(close_ec);
+    }
+#endif
+    socket_.close(close_ec);
 }
 
 void
@@ -134,6 +192,8 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     if (ec) {
         return;
     }
+
+    resetIdleTimer();
     if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
         return;
     }
@@ -172,12 +232,14 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         return;
     }
 
+    resetIdleTimer();
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
         Logger::debug("cinder tcp_connection: decode failed");
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
+
         Response res{.status = Errc::InvalidArgument, .value = std::nullopt};
         sendResponse(res);
         return;
@@ -187,6 +249,8 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
 
 void
 TcpConnection::handleRequest(const Request& req) {
+    pending_opcode_ = req.opcode;
+    request_start_ = std::chrono::steady_clock::now();
     Logger::debug("cinder tcp_connection: request received opcode={} key={}",
         static_cast<int>(req.opcode),
         req.key);
@@ -401,6 +465,14 @@ TcpConnection::handleRequest(const Request& req) {
 
 void
 TcpConnection::sendResponse(const Response& res) {
+    if (pending_opcode_.has_value() && metrics_) {
+        auto elapsed_ns =
+            static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - request_start_)
+                    .count());
+        metrics_->opcodeMetrics().recordLatency(std::to_underlying(*pending_opcode_), elapsed_ns);
+        pending_opcode_.reset();
+    }
     // Encode into the scratch buffer, then hand ownership to the write queue.
     auto result = encodeInto(res, encode_buf_);
     if (!result.has_value()) {
@@ -408,6 +480,14 @@ TcpConnection::sendResponse(const Response& res) {
     }
 
     write_queue_.push_back(std::move(encode_buf_));
+    write_queue_bytes_ += write_queue_.back().size();
+    if (write_queue_bytes_ > K_MAX_WRITE_QUEUE_BYTES) {
+        if (metrics_) {
+            metrics_->connectionMetrics().write_failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        closeConnection("write queue overflow");
+        return;
+    }
     if (!writing_) {
         doWrite();
     }
@@ -423,61 +503,55 @@ TcpConnection::doWrite() {
     writing_ = true;
     auto self = shared_from_this();
     auto& buf = write_queue_.front();
-#ifdef CINDER_ENABLE_TLS
-    if (ssl_stream_) {
-        async_write(*ssl_stream_,
-            buffer(buf.data(), buf.size()),
-            asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
-            if (ec) {
-                if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
-                    || ec == asio::error::operation_aborted) {
-                    Logger::debug("cinder tcp_connection: tls write failed: {}", ec.message());
-                } else {
-                    Logger::warn("cinder tcp_connection: tls write failed: {}", ec.message());
-                }
-
-                write_queue_.clear();
-                writing_ = false;
-                return;
-            }
-
-            encode_buf_ = std::move(write_queue_.front());
-            write_queue_.pop_front();
-            if (!write_queue_.empty()) {
-                doWrite();
-            } else {
-                writing_ = false;
-                maybeRead();
-            }
-        }));
-        return;
-    }
-#endif
-    async_write(socket_,
-        buffer(buf.data(), buf.size()),
-        asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
+    auto on_write_done = [this, self](std::error_code ec) {
         if (ec) {
             if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
-                || ec == asio::error::operation_aborted) {
+                || ec == asio::error::operation_aborted || ec == asio::error::bad_descriptor) {
                 Logger::debug("cinder tcp_connection: write failed: {}", ec.message());
             } else {
                 Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
             }
 
+            if (metrics_) {
+                metrics_->connectionMetrics().write_failures.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+
             write_queue_.clear();
+            write_queue_bytes_ = 0;
             writing_ = false;
+            closeConnection("write failure", ec);
             return;
         }
 
         // Recycle the completed buffer's capacity for the next encode.
+        write_queue_bytes_ -= write_queue_.front().size();
         encode_buf_ = std::move(write_queue_.front());
         write_queue_.pop_front();
+        resetIdleTimer();
         if (!write_queue_.empty()) {
             doWrite();
         } else {
             writing_ = false;
             maybeRead();
         }
+    };
+#ifdef CINDER_ENABLE_TLS
+    if (ssl_stream_) {
+        async_write(*ssl_stream_,
+            buffer(buf.data(), buf.size()),
+            asio::bind_executor(
+                strand_, [on_write_done = std::move(on_write_done)](std::error_code ec, size_t) {
+            on_write_done(ec);
+        }));
+        return;
+    }
+#endif
+    async_write(socket_,
+        buffer(buf.data(), buf.size()),
+        asio::bind_executor(
+            strand_, [on_write_done = std::move(on_write_done)](std::error_code ec, size_t) {
+        on_write_done(ec);
     }));
 }
 } // namespace cinder::net

@@ -338,6 +338,18 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         }
     }
 
+    void setCapacity(size_t new_capacity) final {
+        capacity_bytes_ = new_capacity;
+        if (metrics_) {
+            metrics_->shardMetrics().capacity_bytes.store(new_capacity);
+        }
+        if (new_capacity < current_bytes_) {
+            Derived& self = d();
+            std::scoped_lock lock(self.mutex_);
+            evictIfNeeded();
+        }
+    }
+
   protected:
 
     // Wheel slot for an absolute expiry: at least 1 tick ahead of the current

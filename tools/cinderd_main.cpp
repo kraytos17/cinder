@@ -115,6 +115,9 @@ main(int argc, char* argv[]) -> int {
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
     options.eviction_policy = eviction_policy;
     options.rpc_timeout = milliseconds(rpc_timeout_ms);
+    options.config = cfg;
+    options.config_path = config_path;
+    options.metrics_port = cfg.metrics_port;
 
     if (!peers.empty()) {
         cinder::Config peer_cfg;

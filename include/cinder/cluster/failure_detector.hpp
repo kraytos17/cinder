@@ -42,6 +42,8 @@ class FailureDetector {
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
+    void setSuspectTimeout(milliseconds timeout) { suspect_timeout_ = timeout; }
+
   private:
 
     struct ProbeState {

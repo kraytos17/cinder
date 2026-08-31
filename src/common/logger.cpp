@@ -40,6 +40,11 @@ Logger::init(std::string_view name, LogLevel level, LogSink sink) {
 }
 
 void
+Logger::setLevel(LogLevel level) {
+    spdlog::default_logger()->set_level(toSpdlogLevel(level));
+}
+
+void
 Logger::shutdown() {
     spdlog::shutdown();
 }

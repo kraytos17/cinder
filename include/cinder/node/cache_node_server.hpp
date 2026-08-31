@@ -19,6 +19,7 @@
 #include "cinder/cluster/failure_detector.hpp"
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/cluster/membership.hpp"
+#include "cinder/common/config.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
@@ -66,6 +67,10 @@ struct CacheNodeServerOptions {
     milliseconds rpc_timeout{5'000};
     // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
     uint16_t metrics_port = 0;
+    // Path to YAML config file (empty = no hot-reload).
+    std::string config_path;
+    // Loaded config for runtime reference and hot-reload.
+    Config config;
 };
 
 // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -127,6 +132,8 @@ class CacheNodeServer {
     void scheduleCompact();
     void rebuildRing();
     void scheduleRebalance();
+    void scheduleConfigReload();
+    void applyConfig();
 
     io_context io_;
     NodeId node_id_;
@@ -153,8 +160,11 @@ class CacheNodeServer {
     steady_timer evict_timer_;
     steady_timer quarantine_timer_;
     steady_timer compact_timer_;
+    steady_timer config_reload_timer_;
     signal_set signals_;
     MetricsCollector metrics_;
     uint16_t metrics_port_ = 0;
+    Config current_config_;
+    std::string config_path_;
 };
 } // namespace cinder

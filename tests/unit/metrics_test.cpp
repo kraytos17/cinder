@@ -137,6 +137,58 @@ TEST(MetricsTest, CopyMoveDeleted) {
     static_assert(!std::is_move_assignable_v<MetricsCollector>);
 }
 
+TEST(MetricsTest, LatencyHistogramPercentile) {
+    LatencyHistogram h;
+    // 100 samples spread across two buckets (~1µs and ~10µs).
+    for (int i = 0; i < 50; ++i) {
+        h.record(1'000);
+    }
+    for (int i = 0; i < 50; ++i) {
+        h.record(10'000);
+    }
+
+    EXPECT_EQ(h.count.load(), 100);
+    EXPECT_EQ(h.total_ns.load(), 50 * 1'000 + 50 * 10'000);
+    EXPECT_GE(h.percentile(0.50), 1'000);
+    EXPECT_LE(h.percentile(0.50), 20'000);
+    EXPECT_GE(h.percentile(0.99), 8'192); // bucket upper bound for 10µs samples
+    EXPECT_LE(h.percentile(0.99), 20'000);
+}
+
+TEST(MetricsTest, LatencyHistogramEmpty) {
+    LatencyHistogram h;
+    EXPECT_EQ(h.count.load(), 0);
+    EXPECT_EQ(h.percentile(0.99), 0);
+}
+
+TEST(MetricsTest, LatencyHistogramClampOversize) {
+    LatencyHistogram h;
+    h.record(1); // minimum
+    EXPECT_GE(h.percentile(0.5), 1);
+    h.record(uint64_t{1} << 60U); // beyond the last bucket
+    EXPECT_EQ(h.percentile(1.0), ~uint64_t{0});
+}
+
+TEST(MetricsTest, LatencyExport) {
+    MetricsCollector m;
+    m.opcodeMetrics().recordLatency(1, 2'500); // get
+    m.opcodeMetrics().recordLatency(1, 7'500); // get
+    m.opcodeMetrics().recordLatency(2, 4'000); // set
+    auto text = m.formatPrometheus();
+
+    EXPECT_NE(
+        text.find("cinder_request_latency_seconds_count{opcode=\"get\"} 2"), std::string::npos);
+    EXPECT_NE(text.find("cinder_request_latency_seconds_sum{opcode=\"get\"}"), std::string::npos);
+    EXPECT_NE(text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.5\"}"),
+        std::string::npos);
+    EXPECT_NE(text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.99\"}"),
+        std::string::npos);
+    EXPECT_NE(
+        text.find("cinder_request_latency_seconds_count{opcode=\"set\"} 1"), std::string::npos);
+    // Unused opcode (e.g. del) must not appear in the latency summary.
+    EXPECT_EQ(text.find("cinder_request_latency_seconds{opcode=\"del\""), std::string::npos);
+}
+
 TEST(HttpParserTest, ValidGet) {
     auto req = cinder::net::parseHttpRequest("GET /metrics HTTP/1.1\r\nHost: localhost\r\n");
     ASSERT_TRUE(req.has_value());

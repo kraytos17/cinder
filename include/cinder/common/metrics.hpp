@@ -1,13 +1,62 @@
 #pragma once
 
+#include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace cinder {
 
-// Per-opcode operation counters.
+// Lock-free log2-bucketed latency histogram. Bucket i counts samples with
+// duration in [2^i, 2^(i+1)) ns; the last bucket also absorbs everything
+// above it. Percentiles are estimated from the cumulative bucket counts.
+struct LatencyHistogram {
+    static constexpr size_t K_NUM_BUCKETS = 40; // 1 ns .. ~2^40 ns (~18 min)
+
+    std::array<std::atomic<uint64_t>, K_NUM_BUCKETS> buckets{};
+    std::atomic<uint64_t> count{0};
+    std::atomic<uint64_t> total_ns{0};
+
+    void record(uint64_t ns) {
+        size_t idx = 0;
+        if (ns > 0) {
+            idx = static_cast<size_t>(63 - std::countl_zero(ns));
+            if (idx >= K_NUM_BUCKETS) {
+                idx = K_NUM_BUCKETS - 1;
+            }
+        }
+
+        buckets[idx].fetch_add(1, std::memory_order_relaxed);
+        count.fetch_add(1, std::memory_order_relaxed);
+        total_ns.fetch_add(ns, std::memory_order_relaxed);
+    }
+
+    // Estimated p* latency (bucket upper bound in ns), or 0 when empty.
+    [[nodiscard]] auto percentile(double q) const -> uint64_t {
+        uint64_t c = count.load(std::memory_order_relaxed);
+        if (c == 0) {
+            return 0;
+        }
+
+        uint64_t target = static_cast<uint64_t>(q * static_cast<double>(c)) + 1;
+        uint64_t cum = 0;
+        for (size_t i = 0; i < K_NUM_BUCKETS; ++i) {
+            cum += buckets[i].load(std::memory_order_relaxed);
+            if (cum >= target) {
+                return (i == K_NUM_BUCKETS - 1) ? ~uint64_t{0} : (uint64_t{1} << (i + 1));
+            }
+        }
+        return ~uint64_t{0};
+    }
+
+    // Upper bound of bucket `i` in ns; the last bucket has no finite bound.
+    [[nodiscard]] static constexpr auto upperBoundNs(size_t i) -> uint64_t {
+        return (i == K_NUM_BUCKETS - 1) ? ~uint64_t{0} : (uint64_t{1} << (i + 1));
+    }
+};
+
 struct OpcodeMetrics {
     std::atomic<uint64_t> gets{0};
     std::atomic<uint64_t> sets{0};
@@ -16,6 +65,14 @@ struct OpcodeMetrics {
     std::atomic<uint64_t> replicates{0};
     std::atomic<uint64_t> hints{0};
     std::atomic<uint64_t> gets_versioned{0};
+    std::array<LatencyHistogram, 8> latency{};
+
+    void recordLatency(uint8_t raw_opcode, uint64_t ns) {
+        size_t idx = static_cast<size_t>(raw_opcode) - 1;
+        if (idx < latency.size()) {
+            latency[idx].record(ns);
+        }
+    }
 };
 
 // Per-node store metrics.
@@ -70,6 +127,7 @@ struct ConnectionMetrics {
     std::atomic<uint64_t> connections_closed{0};
     std::atomic<uint64_t> decode_failures{0};
     std::atomic<uint64_t> redirects{0};
+    std::atomic<uint64_t> write_failures{0};
 };
 
 class MetricsCollector {

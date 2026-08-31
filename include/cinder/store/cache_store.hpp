@@ -70,6 +70,9 @@ class CacheStore {
     // Set the metrics collector for observability. Default no-op.
     virtual void setMetrics(MetricsCollector* /*unused*/) {}
 
+    // Change the capacity at runtime. Default no-op.
+    virtual void setCapacity(size_t /*unused*/) {}
+
   protected:
 
     // Injected clock for deterministic sims; nullptr → real steady_clock.

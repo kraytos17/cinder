@@ -285,7 +285,9 @@ TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback 
             return;
         }
         if (result.value().status != Errc::OK) {
-            cb(err(Error(result.value().status, "replica rejected write")));
+            std::string msg = "replica rejected write: ";
+            msg += toString(result.value().status);
+            cb(err(Error(result.value().status, msg)));
             return;
         }
         cb(ok());

@@ -36,10 +36,13 @@ class GossipManager {
     void start();
     void tick(); // send this node's view to a random peer; exposed for the sim harness
     void handleMessage(const NodeId& from, const net::Request& req);
+
     // Broadcast self as Dead to every peer so they don't suspect during teardown.
     void leave();
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
+
+    void setGossipInterval(milliseconds interval) { gossip_interval_ = interval; }
 
     [[nodiscard]] auto gossipInterval() const -> milliseconds { return gossip_interval_; }
 

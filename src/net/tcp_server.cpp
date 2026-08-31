@@ -15,10 +15,10 @@ using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(
-    io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
-    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
-    ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port, MetricsCollector* metrics
+TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
+    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
+    int replica_factor, ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port,
+    MetricsCollector* metrics, std::function<std::string()> config_getter
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -39,7 +39,8 @@ TcpServer::TcpServer(
       ,
       ssl_ctx_(ssl_ctx)
 #endif
-{
+      ,
+      config_getter_(std::move(config_getter)) {
     std::error_code ec;
     acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
     if (metrics_port > 0 && metrics_) {
@@ -85,6 +86,11 @@ TcpServer::shutdown() {
         if (metrics_acceptor_) {
             metrics_acceptor_->close(ec);
         }
+        for (auto& conn : connections_) {
+            if (conn) {
+                conn->close();
+            }
+        }
         connections_.clear();
     }));
 }
@@ -94,26 +100,44 @@ TcpServer::doAccept() {
     acceptor_.async_accept(
         asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
         if (!ec) {
+            if (stopping_) {
+                std::error_code close_ec;
+                socket.close(close_ec);
+                return;
+            }
+
             std::erase_if(connections_,
                 [](const std::shared_ptr<TcpConnection>& c) static { return !c->isAlive(); });
 
-            auto conn = std::make_shared<TcpConnection>(std::move(socket),
-                store_,
-                ring_,
-                node_id_,
-                clock_,
-                repl_,
-                replica_factor_,
-                mode_,
-                gossip_
-#ifdef CINDER_ENABLE_TLS
-                ,
-                ssl_ctx_
-#endif
-            );
+            if (active_connections_.load(std::memory_order_relaxed) >= K_MAX_CONNECTIONS) {
+                std::error_code close_ec;
+                socket.close(close_ec);
+                Logger::warn(
+                    "cinder tcp_server: rejecting connection, max={} reached", K_MAX_CONNECTIONS);
+            } else {
+                active_connections_.fetch_add(1, std::memory_order_relaxed);
+                std::shared_ptr<std::atomic<size_t>> counter(&active_connections_,
+                    [](auto*) {}); // TcpConnection dtor decrements; we own the counter
 
-            connections_.push_back(conn);
-            conn->start();
+                auto conn = std::make_shared<TcpConnection>(std::move(socket),
+                    store_,
+                    ring_,
+                    node_id_,
+                    clock_,
+                    repl_,
+                    replica_factor_,
+                    mode_,
+                    gossip_,
+                    counter
+#ifdef CINDER_ENABLE_TLS
+                    ,
+                    ssl_ctx_
+#endif
+                );
+
+                connections_.push_back(conn);
+                conn->start();
+            }
         } else if (ec != asio::error::operation_aborted) {
             Logger::warn("cinder tcp_server: accept error: {}", ec.message());
         }
@@ -147,6 +171,9 @@ TcpServer::doAcceptMetrics() {
                 auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));
                 if (req.has_value() && req->method == "GET" && req->path == "/metrics") {
                     response = formatHttpResponse(metrics_->formatPrometheus());
+                } else if (req.has_value() && req->method == "GET" && req->path == "/config"
+                           && config_getter_) {
+                    response = formatHttpResponse(config_getter_());
                 } else {
                     response = formatHttp404();
                 }

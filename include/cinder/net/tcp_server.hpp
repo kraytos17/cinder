@@ -1,7 +1,9 @@
 #pragma once
 
 #include <asio.hpp>
+#include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -34,7 +36,7 @@ class TcpServer {
         std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
         GossipManager* gossip = nullptr, uint16_t metrics_port = 0,
-        MetricsCollector* metrics = nullptr
+        MetricsCollector* metrics = nullptr, std::function<std::string()> config_getter = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -50,6 +52,10 @@ class TcpServer {
 
     auto start() -> Result<void>;
     void shutdown();
+
+    // Hard cap on concurrent client connections. Beyond this the acceptor
+    // rejects new sockets instead of buffering unbounded file descriptors.
+    static constexpr size_t K_MAX_CONNECTIONS = 10'000;
 
   private:
 
@@ -73,5 +79,7 @@ class TcpServer {
 #endif
     std::vector<std::shared_ptr<TcpConnection>> connections_;
     std::unique_ptr<tcp::acceptor> metrics_acceptor_;
+    std::function<std::string()> config_getter_;
+    std::atomic<size_t> active_connections_{0};
 };
 } // namespace cinder::net

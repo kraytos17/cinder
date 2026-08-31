@@ -1,7 +1,9 @@
 #include "cinder/node/cache_node_server.hpp"
 
+#include <chrono>
 #include <csignal>
 
+#include "cinder/common/config.hpp"
 #include "cinder/common/logger.hpp"
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -69,7 +71,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
-          options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_
+          options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_,
+          [this]() { return formatConfigJson(current_config_); }
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -81,8 +84,11 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       evict_timer_(io_),
       quarantine_timer_(io_),
       compact_timer_(io_),
+      config_reload_timer_(io_),
       signals_(io_),
-      metrics_port_(options.metrics_port) {
+      metrics_port_(options.metrics_port),
+      current_config_(options.config),
+      config_path_(options.config_path) {
     signals_.add(SIGINT);
     signals_.add(SIGTERM);
     ring_.addNode(options.node_id);
@@ -143,6 +149,7 @@ CacheNodeServer::run() {
         scheduleCompact();
     }
 
+    scheduleConfigReload();
     unsigned workers = io_threads_ > 0 ? static_cast<unsigned>(io_threads_) : 1;
     if (io_threads_ == 0) {
         auto hw = std::thread::hardware_concurrency();
@@ -182,6 +189,7 @@ CacheNodeServer::shutdown() {
     evict_timer_.cancel();
     quarantine_timer_.cancel();
     compact_timer_.cancel();
+    config_reload_timer_.cancel();
     if (persistence_.enabled()) {
         persistence_.shutdown();
     }
@@ -313,5 +321,64 @@ CacheNodeServer::scheduleCompact() {
         }
         scheduleCompact();
     });
+}
+
+void
+CacheNodeServer::scheduleConfigReload() {
+    config_reload_timer_.expires_after(seconds(5));
+    config_reload_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+        applyConfig();
+        scheduleConfigReload();
+    });
+}
+
+void
+CacheNodeServer::applyConfig() {
+    if (config_path_.empty()) {
+        return;
+    }
+
+    auto new_config = loadConfig(config_path_);
+    if (!new_config.has_value()) {
+        return;
+    }
+
+    auto changed = diffConfig(current_config_, *new_config);
+    if (changed.empty()) {
+        return;
+    }
+
+    std::string changed_str;
+    for (size_t i = 0; i < changed.size(); ++i) {
+        if (i > 0) {
+            changed_str += ", ";
+        }
+        changed_str += changed[i];
+    }
+
+    Logger::info("config changed: {}", changed_str);
+    current_config_ = *new_config;
+    for (const auto& field : changed) {
+        if (field == "log_level") {
+            Logger::setLevel(logLevelFromString(new_config->log_level));
+        } else if (field == "ping_interval_ms") {
+            Logger::warn("config field '{}' requires restart to take effect", field);
+        } else if (field == "suspect_timeout_ms") {
+            detector_.setSuspectTimeout(milliseconds(new_config->suspect_timeout_ms));
+        } else if (field == "gossip_interval_ms") {
+            gossip_.setGossipInterval(milliseconds(new_config->gossip_interval_ms));
+        } else if (field == "rpc_timeout_ms") {
+            transport_.setRpcTimeout(milliseconds(new_config->rpc_timeout_ms));
+        } else if (field == "capacity") {
+            store_->setCapacity(new_config->capacity);
+        } else if (field == "quarantine_interval_ms") {
+            quarantine_interval_ = milliseconds(new_config->quarantine_interval_ms);
+        } else {
+            Logger::warn("config field '{}' requires restart to take effect", field);
+        }
+    }
 }
 } // namespace cinder

@@ -1,9 +1,16 @@
 #include "cinder/common/metrics.hpp"
 
+#include <array>
+#include <cstddef>
 #include <sstream>
 
 namespace cinder {
 namespace {
+
+constexpr std::array<const char*, 8> K_OPCODE_NAMES = {
+    "get", "set", "del", "ping", "gossip", "replicate", "hint", "get_versioned"};
+
+constexpr std::array<const char*, 4> K_LATENCY_QUANTILE_LABELS = {"0.5", "0.95", "0.99", "0.999"};
 
 void
 appendCounter(std::ostringstream& os, const char* name, uint64_t value, const char* label = nullptr,
@@ -56,6 +63,29 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "operations_total", opcode_.hints.load(), "opcode", "hint");
     appendCounter(os, "operations_total", opcode_.gets_versioned.load(), "opcode", "get_versioned");
 
+    // Per-opcode latency summaries (p50/p95/p99/p999 + sum + count).
+    for (size_t i = 0; i < opcode_.latency.size(); ++i) {
+        const auto& hist = opcode_.latency[i];
+        uint64_t cnt = hist.count.load();
+        if (cnt == 0) {
+            continue;
+        }
+
+        const char* op = K_OPCODE_NAMES[i];
+        os << "# HELP cinder_request_latency_seconds Request handling latency by opcode\n";
+        os << "# TYPE cinder_request_latency_seconds summary\n";
+        for (size_t q = 0; q < K_LATENCY_QUANTILE_LABELS.size(); ++q) {
+            double pct = (q == 0) ? 0.50 : (q == 1) ? 0.95 : (q == 2) ? 0.99 : 0.999;
+            auto ns = hist.percentile(pct);
+            os << "cinder_request_latency_seconds{opcode=\"" << op << "\",quantile=\""
+               << K_LATENCY_QUANTILE_LABELS[q] << "\"} " << (static_cast<double>(ns) / 1e9) << "\n";
+        }
+
+        os << "cinder_request_latency_seconds_sum{opcode=\"" << op << "\"} "
+           << (static_cast<double>(hist.total_ns.load()) / 1e9) << "\n";
+        os << "cinder_request_latency_seconds_count{opcode=\"" << op << "\"} " << cnt << "\n";
+    }
+
     // Replication metrics
     appendCounter(os, "replication_async_writes_total", repl_.async_writes.load());
     appendCounter(os, "replication_quorum_writes_ok_total", repl_.quorum_writes_ok.load());
@@ -65,7 +95,6 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "replication_hints_enqueued_total", repl_.hints_enqueued.load());
     appendCounter(os, "replication_hints_replayed_total", repl_.hints_replayed.load());
     appendCounter(os, "replication_replica_unreachable_total", repl_.replica_unreachable.load());
-
     // Per-replica lag
     if (!repl_.replica_lags.empty()) {
         os << "# HELP cinder_replication_lag_ms Replication lag per replica (ms since last ack)\n";
@@ -94,6 +123,7 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "connections_closed_total", conn_.connections_closed.load());
     appendCounter(os, "connections_decode_failures_total", conn_.decode_failures.load());
     appendCounter(os, "connections_redirects_total", conn_.redirects.load());
+    appendCounter(os, "connections_write_failures_total", conn_.write_failures.load());
     return os.str();
 }
 } // namespace cinder
