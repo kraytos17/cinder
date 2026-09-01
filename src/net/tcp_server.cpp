@@ -86,9 +86,14 @@ TcpServer::shutdown() {
         if (metrics_acceptor_) {
             metrics_acceptor_->close(ec);
         }
+        // Drain every connection: let in-flight requests (and their queued
+        // responses) complete within K_DRAIN_TIMEOUT before force-closing.
+        // Connections that are idle close immediately; the drain backstop on
+        // each busy connection force-closes it after the grace period. Each
+        // drain() captures its own shared_ptr, so clearing the vector is safe.
         for (auto& conn : connections_) {
             if (conn) {
-                conn->close();
+                conn->drain();
             }
         }
         connections_.clear();

@@ -43,6 +43,10 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     static constexpr size_t K_MAX_WRITE_QUEUE_BYTES = 4 * 1'024 * 1'024;
     // No complete request/response on a connection for this long -> close it.
     static constexpr auto K_IDLE_TIMEOUT = std::chrono::seconds(30);
+    // Grace period granted to in-flight requests when the server is shutting
+    // down. After this, connections still holding a pending request are
+    // force-closed. Reuses the idle-timer machinery as the backstop.
+    static constexpr auto K_DRAIN_TIMEOUT = std::chrono::seconds(2);
 
     TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string_view node_id, Clock& clock, ReplicationManager* repl = nullptr,
@@ -68,6 +72,12 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     // Safe to call from any thread; the actual close runs on the connection's
     // strand so it never races with in-flight handlers.
     void close();
+
+    // Graceful drain: stop reading new requests but let an in-flight request
+    // (and its queued response) complete before closing. If no request is
+    // pending the connection closes immediately; otherwise the idle timer is
+    // re-armed with K_DRAIN_TIMEOUT as a backstop. Safe to call from any thread.
+    void drain();
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
@@ -105,6 +115,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     size_t payload_len_ = 0;
     bool writing_ = false;
     bool reading_ = false;
+    // True once drain() is called: no new reads are issued, and the connection
+    // closes once the in-flight request and its response write complete.
+    bool draining_ = false;
     // Latency instrumentation: set when a request is dispatched, consumed by
     // sendResponse() to record per-opcode handling latency. Only touched
     // on-strand, so no locking required.

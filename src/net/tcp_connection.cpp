@@ -108,9 +108,31 @@ TcpConnection::close() {
 }
 
 void
+TcpConnection::drain() {
+    auto self = shared_from_this();
+    asio::post(strand_, [this, self]() {
+        draining_ = true;
+        if (!pending_opcode_.has_value() && write_queue_.empty() && !writing_) {
+            closeConnection("drained");
+            return;
+        }
+
+        // Backstop: give the in-flight request its grace period, then force-close.
+        idle_timer_.expires_after(K_DRAIN_TIMEOUT);
+        std::weak_ptr<TcpConnection> weak = shared_from_this();
+        idle_timer_.async_wait(asio::bind_executor(strand_, [weak](std::error_code ec) {
+            if (auto s = weak.lock()) {
+                s->onIdleTimeout(ec);
+            }
+        }));
+    });
+}
+
+void
 TcpConnection::maybeRead() {
-    if (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE
-        && write_queue_bytes_ < K_MAX_WRITE_QUEUE_BYTES) {
+    if (draining_
+        || (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE
+            && write_queue_bytes_ < K_MAX_WRITE_QUEUE_BYTES)) {
         reading_ = true;
         doReadHeader();
     }
@@ -142,11 +164,20 @@ TcpConnection::closeConnection(const char* reason, std::error_code ec) {
     }
 
     // Broken pipe / connection reset / operation aborted are transient — peers
-    // closing or node shutdown. Log those at debug, real failures at warn.
-    if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
-        || ec == asio::error::operation_aborted) {
-        Logger::debug(
-            "cinder tcp_connection: closing connection reason={} err={}", reason, ec.message());
+    // closing or node shutdown. Normal lifecycle closes (drained, idle timeout,
+    // server shutdown) are expected too. Log those at debug, real failures at warn.
+    bool transient = ec == asio::error::broken_pipe || ec == asio::error::connection_reset
+                     || ec == asio::error::operation_aborted
+                     || std::string_view(reason) == "drained"
+                     || std::string_view(reason) == "idle timeout"
+                     || std::string_view(reason) == "server shutdown";
+    if (transient) {
+        if (ec) {
+            Logger::debug(
+                "cinder tcp_connection: closing connection reason={} err={}", reason, ec.message());
+        } else {
+            Logger::debug("cinder tcp_connection: closing connection reason={}", reason);
+        }
     } else {
         Logger::warn("cinder tcp_connection: closing connection reason={}", reason);
     }
@@ -491,6 +522,11 @@ TcpConnection::sendResponse(const Response& res) {
     if (!writing_) {
         doWrite();
     }
+    // A drain with no pending request and nothing left to write (e.g. the
+    // decode-failure path replies without a queued write) can finish here.
+    if (draining_ && !pending_opcode_.has_value() && write_queue_.empty() && !writing_) {
+        closeConnection("drained");
+    }
 }
 
 void
@@ -533,7 +569,11 @@ TcpConnection::doWrite() {
             doWrite();
         } else {
             writing_ = false;
-            maybeRead();
+            if (draining_) {
+                closeConnection("drained");
+            } else {
+                maybeRead();
+            }
         }
     };
 #ifdef CINDER_ENABLE_TLS
