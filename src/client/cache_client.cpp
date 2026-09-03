@@ -7,7 +7,9 @@ using std::chrono::milliseconds;
 namespace cinder {
 
 CacheClient::CacheClient(ClusterConfig config)
-    : pool_(config, io_ctx_) {
+    : pool_(config, io_ctx_),
+      max_retries_(config.max_retries),
+      base_backoff_ms_(config.base_backoff_ms) {
     for (const auto& n : config.nodes) {
         ring_.addNode(n.id);
     }
@@ -29,20 +31,31 @@ CacheClient::routePrimary(std::string_view key) const -> NodeId {
 
 auto
 CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response> {
-    auto node = routePrimary(key);
-    Logger::trace("cinder client: route key={} primary={}", key, node);
-    auto res = pool_.send(node, req);
-    if (!res.has_value() || res.value().status != Errc::NotReady) {
-        return res;
-    }
+    Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
+    for (int attempt = 0; attempt <= max_retries_; ++attempt) {
+        auto node = routePrimary(key);
+        Logger::trace("cinder client: route key={} primary={} attempt={}/{}",
+            key,
+            node,
+            attempt,
+            max_retries_);
 
-    // The node redirected us to the ring owner — follow once, then give up.
-    auto target = parseRedirect(res.value().value.value_or(""));
-    if (!target.has_value() || *target == node) {
-        return res;
+        res = pool_.send(node, req);
+        if (res.has_value() && res.value().status == Errc::NotReady) {
+            // The node redirected us to the ring owner — follow once, then give up.
+            auto target = parseRedirect(res.value().value.value_or(""));
+            if (target.has_value() && *target != node) {
+                Logger::debug("cinder client: redirect key={} from={} to={}", key, node, *target);
+                res = pool_.send(*target, req);
+            }
+        }
+        if (!retryable(res) || attempt == max_retries_) {
+            return res;
+        }
+        std::this_thread::sleep_for(
+            milliseconds(jitterBackoff(retryBackoff(attempt, base_backoff_ms_))));
     }
-    Logger::debug("cinder client: redirect key={} from={} to={}", key, node, *target);
-    return pool_.send(*target, req);
+    return res;
 }
 
 auto
@@ -91,7 +104,22 @@ CacheClient::multiGet(const std::vector<std::string>& keys)
             reqs.push_back({net::Opcode::Get, key, {}, std::nullopt});
         }
 
-        auto res = pool_.sendBatch(node, reqs);
+        Result<std::vector<net::Response>> res =
+            err<std::vector<net::Response>>(Error(Errc::NotReady, "no attempts made"));
+        for (int attempt = 0; attempt <= max_retries_; ++attempt) {
+            Logger::trace("cinder client: batch node={} keys={} attempt={}/{}",
+                node,
+                node_keys.size(),
+                attempt,
+                max_retries_);
+
+            res = pool_.sendBatch(node, reqs);
+            if (!retryable(res) || attempt == max_retries_) {
+                break;
+            }
+            std::this_thread::sleep_for(
+                milliseconds(jitterBackoff(retryBackoff(attempt, base_backoff_ms_))));
+        }
         if (!res.has_value()) {
             continue; // node unreachable — those keys are simply missing
         }

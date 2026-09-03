@@ -1,6 +1,7 @@
 #pragma once
 
 #include <asio.hpp>
+#include <chrono>
 #include <flat_map>
 #include <functional>
 #include <memory>
@@ -95,6 +96,7 @@ class ConnectionPool {
 #ifdef CINDER_ENABLE_TLS
     asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
+    std::chrono::milliseconds rpc_timeout_{0};
     mutable std::mutex mu_;
     bool stopping_ = false;
     std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;

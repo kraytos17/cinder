@@ -2,7 +2,9 @@
 
 #include <asio.hpp>
 #include <chrono>
+#include <limits>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -15,6 +17,52 @@ using asio::io_context;
 using std::chrono::milliseconds;
 
 namespace cinder {
+
+// Pure exponential backoff in ms: base * 2^attempt, saturating at int max.
+[[nodiscard]] inline constexpr auto
+retryBackoff(int attempt, int base_ms) -> int {
+    auto delay = static_cast<int64_t>(base_ms);
+    for (int i = 0; i < attempt; ++i) {
+        delay *= 2;
+        if (delay > std::numeric_limits<int>::max()) {
+            return std::numeric_limits<int>::max();
+        }
+    }
+    return static_cast<int>(delay);
+}
+
+// Apply ±`jitter` (fraction, default 0.2) to a backoff delay so concurrent
+// clients don't all retry in lockstep. jitter = 0 returns the exact delay.
+[[nodiscard]] inline auto
+jitterBackoff(int delay_ms, double jitter = 0.2) -> int {
+    if (jitter <= 0.0 || delay_ms <= 0) {
+        return delay_ms;
+    }
+
+    static thread_local std::mt19937 rng{std::random_device{}()};
+    std::uniform_real_distribution<double> dist(1.0 - jitter, 1.0 + jitter);
+    return std::max(1, static_cast<int>(delay_ms * dist(rng)));
+}
+
+// Whether a failed send/response should be retried: transport errors and
+// responses carry Errc::Timeout or Errc::NotReady (node not ready / moved).
+[[nodiscard]] inline auto
+retryable(const Result<net::Response>& res) -> bool {
+    if (!res.has_value()) {
+        return res.error().code() == Errc::Timeout || res.error().code() == Errc::NotReady;
+    }
+    return res.value().status == Errc::Timeout || res.value().status == Errc::NotReady;
+}
+
+// Same policy for pipelined batch sends (multiGet). A successfully returned
+// batch is not retried here; per-key misses are handled by the caller.
+[[nodiscard]] inline auto
+retryable(const Result<std::vector<net::Response>>& res) -> bool {
+    if (!res.has_value()) {
+        return res.error().code() == Errc::Timeout || res.error().code() == Errc::NotReady;
+    }
+    return false;
+}
 
 class CacheClient {
   public:
@@ -47,6 +95,8 @@ class CacheClient {
     std::jthread io_thread_;
     ConsistentHashRing ring_;
     ConnectionPool pool_;
+    int max_retries_ = 2;
+    int base_backoff_ms_ = 25;
 };
 
 // Parse a server redirect hint ("moved to <node>") into a target node id.

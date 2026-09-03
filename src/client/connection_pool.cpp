@@ -17,7 +17,10 @@ using asio::io_context;
 
 namespace {
 auto
-poolError(const char* phase, const error_code& ec) -> cinder::Error {
+poolError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Error {
+    if (timed_out) {
+        return cinder::Error(cinder::Errc::Timeout, "RPC deadline exceeded");
+    }
     return cinder::Error(cinder::Errc::NotReady, std::string(phase) + ": " + ec.message());
 }
 } // namespace
@@ -35,7 +38,8 @@ ConnectionPool::ConnectionPool(const ClusterConfig& config, io_context& io
       ,
       ssl_ctx_(ssl_ctx)
 #endif
-{
+      ,
+      rpc_timeout_(milliseconds(config.rpc_timeout_ms)) {
     for (const auto& n : config.nodes) {
         node_addrs_.insert_or_assign(n.id, n);
     }
@@ -100,6 +104,28 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     -> asio::awaitable<Result<net::Response>> {
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT
+
+    // RPC deadline: on expiry cancel the socket so the pending I/O aborts with
+    // operation_aborted; poolError() then maps that to Errc::Timeout.
+    bool timed_out = false;
+    asio::steady_timer timer(ex);
+    if (rpc_timeout_.count() > 0) {
+        timer.expires_after(rpc_timeout_);
+        timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
+            if (!timer_ec) {
+                timed_out = true;
+#ifdef CINDER_ENABLE_TLS
+                if (conn.stream) {
+                    conn.stream->lowest_layer().cancel();
+                } else {
+                    conn.socket.cancel();
+                }
+#else
+                conn.socket.cancel();
+#endif
+            }
+        });
+    }
     if (!conn.connected) {
         Logger::debug("cinder pool: reconnecting node={}", conn.addr.host);
         tcp::resolver resolver(ex);
@@ -107,7 +133,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(poolError("resolve", ec));
+            co_return err<net::Response>(poolError(timed_out, "resolve", ec));
         }
 #ifdef CINDER_ENABLE_TLS
         if (ssl_ctx_) {
@@ -116,27 +142,27 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
                 conn.stream->lowest_layer(), endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(poolError("connect", ec));
+                co_return err<net::Response>(poolError(timed_out, "connect", ec));
             }
 
             co_await conn.stream->async_handshake(
                 asio::ssl::stream_base::client, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(poolError("tls handshake", ec));
+                co_return err<net::Response>(poolError(timed_out, "tls handshake", ec));
             }
         } else {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<net::Response>(poolError("connect", ec));
+                co_return err<net::Response>(poolError(timed_out, "connect", ec));
             }
         }
 #else
         co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(poolError("connect", ec));
+            co_return err<net::Response>(poolError(timed_out, "connect", ec));
         }
 #endif
         conn.connected = true;
@@ -155,7 +181,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     if (ec) {
         conn.connected = false;
         Logger::warn("cinder pool: send failed node={} phase={}", conn.addr.host, "write");
-        co_return err<net::Response>(poolError("write", ec));
+        co_return err<net::Response>(poolError(timed_out, "write", ec));
     }
 
     std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
@@ -170,7 +196,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
-        co_return err<net::Response>(poolError("read header", ec));
+        co_return err<net::Response>(poolError(timed_out, "read header", ec));
     }
     if (header[0] != std::byte{net::K_MAGIC}) {
         conn.connected = false;
@@ -205,9 +231,10 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
         if (ec) {
             conn.connected = false;
-            co_return err<net::Response>(poolError("read payload", ec));
+            co_return err<net::Response>(poolError(timed_out, "read payload", ec));
         }
     }
+    timer.cancel();
     co_return net::decodeResponse(frame);
 }
 
@@ -216,13 +243,32 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
     -> asio::awaitable<Result<std::vector<net::Response>>> {
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT
+    bool timed_out = false;
+    asio::steady_timer timer(ex);
+    if (rpc_timeout_.count() > 0) {
+        timer.expires_after(rpc_timeout_);
+        timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
+            if (!timer_ec) {
+                timed_out = true;
+#ifdef CINDER_ENABLE_TLS
+                if (conn.stream) {
+                    conn.stream->lowest_layer().cancel();
+                } else {
+                    conn.socket.cancel();
+                }
+#else
+                conn.socket.cancel();
+#endif
+            }
+        });
+    }
     if (!conn.connected) {
         tcp::resolver resolver(ex);
         auto endpoints = co_await resolver.async_resolve(
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<std::vector<net::Response>>(poolError("resolve", ec));
+            co_return err<std::vector<net::Response>>(poolError(timed_out, "resolve", ec));
         }
 #ifdef CINDER_ENABLE_TLS
         if (ssl_ctx_) {
@@ -231,27 +277,28 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
                 conn.stream->lowest_layer(), endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<std::vector<net::Response>>(poolError("connect", ec));
+                co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
             }
 
             co_await conn.stream->async_handshake(
                 asio::ssl::stream_base::client, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<std::vector<net::Response>>(poolError("tls handshake", ec));
+                co_return err<std::vector<net::Response>>(
+                    poolError(timed_out, "tls handshake", ec));
             }
         } else {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 conn.connected = false;
-                co_return err<std::vector<net::Response>>(poolError("connect", ec));
+                co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
             }
         }
 #else
         co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
         if (ec) {
             conn.connected = false;
-            co_return err<std::vector<net::Response>>(poolError("connect", ec));
+            co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
         }
 #endif
         conn.connected = true;
@@ -281,7 +328,7 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
 #endif
     if (ec) {
         conn.connected = false;
-        co_return err<std::vector<net::Response>>(poolError("write", ec));
+        co_return err<std::vector<net::Response>>(poolError(timed_out, "write", ec));
     }
 
     std::vector<net::Response> responses;
@@ -299,7 +346,7 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
 #endif
         if (ec) {
             conn.connected = false;
-            co_return err<std::vector<net::Response>>(poolError("read header", ec));
+            co_return err<std::vector<net::Response>>(poolError(timed_out, "read header", ec));
         }
         if (header[0] != std::byte{net::K_MAGIC}) {
             conn.connected = false;
@@ -336,11 +383,12 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
 #endif
             if (ec) {
                 conn.connected = false;
-                co_return err<std::vector<net::Response>>(poolError("read payload", ec));
+                co_return err<std::vector<net::Response>>(poolError(timed_out, "read payload", ec));
             }
         }
         responses.push_back(net::decodeResponse(frame).value());
     }
+    timer.cancel();
     co_return ok(std::move(responses));
 }
 
