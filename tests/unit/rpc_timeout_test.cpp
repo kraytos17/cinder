@@ -211,8 +211,10 @@ TEST(PoolRpcTimeout, NoDeadlineWhenZero) {
     do_accept = [&]() {
         auto sock = std::make_shared<tcp::socket>(io);
         acceptor.async_accept(*sock, [&, sock](error_code ec) {
-            if (ec)
+            if (ec) {
                 return;
+            }
+
             auto buf = std::make_shared<std::vector<std::byte>>(4'096);
             sock->async_read_some(buffer(*buf), [sock, buf](error_code, size_t) {
                 auto resp = net::Response{.status = Errc::OK, .value = std::nullopt};

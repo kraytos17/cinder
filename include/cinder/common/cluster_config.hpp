@@ -20,5 +20,8 @@ struct ClusterConfig {
     int base_backoff_ms = 25; // exponential: base * 2^attempt, ±20% jitter
     // Per-RPC deadline for the connection pool (0 = no timeout).
     int rpc_timeout_ms = 5'000;
+    // Anti-entropy: periodic background repair between replica partners.
+    uint32_t anti_entropy_interval_ms = 30'000; // 0 = disabled
+    uint32_t anti_entropy_buckets = 256;        // hash bucket count for range-hash
 };
 } // namespace cinder

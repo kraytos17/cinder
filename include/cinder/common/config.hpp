@@ -37,6 +37,10 @@ struct Config {
     // RPC
     int rpc_timeout_ms = 5'000;
 
+    // Anti-entropy (periodic background repair between replica partners)
+    int anti_entropy_interval_ms = 30'000; // 0 = disabled
+    int anti_entropy_buckets = 256;
+
     // Persistence
     bool persistence_enabled = false;
     std::string data_dir;

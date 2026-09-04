@@ -7,8 +7,16 @@
 namespace cinder {
 namespace {
 
-constexpr std::array<const char*, 8> K_OPCODE_NAMES = {
-    "get", "set", "del", "ping", "gossip", "replicate", "hint", "get_versioned"};
+constexpr std::array<const char*, 10> K_OPCODE_NAMES = {"get",
+    "set",
+    "del",
+    "ping",
+    "gossip",
+    "replicate",
+    "hint",
+    "get_versioned",
+    "anti_entropy_digest",
+    "anti_entropy_sync"};
 
 constexpr std::array<const char*, 4> K_LATENCY_QUANTILE_LABELS = {"0.5", "0.95", "0.99", "0.999"};
 
@@ -62,6 +70,14 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "operations_total", opcode_.replicates.load(), "opcode", "replicate");
     appendCounter(os, "operations_total", opcode_.hints.load(), "opcode", "hint");
     appendCounter(os, "operations_total", opcode_.gets_versioned.load(), "opcode", "get_versioned");
+    appendCounter(os,
+        "operations_total",
+        opcode_.anti_entropy_digest.load(),
+        "opcode",
+        "anti_entropy_digest");
+
+    appendCounter(
+        os, "operations_total", opcode_.anti_entropy_sync.load(), "opcode", "anti_entropy_sync");
 
     // Per-opcode latency summaries (p50/p95/p99/p999 + sum + count).
     for (size_t i = 0; i < opcode_.latency.size(); ++i) {
@@ -95,6 +111,11 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "replication_hints_enqueued_total", repl_.hints_enqueued.load());
     appendCounter(os, "replication_hints_replayed_total", repl_.hints_replayed.load());
     appendCounter(os, "replication_replica_unreachable_total", repl_.replica_unreachable.load());
+    appendCounter(os, "replication_anti_entropy_rounds_total", repl_.anti_entropy_rounds.load());
+    appendCounter(os,
+        "replication_anti_entropy_keys_repaired_total",
+        repl_.anti_entropy_keys_repaired.load());
+
     // Per-replica lag
     if (!repl_.replica_lags.empty()) {
         os << "# HELP cinder_replication_lag_ms Replication lag per replica (ms since last ack)\n";

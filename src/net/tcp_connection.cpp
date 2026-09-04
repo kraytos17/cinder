@@ -8,6 +8,7 @@
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
+#include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::async_read;
@@ -18,7 +19,8 @@ namespace cinder::net {
 
 TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
     std::string_view node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
-    ConsistencyMode mode, GossipManager* gossip, std::shared_ptr<std::atomic<size_t>> conn_counter
+    ConsistencyMode mode, GossipManager* gossip, std::shared_ptr<std::atomic<size_t>> conn_counter,
+    AntiEntropyManager* anti_entropy
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -32,6 +34,7 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       clock_(clock),
       repl_(repl),
       gossip_(gossip),
+      anti_entropy_(anti_entropy),
       node_id_(node_id),
       replica_factor_(replica_factor),
       mode_(mode),
@@ -309,15 +312,24 @@ TcpConnection::handleRequest(const Request& req) {
             case Opcode::GetVersioned:
                 metrics_->opcodeMetrics().gets_versioned.fetch_add(1, std::memory_order_relaxed);
                 break;
+            case Opcode::AntiEntropyDigest:
+                metrics_->opcodeMetrics().anti_entropy_digest.fetch_add(
+                    1, std::memory_order_relaxed);
+                break;
+            case Opcode::AntiEntropySync:
+                metrics_->opcodeMetrics().anti_entropy_sync.fetch_add(1, std::memory_order_relaxed);
+                break;
             default:
                 break;
         }
     }
 
-    // Replicate/Hint/Gossip are inter-node messages addressed to this node
-    // directly (a replica does not own the key) — skip the ring ownership check.
+    // Replicate/Hint/Gossip/AntiEntropy* are inter-node messages addressed to
+    // this node directly (a replica does not own the key) — skip the ring
+    // ownership check.
     bool is_internal = req.opcode == Opcode::Replicate || req.opcode == Opcode::Hint
-                       || req.opcode == Opcode::Gossip;
+                       || req.opcode == Opcode::Gossip || req.opcode == Opcode::AntiEntropyDigest
+                       || req.opcode == Opcode::AntiEntropySync;
 
     // Reads are served from the local store when present — a replica holds a
     // copy and can keep serving reads after the primary fails (failover read).
@@ -481,6 +493,30 @@ TcpConnection::handleRequest(const Request& req) {
                 // Sender identity is best-effort: the connection knows only its
                 // own node_id_; the sender's entry is always inside the payload.
                 gossip_->handleMessage(std::string(node_id_), req);
+            }
+            res.status = Errc::OK;
+            break;
+        }
+        case Opcode::AntiEntropyDigest: {
+            if (anti_entropy_ != nullptr) {
+                // Sender identity is best-effort (same as gossip); used only
+                // for logging inside the anti-entropy manager.
+                anti_entropy_->onDigestRequest(std::string(node_id_), req, [this](Response r) {
+                    sendResponse(r);
+                    maybeRead();
+                });
+                return;
+            }
+            res.status = Errc::OK;
+            break;
+        }
+        case Opcode::AntiEntropySync: {
+            if (anti_entropy_ != nullptr) {
+                anti_entropy_->onSyncRequest(std::string(node_id_), req, [this](Response r) {
+                    sendResponse(r);
+                    maybeRead();
+                });
+                return;
             }
             res.status = Errc::OK;
             break;

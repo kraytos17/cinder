@@ -116,14 +116,47 @@ $(foreach s,$(SAN_TARGETS),$(eval $(call SAN_TEST,$(word 1,$(subst :, ,$(s))),$(
 
 .PHONY: fuzz-test
 # FUZZ_TARGETS: fuzz binary base names. FUZZ_DICT_<name> supplies an optional
-# -dict= flag for targets that ship a libFuzzer dictionary.
-FUZZ_TARGETS := protocol_decode gossip_parse store_put snapshot
+# -dict= flag. FUZZ_MAXLEN_<name> overrides -max_len. FUZZ_TIMEOUT_<name>
+# overrides -timeout (seconds per input).
+FUZZ_TARGETS := protocol_decode gossip_parse store_put snapshot wal anti_entropy http_parse
 FUZZ_DICT_protocol_decode := -dict=tests/fuzz/corpus/protocol_decode/protocol.dict
+FUZZ_MAXLEN_wal := -max_len=4096 -rss_limit_mb=512
+FUZZ_MAXLEN_snapshot := -max_len=4096
+FUZZ_MAXLEN_anti_entropy := -max_len=8192
+FUZZ_MAXLEN_store_put := -max_len=1024
+FUZZ_TIMEOUT_all := -timeout=5
 
 fuzz-test: fuzz
-	@$(foreach t,$(FUZZ_TARGETS),echo "==> $(t)_fuzz (10s)..."; echo "────────────────────────────────────────"; build/fuzz/tests/$(t)_fuzz -max_total_time=10 -print_final_stats=1 $(FUZZ_DICT_$(t)) tests/fuzz/corpus/$(t) $(ARGS) || { echo "FAILED: $(t)_fuzz"; exit 1; }; echo "PASSED: $(t)_fuzz"; echo "";)
+	@$(foreach t,$(FUZZ_TARGETS),\
+	  echo "==> $(t)_fuzz (10s)..."; \
+	  echo "────────────────────────────────────────"; \
+	  build/fuzz/tests/$(t)_fuzz \
+	    -max_total_time=10 -print_final_stats=1 \
+	    $(FUZZ_TIMEOUT_all) \
+	    $(FUZZ_MAXLEN_$(t)) \
+	    $(FUZZ_DICT_$(t)) \
+	    tests/fuzz/corpus/$(t) $(ARGS) \
+	    || { echo "FAILED: $(t)_fuzz"; exit 1; }; \
+	  echo "PASSED: $(t)_fuzz"; echo "";)
 	@echo "════════════════════════════════════════"
 	@echo "All fuzz targets passed (fuzz)."
+
+.PHONY: fuzz-long
+# Longer soak run (5 min per target) — run before major releases.
+fuzz-long: fuzz
+	@$(foreach t,$(FUZZ_TARGETS),\
+	  echo "==> $(t)_fuzz (5min)..."; \
+	  echo "────────────────────────────────────────"; \
+	  build/fuzz/tests/$(t)_fuzz \
+	    -max_total_time=300 -print_final_stats=1 \
+	    $(FUZZ_TIMEOUT_all) \
+	    $(FUZZ_MAXLEN_$(t)) \
+	    $(FUZZ_DICT_$(t)) \
+	    tests/fuzz/corpus/$(t) $(ARGS) \
+	    || { echo "FAILED: $(t)_fuzz"; exit 1; }; \
+	  echo "PASSED: $(t)_fuzz"; echo "";)
+	@echo "════════════════════════════════════════"
+	@echo "All fuzz targets passed (fuzz-long)."
 
 .PHONY: bench
 bench: build
@@ -187,6 +220,7 @@ help:
 	@echo ''
 	@echo 'Fuzz tests:'
 	@echo '  make fuzz-test              Run all fuzz targets for 10s each'
+	@echo '  make fuzz-long              Run all fuzz targets for 5min each (soak)'
 	@echo ''
 	@echo 'Other:'
 	@echo '  make bench                  Run throughput benchmark'

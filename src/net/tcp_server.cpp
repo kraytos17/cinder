@@ -15,10 +15,11 @@ using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port,
-    MetricsCollector* metrics, std::function<std::string()> config_getter
+TcpServer::TcpServer(
+    io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
+    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
+    ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port, MetricsCollector* metrics,
+    std::function<std::string()> config_getter, AntiEntropyManager* anti_entropy
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -34,6 +35,7 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
       replica_factor_(replica_factor),
       mode_(mode),
       gossip_(gossip),
+      anti_entropy_(anti_entropy),
       metrics_(metrics)
 #ifdef CINDER_ENABLE_TLS
       ,
@@ -133,7 +135,8 @@ TcpServer::doAccept() {
                     replica_factor_,
                     mode_,
                     gossip_,
-                    counter
+                    counter,
+                    anti_entropy_
 #ifdef CINDER_ENABLE_TLS
                     ,
                     ssl_ctx_

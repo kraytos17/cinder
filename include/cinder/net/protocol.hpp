@@ -48,15 +48,17 @@ enum class Opcode : uint8_t {
     Replicate = 6,
     Hint = 7,
     GetVersioned = 8,
+    AntiEntropyDigest = 9,
+    AntiEntropySync = 10,
 };
 
-// The decode path validates `raw_opcode ∈ [Get, GetVersioned]`; assert at
+// The decode path validates `raw_opcode ∈ [Get, AntiEntropySync]`; assert at
 // compile time that this range covers exactly the declared opcodes with no
 // gaps or overlap.
 consteval auto
 opcodeRangeCoverage() -> bool {
     const int min = std::to_underlying(Opcode::Get);
-    const int max = std::to_underlying(Opcode::GetVersioned);
+    const int max = std::to_underlying(Opcode::AntiEntropySync);
     int count = 0;
     for (const auto op : {Opcode::Get,
              Opcode::Set,
@@ -65,7 +67,9 @@ opcodeRangeCoverage() -> bool {
              Opcode::Gossip,
              Opcode::Replicate,
              Opcode::Hint,
-             Opcode::GetVersioned}) {
+             Opcode::GetVersioned,
+             Opcode::AntiEntropyDigest,
+             Opcode::AntiEntropySync}) {
         if (std::to_underlying(op) < min || std::to_underlying(op) > max) {
             return false;
         }

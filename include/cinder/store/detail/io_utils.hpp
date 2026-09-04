@@ -51,6 +51,15 @@ readU8(std::istream& in) -> std::optional<uint8_t> {
 
 inline auto
 readString(std::istream& in, size_t len) -> std::optional<std::string> {
+    // Bounds-check: refuse to allocate more than the remaining stream size
+    // to prevent OOM on malformed inputs (e.g. fuzzed WAL with huge key_len).
+    auto pos = in.tellg();
+    in.seekg(0, std::ios::end);
+    auto end = in.tellg();
+    in.seekg(pos);
+    if (end < pos || static_cast<uint64_t>(end - pos) < len) {
+        return std::nullopt;
+    }
     std::string buf(len, '\0');
     if (!in.read(buf.data(), static_cast<std::streamsize>(len))) {
         return std::nullopt;

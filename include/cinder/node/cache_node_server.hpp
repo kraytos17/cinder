@@ -25,6 +25,7 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_server.hpp"
 #include "cinder/net/tcp_transport.hpp"
+#include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/cache_store.hpp"
@@ -65,6 +66,9 @@ struct CacheNodeServerOptions {
     std::string eviction_policy = "lru";
     // RPC deadline — max time for a single peer RPC before cancellation.
     milliseconds rpc_timeout{5'000};
+    // Anti-entropy: background repair between replica partners (0 = disabled).
+    milliseconds anti_entropy_interval{30'000};
+    uint32_t anti_entropy_buckets = 256;
     // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
     uint16_t metrics_port = 0;
     // Path to YAML config file (empty = no hot-reload).
@@ -130,6 +134,7 @@ class CacheNodeServer {
     void scheduleProbe();
     void scheduleEvict();
     void scheduleCompact();
+    void scheduleAntiEntropy();
     void rebuildRing();
     void scheduleRebalance();
     void scheduleConfigReload();
@@ -153,6 +158,9 @@ class CacheNodeServer {
     FailureDetector detector_;
     GossipManager gossip_;
     ShardManager shard_;
+    int replica_factor_ = 1;
+    milliseconds anti_entropy_interval_{30'000};
+    AntiEntropyManager anti_entropy_;
     net::TcpServer server_;
     steady_timer replay_timer_;
     steady_timer gossip_timer_;
@@ -161,6 +169,7 @@ class CacheNodeServer {
     steady_timer quarantine_timer_;
     steady_timer compact_timer_;
     steady_timer config_reload_timer_;
+    steady_timer anti_entropy_timer_;
     signal_set signals_;
     MetricsCollector metrics_;
     uint16_t metrics_port_ = 0;

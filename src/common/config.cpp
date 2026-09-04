@@ -64,6 +64,8 @@ formatConfigJson(const Config& cfg) -> std::string {
     out += "\"gossip_interval_ms\":" + std::to_string(cfg.gossip_interval_ms) + ",";
     out += "\"quarantine_interval_ms\":" + std::to_string(cfg.quarantine_interval_ms) + ",";
     out += "\"rpc_timeout_ms\":" + std::to_string(cfg.rpc_timeout_ms) + ",";
+    out += "\"anti_entropy_interval_ms\":" + std::to_string(cfg.anti_entropy_interval_ms) + ",";
+    out += "\"anti_entropy_buckets\":" + std::to_string(cfg.anti_entropy_buckets) + ",";
     out +=
         "\"persistence_enabled\":" + std::string(cfg.persistence_enabled ? "true" : "false") + ",";
 
@@ -126,6 +128,12 @@ diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::str
     }
     if (old_cfg.rpc_timeout_ms != new_cfg.rpc_timeout_ms) {
         changed.emplace_back("rpc_timeout_ms");
+    }
+    if (old_cfg.anti_entropy_interval_ms != new_cfg.anti_entropy_interval_ms) {
+        changed.emplace_back("anti_entropy_interval_ms");
+    }
+    if (old_cfg.anti_entropy_buckets != new_cfg.anti_entropy_buckets) {
+        changed.emplace_back("anti_entropy_buckets");
     }
     if (old_cfg.persistence_enabled != new_cfg.persistence_enabled) {
         changed.emplace_back("persistence_enabled");
@@ -204,6 +212,11 @@ loadConfig(const std::string& path) -> Result<Config> {
         cfg.gossip_interval_ms = fd["gossip_interval_ms"].as<int>(cfg.gossip_interval_ms);
         cfg.quarantine_interval_ms =
             fd["quarantine_interval_ms"].as<int>(cfg.quarantine_interval_ms);
+    }
+    // Anti-entropy
+    if (auto ae = root["anti_entropy"]) {
+        cfg.anti_entropy_interval_ms = ae["interval_ms"].as<int>(cfg.anti_entropy_interval_ms);
+        cfg.anti_entropy_buckets = ae["buckets"].as<int>(cfg.anti_entropy_buckets);
     }
     // Persistence
     if (auto pers = root["persistence"]) {

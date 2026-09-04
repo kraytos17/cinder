@@ -25,6 +25,8 @@ OP_GOSSIP = 5
 OP_REPLICATE = 6
 OP_HINT = 7
 OP_GET_VERSIONED = 8
+OP_ANTI_ENTROPY_DIGEST = 9
+OP_ANTI_ENTROPY_SYNC = 10
 
 # Response status codes (Errc), mirrored from cinder::net::Errc.
 STATUS_OK = 0
@@ -161,6 +163,10 @@ def generate_protocol_corpus():
         "unknown_opcode_high": encode_request(0xFF, key=b"k"),
         "min_opcode": encode_request(OP_GET),
         "max_opcode": encode_request(OP_GET_VERSIONED),
+        "anti_entropy_digest_request": encode_request(OP_ANTI_ENTROPY_DIGEST,
+                                                       value=b"\x08\x00\x00\x00" + b"\x00" * 32),
+        "anti_entropy_sync_request": encode_request(OP_ANTI_ENTROPY_SYNC,
+                                                     value=b"\x01\x00\x00\x00"),
         "empty_key": encode_request(OP_SET, key=b"", value=b"v"),
         "empty_key_and_value": encode_request(OP_SET, key=b"", value=b""),
         "large_key": encode_request(OP_SET, key=b"x" * 1000, value=b"v"),
@@ -306,6 +312,194 @@ def generate_snapshot_corpus():
 
 
 # ---------------------------------------------------------------------------
+# WAL seed generation
+# ---------------------------------------------------------------------------
+
+K_WAL_MAGIC = 0x57414C30  # "WAL0"
+K_WAL_FORMAT_VERSION = 1
+
+WAL_OP_SET = 1
+WAL_OP_DEL = 2
+
+
+def encode_wal_entry(op, key, value, version=1, writer_hash=0,
+                     expires_at_ms=0, has_ttl=False, checksummed=True):
+    """Encode a single WAL entry."""
+    entry = bytearray()
+    entry.append(op)
+    entry += struct.pack("<I", len(key))
+    entry += key
+    entry += struct.pack("<I", len(value))
+    entry += value
+    entry += struct.pack("<Q", version)
+    entry += struct.pack("<Q", writer_hash)
+    entry += struct.pack("<Q", expires_at_ms)
+    entry += struct.pack("<B", 1 if has_ttl else 0)
+    if checksummed:
+        # Compute a fake checksum (will be validated by WalReader).
+        entry += struct.pack("<Q", 0xCAFEBABE)
+    return bytes(entry)
+
+
+def encode_wal_file(checksummed, entries):
+    """Encode a complete WAL file."""
+    buf = bytearray()
+    if checksummed:
+        buf += struct.pack("<I", K_WAL_MAGIC)
+        buf += struct.pack("<I", K_WAL_FORMAT_VERSION)
+    for entry in entries:
+        buf += entry
+    return bytes(buf)
+
+
+def generate_wal_corpus():
+    d = os.path.join(CORPUS_DIR, "wal")
+
+    seeds = {
+        "empty_file": b"",
+        "one_byte": b"\x00",
+        "bad_magic": struct.pack("<I", 0xDEADBEEF) + b"\x00" * 20,
+        "valid_empty": encode_wal_file(True, []),
+        "valid_set": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v", version=1, writer_hash=10),
+        ]),
+        "valid_del": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_DEL, b"k", b"", version=2, writer_hash=20),
+        ]),
+        "valid_multi": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"key1", b"val1", version=1),
+            encode_wal_entry(WAL_OP_SET, b"key2", b"val2", version=2),
+            encode_wal_entry(WAL_OP_DEL, b"key1", b"", version=3),
+        ]),
+        "legacy_format": encode_wal_file(False, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v", checksummed=False),
+        ]),
+        "truncated_entry": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v"),
+        ])[:-5],
+        "truncated_mid_key": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"longkey", b"v"),
+        ])[:-10],
+        "large_key": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k" * 1000, b"v"),
+        ]),
+        "large_value": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v" * 10_000),
+        ]),
+        "invalid_op": encode_wal_file(True, [
+            encode_wal_entry(0xFF, b"k", b"v"),
+        ]),
+        "zero_version": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v", version=0),
+        ]),
+        "max_version": encode_wal_file(True, [
+            encode_wal_entry(WAL_OP_SET, b"k", b"v",
+                             version=0xFFFFFFFFFFFFFFFF),
+        ]),
+    }
+
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} WAL seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
+# Anti-entropy seed generation
+# ---------------------------------------------------------------------------
+
+def encode_anti_entropy_digest(num_buckets, hashes):
+    """Encode a digest blob: [u32 num][u64 hash * num]."""
+    buf = bytearray()
+    buf += struct.pack("<I", num_buckets)
+    for h in hashes:
+        buf += struct.pack("<Q", h)
+    return bytes(buf)
+
+
+def encode_anti_entropy_bucket_ids(ids):
+    """Encode bucket IDs: [u32 count][u32 id * count]."""
+    buf = bytearray()
+    buf += struct.pack("<I", len(ids))
+    for i in ids:
+        buf += struct.pack("<I", i)
+    return bytes(buf)
+
+
+def encode_anti_entropy_entries(entries):
+    """Encode entries: [u32 count][entry * count]."""
+    buf = bytearray()
+    buf += struct.pack("<I", len(entries))
+    for key, version, writer_hash, has_ttl, expires_ms, value in entries:
+        key_bytes = key if isinstance(key, bytes) else key.encode()
+        val_bytes = value if isinstance(value, bytes) else value.encode()
+        buf += struct.pack("<I", len(key_bytes))
+        buf += key_bytes
+        buf += struct.pack("<Q", version)
+        buf += struct.pack("<Q", writer_hash)
+        buf += struct.pack("<B", 1 if has_ttl else 0)
+        if has_ttl:
+            buf += struct.pack("<Q", expires_ms)
+        buf += struct.pack("<I", len(val_bytes))
+        buf += val_bytes
+    return bytes(buf)
+
+
+def generate_anti_entropy_corpus():
+    d = os.path.join(CORPUS_DIR, "anti_entropy")
+
+    seeds = {
+        "empty": b"",
+        "one_byte": b"\x00",
+        "digest_empty": encode_anti_entropy_digest(0, []),
+        "digest_one_bucket": encode_anti_entropy_digest(1, [42]),
+        "digest_eight_buckets": encode_anti_entropy_digest(8, list(range(8))),
+        "digest_bad_count": struct.pack("<I", 0xFFFFFFFF),
+        "bucket_ids_empty": encode_anti_entropy_bucket_ids([]),
+        "bucket_ids_one": encode_anti_entropy_bucket_ids([0]),
+        "bucket_ids_many": encode_anti_entropy_bucket_ids(list(range(256))),
+        "bucket_ids_bad_count": struct.pack("<I", 0xFFFFFFFF),
+        "entries_empty": encode_anti_entropy_entries([]),
+        "entries_one": encode_anti_entropy_entries([
+            (b"k", 1, 10, False, 0, b"v"),
+        ]),
+        "entries_ttl": encode_anti_entropy_entries([
+            (b"k", 2, 20, True, 1_700_000_000_000, b"v"),
+        ]),
+        "entries_truncated": encode_anti_entropy_entries([
+            (b"k", 1, 0, False, 0, b"v"),
+        ])[:-3],
+        "entries_bad_count": struct.pack("<I", 0xFFFFFFFF),
+    }
+
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} anti-entropy seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
+# HTTP parse seed generation
+# ---------------------------------------------------------------------------
+
+def generate_http_corpus():
+    d = os.path.join(CORPUS_DIR, "http_parse")
+
+    seeds = {
+        "empty": b"",
+        "one_byte": b"\n",
+        "valid_get": b"GET /metrics HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        "valid_get_root": b"GET / HTTP/1.0\r\n\r\n",
+        "bad_method": b"POST /metrics HTTP/1.1\r\n\r\n",
+        "no_http_version": b"GET /metrics\r\n\r\n",
+        "no_crlf": b"GET /metrics HTTP/1.1",
+        "double_slash": b"GET //metrics HTTP/1.1\r\n\r\n",
+        "long_path": b"GET /" + b"a" * 10000 + b" HTTP/1.1\r\n\r\n",
+        "null_bytes": b"GET /\x00/metrics HTTP/1.1\r\n\r\n",
+        "unicode_path": "GET /café HTTP/1.1\r\n\r\n".encode(),
+    }
+
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} HTTP seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
 # Protocol dictionary (for libFuzzer -dict flag)
 # ---------------------------------------------------------------------------
 
@@ -348,6 +542,8 @@ def generate_protocol_dict():
         ("OpcodePING", OP_PING), ("OpcodeGOSSIP", OP_GOSSIP),
         ("OpcodeREPLICATE", OP_REPLICATE), ("OpcodeHINT", OP_HINT),
         ("OpcodeGET_VERSIONED", OP_GET_VERSIONED),
+        ("OpcodeANTI_ENTROPY_DIGEST", OP_ANTI_ENTROPY_DIGEST),
+        ("OpcodeANTI_ENTROPY_SYNC", OP_ANTI_ENTROPY_SYNC),
     ]
     statuses = [
         ("StatusOK", STATUS_OK), ("StatusNotFound", STATUS_NOT_FOUND),
@@ -407,6 +603,9 @@ def main():
     generate_gossip_corpus()
     generate_store_corpus()
     generate_snapshot_corpus()
+    generate_wal_corpus()
+    generate_anti_entropy_corpus()
+    generate_http_corpus()
     generate_protocol_dict()
     print("Done.")
 

@@ -70,9 +70,13 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
       shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
+      replica_factor_(options.replica_factor),
+      anti_entropy_interval_(options.anti_entropy_interval),
+      anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
+          options.anti_entropy_buckets, &metrics_),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_,
-          [this]() { return formatConfigJson(current_config_); }
+          [this]() { return formatConfigJson(current_config_); }, &anti_entropy_
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -85,6 +89,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       quarantine_timer_(io_),
       compact_timer_(io_),
       config_reload_timer_(io_),
+      anti_entropy_timer_(io_),
       signals_(io_),
       metrics_port_(options.metrics_port),
       current_config_(options.config),
@@ -114,7 +119,12 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     detector_.setMetrics(&metrics_);
     gossip_.setMetrics(&metrics_);
     shard_.setMetrics(&metrics_);
+    anti_entropy_.setMetrics(&metrics_);
+
     Logger::info("eviction policy: {}", options.eviction_policy);
+    Logger::info("anti-entropy: interval_ms={} buckets={}",
+        options.anti_entropy_interval.count(),
+        options.anti_entropy_buckets);
 }
 
 auto
@@ -147,6 +157,9 @@ CacheNodeServer::run() {
     scheduleEvict();
     if (persistence_.enabled()) {
         scheduleCompact();
+    }
+    if (anti_entropy_interval_.count() > 0) {
+        scheduleAntiEntropy();
     }
 
     scheduleConfigReload();
@@ -190,6 +203,7 @@ CacheNodeServer::shutdown() {
     quarantine_timer_.cancel();
     compact_timer_.cancel();
     config_reload_timer_.cancel();
+    anti_entropy_timer_.cancel();
     if (persistence_.enabled()) {
         persistence_.shutdown();
     }
@@ -324,6 +338,27 @@ CacheNodeServer::scheduleCompact() {
 }
 
 void
+CacheNodeServer::scheduleAntiEntropy() {
+    if (anti_entropy_interval_.count() <= 0) {
+        return;
+    }
+
+    anti_entropy_timer_.expires_after(anti_entropy_interval_);
+    anti_entropy_timer_.async_wait([this](std::error_code ec) {
+        if (ec) {
+            return;
+        }
+        // Skip background repair while the cluster view is degraded: with
+        // fewer than a majority visible, partner selection may flap and
+        // repair against stale membership.
+        if (!table_.isDegraded()) {
+            anti_entropy_.runRound(replica_factor_);
+        }
+        scheduleAntiEntropy();
+    });
+}
+
+void
 CacheNodeServer::scheduleConfigReload() {
     config_reload_timer_.expires_after(seconds(5));
     config_reload_timer_.async_wait([this](std::error_code ec) {
@@ -376,6 +411,14 @@ CacheNodeServer::applyConfig() {
             store_->setCapacity(new_config->capacity);
         } else if (field == "quarantine_interval_ms") {
             quarantine_interval_ = milliseconds(new_config->quarantine_interval_ms);
+        } else if (field == "anti_entropy_interval_ms") {
+            bool was_disabled = anti_entropy_interval_.count() <= 0;
+            anti_entropy_interval_ = milliseconds(new_config->anti_entropy_interval_ms);
+            if (was_disabled && anti_entropy_interval_.count() > 0) {
+                scheduleAntiEntropy();
+            }
+        } else if (field == "anti_entropy_buckets") {
+            Logger::warn("config field '{}' requires restart to take effect", field);
         } else {
             Logger::warn("config field '{}' requires restart to take effect", field);
         }

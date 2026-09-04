@@ -25,6 +25,7 @@ using asio::ip::tcp;
 namespace cinder {
 class ReplicationManager;
 class GossipManager;
+class AntiEntropyManager;
 } // namespace cinder
 
 namespace cinder::net {
@@ -36,7 +37,8 @@ class TcpServer {
         std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
         GossipManager* gossip = nullptr, uint16_t metrics_port = 0,
-        MetricsCollector* metrics = nullptr, std::function<std::string()> config_getter = nullptr
+        MetricsCollector* metrics = nullptr, std::function<std::string()> config_getter = nullptr,
+        AntiEntropyManager* anti_entropy = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -73,6 +75,7 @@ class TcpServer {
     int replica_factor_;
     ConsistencyMode mode_;
     GossipManager* gossip_;
+    AntiEntropyManager* anti_entropy_ = nullptr;
     MetricsCollector* metrics_ = nullptr;
 #ifdef CINDER_ENABLE_TLS
     asio::ssl::context* ssl_ctx_ = nullptr;

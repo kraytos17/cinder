@@ -24,6 +24,7 @@ cinder_add_test(cinder_unit_tests
     unit/persistence_test.cpp
     unit/tcp_server_stress_test.cpp
     unit/rpc_timeout_test.cpp
+    unit/anti_entropy_test.cpp
     unit/gossip_test.cpp
     unit/error_provenance_test.cpp
     unit/lfu_concurrent_test.cpp
@@ -91,4 +92,7 @@ if(CINDER_ENABLE_FUZZER)
     cinder_add_fuzz(gossip_parse_fuzz fuzz/gossip_parse_fuzz.cpp)
     cinder_add_fuzz(store_put_fuzz fuzz/store_put_fuzz.cpp)
     cinder_add_fuzz(snapshot_fuzz fuzz/snapshot_fuzz.cpp)
+    cinder_add_fuzz(wal_fuzz fuzz/wal_fuzz.cpp)
+    cinder_add_fuzz(anti_entropy_fuzz fuzz/anti_entropy_fuzz.cpp)
+    cinder_add_fuzz(http_parse_fuzz fuzz/http_parse_fuzz.cpp)
 endif()

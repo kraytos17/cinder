@@ -27,6 +27,7 @@ using asio::ip::tcp;
 namespace cinder {
 class ReplicationManager;
 class GossipManager;
+class AntiEntropyManager;
 } // namespace cinder
 
 namespace cinder::net {
@@ -51,7 +52,9 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
         std::string_view node_id, Clock& clock, ReplicationManager* repl = nullptr,
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
-        GossipManager* gossip = nullptr, std::shared_ptr<std::atomic<size_t>> conn_counter = nullptr
+        GossipManager* gossip = nullptr,
+        std::shared_ptr<std::atomic<size_t>> conn_counter = nullptr,
+        AntiEntropyManager* anti_entropy = nullptr
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -138,6 +141,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     Clock& clock_;
     ReplicationManager* repl_;
     GossipManager* gossip_;
+    AntiEntropyManager* anti_entropy_ = nullptr;
     std::string_view node_id_;
     int replica_factor_;
     ConsistencyMode mode_;

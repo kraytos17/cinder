@@ -38,6 +38,8 @@ main(int argc, char* argv[]) -> int {
     std::string tls_ca_file;
     std::string eviction_policy = "lru";
     int rpc_timeout_ms = 5'000;
+    int anti_entropy_interval_ms = 30'000;
+    int anti_entropy_buckets = 256;
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -68,6 +70,11 @@ main(int argc, char* argv[]) -> int {
 
     app.add_option(
         "--rpc-timeout", rpc_timeout_ms, "Per-RPC deadline in milliseconds (0 = no timeout)");
+    app.add_option("--anti-entropy-interval",
+        anti_entropy_interval_ms,
+        "Anti-entropy repair interval in milliseconds (0 = disabled)");
+    app.add_option(
+        "--anti-entropy-buckets", anti_entropy_buckets, "Anti-entropy hash bucket count");
 
     CLI11_PARSE(app, argc, argv);
 
@@ -115,10 +122,21 @@ main(int argc, char* argv[]) -> int {
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
     options.eviction_policy = eviction_policy;
     options.rpc_timeout = milliseconds(rpc_timeout_ms);
+    options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
+    options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
+    if (!config_path.empty()) {
+        // Config-file values are the base; explicit CLI flags override them.
+        if (app.count("--anti-entropy-interval") == 0) {
+            options.anti_entropy_interval = milliseconds(cfg.anti_entropy_interval_ms);
+        }
+        if (app.count("--anti-entropy-buckets") == 0) {
+            options.anti_entropy_buckets = static_cast<uint32_t>(cfg.anti_entropy_buckets);
+        }
+    }
+
     options.config = cfg;
     options.config_path = config_path;
     options.metrics_port = cfg.metrics_port;
-
     if (!peers.empty()) {
         cinder::Config peer_cfg;
         cinder::parsePeersString(peers, peer_cfg);
