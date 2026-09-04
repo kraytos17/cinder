@@ -71,3 +71,5 @@ distributed_caching_cpp_improvement_plan.md
 tests/fuzz/corpus
 .codebase-memory/
 tests/fuzz/coverage
+tests/fuzz/corpus_minimal
+*.profraw

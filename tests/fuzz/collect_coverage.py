@@ -79,7 +79,11 @@ def main():
     # Find llvm-profdata
     profdata_tool = find_llvm_tool("llvm-profdata")
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # Clean stale .profraw from a previous run — a crash mid-collection (ASan
+    # is implied by CINDER_ENABLE_COVERAGE) can leave a truncated/corrupt file
+    # that would otherwise make llvm-profdata merge fail on the *next* run.
+    for stale in output_dir.glob("*.profraw"):
+        stale.unlink()
 
     # Collect seeds
     seeds = sorted(corpus_dir.iterdir())
@@ -109,7 +113,7 @@ def main():
     merged = output_dir / "merged.profdata"
     print(f"\nMerging {len(profraw_files)} profraw files...")
     cmd = [
-        profdata_tool, "merge",
+        profdata_tool, "merge", "-sparse",
         "-output", str(merged),
     ] + [str(f) for f in profraw_files]
 

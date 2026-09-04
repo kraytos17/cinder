@@ -2,8 +2,8 @@
 """Minimize fuzz corpus to smallest set maintaining coverage.
 
 Algorithm (greedy):
-1. Load per-seed coverage from merged profdata
-2. For each seed, compute which source lines it covers
+1. For each seed, run the fuzzer to generate a per-seed profraw
+2. Use llvm-cov export JSON to extract which source lines each seed covers
 3. Greedily remove seeds that don't increase total coverage
 4. Output minimal corpus
 
@@ -20,55 +20,97 @@ Prerequisites:
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 def find_llvm_tool(name: str) -> str:
     """Find llvm-cov, trying versioned names first."""
     for tool in [name, f"{name}-19", f"{name}-18", f"{name}-17"]:
-        path = subprocess.run(["which", tool], capture_output=True, text=True)
-        if path.returncode == 0:
-            return path.stdout.strip()
+        result = subprocess.run(["which", tool], capture_output=True, text=True)
+        if result.returncode == 0:
+            return result.stdout.strip()
     print(f"ERROR: {name} not found in PATH", file=sys.stderr)
     sys.exit(1)
 
 
-def get_seed_coverage(fuzzer: Path, seed: Path, profdata: Path, llvm_cov: str) -> set:
-    """Get the set of source lines covered by a single seed."""
+def get_seed_coverage(fuzzer: Path, seed: Path, llvm_cov: str, llvm_profdata: str, tmpdir: Path) -> set:
+    """Run the fuzzer with a single seed and extract covered source lines."""
+    profraw = tmpdir / f"{seed.name}.profraw"
     env = os.environ.copy()
-    env["LLVM_PROFILE_FILE"] = str(profdata)
+    env["LLVM_PROFILE_FILE"] = str(profraw)
 
     try:
-        # Use llvm-cov to show coverage for this specific seed
-        result = subprocess.run(
-            [
-                llvm_cov, "show",
-                "--instr-profile", str(profdata),
-                "--sources", "src/",
-                str(fuzzer),
-                "--", str(seed),
-            ],
+        # Pass the seed as a positional file argument with -runs=1 so the
+        # fuzzer replays exactly this input once. Calling the binary with no
+        # arguments starts libFuzzer's normal fuzzing loop (mutating its own
+        # generated inputs indefinitely) — stdin is not read by libFuzzer
+        # harnesses, so `input=seed_data` alone silently does nothing useful.
+        subprocess.run(
+            [str(fuzzer), str(seed), "-runs=1"],
             capture_output=True,
-            text=True,
-            timeout=30,
+            timeout=10,
             env=env,
         )
-
-        # Parse output to extract covered lines
-        covered = set()
-        for line in result.stdout.splitlines():
-            # Lines like "  42 |    code here" have a line number
-            parts = line.split("|")
-            if len(parts) >= 2:
-                line_num = parts[0].strip()
-                if line_num.isdigit():
-                    covered.add(int(line_num))
-        return covered
+    except subprocess.TimeoutExpired:
+        pass
     except Exception:
         return set()
+
+    if not profraw.exists():
+        return set()
+
+    # Merge single profraw into temp profdata
+    profdata = tmpdir / f"{seed.name}.profdata"
+    subprocess.run(
+        [llvm_profdata, "merge", "-sparse", str(profraw), "-o", str(profdata)],
+        capture_output=True,
+    )
+
+    if not profdata.exists():
+        return set()
+
+    # Get coverage JSON
+    result = subprocess.run(
+        [
+            llvm_cov, "export",
+            "--instr-profile", str(profdata),
+            "--ignore-filename-regex", r"_deps/",
+            str(fuzzer),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode != 0:
+        return set()
+
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return set()
+
+    # llvm-cov export's schema nests segments under files, not directly under
+    # each "data" entry: data -> [ {files: [ {filename, segments: [...]}, ... ]} ].
+    # Reading segments straight off the "data" entries (as before) always
+    # returned an empty list, since that key lives one level deeper.
+    # Line numbers are also namespaced by filename here, since two different
+    # files can both have a "line 12" and those aren't the same covered region.
+    covered = set()
+    for export_entry in data.get("data", []):
+        for file_entry in export_entry.get("files", []):
+            filename = file_entry.get("filename", "")
+            for seg in file_entry.get("segments", []):
+                # seg = [line, col, count, hasCount, isRegionEntry, isGapRegion]
+                if len(seg) >= 3 and seg[2] > 0:
+                    covered.add((filename, seg[0]))
+
+    return covered
 
 
 def main():
@@ -92,10 +134,12 @@ def main():
         sys.exit(1)
 
     llvm_cov = find_llvm_tool("llvm-cov")
+    llvm_profdata = find_llvm_tool("llvm-profdata")
 
     # Get total coverage from merged profdata
     result = subprocess.run(
-        [llvm_cov, "report", "--instr-profile", str(profdata), str(fuzzer)],
+        [llvm_cov, "report", "--instr-profile", str(profdata),
+         "--ignore-filename-regex", r"_deps/", str(fuzzer)],
         capture_output=True,
         text=True,
     )
@@ -107,12 +151,14 @@ def main():
     seeds = [s for s in seeds if s.is_file()]
     print(f"\nAnalyzing {len(seeds)} seeds...")
 
-    seed_coverage = {}
-    for i, seed in enumerate(seeds, 1):
-        print(f"  [{i}/{len(seeds)}] {seed.name}...", end=" ", flush=True)
-        coverage = get_seed_coverage(fuzzer, seed, profdata, llvm_cov)
-        seed_coverage[seed] = coverage
-        print(f"{len(coverage)} lines")
+    with tempfile.TemporaryDirectory(prefix="cinder-cov-") as tmpdir:
+        tmpdir = Path(tmpdir)
+        seed_coverage = {}
+        for i, seed in enumerate(seeds, 1):
+            print(f"  [{i}/{len(seeds)}] {seed.name}...", end=" ", flush=True)
+            coverage = get_seed_coverage(fuzzer, seed, llvm_cov, llvm_profdata, tmpdir)
+            seed_coverage[seed] = coverage
+            print(f"{len(coverage)} lines")
 
     if not seed_coverage:
         print("ERROR: No coverage data collected", file=sys.stderr)

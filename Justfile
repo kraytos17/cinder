@@ -147,6 +147,7 @@ fuzz-coverage-report target: fuzz-coverage-build
     mkdir -p tests/fuzz/coverage/{{ target }}/html
     llvm-cov show build/fuzz-coverage/tests/{{ target }}_cov \
         --instr-profile=tests/fuzz/coverage/{{ target }}/merged.profdata \
+        --ignore-filename-regex='_deps/' \
         --format=html \
         --output-dir=tests/fuzz/coverage/{{ target }}/html
     echo "Report: tests/fuzz/coverage/{{ target }}/html/index.html"
