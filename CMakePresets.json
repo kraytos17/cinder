@@ -181,6 +181,20 @@
             "CINDER_ENABLE_ASAN":"ON",
             "CINDER_ENABLE_UBSAN":"ON"
          }
+      },
+      {
+         "name":"fuzz-coverage",
+         "displayName":"Fuzz + Coverage",
+         "description":"Clang build with coverage instrumentation for corpus minimization",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/fuzz-coverage",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_COVERAGE":"ON",
+            "CINDER_ENABLE_ASAN":"ON"
+         }
       }
    ],
    "buildPresets":[
@@ -243,68 +257,123 @@
       {
          "name":"fuzz",
          "configurePreset":"fuzz"
+      },
+      {
+         "name":"fuzz-coverage",
+         "configurePreset":"fuzz-coverage"
       }
    ],
    "testPresets":[
       {
          "name":"debug",
-         "configurePreset":"debug"
+         "configurePreset":"debug",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"debug-tls",
-         "configurePreset":"debug-tls"
+         "configurePreset":"debug-tls",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"debug-clang",
-         "configurePreset":"debug-clang"
+         "configurePreset":"debug-clang",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"release",
-         "configurePreset":"release"
+         "configurePreset":"release",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"release-clang",
-         "configurePreset":"release-clang"
+         "configurePreset":"release-clang",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"sanitized",
-         "configurePreset":"sanitized"
+         "configurePreset":"sanitized",
+         "output":{ "outputOnFailure":true },
+         "environment":{
+            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
+            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
+         }
       },
       {
          "name":"asan",
-         "configurePreset":"asan"
+         "configurePreset":"asan",
+         "output":{ "outputOnFailure":true },
+         "environment":{
+            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
+            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
+         }
       },
       {
          "name":"asan-clang",
-         "configurePreset":"asan-clang"
+         "configurePreset":"asan-clang",
+         "output":{ "outputOnFailure":true },
+         "environment":{
+            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
+            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
+         }
       },
       {
          "name":"tsan",
-         "configurePreset":"tsan"
+         "configurePreset":"tsan",
+         "output":{ "outputOnFailure":true },
+         "environment":{
+            "TSAN_OPTIONS":"halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
+         }
       },
       {
          "name":"ubsan",
-         "configurePreset":"ubsan"
+         "configurePreset":"ubsan",
+         "output":{ "outputOnFailure":true },
+         "environment":{
+            "UBSAN_OPTIONS":"halt_on_error=1:print_stacktrace=1:suppressions=${sourceDir}/suppressions/ubsan.supp"
+         }
       },
       {
          "name":"msan",
-         "configurePreset":"msan"
+         "configurePreset":"msan",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"fast",
-         "configurePreset":"fast"
+         "configurePreset":"fast",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"ci",
-         "configurePreset":"ci"
+         "configurePreset":"ci",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"ci-gcc",
-         "configurePreset":"ci-gcc"
+         "configurePreset":"ci-gcc",
+         "output":{ "outputOnFailure":true }
       },
       {
          "name":"fuzz",
-         "configurePreset":"fuzz"
+         "configurePreset":"fuzz",
+         "output":{ "outputOnFailure":true }
+      }
+   ],
+   "workflowPresets":[
+      {
+         "name":"ci",
+         "steps":[
+            { "type":"configure", "name":"ci" },
+            { "type":"build",     "name":"ci" },
+            { "type":"test",      "name":"ci" }
+         ]
+      },
+      {
+         "name":"ci-gcc",
+         "steps":[
+            { "type":"configure", "name":"ci-gcc" },
+            { "type":"build",     "name":"ci-gcc" },
+            { "type":"test",      "name":"ci-gcc" }
+         ]
       }
    ]
 }

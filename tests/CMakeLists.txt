@@ -96,3 +96,30 @@ if(CINDER_ENABLE_FUZZER)
     cinder_add_fuzz(anti_entropy_fuzz fuzz/anti_entropy_fuzz.cpp)
     cinder_add_fuzz(http_parse_fuzz fuzz/http_parse_fuzz.cpp)
 endif()
+
+# ---------------------------------------------------------------------------
+# Coverage-instrumented fuzz targets (opt-in via -DCINDER_ENABLE_COVERAGE=ON)
+# These link against cinder_core with coverage flags; use a wrapper script
+# to run them under libFuzzer with -runs=1 for per-seed coverage collection.
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_COVERAGE)
+    function(cinder_add_fuzz_coverage name)
+        add_executable(${name} ${ARGN})
+        target_link_libraries(${name} PRIVATE cinder::core)
+        target_compile_options(${name} PRIVATE
+            -fsanitize=fuzzer,address,undefined
+            -fprofile-instr-generate -fcoverage-mapping
+            -fno-omit-frame-pointer)
+        target_link_options(${name} PRIVATE
+            -fsanitize=fuzzer,address,undefined
+            -fprofile-instr-generate -fcoverage-mapping)
+    endfunction()
+
+    cinder_add_fuzz_coverage(protocol_decode_cov fuzz/protocol_decode_fuzz.cpp)
+    cinder_add_fuzz_coverage(gossip_parse_cov fuzz/gossip_parse_fuzz.cpp)
+    cinder_add_fuzz_coverage(store_put_cov fuzz/store_put_fuzz.cpp)
+    cinder_add_fuzz_coverage(snapshot_cov fuzz/snapshot_fuzz.cpp)
+    cinder_add_fuzz_coverage(wal_cov fuzz/wal_fuzz.cpp)
+    cinder_add_fuzz_coverage(anti_entropy_cov fuzz/anti_entropy_fuzz.cpp)
+    cinder_add_fuzz_coverage(http_parse_cov fuzz/http_parse_fuzz.cpp)
+endif()

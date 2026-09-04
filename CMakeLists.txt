@@ -29,6 +29,7 @@ option(CINDER_ENABLE_UBSAN          "Build with UndefinedBehaviorSanitizer"  OFF
 option(CINDER_ENABLE_TSAN           "Build with ThreadSanitizer"             OFF)
 option(CINDER_ENABLE_MSAN           "Build with MemorySanitizer (Clang, needs instrumented libc++)" OFF)
 option(CINDER_ENABLE_FUZZER         "Build with libFuzzer (implies ASan, Clang only)" OFF)
+option(CINDER_ENABLE_COVERAGE       "Build with coverage instrumentation (Clang only)" OFF)
 option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF)
 option(CINDER_UNITY_BUILD           "Enable unity/jumbo builds"              OFF)
 option(CINDER_ENABLE_CLANG_TIDY     "Run clang-tidy during compilation"      OFF)
@@ -85,6 +86,17 @@ if(CINDER_ENABLE_FUZZER)
     endif()
     set(CINDER_ENABLE_ASAN ON CACHE BOOL "" FORCE)
     message(STATUS "Cinder: libFuzzer enabled (Clang, implies ASan)")
+endif()
+
+# ---------------------------------------------------------------------------
+# Coverage instrumentation (Clang only) — for corpus minimization
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "CINDER_ENABLE_COVERAGE requires Clang (llvm-cov/llvm-profdata)")
+    endif()
+    set(CINDER_ENABLE_ASAN ON CACHE BOOL "" FORCE)
+    message(STATUS "Cinder: coverage instrumentation enabled (Clang, implies ASan)")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -309,11 +321,6 @@ FetchContent_Declare(
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
 
-# SYSTEM quiets how *consumers* see these headers, not the dep compiling its
-# own sources — spdlog's bundled fmt spams -Wstringop-overflow under GCC.
-# Vendored code is explicitly out of lint scope: hard-mute it.
-target_compile_options(spdlog PRIVATE -w)
-
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
@@ -483,7 +490,11 @@ endif()
 target_compile_options(cinder_core PRIVATE
     -Wall -Wextra -Wpedantic -Wshadow -Wconversion
     $<$<CONFIG:Release>:-O3>
+    $<$<BOOL:${CINDER_ENABLE_COVERAGE}>:-fprofile-instr-generate;-fcoverage-mapping>
 )
+if(CINDER_ENABLE_COVERAGE)
+    target_link_options(cinder_core PUBLIC -fprofile-instr-generate -fcoverage-mapping)
+endif()
 _cinder_apply_debug_options(cinder_core)
 
 target_precompile_headers(cinder_core PRIVATE

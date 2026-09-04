@@ -70,3 +70,4 @@ cinder_plan.md
 distributed_caching_cpp_improvement_plan.md
 tests/fuzz/corpus
 .codebase-memory/
+tests/fuzz/coverage
