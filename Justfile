@@ -1,5 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
-set quiet
+set quiet := true
 
 presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-clang release release-clang sanitized asan asan-clang msan tsan ubsan ci ci-gcc fast fuzz fuzz-coverage"`
 preset := "debug"
@@ -17,37 +17,41 @@ fuzz_opts_default := "-timeout=5"
 default:
     @just --list
 
+# ── Build ───────────────────────────────────────────────────────────────────
+
 [group('build')]
-configure preset=preset:
+configure:
     cmake --preset {{ preset }}
 
 [group('build')]
-build preset=preset:
+build:
     cmake --build --preset {{ preset }} -j{{ jobs }}
 
+# ── Test ────────────────────────────────────────────────────────────────────
+
 [group('test')]
-test preset=preset: (build preset)
+test: build
     ctest --preset {{ preset }} --output-on-failure -j{{ jobs }} -- {{ args }}
 
 [group('test')]
-test-suite label preset=preset: (build preset)
+test-suite label: build
     ctest --preset {{ preset }} -L {{ label }} --output-on-failure -- {{ args }}
 
 [group('test')]
-test-unit preset=preset: (test-suite "unit" preset)
+test-unit: (test-suite "unit")
 
 [group('test')]
-test-sim preset=preset: (test-suite "sim" preset)
+test-sim: (test-suite "sim")
 
 [group('test')]
-test-cli preset=preset: (test-suite "cli" preset)
+test-cli: (test-suite "cli")
 
 [group('test')]
-test-integration preset=preset: (build preset) kill-stale
+test-integration: build kill-stale
     ctest --preset {{ preset }} -L integration --output-on-failure -- {{ args }}
 
 [group('test')]
-test-all preset=preset: (build preset) kill-stale
+test-all: build kill-stale
     #!/usr/bin/env bash
     set -euo pipefail
     for bin in cinder_unit_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests; do
@@ -62,29 +66,39 @@ test-all preset=preset: (build preset) kill-stale
     echo "════════════════════════════════════════"
     echo "All test suites passed ({{ preset }})."
 
-[group('sanitizers')]
-asan-test: (test "asan")
+# ── Sanitizer tests ─────────────────────────────────────────────────────────
+
+[private]
+_test-preset p: build
+    ctest --preset {{ p }} --output-on-failure -j{{ jobs }} -- {{ args }}
 
 [group('sanitizers')]
-tsan-test: (test "tsan")
+asan-test: (_test-preset "asan")
 
 [group('sanitizers')]
-ubsan-test: (test "ubsan")
+tsan-test: (_test-preset "tsan")
 
 [group('sanitizers')]
-asan-clang-test: (test "asan-clang")
+ubsan-test: (_test-preset "ubsan")
+
+[group('sanitizers')]
+asan-clang-test: (_test-preset "asan-clang")
+
+# ── Run ─────────────────────────────────────────────────────────────────────
 
 [group('run')]
-run preset=preset: (build preset)
+run: build
     ./build/{{ preset }}/bin/cinderd {{ args }}
 
 [group('run')]
-run-cli preset=preset: (build preset)
+run-cli: build
     ./build/{{ preset }}/bin/cinder-cli {{ args }}
 
 [group('run')]
 kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
+
+# ── Fuzzing ─────────────────────────────────────────────────────────────────
 
 [private]
 fuzz-build:
@@ -121,6 +135,8 @@ fuzz-test: (_fuzz-run "10" "10s")
 
 [group('fuzz')]
 fuzz-long: (_fuzz-run "300" "5min")
+
+# ── Coverage-guided minimization ────────────────────────────────────────────
 
 [private]
 fuzz-coverage-build:
@@ -174,24 +190,26 @@ fuzz-coverage-all: fuzz-coverage-build
     echo "════════════════════════════════════════"
     echo "Coverage minimization complete."
 
+# ── Other ───────────────────────────────────────────────────────────────────
+
 [group('misc')]
-bench preset=preset: (build preset)
+bench: build
     ./build/{{ preset }}/bin/cinder_throughput_bench {{ args }}
 
 [group('misc')]
-format preset=preset:
+format:
     cmake --build build/{{ preset }} --target format -j{{ jobs }}
 
 [group('misc')]
-check-format preset=preset:
+check-format:
     cmake --build build/{{ preset }} --target check-format -j{{ jobs }}
 
 [group('misc')]
-install preset=preset: (build preset)
+install: build
     cmake --install build/{{ preset }}
 
 [group('misc')]
-clean preset=preset:
+clean:
     rm -rf build/{{ preset }}
 
 [group('misc')]
