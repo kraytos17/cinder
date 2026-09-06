@@ -1,156 +1,142 @@
 # Cinder Wire Protocol v3
 
-## Overview
+Binary, length-prefixed, request-response protocol over TCP. All multi-byte
+integers on the wire are **big-endian** (network byte order). On-disk formats
+(snapshot, WAL) use native byte order.
 
-Binary, length-prefixed, request-response protocol over TCP.
+## Frame Header
 
-All multi-byte integers are **big-endian** (network byte order).
+Every message begins with a fixed 7-byte header. Its size is derived at
+compile time via `consteval` and verified with `static_assert`.
 
-## Frame Header (7 bytes)
+| Offset | Size | Field         | Description |
+|--------|------|---------------|--------------|
+| 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
+| 1      | 1    | `version`     | `0x03` |
+| 2      | 1    | `opcode`      | Request: 1–10 (see [Opcodes](#opcodes)). Response: `0x00` |
+| 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
-Every message starts with a fixed 7-byte header. The size is derived at
-compile time via `consteval` and verified with `static_assert`:
+**Limits and validation:**
+- Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
+  both encode and decode. On decode, `payload_len` is checked against this
+  bound before the body is read.
+- `opcode` must fall in `1..10`; any other value is rejected as unknown. A
+  `consteval` function, `opcodeRangeCoverage()`, asserts at compile time that
+  this range is contiguous with no gaps.
 
-```
-Offset  Size  Field        Description
-──────  ────  ───────────  ─────────────────────────────
-0       1     magic        0xC1 — identifies a Cinder frame
-1       1     version      0x03 — protocol version
-2       1     opcode       Request: 1=GET, 2=SET, 3=DEL, 4=PING, 5=GOSSIP,
-                           6=REPLICATE, 7=HINT, 8=GET_VERSIONED,
-                           9=ANTI_ENTROPY_DIGEST, 10=ANTI_ENTROPY_SYNC
-                           Response: 0x00
-3       4     payload_len  Length of payload in bytes (uint32, big-endian)
-```
+## Request Payload
 
-Maximum total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB). Enforced
-on both encode and decode; the decoder rejects any frame whose `payload_len`
-exceeds this before reading the body.
+All request opcodes share one field layout. `ttl_ms` and `expires_at_ms` are
+only present when their corresponding flag bit is set, so byte offsets shift
+depending on which flags are set.
 
-The opcode byte is validated on decode: any value outside `Get..AntiEntropySync`
-(1..10) is rejected as an unknown opcode. A `consteval` function
-`opcodeRangeCoverage()` verifies at compile time that the opcode range is
-contiguous with no gaps.
+| Field              | Size | Present when     |
+|--------------------|------|-------------------|
+| `flags`             | 1    | always |
+| `ttl_ms`            | 4    | `flags & 0x01` |
+| `expires_at_ms`     | 8    | `flags & 0x02` |
+| `version`           | 8    | always |
+| `writer_node_hash`  | 8    | always |
+| `key_len`           | 4    | always |
+| `key`               | N    | always (may be empty) |
+| `val_len`           | 4    | always |
+| `value`             | M    | always (may be empty) |
 
-## Request Payload — common format
+- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`.
+- **`ttl_ms`** (`uint32`) — relative TTL in milliseconds. Sent by clients on
+  `SET`; the server converts it to an absolute expiry using its own clock.
+- **`expires_at_ms`** (`uint64`) — absolute wall-clock expiry (Unix epoch ms).
+  Sent by the primary on `REPLICATE`/`HINT` so every replica expires the key
+  at the same instant regardless of delivery delay. Replicas convert it to
+  their local steady-clock basis before storing.
 
-All requests share the same field sequence. Fields are written in order, with the
-two optional fields (`ttl_ms`, `expires_at_ms`) present only when their flag bit
-is set — so byte offsets depend on which flags are present:
+  Overflow guard: values above `int64_t::max() / 1,000,000` (~9.2 × 10¹² ms,
+  ≈ year 2262) are rejected. This prevents overflow when the value is later
+  converted from `milliseconds` to a nanosecond-resolution `time_point`
+  (a ×1,000,000 multiply).
+- **`version`** (`uint64`) — monotonic LWW version. Meaningful on
+  `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
+- **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
+  version ties. Meaningful on writes; `0` elsewhere.
 
-```
-Field            Size  Present when
-───────────────  ────  ─────────────────────────────
-flags            1     always
-ttl_ms           4     flags & 0x01
-expires_at_ms    8     flags & 0x02
-version          8     always
-writer_node_hash 8     always
-key_len          4     always
-key              N     always (may be empty)
-val_len          4     always
-value            M     always (may be empty)
-```
+`ttl_ms` and `expires_at_ms` are mutually exclusive in practice: clients send
+the former on writes, replication uses the latter.
 
-- **`flags`**: bit 0 = `has_ttl`, bit 1 = `has_expires_at`.
-- **`ttl_ms`** (uint32, big-endian) — relative TTL in milliseconds, sent by
-  **clients** on `SET`. The server converts it to an absolute expiry using its own
-  clock.
-- **`expires_at_ms`** (uint64, big-endian) — absolute wall-clock expiry, unix epoch
-  milliseconds, sent by the **primary** on `REPLICATE`/`HINT`. Because it is
-  absolute, every replica expires the key at the same instant regardless of
-  delivery delay. Replicas convert it to their local steady-clock basis before
-  storing. **Overflow guard**: values above `int64_t::max() / 1,000,000`
-  (~9.2 × 10¹² ms ≈ year 2262) are rejected to prevent undefined behavior when
-  the `milliseconds` → `time_point` conversion multiplies by 1,000,000 for
-  nanosecond resolution.
-- **`version`** (uint64, big-endian) — monotonic version for LWW conflict
-  resolution. Meaningful on `SET`/`REPLICATE`/`HINT`; 0 elsewhere.
-- **`writer_node_hash`** (uint64, big-endian) — stable per-node writer hash used
-  to break version ties. Meaningful on writes; 0 elsewhere.
+## Opcodes
 
-`ttl_ms` and `expires_at_ms` are semantically exclusive: clients send the former,
-replication uses the latter.
-
-## Opcode-Specific Notes
-
-| Opcode | Field usage |
-|--------|-------------|
-| GET (1) | `key` set; no ttl/expires_at; value empty |
-| SET (2) | `key` + `value` set; `ttl_ms` when a relative TTL is given; `version`/`writer_node_hash` may carry LWW metadata |
-| DEL (3) | `key` set |
-| PING (4) | all fields empty/zero |
-| GOSSIP (5) | membership view in `value`: `;`-delimited `id@host:port:state:incarnation` entries, e.g. `node1@127.0.0.1:7000:alive:3;node2@127.0.0.1:7001:dead:7`; `key` empty |
-| REPLICATE (6), HINT (7) | `key` + `value` set; `expires_at_ms` when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
-| GET_VERSIONED (8) | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (used by quorum reads and read repair) |
-| ANTI_ENTROPY_DIGEST (9) | Initiator sends its bucket digest (see below); `key` empty |
-| ANTI_ENTROPY_SYNC (10) | Initiator sends entries for divergent buckets (see below); `key` empty |
+| Op | Name | Field usage |
+|----|------|-------------|
+| 1 | `GET` | `key` set; no `ttl`/`expires_at`; `value` empty |
+| 2 | `SET` | `key` + `value` set; `ttl_ms` set for a relative TTL; `version`/`writer_node_hash` optionally carry LWW metadata |
+| 3 | `DEL` | `key` set |
+| 4 | `PING` | all fields empty/zero |
+| 5 | `GOSSIP` | membership view in `value` — `;`-delimited `id@host:port:state:incarnation` entries, e.g. `node1@127.0.0.1:7000:alive:3;node2@127.0.0.1:7001:dead:7`; `key` empty |
+| 6 | `REPLICATE` | `key` + `value` set; `expires_at_ms` set when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
+| 7 | `HINT` | same layout as `REPLICATE` |
+| 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) |
+| 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its bucket digest (see [Anti-Entropy Payloads](#anti-entropy-payloads)); `key` empty |
+| 10 | `ANTI_ENTROPY_SYNC` | initiator sends entries for divergent buckets; `key` empty |
 
 ## Response Payload
 
-The response payload is variable-length. After the 7-byte frame header:
+The opcode byte on a response frame is always `0x00`.
 
-```
-Field              Size  Present when
-────────────────   ────  ─────────────────────────────
-status             1     always
-flags              1     always (bit 0 = version metadata; bit 1 = expires_at)
-version            8     flags & 0x01
-writer_node_hash   8     flags & 0x01
-expires_at         8     flags & 0x02
-has_val            4     always
-value              M     has_val != 0
-```
+| Field              | Size | Present when |
+|--------------------|------|---------------|
+| `status`            | 1    | always |
+| `flags`             | 1    | always (bit 0: version metadata; bit 1: `expires_at`) |
+| `version`           | 8    | `flags & 0x01` |
+| `writer_node_hash`  | 8    | `flags & 0x01` |
+| `expires_at`        | 8    | `flags & 0x02` |
+| `has_val`           | 4    | always |
+| `value`             | M    | `has_val != 0` |
 
-The flags byte is always present (from protocol v3 onwards). When bit 0 is set,
-the response carries `version` + `writer_node_hash` (used by `GET_VERSIONED`
-responses for LWW comparison in quorum reads and read repair). When bit 1 is
-set, `expires_at` carries the absolute wall-clock expiry so TTL semantics are
-preserved across nodes.
-
-The header opcode byte is always `0x00` on responses.
+The `flags` byte has been present unconditionally since protocol v3. Bit 0
+carries `version` + `writer_node_hash` (used by `GET_VERSIONED` responses for
+LWW comparison in quorum reads and read repair). Bit 1 carries `expires_at`,
+the absolute wall-clock expiry, so TTL semantics survive across nodes.
 
 ## Status Codes
 
 | Code | Name | Description |
 |------|------|-------------|
-| 0 | OK | Success |
-| 1 | NotFound | Key not in cache |
-| 2 | CapacityExceeded | Value exceeds capacity |
-| 3 | InvalidArgument | Malformed request (truncated payload, opcode out of range, `expires_at` overflow, `mustRead` failure) |
-| 4 | TtlExpired | Key expired |
-| 5 | NotSupported | Unsupported operation |
-| 6 | InternalError | Server internal error |
-| 7 | Timeout | Operation timed out |
-| 8 | NotReady | Node not ready; body may carry `"moved to <node>"` |
+| 0 | `OK` | Success |
+| 1 | `NotFound` | Key not in cache |
+| 2 | `CapacityExceeded` | Value exceeds capacity |
+| 3 | `InvalidArgument` | Malformed request — truncated payload, opcode out of range, `expires_at` overflow, or a failed `mustRead` |
+| 4 | `TtlExpired` | Key expired |
+| 5 | `NotSupported` | Unsupported operation |
+| 6 | `InternalError` | Server internal error |
+| 7 | `Timeout` | Operation timed out |
+| 8 | `NotReady` | Node not ready; body may carry `"moved to <node>"` |
 
-`NotReady` is used both for ownership redirects (the server replies
-`"moved to <node-id>"` in the value field) and for failed quorum writes.
+`NotReady` covers two distinct cases: ownership redirects (value field carries
+`"moved to <node-id>"`) and failed quorum writes.
 
 ## Decode Safety
 
-The decode path uses `mustRead<T>()` which returns `Result<T>` instead of
-throwing. This prevents `std::bad_expected_access` on adversarial or malformed
-frames — truncated payloads, oversized integers, and corrupted headers are all
-handled as `Result` errors that propagate up through the connection handler.
+Decoding goes through `mustRead<T>()`, which returns `Result<T>` instead of
+throwing. Truncated payloads, oversized integers, and corrupted headers all
+surface as `Result` errors that propagate through the connection handler,
+rather than as exceptions (`std::bad_expected_access`) or undefined behavior.
 
-## Example: SET "foo" "bar" with 30s TTL
+## Worked Example: `SET "foo" "bar"`, 30s TTL
 
-Wire fields (payload = 35 bytes):
+Payload is 35 bytes:
 
 ```
 flags               0x01                        has_ttl, no expires_at
-ttl_ms              00 00 00 1E                 30,000
-version             00 00 00 00 00 00 00 02     2
-writer_node_hash    00 00 00 00 00 00 00 42     66
-key_len             00 00 00 03                 3
-key                 66 6F 6F                    "foo"
-val_len             00 00 00 03                 3
-value               62 61 72                    "bar"
+ttl_ms               00 00 00 1E                30,000
+version              00 00 00 00 00 00 00 02     2
+writer_node_hash     00 00 00 00 00 00 00 42     66
+key_len               00 00 00 03                3
+key                    66 6F 6F                  "foo"
+val_len                00 00 00 03                3
+value                   62 61 72                 "bar"
 ```
 
 ```
-Hex dump (request):
+Request:
   C1 03 02 00 00 00 23     header: magic=0xC1, v=3, op=SET, len=35
   01                        flags: has_ttl=1
   00 00 00 1E              ttl_ms: 30,000
@@ -161,81 +147,70 @@ Hex dump (request):
   00 00 00 03              val_len: 3
   62 61 72                 value: "bar"
 
-Hex dump (response):
-  C1 03 00 00 00 00 06     header: magic=0xC1, v=3, op=0, len=6
+Response:
+  C1 03 00 00 00 00 09     header: magic=0xC1, v=3, op=0, len=9
   00                        status: OK
   00                        flags: no version metadata, no expires_at
   00 00 00 01              has_val: 1
   62 61 72                 value: "bar"
 ```
 
-A `GET_VERSIONED` response would set flags = `0x01` and include the 16 bytes of
-version metadata after the flags byte (before `has_val`).
+A `GET_VERSIONED` response would instead set `flags = 0x01` and include the
+16 bytes of version metadata between `flags` and `has_val`.
 
-## Anti-Entropy Binary Formats
+## Anti-Entropy Payloads
 
-The anti-entropy protocol (opcodes 9 and 10) uses custom binary payloads
-carried in the `value` field. All integers are big-endian.
+Opcodes 9 and 10 carry custom binary payloads inside the `value` field. All
+integers are big-endian.
 
-### Digest (opcode 9 — `ANTI_ENTROPY_DIGEST`)
+### Digest (`ANTI_ENTROPY_DIGEST` request, opcode 9)
 
-```
-Field         Size     Description
-───────────   ──────   ─────────────────────────────────
-num_buckets   4        Number of hash buckets (uint32)
-bucket[0]     8        xxHash3 of keys in bucket 0
-bucket[1]     8        xxHash3 of keys in bucket 1
-...          ...       ...
-bucket[N-1]   8        xxHash3 of keys in bucket N-1
-```
+| Field         | Size | Description |
+|---------------|------|--------------|
+| `num_buckets` | 4    | `uint32` |
+| `bucket[0..N-1]` | 8 each | xxHash3 of one bucket's contents |
 
-Total size: `4 + 8 × num_buckets` bytes. The digest is computed by sorting
-keys within each bucket, then hashing key+version+writer_hash via xxHash3.
+Total size: `4 + 8 × num_buckets` bytes. Each bucket's hash is computed by
+sorting the keys assigned to it, then hashing `key + version + writer_hash`
+per key via xxHash3.
 
-### Divergent Bucket IDs (opcode 9 response)
+### Digest Response (opcode 9 response)
 
-```
-Field         Size     Description
-───────────   ──────   ─────────────────────────────────
-count         4        Number of divergent buckets (uint32)
-id[0]         4        Bucket ID (uint32)
-id[1]         4        Bucket ID (uint32)
-...          ...       ...
-```
+The partner responds with its own digest followed by its entries for divergent
+buckets. The initiator derives the divergent set by comparing both digests:
 
-### Entry List (opcode 10 — `ANTI_ENTROPY_SYNC`)
+| Field         | Size | Description |
+|---------------|------|--------------|
+| `num_buckets` | 4    | `uint32` |
+| `bucket[0..N-1]` | 8 each | xxHash3 of one bucket's contents |
+| entry count   | 4    | number of entries, `uint32` |
+| entries       | var  | variable-length entries (see below) |
 
-Each entry in the `value` payload is serialized as:
+### Entry List (`ANTI_ENTROPY_SYNC`, opcode 10)
 
-```
-Field              Size  Description
-────────────────   ────  ─────────────────────────────────
-key_len            4     Key length (uint32)
-key                N     Key bytes
-version            8     LWW version (uint64)
-writer_node_hash   8     Writer node hash (uint64)
-has_ttl            1     0 or 1 (uint8)
-expires_at_ms      8     Absolute expiry ms (only if has_ttl == 1)
-val_len            4     Value length (uint32)
-value              M     Value bytes
-```
+A 4-byte `count` field, followed by `count` variable-length entries:
 
-The entry list is preceded by a 4-byte `count` field, then `count` entries
-are serialized contiguously. Each entry is variable-length due to key/value
-sizes and the optional `expires_at_ms`.
+| Field              | Size | Description |
+|--------------------|------|--------------|
+| `key_len`           | 4    | `uint32` |
+| `key`               | N    | |
+| `version`           | 8    | LWW version, `uint64` |
+| `writer_node_hash`  | 8    | `uint64` |
+| `has_ttl`           | 1    | `0` or `1` |
+| `expires_at_ms`     | 8    | only if `has_ttl == 1` |
+| `val_len`           | 4    | `uint32` |
+| `value`             | M    | |
 
-## Implementation
+## Implementation Reference
 
-- Encoding: `net::encode(const Request&) -> Result<vector<byte>>`
-  (and `net::encodeInto` for buffer reuse)
-- Decoding: `net::decode(span<const byte>) -> Result<Request>`
-- Response encoding: `net::encode(const Response&) -> Result<vector<byte>>`
-  (and `net::encodeInto` for buffer reuse)
-- Response decoding: `net::decodeResponse(span<const byte>) -> Result<Response>`
+Defined in `include/cinder/net/protocol.hpp` and `src/net/protocol.cpp`:
 
-All defined in `include/cinder/net/protocol.hpp` and `src/net/protocol.cpp`.
+- `net::encode(const Request&) -> Result<vector<byte>>` (`net::encodeInto` for buffer reuse)
+- `net::decode(span<const byte>) -> Result<Request>`
+- `net::encode(const Response&) -> Result<vector<byte>>` (`net::encodeInto` for buffer reuse)
+- `net::decodeResponse(span<const byte>) -> Result<Response>`
 
-Decoded requests are delivered to the `TcpConnection::handleRequest()` handler,
-which dispatches by opcode to the appropriate store/replication/gossip/anti-entropy
-handler. Each connection is serialized on its own `asio::strand`, so concurrent
-requests on the same connection do not interleave.
+Decoded requests are dispatched to `TcpConnection::handleRequest()`, which
+routes by opcode to the corresponding store, replication, gossip, or
+anti-entropy handler. Each connection runs on its own `asio::strand`, so
+concurrent requests on the same connection never interleave.
