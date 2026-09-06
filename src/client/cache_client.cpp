@@ -62,7 +62,7 @@ auto
 CacheClient::set(const std::string& key, const std::string& value, std::optional<milliseconds> ttl)
     -> Result<void> {
     net::Request req{net::Opcode::Set, key, value, ttl};
-    return sendToOwner(key, req).and_then([](net::Response res) -> Result<void> {
+    return sendToOwner(key, req).and_then([](const net::Response& res) -> Result<void> {
         if (res.status != Errc::OK) {
             return err(Error(res.status));
         }
@@ -82,7 +82,7 @@ auto
 CacheClient::remove(const std::string& key) -> bool {
     net::Request req{net::Opcode::Del, key, {}, std::nullopt};
     return sendToOwner(key, req)
-        .and_then([](net::Response res) -> Result<bool> {
+        .and_then([](const net::Response& res) -> Result<bool> {
         return ok(res.status == Errc::OK);
     }).value_or(false);
 }

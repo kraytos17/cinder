@@ -444,6 +444,10 @@ if(CINDER_ENABLE_CLANG_TIDY)
 endif()
 
 if(CINDER_ENABLE_IWYU)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(WARNING "CINDER_ENABLE_IWYU works best with Clang; IWYU's own binary "
+                "still requires a Clang-compatible AST regardless of the project's compiler")
+    endif()
     find_program(IWYU_PROGRAM include-what-you-use)
     if(IWYU_PROGRAM)
         set(CMAKE_CXX_INCLUDE_WHAT_YOU_USE "${IWYU_PROGRAM}")
@@ -555,9 +559,24 @@ if(CPPCHECK_PROGRAM)
                 --std=c++23 --language=c++ --error-exitcode=1
                 --project=${CMAKE_BINARY_DIR}/compile_commands.json
                 --suppressions-list=${CMAKE_SOURCE_DIR}/suppressions/cppcheck.supp
+                -i tests
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         COMMENT "Running cppcheck static analysis"
     )
+endif()
+
+# Aggregate target for whichever of the above lint tools are actually
+# available on this machine — `ninja lint` / `cmake --build . --target lint`
+# runs all of them in one shot instead of needing to know each name.
+set(_cinder_lint_deps "")
+if(TARGET check-format)
+    list(APPEND _cinder_lint_deps check-format)
+endif()
+if(TARGET cppcheck)
+    list(APPEND _cinder_lint_deps cppcheck)
+endif()
+if(_cinder_lint_deps)
+    add_custom_target(lint DEPENDS ${_cinder_lint_deps})
 endif()
 
 # ---------------------------------------------------------------------------

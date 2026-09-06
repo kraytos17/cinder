@@ -50,7 +50,7 @@ class ConnectionPool {
         std::function<void(Result<net::Response>)> on_done);
 
     // Async batch send — callback fires on the io_context's executor.
-    void sendBatchAsync(const NodeId& node_id, std::vector<net::Request> reqs,
+    void sendBatchAsync(const NodeId& node_id, const std::vector<net::Request>& reqs,
         std::function<void(Result<std::vector<net::Response>>)> on_done);
 
     void shutdown();

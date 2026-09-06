@@ -365,7 +365,7 @@ TcpConnection::handleRequest(const Request& req) {
                 auto self = shared_from_this();
                 repl_->readAsync(req.key,
                     replicas,
-                    replica_factor_,
+                    static_cast<size_t>(replica_factor_),
                     [this, self](Result<VersionedEntry> result) {
                     // Quorum completion lands on an arbitrary pool thread —
                     // hop back onto this connection's strand.
@@ -501,7 +501,8 @@ TcpConnection::handleRequest(const Request& req) {
             if (anti_entropy_ != nullptr) {
                 // Sender identity is best-effort (same as gossip); used only
                 // for logging inside the anti-entropy manager.
-                anti_entropy_->onDigestRequest(std::string(node_id_), req, [this](Response r) {
+                anti_entropy_->onDigestRequest(
+                    std::string(node_id_), req, [this](const Response& r) {
                     sendResponse(r);
                     maybeRead();
                 });
@@ -512,7 +513,7 @@ TcpConnection::handleRequest(const Request& req) {
         }
         case Opcode::AntiEntropySync: {
             if (anti_entropy_ != nullptr) {
-                anti_entropy_->onSyncRequest(std::string(node_id_), req, [this](Response r) {
+                anti_entropy_->onSyncRequest(std::string(node_id_), req, [this](const Response& r) {
                     sendResponse(r);
                     maybeRead();
                 });

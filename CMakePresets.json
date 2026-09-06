@@ -59,18 +59,6 @@
          }
       },
       {
-         "name":"sanitized",
-         "displayName":"Sanitized",
-         "description":"Debug build with ASan+UBSan (GCC); mimalloc auto-disabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/sanitized",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
-      },
-      {
          "name":"asan",
          "displayName":"ASan+UBSan",
          "description":"Debug build with ASan+UBSan; mimalloc auto-disabled",
@@ -99,7 +87,7 @@
       {
          "name":"msan",
          "displayName":"MSan (Clang)",
-         "description":"Clang with MemorySanitizer (experimental, needs instrumented libc++); mimalloc auto-disabled",
+         "description":"Clang with MemorySanitizer — requires an MSan-instrumented libc++ to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/msan",
          "cacheVariables":{
@@ -159,12 +147,60 @@
       {
          "name":"fast",
          "displayName":"Fast (unity + lld)",
-         "description":"Debug build with unity/jumbo merging and lld (GCC)",
+         "description":"Debug build with unity/jumbo merging and lld (GCC) — fastest edit-compile-test loop, not representative of real performance",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/fast",
          "cacheVariables":{
             "CMAKE_BUILD_TYPE":"Debug",
             "CINDER_UNITY_BUILD":"ON"
+         }
+      },
+      {
+         "name":"release-unity",
+         "displayName":"Release + Unity",
+         "description":"Optimized build with unity/jumbo merging — fast rebuilds for perf-iteration work",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/release-unity",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Release",
+            "CINDER_UNITY_BUILD":"ON"
+         }
+      },
+      {
+         "name":"profile",
+         "displayName":"Profile",
+         "description":"RelWithDebInfo with frame pointers preserved — for perf/flamegraph work",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/profile",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+            "CINDER_KEEP_FRAME_POINTER":"ON"
+         }
+      },
+      {
+         "name":"analyze",
+         "displayName":"GCC Analyzer",
+         "description":"Debug build with GCC's static analyzer (-fanalyzer)",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/analyze",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_GCC_ANALYZER":"ON",
+            "CINDER_BUILD_BENCHMARKS":"OFF"
+         }
+      },
+      {
+         "name":"iwyu",
+         "displayName":"include-what-you-use",
+         "description":"Clang build running include-what-you-use during compilation",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/iwyu",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CMAKE_CXX_COMPILER":"clang++",
+            "CMAKE_C_COMPILER":"clang",
+            "CINDER_ENABLE_IWYU":"ON",
+            "CINDER_BUILD_BENCHMARKS":"OFF"
          }
       },
       {
@@ -198,110 +234,41 @@
       }
    ],
    "buildPresets":[
-      {
-         "name":"debug",
-         "configurePreset":"debug"
-      },
-      {
-         "name":"debug-tls",
-         "configurePreset":"debug-tls"
-      },
-      {
-         "name":"debug-clang",
-         "configurePreset":"debug-clang"
-      },
-      {
-         "name":"release",
-         "configurePreset":"release"
-      },
-      {
-         "name":"release-clang",
-         "configurePreset":"release-clang"
-      },
-      {
-         "name":"sanitized",
-         "configurePreset":"sanitized"
-      },
-      {
-         "name":"asan",
-         "configurePreset":"asan"
-      },
-      {
-         "name":"asan-clang",
-         "configurePreset":"asan-clang"
-      },
-      {
-         "name":"msan",
-         "configurePreset":"msan"
-      },
-      {
-         "name":"tsan",
-         "configurePreset":"tsan"
-      },
-      {
-         "name":"ubsan",
-         "configurePreset":"ubsan"
-      },
-      {
-         "name":"ci",
-         "configurePreset":"ci"
-      },
-      {
-         "name":"ci-gcc",
-         "configurePreset":"ci-gcc"
-      },
-      {
-         "name":"fast",
-         "configurePreset":"fast"
-      },
-      {
-         "name":"fuzz",
-         "configurePreset":"fuzz"
-      },
-      {
-         "name":"fuzz-coverage",
-         "configurePreset":"fuzz-coverage"
-      }
+      { "name":"debug", "configurePreset":"debug" },
+      { "name":"debug-tls", "configurePreset":"debug-tls" },
+      { "name":"debug-clang", "configurePreset":"debug-clang" },
+      { "name":"release", "configurePreset":"release" },
+      { "name":"release-clang", "configurePreset":"release-clang" },
+      { "name":"asan", "configurePreset":"asan" },
+      { "name":"asan-clang", "configurePreset":"asan-clang" },
+      { "name":"msan", "configurePreset":"msan" },
+      { "name":"tsan", "configurePreset":"tsan" },
+      { "name":"ubsan", "configurePreset":"ubsan" },
+      { "name":"ci", "configurePreset":"ci" },
+      { "name":"ci-gcc", "configurePreset":"ci-gcc" },
+      { "name":"fast", "configurePreset":"fast" },
+      { "name":"release-unity", "configurePreset":"release-unity" },
+      { "name":"profile", "configurePreset":"profile" },
+      { "name":"analyze", "configurePreset":"analyze" },
+      { "name":"iwyu", "configurePreset":"iwyu" },
+      { "name":"fuzz", "configurePreset":"fuzz" },
+      { "name":"fuzz-coverage", "configurePreset":"fuzz-coverage" }
    ],
    "testPresets":[
       {
-         "name":"debug",
-         "configurePreset":"debug",
+         "name":"test-common",
+         "hidden":true,
          "output":{ "outputOnFailure":true }
       },
-      {
-         "name":"debug-tls",
-         "configurePreset":"debug-tls",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"debug-clang",
-         "configurePreset":"debug-clang",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"release",
-         "configurePreset":"release",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"release-clang",
-         "configurePreset":"release-clang",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"sanitized",
-         "configurePreset":"sanitized",
-         "output":{ "outputOnFailure":true },
-         "environment":{
-            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
-            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
-         }
-      },
+      { "name":"debug", "configurePreset":"debug", "inherits":"test-common" },
+      { "name":"debug-tls", "configurePreset":"debug-tls", "inherits":"test-common" },
+      { "name":"debug-clang", "configurePreset":"debug-clang", "inherits":"test-common" },
+      { "name":"release", "configurePreset":"release", "inherits":"test-common" },
+      { "name":"release-clang", "configurePreset":"release-clang", "inherits":"test-common" },
       {
          "name":"asan",
          "configurePreset":"asan",
-         "output":{ "outputOnFailure":true },
+         "inherits":"test-common",
          "environment":{
             "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
             "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
@@ -310,7 +277,7 @@
       {
          "name":"asan-clang",
          "configurePreset":"asan-clang",
-         "output":{ "outputOnFailure":true },
+         "inherits":"test-common",
          "environment":{
             "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
             "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
@@ -319,7 +286,7 @@
       {
          "name":"tsan",
          "configurePreset":"tsan",
-         "output":{ "outputOnFailure":true },
+         "inherits":"test-common",
          "environment":{
             "TSAN_OPTIONS":"halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
          }
@@ -327,36 +294,18 @@
       {
          "name":"ubsan",
          "configurePreset":"ubsan",
-         "output":{ "outputOnFailure":true },
+         "inherits":"test-common",
          "environment":{
             "UBSAN_OPTIONS":"halt_on_error=1:print_stacktrace=1:suppressions=${sourceDir}/suppressions/ubsan.supp"
          }
       },
-      {
-         "name":"msan",
-         "configurePreset":"msan",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"fast",
-         "configurePreset":"fast",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"ci",
-         "configurePreset":"ci",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"ci-gcc",
-         "configurePreset":"ci-gcc",
-         "output":{ "outputOnFailure":true }
-      },
-      {
-         "name":"fuzz",
-         "configurePreset":"fuzz",
-         "output":{ "outputOnFailure":true }
-      }
+      { "name":"msan", "configurePreset":"msan", "inherits":"test-common" },
+      { "name":"fast", "configurePreset":"fast", "inherits":"test-common" },
+      { "name":"release-unity", "configurePreset":"release-unity", "inherits":"test-common" },
+      { "name":"profile", "configurePreset":"profile", "inherits":"test-common" },
+      { "name":"ci", "configurePreset":"ci", "inherits":"test-common" },
+      { "name":"ci-gcc", "configurePreset":"ci-gcc", "inherits":"test-common" },
+      { "name":"fuzz", "configurePreset":"fuzz", "inherits":"test-common" }
    ],
    "workflowPresets":[
       {

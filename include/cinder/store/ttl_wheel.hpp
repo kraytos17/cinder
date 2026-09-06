@@ -34,7 +34,7 @@ class TtlWheel {
     size_t tick_count_ = 0;
 
     struct HeapEntry {
-        size_t absolute_tick;
+        size_t absolute_tick = 0;
         std::string key;
     };
 

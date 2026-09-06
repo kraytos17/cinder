@@ -426,7 +426,7 @@ ConnectionPool::sendAsync(const NodeId& node_id, const net::Request& req,
 }
 
 void
-ConnectionPool::sendBatchAsync(const NodeId& node_id, std::vector<net::Request> reqs,
+ConnectionPool::sendBatchAsync(const NodeId& node_id, const std::vector<net::Request>& reqs,
     std::function<void(Result<std::vector<net::Response>>)> on_done) {
     if (reqs.empty()) {
         on_done(ok(std::vector<net::Response>{}));

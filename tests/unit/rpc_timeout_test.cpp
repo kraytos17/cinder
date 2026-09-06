@@ -188,7 +188,7 @@ TEST(PoolRpcTimeout, BatchRequestTimesOutAgainstBlackHole) {
     reqs.push_back({.opcode = Opcode::Get, .key = "k2", .value = {}, .ttl = std::nullopt});
 
     bool callback_called = false;
-    pool.sendBatchAsync("node1", std::move(reqs), [&](Result<std::vector<net::Response>> res) {
+    pool.sendBatchAsync("node1", reqs, [&](Result<std::vector<net::Response>> res) {
         callback_called = true;
         EXPECT_FALSE(res.has_value());
         EXPECT_EQ(res.error().code(), Errc::Timeout);
