@@ -97,6 +97,10 @@ run-cli: build
     ./build/{{ preset }}/bin/cinder-cli {{ args }}
 
 [group('run')]
+run-admin: build
+    ./build/{{ preset }}/bin/cinder-admin {{ args }}
+
+[group('run')]
 kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
 

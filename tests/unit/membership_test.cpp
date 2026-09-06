@@ -12,7 +12,7 @@ namespace {
 
 NodeInfo
 makeInfo(const std::string& id, NodeState state, uint64_t incarnation) {
-    return {.id = id, .host = "", .state = state, .incarnation = incarnation};
+    return {.id = id, .host = {}, .state = state, .incarnation = incarnation};
 }
 
 TEST(MembershipTest, HigherIncarnationWins) {

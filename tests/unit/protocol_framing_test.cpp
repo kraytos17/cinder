@@ -305,7 +305,7 @@ TEST(ProtocolTest, DecodeOversizedPayload) {
 TEST(ProtocolTest, EncodeEmptyKey) {
     Request req;
     req.opcode = Opcode::Set;
-    req.key = "";
+    req.key = {};
     req.value = "value";
 
     auto encoded = encode(req);

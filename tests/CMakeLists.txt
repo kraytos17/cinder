@@ -41,6 +41,7 @@ cinder_add_test(cinder_integration_tests
     integration/read_repair_test.cpp
     integration/multi_get_test.cpp
     integration/tls_test.cpp
+    integration/admin_test.cpp
 )
 add_dependencies(cinder_integration_tests cinderd)
 target_compile_definitions(cinder_integration_tests PRIVATE

@@ -13,14 +13,14 @@ compile time via `consteval` and verified with `static_assert`.
 |--------|------|---------------|--------------|
 | 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
 | 1      | 1    | `version`     | `0x03` |
-| 2      | 1    | `opcode`      | Request: 1–10 (see [Opcodes](#opcodes)). Response: `0x00` |
+| 2      | 1    | `opcode`      | Request: 1–16 (see [Opcodes](#opcodes)). Response: `0x00` |
 | 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
 **Limits and validation:**
 - Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
   both encode and decode. On decode, `payload_len` is checked against this
   bound before the body is read.
-- `opcode` must fall in `1..10`; any other value is rejected as unknown. A
+- `opcode` must fall in `1..16`; any other value is rejected as unknown. A
   `consteval` function, `opcodeRangeCoverage()`, asserts at compile time that
   this range is contiguous with no gaps.
 
@@ -76,6 +76,14 @@ the former on writes, replication uses the latter.
 | 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) |
 | 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its bucket digest (see [Anti-Entropy Payloads](#anti-entropy-payloads)); `key` empty |
 | 10 | `ANTI_ENTROPY_SYNC` | initiator sends entries for divergent buckets; `key` empty |
+| 11 | `ADMIN_INFO` | request: empty; response: `value` = JSON node info (node_id, port, capacity, store stats, config) |
+| 12 | `ADMIN_CLUSTER` | request: empty; response: `value` = JSON membership array (id, host, port, state, incarnation) |
+| 13 | `ADMIN_RING` | request: empty; response: `value` = JSON ring snapshot (self, vnodes_per_node) |
+| 14 | `ADMIN_COMPACT` | request: empty; response: `status` = OK on success |
+| 15 | `ADMIN_CONFIG_RELOAD` | request: empty; response: `status` = OK on success |
+| 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK, then server shuts down gracefully |
+
+Admin opcodes (11-16) bypass ring ownership checks and are client-initiated only.
 
 ## Response Payload
 

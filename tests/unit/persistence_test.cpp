@@ -74,7 +74,7 @@ TEST_F(PersistenceTest, WalAppendAndRead) {
                 .append(WalEntry{
                     .op = WalEntry::Op::Del,
                     .key = "k3",
-                    .value = "",
+                    .value = {},
                     .version = 3,
                     .writer_node_hash = 300,
                     .expires_at_ms = 0,

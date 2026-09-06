@@ -162,7 +162,7 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         return err<Request>(raw_opcode.error());
     }
     if (*raw_opcode < std::to_underlying(Opcode::Get)
-        || *raw_opcode > std::to_underlying(Opcode::AntiEntropySync)) {
+        || *raw_opcode > std::to_underlying(Opcode::AdminShutdown)) {
         return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
 

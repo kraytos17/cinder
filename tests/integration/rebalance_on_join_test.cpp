@@ -97,7 +97,7 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     // Every key that hashes to node3 in the 3-node ring must be served by node3.
     for (const auto& k : keys) {
         if (ring.getNode(k) == "node3") {
-            EXPECT_TRUE(waitForValue(K_PORT_RB_NODE3, k, "v-" + k, 1200))
+            EXPECT_TRUE(waitForValue(K_PORT_RB_NODE3, k, "v-" + k, 1'200))
                 << k << " not migrated to node3";
         }
     }

@@ -15,6 +15,9 @@
 #include <asio/ssl.hpp>
 #endif
 
+#include <functional>
+#include <string>
+
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/types.hpp"
@@ -84,6 +87,19 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
+    // Admin callback setters — called by TcpServer after construction.
+    void setAdminCallbacks(std::function<std::string()> info_getter,
+        std::function<std::string()> cluster_getter, std::function<std::string()> ring_getter,
+        std::function<void()> compact_trigger, std::function<void()> config_reload_trigger,
+        std::function<void()> shutdown_trigger) {
+        admin_info_getter_ = std::move(info_getter);
+        admin_cluster_getter_ = std::move(cluster_getter);
+        admin_ring_getter_ = std::move(ring_getter);
+        admin_compact_trigger_ = std::move(compact_trigger);
+        admin_config_reload_trigger_ = std::move(config_reload_trigger);
+        admin_shutdown_trigger_ = std::move(shutdown_trigger);
+    }
+
     [[nodiscard]] auto isAlive() const -> bool { return socket_.is_open(); }
 
   private:
@@ -152,5 +168,13 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     std::vector<std::byte> encode_buf_; // scratch; pre-allocated for typical requests
     std::shared_ptr<std::atomic<size_t>> conn_counter_;
     MetricsCollector* metrics_ = nullptr;
+
+    // Admin opcode callbacks — populated by TcpServer from CacheNodeServer.
+    std::function<std::string()> admin_info_getter_;
+    std::function<std::string()> admin_cluster_getter_;
+    std::function<std::string()> admin_ring_getter_;
+    std::function<void()> admin_compact_trigger_;
+    std::function<void()> admin_config_reload_trigger_;
+    std::function<void()> admin_shutdown_trigger_;
 };
 } // namespace cinder::net

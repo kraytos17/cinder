@@ -13,6 +13,7 @@ auto
 escapeJsonString(std::string_view s) -> std::string {
     std::string out;
     out.reserve(s.size() + 2);
+    out += '"';
     for (char c : s) {
         switch (c) {
             case '"':
@@ -35,6 +36,7 @@ escapeJsonString(std::string_view s) -> std::string {
                 break;
         }
     }
+    out += '"';
     return out;
 }
 } // namespace
@@ -274,5 +276,81 @@ logLevelFromString(std::string_view str) -> LogLevel {
         return LogLevel::Error;
     }
     return LogLevel::Info;
+}
+
+static auto
+nodeStateToString(NodeState state) -> const char* {
+    switch (state) {
+        case NodeState::Alive:
+            return "alive";
+        case NodeState::Suspect:
+            return "suspect";
+        case NodeState::Dead:
+            return "dead";
+    }
+    return "unknown";
+}
+
+auto
+formatNodeInfoJson(const NodeId& node_id, const Config& config, size_t store_size,
+    size_t store_entries) -> std::string {
+    std::string out = "{";
+    out += R"("node_id":")" + escapeJsonString(node_id) + "\",";
+    out += "\"port\":" + std::to_string(config.port) + ",";
+    out += "\"capacity_bytes\":" + std::to_string(config.capacity) + ",";
+    out += "\"current_bytes\":" + std::to_string(store_size) + ",";
+    out += "\"current_entries\":" + std::to_string(store_entries) + ",";
+    out += R"("eviction_policy":")" + escapeJsonString("lru") + "\",";
+    out += "\"replica_factor\":" + std::to_string(config.replica_factor) + ",";
+    out += R"("consistency":")" + escapeJsonString(config.consistency) + "\",";
+    out += "\"persistence_enabled\":" + std::string(config.persistence_enabled ? "true" : "false")
+           + ",";
+
+    out += "\"anti_entropy_interval_ms\":" + std::to_string(config.anti_entropy_interval_ms) + ",";
+    out += "\"anti_entropy_buckets\":" + std::to_string(config.anti_entropy_buckets) + ",";
+    out += "\"tls_enabled\":" + std::string(config.tls.enabled ? "true" : "false") + ",";
+    out += R"("log_level":")" + escapeJsonString(config.log_level) + "\",";
+    out += "\"peers\":[";
+    for (size_t i = 0; i < config.peers.size(); ++i) {
+        if (i > 0) {
+            out += ",";
+        }
+
+        out += R"({"id":")" + escapeJsonString(config.peers[i].id) + "\",";
+        out += R"("host":")" + escapeJsonString(config.peers[i].host) + "\",";
+        out += "\"port\":" + std::to_string(config.peers[i].port) + "}";
+    }
+    out += "]}";
+    return out;
+}
+
+auto
+formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string {
+    std::string out = "[";
+    for (size_t i = 0; i < nodes.size(); ++i) {
+        if (i > 0) {
+            out += ",";
+        }
+
+        out += "{";
+        out += R"("id":")" + escapeJsonString(nodes[i].id) + "\",";
+        out += R"("host":")" + escapeJsonString(nodes[i].host) + "\",";
+        out += "\"port\":" + std::to_string(nodes[i].port) + ",";
+        out += R"("state":")" + std::string(nodeStateToString(nodes[i].state)) + "\",";
+        out += "\"incarnation\":" + std::to_string(nodes[i].incarnation);
+        out += "}";
+    }
+    out += "]";
+    return out;
+}
+
+auto
+formatRingJson(const NodeId& self) -> std::string {
+    std::string out = "{";
+    out += R"("self":")" + escapeJsonString(self) + "\",";
+    out += "\"vnodes_per_node\":150,";
+    out += R"("note":"ring is an immutable snapshot with 150 vnodes per physical node")";
+    out += "}";
+    return out;
 }
 } // namespace cinder

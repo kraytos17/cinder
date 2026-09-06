@@ -324,12 +324,15 @@ TcpConnection::handleRequest(const Request& req) {
         }
     }
 
-    // Replicate/Hint/Gossip/AntiEntropy* are inter-node messages addressed to
-    // this node directly (a replica does not own the key) — skip the ring
-    // ownership check.
+    // Replicate/Hint/Gossip/AntiEntropy*/Admin* are inter-node or admin messages
+    // addressed to this node directly — skip the ring ownership check.
     bool is_internal = req.opcode == Opcode::Replicate || req.opcode == Opcode::Hint
                        || req.opcode == Opcode::Gossip || req.opcode == Opcode::AntiEntropyDigest
-                       || req.opcode == Opcode::AntiEntropySync;
+                       || req.opcode == Opcode::AntiEntropySync || req.opcode == Opcode::AdminInfo
+                       || req.opcode == Opcode::AdminCluster || req.opcode == Opcode::AdminRing
+                       || req.opcode == Opcode::AdminCompact
+                       || req.opcode == Opcode::AdminConfigReload
+                       || req.opcode == Opcode::AdminShutdown;
 
     // Reads are served from the local store when present — a replica holds a
     // copy and can keep serving reads after the primary fails (failover read).
@@ -520,6 +523,42 @@ TcpConnection::handleRequest(const Request& req) {
                 return;
             }
             res.status = Errc::OK;
+            break;
+        }
+        case Opcode::AdminInfo: {
+            if (admin_info_getter_) {
+                res.value = admin_info_getter_();
+            }
+            break;
+        }
+        case Opcode::AdminCluster: {
+            if (admin_cluster_getter_) {
+                res.value = admin_cluster_getter_();
+            }
+            break;
+        }
+        case Opcode::AdminRing: {
+            if (admin_ring_getter_) {
+                res.value = admin_ring_getter_();
+            }
+            break;
+        }
+        case Opcode::AdminCompact: {
+            if (admin_compact_trigger_) {
+                admin_compact_trigger_();
+            }
+            break;
+        }
+        case Opcode::AdminConfigReload: {
+            if (admin_config_reload_trigger_) {
+                admin_config_reload_trigger_();
+            }
+            break;
+        }
+        case Opcode::AdminShutdown: {
+            if (admin_shutdown_trigger_) {
+                admin_shutdown_trigger_();
+            }
             break;
         }
         default: {

@@ -143,6 +143,13 @@ TcpServer::doAccept() {
 #endif
                 );
 
+                conn->setAdminCallbacks(admin_callbacks_.info_getter,
+                    admin_callbacks_.cluster_getter,
+                    admin_callbacks_.ring_getter,
+                    admin_callbacks_.compact_trigger,
+                    admin_callbacks_.config_reload_trigger,
+                    admin_callbacks_.shutdown_trigger);
+
                 connections_.push_back(conn);
                 conn->start();
             }

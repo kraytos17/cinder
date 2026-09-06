@@ -4,9 +4,11 @@
 #include <string>
 #include <vector>
 
+#include "cinder/cluster/membership.hpp"
 #include "cinder/common/cluster_config.hpp"
 #include "cinder/common/logger.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/types.hpp"
 
 namespace cinder {
 
@@ -77,4 +79,15 @@ formatConfigJson(const Config& cfg) -> std::string;
 // Compare old vs new config, return names of fields that changed.
 [[nodiscard]] auto
 diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::string>;
+
+// JSON formatters for admin opcodes.
+auto
+formatNodeInfoJson(const NodeId& node_id, const Config& config, size_t store_size,
+    size_t store_entries) -> std::string;
+
+auto
+formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string;
+
+auto
+formatRingJson(const NodeId& self) -> std::string;
 } // namespace cinder

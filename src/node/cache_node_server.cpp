@@ -121,6 +121,28 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     shard_.setMetrics(&metrics_);
     anti_entropy_.setMetrics(&metrics_);
 
+    server_.setAdminCallbacks({
+        .info_getter = [this]() -> std::string {
+        return formatNodeInfoJson(node_id_,
+            current_config_,
+            metrics_.shardMetrics().current_bytes.load(),
+            metrics_.shardMetrics().current_entries.load());
+    },
+        .cluster_getter = [this]() -> std::string { return formatClusterJson(table_.snapshot()); },
+        .ring_getter = [this]() -> std::string { return formatRingJson(node_id_); },
+        .compact_trigger =
+            [this]() {
+        if (persistence_.enabled()) {
+            auto result = persistence_.compact();
+            if (!result.has_value()) {
+                Logger::error("admin compact failed: {}", result.error().message());
+            }
+        }
+    },
+        .config_reload_trigger = [this]() { applyConfig(); },
+        .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
+    });
+
     Logger::info("eviction policy: {}", options.eviction_policy);
     Logger::info("anti-entropy: interval_ms={} buckets={}",
         options.anti_entropy_interval.count(),

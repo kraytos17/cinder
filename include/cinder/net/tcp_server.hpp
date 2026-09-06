@@ -30,6 +30,15 @@ class AntiEntropyManager;
 
 namespace cinder::net {
 
+struct AdminCallbacks {
+    std::function<std::string()> info_getter;
+    std::function<std::string()> cluster_getter;
+    std::function<std::string()> ring_getter;
+    std::function<void()> compact_trigger;
+    std::function<void()> config_reload_trigger;
+    std::function<void()> shutdown_trigger;
+};
+
 class TcpServer {
   public:
 
@@ -54,6 +63,8 @@ class TcpServer {
 
     auto start() -> Result<void>;
     void shutdown();
+
+    void setAdminCallbacks(AdminCallbacks cb) { admin_callbacks_ = std::move(cb); }
 
     // Hard cap on concurrent client connections. Beyond this the acceptor
     // rejects new sockets instead of buffering unbounded file descriptors.
@@ -84,5 +95,6 @@ class TcpServer {
     std::unique_ptr<tcp::acceptor> metrics_acceptor_;
     std::function<std::string()> config_getter_;
     std::atomic<size_t> active_connections_{0};
+    AdminCallbacks admin_callbacks_;
 };
 } // namespace cinder::net

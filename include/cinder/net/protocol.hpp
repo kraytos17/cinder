@@ -50,15 +50,22 @@ enum class Opcode : uint8_t {
     GetVersioned = 8,
     AntiEntropyDigest = 9,
     AntiEntropySync = 10,
+    // Admin opcodes (client-initiated, bypass ring ownership)
+    AdminInfo = 11,
+    AdminCluster = 12,
+    AdminRing = 13,
+    AdminCompact = 14,
+    AdminConfigReload = 15,
+    AdminShutdown = 16,
 };
 
-// The decode path validates `raw_opcode ∈ [Get, AntiEntropySync]`; assert at
+// The decode path validates `raw_opcode ∈ [Get, AdminShutdown]`; assert at
 // compile time that this range covers exactly the declared opcodes with no
 // gaps or overlap.
 consteval auto
 opcodeRangeCoverage() -> bool {
     const int min = std::to_underlying(Opcode::Get);
-    const int max = std::to_underlying(Opcode::AntiEntropySync);
+    const int max = std::to_underlying(Opcode::AdminShutdown);
     int count = 0;
     for (const auto op : {Opcode::Get,
              Opcode::Set,
@@ -69,7 +76,13 @@ opcodeRangeCoverage() -> bool {
              Opcode::Hint,
              Opcode::GetVersioned,
              Opcode::AntiEntropyDigest,
-             Opcode::AntiEntropySync}) {
+             Opcode::AntiEntropySync,
+             Opcode::AdminInfo,
+             Opcode::AdminCluster,
+             Opcode::AdminRing,
+             Opcode::AdminCompact,
+             Opcode::AdminConfigReload,
+             Opcode::AdminShutdown}) {
         if (std::to_underlying(op) < min || std::to_underlying(op) > max) {
             return false;
         }
