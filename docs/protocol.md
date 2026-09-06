@@ -17,7 +17,8 @@ Offset  Size  Field        Description
 0       1     magic        0xC1 — identifies a Cinder frame
 1       1     version      0x03 — protocol version
 2       1     opcode       Request: 1=GET, 2=SET, 3=DEL, 4=PING, 5=GOSSIP,
-                           6=REPLICATE, 7=HINT, 8=GET_VERSIONED
+                           6=REPLICATE, 7=HINT, 8=GET_VERSIONED,
+                           9=ANTI_ENTROPY_DIGEST, 10=ANTI_ENTROPY_SYNC
                            Response: 0x00
 3       4     payload_len  Length of payload in bytes (uint32, big-endian)
 ```
@@ -26,8 +27,8 @@ Maximum total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB). Enforced
 on both encode and decode; the decoder rejects any frame whose `payload_len`
 exceeds this before reading the body.
 
-The opcode byte is validated on decode: any value outside `Get..GetVersioned`
-(1..8) is rejected as an unknown opcode. A `consteval` function
+The opcode byte is validated on decode: any value outside `Get..AntiEntropySync`
+(1..10) is rejected as an unknown opcode. A `consteval` function
 `opcodeRangeCoverage()` verifies at compile time that the opcode range is
 contiguous with no gaps.
 
@@ -82,25 +83,30 @@ replication uses the latter.
 | GOSSIP (5) | membership view in `value`: `;`-delimited `id@host:port:state:incarnation` entries, e.g. `node1@127.0.0.1:7000:alive:3;node2@127.0.0.1:7001:dead:7`; `key` empty |
 | REPLICATE (6), HINT (7) | `key` + `value` set; `expires_at_ms` when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
 | GET_VERSIONED (8) | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (used by quorum reads and read repair) |
+| ANTI_ENTROPY_DIGEST (9) | Initiator sends its bucket digest (see below); `key` empty |
+| ANTI_ENTROPY_SYNC (10) | Initiator sends entries for divergent buckets (see below); `key` empty |
 
 ## Response Payload
 
-```
-Offset  Size  Field        Description
-──────  ────  ───────────  ─────────────────────────────
-0       1     status       Errc enum value (see below)
-1       4     has_val      Non-zero if a value follows (uint32, big-endian)
-5       M     value        Value bytes (only if has_val != 0)
-```
-
-For `GET_VERSIONED` responses, the response also carries version metadata after the value:
+The response payload is variable-length. After the 7-byte frame header:
 
 ```
-Offset        Size  Field              Description
-────────────  ────  ─────────────────  ─────────────────────────────
-5+M           8     version            LWW version (uint64, big-endian)
-13+M          8     writer_node_hash   Writer node hash (uint64, big-endian)
+Field              Size  Present when
+────────────────   ────  ─────────────────────────────
+status             1     always
+flags              1     always (bit 0 = version metadata; bit 1 = expires_at)
+version            8     flags & 0x01
+writer_node_hash   8     flags & 0x01
+expires_at         8     flags & 0x02
+has_val            4     always
+value              M     has_val != 0
 ```
+
+The flags byte is always present (from protocol v3 onwards). When bit 0 is set,
+the response carries `version` + `writer_node_hash` (used by `GET_VERSIONED`
+responses for LWW comparison in quorum reads and read repair). When bit 1 is
+set, `expires_at` carries the absolute wall-clock expiry so TTL semantics are
+preserved across nodes.
 
 The header opcode byte is always `0x00` on responses.
 
@@ -156,11 +162,67 @@ Hex dump (request):
   62 61 72                 value: "bar"
 
 Hex dump (response):
-  C1 03 00 00 00 00 05     header: magic=0xC1, v=3, op=0, len=5
+  C1 03 00 00 00 00 06     header: magic=0xC1, v=3, op=0, len=6
   00                        status: OK
+  00                        flags: no version metadata, no expires_at
   00 00 00 01              has_val: 1
   62 61 72                 value: "bar"
 ```
+
+A `GET_VERSIONED` response would set flags = `0x01` and include the 16 bytes of
+version metadata after the flags byte (before `has_val`).
+
+## Anti-Entropy Binary Formats
+
+The anti-entropy protocol (opcodes 9 and 10) uses custom binary payloads
+carried in the `value` field. All integers are big-endian.
+
+### Digest (opcode 9 — `ANTI_ENTROPY_DIGEST`)
+
+```
+Field         Size     Description
+───────────   ──────   ─────────────────────────────────
+num_buckets   4        Number of hash buckets (uint32)
+bucket[0]     8        xxHash3 of keys in bucket 0
+bucket[1]     8        xxHash3 of keys in bucket 1
+...          ...       ...
+bucket[N-1]   8        xxHash3 of keys in bucket N-1
+```
+
+Total size: `4 + 8 × num_buckets` bytes. The digest is computed by sorting
+keys within each bucket, then hashing key+version+writer_hash via xxHash3.
+
+### Divergent Bucket IDs (opcode 9 response)
+
+```
+Field         Size     Description
+───────────   ──────   ─────────────────────────────────
+count         4        Number of divergent buckets (uint32)
+id[0]         4        Bucket ID (uint32)
+id[1]         4        Bucket ID (uint32)
+...          ...       ...
+```
+
+### Entry List (opcode 10 — `ANTI_ENTROPY_SYNC`)
+
+Each entry in the `value` payload is serialized as:
+
+```
+Field              Size  Description
+────────────────   ────  ─────────────────────────────────
+key_len            4     Key length (uint32)
+key                N     Key bytes
+version            8     LWW version (uint64)
+writer_node_hash   8     Writer node hash (uint64)
+has_ttl            1     0 or 1 (uint8)
+expires_at_ms      8     Absolute expiry ms (only if has_ttl == 1)
+val_len            4     Value length (uint32)
+value              M     Value bytes
+```
+
+The entry list is preceded by a 4-byte `count` field, then `count` entries
+are serialized contiguously. Each entry is variable-length due to key/value
+sizes and the optional `expires_at_ms`.
 
 ## Implementation
 
@@ -168,11 +230,12 @@ Hex dump (response):
   (and `net::encodeInto` for buffer reuse)
 - Decoding: `net::decode(span<const byte>) -> Result<Request>`
 - Response encoding: `net::encode(const Response&) -> Result<vector<byte>>`
+  (and `net::encodeInto` for buffer reuse)
 - Response decoding: `net::decodeResponse(span<const byte>) -> Result<Response>`
 
 All defined in `include/cinder/net/protocol.hpp` and `src/net/protocol.cpp`.
 
 Decoded requests are delivered to the `TcpConnection::handleRequest()` handler,
-which dispatches by opcode to the appropriate store/replication/gossip handler.
-Each connection is serialized on its own `asio::strand`, so concurrent requests
-on the same connection do not interleave.
+which dispatches by opcode to the appropriate store/replication/gossip/anti-entropy
+handler. Each connection is serialized on its own `asio::strand`, so concurrent
+requests on the same connection do not interleave.

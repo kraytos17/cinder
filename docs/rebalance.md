@@ -8,8 +8,9 @@ consistent hash ring to distribute keys across nodes. When membership changes
 owners and pushes replicas to new replica-set members. A quarantine window
 prevents crash-looping nodes from becoming hot migration targets.
 
-This document covers the cluster lifecycle. The wire protocol is documented in
-`protocol.md`.
+This document covers the cluster lifecycle, replication, read repair, hinted
+handoff, anti-entropy, consistency modes, and persistence. The wire protocol
+is documented in `protocol.md`.
 
 ## Membership State Machine
 
@@ -311,6 +312,201 @@ sending any push or migrate request. If the target node is `Suspect` or `Dead`,
 the send is skipped (the key stays local or the push is deferred). This prevents
 wasted network I/O and avoids sending data to nodes that will not ack.
 
+## Read Repair
+
+When a quorum read (`R > 1`) is performed, `ReplicationManager::readAsync()`
+compares responses from the local store and all replicas using LWW (last-writer-wins
+via version + writer_node_hash). If any replica has a newer version than the current
+best, the read is flagged as `needs_repair`.
+
+### Repair Mechanism
+
+1. **Local self-heal**: If the local store is behind a replica, it is updated
+   via `putVersioned()` (LWW — stale writes are no-ops).
+2. **Fan-out repair**: `sendRepairFanOut()` sends a `Replicate` request carrying
+   the winning entry (value, version, writer_node_hash, expires_at) to **all**
+   replica nodes — not just the stale one. This is idempotent (version-gated LWW),
+   so pushing to an already-current replica is harmless.
+
+### When Repair Is Triggered
+
+- **Quorum read** (`R > 1`): fan-out `GetVersioned` to all replicas, compare
+  versions, repair if needed.
+- **Read miss on replica**: If a replica returns `NotFound` but the key exists
+  elsewhere, the replica is stale and repair is triggered.
+
+Read repair handles transient inconsistencies (e.g., a replica missed a write
+due to a transient failure). Anti-entropy handles deeper drift.
+
+## Hinted Handoff
+
+When a write (async or quorum) fails to reach a replica node, a **hint** is
+enqueued in the local `HintQueue` for later replay. This prevents data loss when
+a replica is temporarily unreachable.
+
+### Hint Queue
+
+- **Bounded FIFO**: capacity = 1,024 hints. When full, the oldest hint is dropped.
+- **TTL**: hints expire after 30 seconds (`K_HINT_TTL`). Expired hints are
+  dropped during replay.
+- **Thread-safe**: all operations take an internal mutex.
+
+### Hint Structure
+
+```
+struct Hint {
+    NodeId target;        // unreachable replica node
+    net::Request req;     // the original Replicate request
+    steady_clock::time_point expires_at;  // hint TTL
+};
+```
+
+### Replay
+
+`ReplicationManager::replayHints()` snapshots live hints under the lock, then
+sends each hint to its target node. A single-consumer guard (`replaying_` atomic)
+prevents overlapping replays from concurrent timer ticks or pool threads.
+
+Successful replays call `remove()` to drop the hint from the queue. Failed or
+expired hints are silently dropped.
+
+### When Hints Are Enqueued
+
+- **Async write**: replica unreachable → `enqueueHint(node, req)`
+- **Quorum write**: replica unreachable → `enqueueHint(node, req)`
+- **Replica failover test**: verifies hints are replayed when the replica returns
+
+## Anti-Entropy
+
+Periodic background repair between replica partners using range-hash bucketing.
+This handles deeper drift that read repair and hinted handoff cannot catch
+(e.g., a replica was down for longer than the hint TTL).
+
+### Protocol
+
+Two-phase exchange (initiated by primary every `anti_entropy_interval`):
+
+1. **Phase 1 — Digest exchange**: Initiator computes a digest (N bucket hashes
+   via xxHash3) and sends it to a replica partner (`ANTI_ENTROPY_DIGEST`, opcode 9).
+   The partner compares digests, identifies divergent buckets, and responds with
+   the divergent bucket IDs + its entries for those buckets.
+2. **Phase 2 — Entry sync**: Initiator applies received entries via LWW
+   (`putVersioned`), then sends its entries for the same divergent buckets back
+   to the partner (`ANTI_ENTROPY_SYNC`, opcode 10).
+
+### Bucket Digest
+
+Keys are partitioned into N hash buckets (default 256). Within each bucket, keys
+are sorted lexicographically, then hashed via xxHash3 over key + version +
+writer_node_hash. The resulting digest is a vector of N uint64 hashes.
+
+Two nodes with identical data produce identical digests. Divergent bucket hashes
+indicate differing entries — only those buckets trigger full entry exchange.
+
+### Entry Format
+
+Each entry in the sync payload is serialized as:
+
+```
+[key_len(4)][key][version(8)][writer_hash(8)][has_ttl(1)][expires_at_ms?(8)][val_len(4)][value]
+```
+
+All entries are applied via LWW (`putVersioned`), making the protocol idempotent
+and commutative. Replaying the same sync blob is always safe.
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--anti-entropy-interval` | `30000` ms | Interval between anti-entropy rounds. `0` = disabled |
+| `--anti-entropy-buckets` | `256` | Number of hash buckets for digest computation |
+
+## Consistency Modes
+
+Cinder supports two write consistency modes, configured via `--consistency`:
+
+### Async (default)
+
+Local write commits immediately, then fan-out to replicas is best-effort. The
+client receives success after the local commit. Unreachable replicas get hints
+queued for later replay.
+
+- **Pros**: lowest latency, always available.
+- **Cons**: replicas may be briefly behind the primary.
+
+### Quorum
+
+Local write commits, then fan-out to replicas. The client receives success only
+after `W = R/2 + 1` acknowledgements (including the local write). If fewer than
+W replicas ack, the write fails with `NotReady`.
+
+- **Pros**: stronger consistency — reads with `R > 1` always see the latest write.
+- **Cons**: higher latency, writes fail if too many replicas are down.
+
+The quorum formula: with `replica_factor` replicas, `total = replica_factor + 1`
+(including local), `W = total / 2 + 1`. For example, with 2 replicas (3 total),
+W = 2 (local + 1 replica).
+
+## Persistence
+
+Cinder supports optional disk persistence via snapshot + WAL (write-ahead log).
+
+### Snapshot Format
+
+Binary format with magic `0x43534E50` ("CSNP") and format version 1:
+
+```
+Field              Size  Description
+────────────────   ────  ─────────────────────────────────
+magic              4     0x43534E50 ("CSNP")
+format_version     4     1 (uint32)
+next_version       8     Monotonic version counter (uint64)
+entry_count        4     Number of entries (uint32)
+── per entry ─────────────────────────────────────────────
+key_len            4     Key length (uint32)
+key                N     Key bytes
+val_len            4     Value length (uint32)
+value              M     Value bytes
+version            8     LWW version (uint64)
+writer_node_hash   8     Writer node hash (uint64)
+expires_at_ms      8     Absolute expiry ms (uint64, 0 = no TTL)
+has_ttl            1     0 or 1 (uint8)
+freq               8     Access frequency for LFU (uint64, 0 for LRU)
+```
+
+Atomic write: data is written to `path.tmp`, then renamed to `path` on success.
+
+### WAL Format
+
+Binary format with magic `0x57414C30` ("WAL0") and format version 1. Each entry
+records a Set or Del operation with version metadata for crash recovery.
+
+### Recovery
+
+On startup, `PersistenceManager::recover()`:
+
+1. Finds the latest snapshot file in `data_dir`.
+2. Loads the snapshot into the store (restores all entries + version counter).
+3. Replays the WAL from after the snapshot timestamp, applying each entry via LWW.
+
+This ensures crash consistency: the snapshot provides a consistent base, and the
+WAL captures writes since the last snapshot.
+
+### Compaction
+
+`PersistenceManager::compact()` creates a new snapshot from the current store
+state and truncates the WAL. This is triggered periodically based on
+`snapshot_interval_s` or when the WAL exceeds `max_wal_entries`.
+
+### Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--persistence-enabled` | `false` | Enable disk persistence |
+| `--data-dir` | (empty) | Directory for snapshot and WAL files |
+| `--snapshot-interval-s` | `60` | Seconds between automatic snapshots |
+| `--max-wal-entries` | `10000` | Max WAL entries before forced compaction |
+
 ## Configuration Reference
 
 | Flag | Default | Description |
@@ -322,6 +518,61 @@ wasted network I/O and avoids sending data to nodes that will not ack.
 | `--replication-factor` | `1` | Number of copies per key (1 = no replication) |
 | `--consistency` | `async` | Write consistency: `async` or `quorum` |
 | `--rpc-timeout` | `5000` | Per-RPC deadline for peer sends (ms). `0` = no timeout |
+| `--anti-entropy-interval` | `30000` | Anti-entropy round interval (ms). `0` = disabled |
+| `--anti-entropy-buckets` | `256` | Number of hash buckets for anti-entropy digest |
+| `--persistence-enabled` | `false` | Enable disk persistence (snapshot + WAL) |
+| `--data-dir` | (empty) | Directory for snapshot and WAL files |
+| `--snapshot-interval-s` | `60` | Seconds between automatic snapshots |
+| `--max-wal-entries` | `10000` | Max WAL entries before forced compaction |
 
 All parameters can be set via CLI flags or the YAML configuration file. CLI
 flags override config file values.
+
+## YAML Configuration Example
+
+```yaml
+server:
+  node_id: node1
+  port: 7000
+  capacity: 67108864        # 64 MiB
+  replication_factor: 2
+  consistency: quorum
+  metrics_port: 9090
+
+cluster:
+  peers:
+    - id: node1
+      host: 127.0.0.1
+      port: 7000
+    - id: node2
+      host: 127.0.0.1
+      port: 7001
+    - id: node3
+      host: 127.0.0.1
+      port: 7002
+
+failure_detector:
+  ping_interval_ms: 1000
+  suspect_timeout_ms: 3000
+  gossip_interval_ms: 1000
+  quarantine_interval_ms: 10000
+
+anti_entropy:
+  interval_ms: 30000
+  buckets: 256
+
+persistence:
+  enabled: true
+  data_dir: /var/lib/cinder/data
+  snapshot_interval_s: 60
+  max_wal_entries: 10000
+
+tls:
+  enabled: false
+  cert_file: /path/to/cert.pem
+  key_file: /path/to/key.pem
+  ca_file: /path/to/ca.pem
+
+logging:
+  level: info
+```
