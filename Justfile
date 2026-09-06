@@ -1,3 +1,4 @@
+# ── Settings ────────────────────────────────────────────────────────────────
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
@@ -14,6 +15,7 @@ fuzz_opts_anti_entropy := "-max_len=8192"
 fuzz_opts_store_put := "-max_len=1024"
 fuzz_opts_default := "-timeout=5"
 
+# Show all available recipes
 default:
     @just --list
 
@@ -68,21 +70,21 @@ test-all: build kill-stale
 
 # ── Sanitizer tests ─────────────────────────────────────────────────────────
 
-[private]
-_test-preset p: build
-    ctest --preset {{ p }} --output-on-failure -j{{ jobs }} -- {{ args }}
+[group('sanitizers')]
+asan-test:
+    @just preset=asan test
 
 [group('sanitizers')]
-asan-test: (_test-preset "asan")
+tsan-test:
+    @just preset=tsan test
 
 [group('sanitizers')]
-tsan-test: (_test-preset "tsan")
+ubsan-test:
+    @just preset=ubsan test
 
 [group('sanitizers')]
-ubsan-test: (_test-preset "ubsan")
-
-[group('sanitizers')]
-asan-clang-test: (_test-preset "asan-clang")
+asan-clang-test:
+    @just preset=asan-clang test
 
 # ── Run ─────────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,18 @@ run-cli: build
 [group('run')]
 kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
+
+# ── Preset shortcuts ─────────────────────────────────────────────────────────
+
+[group('presets')]
+debug-tls: (build)
+
+[group('presets')]
+fast: (build)
+
+[group('presets')]
+ci:
+    cmake --workflow --preset ci
 
 # ── Fuzzing ─────────────────────────────────────────────────────────────────
 
@@ -190,19 +204,29 @@ fuzz-coverage-all: fuzz-coverage-build
     echo "════════════════════════════════════════"
     echo "Coverage minimization complete."
 
+# ── Lint ──────────────────────────────────────────────────────────────────
+
+[group('lint')]
+format:
+    cmake --build build/{{ preset }} --target format -j{{ jobs }}
+
+[group('lint')]
+check-format:
+    cmake --build build/{{ preset }} --target check-format -j{{ jobs }}
+
+[group('lint')]
+cppcheck: build
+    cmake --build build/{{ preset }} --target cppcheck -j{{ jobs }}
+
+[group('lint')]
+lint: build
+    cmake --build build/{{ preset }} --target lint -j{{ jobs }}
+
 # ── Other ───────────────────────────────────────────────────────────────────
 
 [group('misc')]
 bench: build
     ./build/{{ preset }}/bin/cinder_throughput_bench {{ args }}
-
-[group('misc')]
-format:
-    cmake --build build/{{ preset }} --target format -j{{ jobs }}
-
-[group('misc')]
-check-format:
-    cmake --build build/{{ preset }} --target check-format -j{{ jobs }}
 
 [group('misc')]
 install: build
