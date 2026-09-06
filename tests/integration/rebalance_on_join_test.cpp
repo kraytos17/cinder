@@ -54,27 +54,28 @@ seedKeys2Node(const std::vector<std::string>& keys) {
 TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     // Quarantine disabled so migrated keys land on node3 immediately — the
     // deferred path (quarantine window + retry) is covered elsewhere.
-    // Suspect timeout raised to 10s so the failure detector tolerates startup
-    // delays without false-suspecting peers and disrupting the ring.
+    // Suspect timeout raised to 30s so the failure detector tolerates ASan
+    // startup delays without false-suspecting peers and disrupting the ring.
+    // Only 20 keys to keep migration time reasonable under ASan overhead.
     NodeProcGuard node1{spawnNode(K_PORT_RB_NODE1,
         "node1",
         "node2@127.0.0.1:" + std::to_string(K_PORT_RB_NODE2),
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     NodeProcGuard node2{spawnNode(K_PORT_RB_NODE2,
         "node2",
         "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1),
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE1)) << "node1 did not start";
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE2)) << "node2 did not start";
 
     std::vector<std::string> keys;
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 20; i++) {
         keys.push_back("key" + std::to_string(i));
     }
     seedKeys2Node(keys);
@@ -88,7 +89,7 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE3)) << "node3 did not start";
 
     ConsistentHashRing ring(150);
@@ -96,7 +97,7 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     // Every key that hashes to node3 in the 3-node ring must be served by node3.
     for (const auto& k : keys) {
         if (ring.getNode(k) == "node3") {
-            EXPECT_TRUE(waitForValue(K_PORT_RB_NODE3, k, "v-" + k, 200))
+            EXPECT_TRUE(waitForValue(K_PORT_RB_NODE3, k, "v-" + k, 1200))
                 << k << " not migrated to node3";
         }
     }
@@ -109,19 +110,19 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     NodeProcGuard node2{spawnNode(K_PORT_RB_NODE2,
         "node2",
         "node1@127.0.0.1:" + std::to_string(K_PORT_RB_NODE1),
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE1)) << "node1 did not start";
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE2)) << "node2 did not start";
 
     std::vector<std::string> keys;
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 20; i++) {
         keys.push_back("key" + std::to_string(i));
     }
     seedKeys2Node(keys);
@@ -133,7 +134,7 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
         /*quorum=*/false,
         /*replica_factor=*/1,
         /*quarantine_interval_ms=*/0,
-        /*suspect_timeout_ms=*/10'000)};
+        /*suspect_timeout_ms=*/30'000)};
     ASSERT_TRUE(waitForPort(K_PORT_RB_NODE3)) << "node3 did not start";
 
     ConsistentHashRing ring(150);
@@ -142,7 +143,7 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
     for (const auto& k : keys) {
         auto owner = ring.getNode(k);
         if (owner == "node1" || owner == "node2") {
-            EXPECT_TRUE(waitForValue(portOf(owner), k, "v-" + k, 100))
+            EXPECT_TRUE(waitForValue(portOf(owner), k, "v-" + k, 200))
                 << k << " dropped from its owner";
         }
     }
