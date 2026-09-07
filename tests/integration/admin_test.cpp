@@ -67,7 +67,8 @@ TEST(AdminTest, ConfigReloadReturnsOk) {
     NodeProcGuard node{spawnNode(K_ADMIN_PORT1, "node1", "")};
     ASSERT_TRUE(waitForPort(K_ADMIN_PORT1));
 
-    cinder::net::Request req{.opcode = cinder::net::Opcode::AdminConfigReload, .key = {}, .value = {}};
+    cinder::net::Request req{
+        .opcode = cinder::net::Opcode::AdminConfigReload, .key = {}, .value = {}};
     auto res = rawRequest(K_ADMIN_PORT1, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);

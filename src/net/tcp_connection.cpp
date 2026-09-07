@@ -319,6 +319,25 @@ TcpConnection::handleRequest(const Request& req) {
             case Opcode::AntiEntropySync:
                 metrics_->opcodeMetrics().anti_entropy_sync.fetch_add(1, std::memory_order_relaxed);
                 break;
+            case Opcode::AdminInfo:
+                metrics_->opcodeMetrics().admin_info.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminCluster:
+                metrics_->opcodeMetrics().admin_cluster.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminRing:
+                metrics_->opcodeMetrics().admin_ring.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminCompact:
+                metrics_->opcodeMetrics().admin_compact.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminConfigReload:
+                metrics_->opcodeMetrics().admin_config_reload.fetch_add(
+                    1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminShutdown:
+                metrics_->opcodeMetrics().admin_shutdown.fetch_add(1, std::memory_order_relaxed);
+                break;
             default:
                 break;
         }

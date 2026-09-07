@@ -67,7 +67,13 @@ struct OpcodeMetrics {
     std::atomic<uint64_t> gets_versioned{0};
     std::atomic<uint64_t> anti_entropy_digest{0};
     std::atomic<uint64_t> anti_entropy_sync{0};
-    std::array<LatencyHistogram, 10> latency{};
+    std::atomic<uint64_t> admin_info{0};
+    std::atomic<uint64_t> admin_cluster{0};
+    std::atomic<uint64_t> admin_ring{0};
+    std::atomic<uint64_t> admin_compact{0};
+    std::atomic<uint64_t> admin_config_reload{0};
+    std::atomic<uint64_t> admin_shutdown{0};
+    std::array<LatencyHistogram, 16> latency{};
 
     void recordLatency(uint8_t raw_opcode, uint64_t ns) {
         size_t idx = static_cast<size_t>(raw_opcode) - 1;

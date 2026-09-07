@@ -27,6 +27,12 @@ OP_HINT = 7
 OP_GET_VERSIONED = 8
 OP_ANTI_ENTROPY_DIGEST = 9
 OP_ANTI_ENTROPY_SYNC = 10
+OP_ADMIN_INFO = 11
+OP_ADMIN_CLUSTER = 12
+OP_ADMIN_RING = 13
+OP_ADMIN_COMPACT = 14
+OP_ADMIN_CONFIG_RELOAD = 15
+OP_ADMIN_SHUTDOWN = 16
 
 # Response status codes (Errc), mirrored from cinder::net::Errc.
 STATUS_OK = 0
@@ -162,7 +168,14 @@ def generate_protocol_corpus():
         "unknown_opcode_zero": encode_request(0, key=b"k"),
         "unknown_opcode_high": encode_request(0xFF, key=b"k"),
         "min_opcode": encode_request(OP_GET),
-        "max_opcode": encode_request(OP_GET_VERSIONED),
+        "max_opcode": encode_request(OP_ADMIN_SHUTDOWN),
+        "admin_info_request": encode_request(OP_ADMIN_INFO),
+        "admin_cluster_request": encode_request(OP_ADMIN_CLUSTER),
+        "admin_ring_request": encode_request(OP_ADMIN_RING),
+        "admin_compact_request": encode_request(OP_ADMIN_COMPACT),
+        "admin_config_reload_request": encode_request(OP_ADMIN_CONFIG_RELOAD),
+        "admin_shutdown_request": encode_request(OP_ADMIN_SHUTDOWN),
+        "admin_opcode_overflow": encode_request(0xFF, key=b"k"),
         "anti_entropy_digest_request": encode_request(OP_ANTI_ENTROPY_DIGEST,
                                                        value=b"\x08\x00\x00\x00" + b"\x00" * 32),
         "anti_entropy_sync_request": encode_request(OP_ANTI_ENTROPY_SYNC,
@@ -544,6 +557,12 @@ def generate_protocol_dict():
         ("OpcodeGET_VERSIONED", OP_GET_VERSIONED),
         ("OpcodeANTI_ENTROPY_DIGEST", OP_ANTI_ENTROPY_DIGEST),
         ("OpcodeANTI_ENTROPY_SYNC", OP_ANTI_ENTROPY_SYNC),
+        ("OpcodeADMIN_INFO", OP_ADMIN_INFO),
+        ("OpcodeADMIN_CLUSTER", OP_ADMIN_CLUSTER),
+        ("OpcodeADMIN_RING", OP_ADMIN_RING),
+        ("OpcodeADMIN_COMPACT", OP_ADMIN_COMPACT),
+        ("OpcodeADMIN_CONFIG_RELOAD", OP_ADMIN_CONFIG_RELOAD),
+        ("OpcodeADMIN_SHUTDOWN", OP_ADMIN_SHUTDOWN),
     ]
     statuses = [
         ("StatusOK", STATUS_OK), ("StatusNotFound", STATUS_NOT_FOUND),

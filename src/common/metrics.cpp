@@ -7,7 +7,7 @@
 namespace cinder {
 namespace {
 
-constexpr std::array<const char*, 10> K_OPCODE_NAMES = {"get",
+constexpr std::array<const char*, 16> K_OPCODE_NAMES = {"get",
     "set",
     "del",
     "ping",
@@ -16,7 +16,13 @@ constexpr std::array<const char*, 10> K_OPCODE_NAMES = {"get",
     "hint",
     "get_versioned",
     "anti_entropy_digest",
-    "anti_entropy_sync"};
+    "anti_entropy_sync",
+    "admin_info",
+    "admin_cluster",
+    "admin_ring",
+    "admin_compact",
+    "admin_config_reload",
+    "admin_shutdown"};
 
 constexpr std::array<const char*, 4> K_LATENCY_QUANTILE_LABELS = {"0.5", "0.95", "0.99", "0.999"};
 
@@ -78,6 +84,19 @@ MetricsCollector::formatPrometheus() const -> std::string {
 
     appendCounter(
         os, "operations_total", opcode_.anti_entropy_sync.load(), "opcode", "anti_entropy_sync");
+
+    appendCounter(os, "operations_total", opcode_.admin_info.load(), "opcode", "admin_info");
+    appendCounter(os, "operations_total", opcode_.admin_cluster.load(), "opcode", "admin_cluster");
+    appendCounter(os, "operations_total", opcode_.admin_ring.load(), "opcode", "admin_ring");
+    appendCounter(os, "operations_total", opcode_.admin_compact.load(), "opcode", "admin_compact");
+    appendCounter(os,
+        "operations_total",
+        opcode_.admin_config_reload.load(),
+        "opcode",
+        "admin_config_reload");
+
+    appendCounter(
+        os, "operations_total", opcode_.admin_shutdown.load(), "opcode", "admin_shutdown");
 
     // Per-opcode latency summaries (p50/p95/p99/p999 + sum + count).
     for (size_t i = 0; i < opcode_.latency.size(); ++i) {
