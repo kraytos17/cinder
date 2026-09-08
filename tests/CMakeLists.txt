@@ -49,6 +49,11 @@ target_compile_definitions(cinder_integration_tests PRIVATE
     CMAKE_CURRENT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
     CMAKE_CURRENT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
 )
+
+if(CINDER_ENABLE_GRPC)
+    target_sources(cinder_integration_tests PRIVATE integration/grpc_test.cpp)
+    target_link_libraries(cinder_integration_tests PRIVATE cinder_proto grpc++)
+endif()
 gtest_discover_tests(cinder_integration_tests
     PROPERTIES LABELS "integration"
     RUN_SERIAL TRUE

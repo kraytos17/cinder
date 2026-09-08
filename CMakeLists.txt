@@ -41,6 +41,7 @@ option(CINDER_USE_SPLIT_DWARF       "Use -gsplit-dwarf for faster linking"    ON
 option(CINDER_KEEP_FRAME_POINTER    "Keep frame pointer (-fno-omit-frame-pointer) for perf/profiling" OFF)
 option(CINDER_TEST_BUILD_DEPS       "Auto-build test dependencies (Ninja)"   ON)
 option(CINDER_USE_MIMALLOC          "Override global allocator with mimalloc" ON)
+option(CINDER_ENABLE_GRPC          "Build with gRPC gateway for multi-language clients" OFF)
 option(CINDER_PREFER_SYSTEM_DEPS    "Try find_package() before FetchContent for each dep" ON)
 
 # ---------------------------------------------------------------------------
@@ -349,17 +350,6 @@ if(TARGET yaml-cpp)
     target_compile_options(yaml-cpp PRIVATE -w)
 endif()
 
-# mimalloc — global allocator override. Disabled automatically under any
-# sanitizer build: ASan/TSan/MSan each install their own allocation hooks,
-# and layering mimalloc's override underneath produces false positives /
-# crashes rather than useful signal. Sanitizer builds use the sanitizer's
-# own allocator instead, same mutual-exclusion spirit as the ASan/TSan/MSan
-# checks above.
-#
-# No FIND_PACKAGE_ARGS here on purpose: we need the exact v3.5.0 build with
-# MI_OVERRIDE/MI_BUILD_STATIC set our way, not whatever a system package
-# happens to ship — a mismatched system mimalloc build would silently defeat
-# the point of this dep.
 if(CINDER_USE_MIMALLOC AND (CINDER_ENABLE_ASAN OR CINDER_ENABLE_TSAN OR CINDER_ENABLE_MSAN))
     message(STATUS "Cinder: mimalloc disabled — sanitizer build takes precedence")
     set(CINDER_USE_MIMALLOC OFF)
@@ -380,7 +370,7 @@ if(CINDER_USE_MIMALLOC)
     set(MI_BUILD_SHARED OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_OBJECT OFF CACHE BOOL "" FORCE)
     set(MI_BUILD_STATIC ON  CACHE BOOL "" FORCE)
-    set(MI_OVERRIDE     ON  CACHE BOOL "" FORCE)   # provides malloc/free overrides
+    set(MI_OVERRIDE     ON  CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(mimalloc)
     message(STATUS "Cinder: mimalloc enabled (static override)")
 endif()
@@ -431,6 +421,90 @@ if(CINDER_BUILD_BENCHMARKS)
     # for no reason.
     set(BENCHMARK_DOWNLOAD_DEPENDENCIES OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(benchmark)
+endif()
+
+# ---------------------------------------------------------------------------
+# gRPC gateway (opt-in via CINDER_ENABLE_GRPC)
+# ---------------------------------------------------------------------------
+if(CINDER_ENABLE_GRPC)
+    # gRPC v1.83.1 build options — disable everything we don't need.
+    set(gRPC_BUILD_TESTS          OFF CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_CODEGEN        ON  CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_GRPC_CPP_PLUGIN ON CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_CPP_PLUGIN     OFF CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_CSHARP_EXT     OFF CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_NODE_EXT       OFF CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_PYTHON_EXT     OFF CACHE BOOL "" FORCE)
+    set(gRPC_BUILD_RUBY_EXT       OFF CACHE BOOL "" FORCE)
+    set(gRPC_INSTALL              OFF CACHE BOOL "" FORCE)
+    set(protobuf_BUILD_TESTS      OFF CACHE BOOL "" FORCE)
+    set(protobuf_INSTALL           OFF CACHE BOOL "" FORCE)
+    set(absl_BUILD_TESTING        OFF CACHE BOOL "" FORCE)
+    set(absl_PROPAGATE_CXX_STD    ON  CACHE BOOL "" FORCE)
+    set(RE2_BUILD_TESTING         OFF CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        grpc
+        GIT_REPOSITORY https://github.com/grpc/grpc.git
+        GIT_TAG        v1.83.1
+        GIT_SHALLOW    TRUE
+        BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/grpc-build
+        SYSTEM
+    )
+    # Suppress compiler warnings from gRPC internal source code (deprecated
+    # c-ares APIs, missing-return in debug-only switch arms, attribute warnings
+    # on unions, etc.). These are gRPC bugs, not ours.
+    set(_cinder_save_cxx_flags "${CMAKE_CXX_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
+    FetchContent_MakeAvailable(grpc)
+    set(CMAKE_CXX_FLAGS "${_cinder_save_cxx_flags}")
+
+    # Compile proto/cinder/v1/cache.proto
+    set(_proto_src_dir ${CMAKE_CURRENT_SOURCE_DIR}/cinder/v1)
+    set(_proto_out_dir ${CMAKE_CURRENT_BINARY_DIR}/generated)
+    file(MAKE_DIRECTORY ${_proto_out_dir})
+
+    set(_proto_file ${_proto_src_dir}/cache.proto)
+    add_custom_command(
+        OUTPUT
+            ${_proto_out_dir}/cache.pb.cc
+            ${_proto_out_dir}/cache.pb.h
+            ${_proto_out_dir}/cache.grpc.pb.cc
+            ${_proto_out_dir}/cache.grpc.pb.h
+        COMMAND $<TARGET_FILE:protoc>
+            --cpp_out=${_proto_out_dir}
+            --grpc_out=${_proto_out_dir}
+            --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+            -I ${_proto_src_dir}
+            ${_proto_file}
+        DEPENDS ${_proto_file} protoc grpc_cpp_plugin
+        COMMENT "Generating protobuf + gRPC code from cache.proto"
+        VERBATIM
+    )
+
+    add_library(cinder_proto OBJECT
+        ${_proto_out_dir}/cache.pb.cc
+        ${_proto_out_dir}/cache.grpc.pb.cc
+    )
+    target_include_directories(cinder_proto PUBLIC ${_proto_out_dir})
+    target_link_libraries(cinder_proto PUBLIC
+        protobuf::libprotobuf
+        grpc++
+        grpc
+    )
+    target_compile_options(cinder_proto PRIVATE -w)
+
+    # cinder_grpc: gateway library (links cinder_core + proto + grpc++)
+    add_library(cinder_grpc OBJECT
+        src/net/grpc_gateway.cpp
+        src/net/cache_service_impl.cpp
+    )
+    target_include_directories(cinder_grpc PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${_proto_out_dir}
+    )
+    target_link_libraries(cinder_grpc PUBLIC cinder_core cinder_proto)
+    target_compile_options(cinder_grpc PRIVATE -w)
 endif()
 
 if(CINDER_ENABLE_CLANG_TIDY)

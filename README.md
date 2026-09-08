@@ -5,7 +5,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 ## Features
 
 - **Eviction store** with LRU and LFU policies, backed by a policy-templated CRTP base (`EvictionStoreBase`) that eliminates duplication across eviction strategies; a 256-slot `TtlWheel` with a min-heap for long TTLs (>256 ticks) reaps expiries without repeated wheel reinsertion
-- **Binary wire protocol** (v3) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 8 opcodes, max 64 MiB messages
+- **Binary wire protocol** (v3) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 16 opcodes (1–16), max 64 MiB messages
 - **Async TCP server** using Asio, per-connection strand serialization, 1 MiB read buffers, write-queue backpressure (max 64 queued writes **and** 4 MiB in-flight bytes, with the connection closed on overflow), a 30s idle timeout that reaps silent connections, and a hard 10k concurrent-connection cap
 - **Observability** — Prometheus `/metrics` endpoint (counters, gauges, per-opcode request-latency summaries `cinder_request_latency_seconds` with p50/p95/p99/p999) and a `/config` endpoint exposing the live running configuration as JSON
 - **Consistent hash ring** — xxHash3 virtual nodes (150/physical node), immutable-snapshot atomic swap via `std::atomic<shared_ptr>`, lock-free reads with binary search; cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
@@ -25,7 +25,10 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`); **live hot-reload** — the running node watches the config file and applies changed log level, gossip/suspect intervals, and store capacity without a restart
 - **Persistence** — append-only WAL + periodic snapshot; WAL entries carry per-entry XXH3-64 checksums (8-byte `WAL0` header + format version); atomic snapshot via write-to-temp + rename; crash recovery replays WAL from last snapshot; backward-compatible with older headerless WAL files
 - **Error provenance** — `Error::wrap()` chains error origins across call layers with `std::source_location`; full Rule of Five (deep copy of `cause_` chain, move, assignment)
-- **Fuzz harnesses** — 4 libFuzzer targets (protocol decode, gossip parse, store put, snapshot read) with 58+ seed corpus files and a protocol dictionary
+- **Admin CLI** (`cinder-admin`) — operational tooling: `info`, `cluster`, `ring`, `compact`, `config-reload`, `shutdown`; connects via the same binary protocol with TLS support
+- **gRPC gateway** — compile-time opt-in (`CINDER_ENABLE_GRPC`) protobuf gateway for multi-language clients; translates gRPC RPCs (Get/Set/Delete/Ping/MultiGet/MultiSet/Info/ClusterInfo/RingInfo) into internal cache operations on a separate port
+- **Periodic anti-entropy** — background repair between replica partners using range-hash bucketing (xxHash3 fingerprints exchange divergent buckets, then full entry sync via LWW); configurable interval and bucket count
+- **Fuzz harnesses** — 7 libFuzzer targets (protocol decode, gossip parse, store put, snapshot, WAL, anti-entropy, HTTP parse) with 90+ seed corpus files and a protocol dictionary
 - **TLS encryption** — compile-time opt-in (`CINDER_ENABLE_TLS`) with TLS 1.2; self-signed certs for testing, CA verification for production
 
 ## Build
@@ -51,6 +54,7 @@ cmake --preset fast && cmake --build --preset fast
 |---|---|---|---|
 | `debug` | GCC | Debug, per-file | Editor indexing + incremental dev |
 | `debug-tls` | GCC | Debug + **TLS** | TLS development and testing |
+| `debug-grpc` | GCC | Debug + **gRPC gateway** | gRPC gateway development |
 | `fast` | GCC | Debug, **unity** | One-time full builds |
 | `release` | GCC | Release + LTO | Production |
 | `release-clang` | Clang | Release + LTO | Production (Clang) |
@@ -133,6 +137,13 @@ tls:
   key_file: /etc/cinder/key.pem
   ca_file: /etc/cinder/ca.pem
 
+anti_entropy:
+  interval_ms: 30000
+  buckets: 256
+
+grpc:
+  port: 0
+
 logging:
   level: info
 ```
@@ -171,6 +182,27 @@ build/debug-tls/bin/cinder-cli --port 7000 --tls \
 - Server with `--tls` rejects plaintext connections.
 - Client/server both support `--tls`, `--tls-cert`, `--tls-key`, `--tls-ca`.
 - Non-TLS code paths are unaffected — `ConnectionPool` and `TcpTransport` gracefully fall back to plain TCP when `ssl_ctx` is null.
+
+### gRPC gateway (optional)
+
+```bash
+# Build with gRPC gateway support
+cmake --preset debug-grpc && cmake --build --preset debug-grpc
+
+# Start with gRPC gateway enabled
+build/debug-grpc/bin/cinderd --port 7000 --grpc-port 50051
+
+# Use the gRPC client
+grpcurl -plaintext localhost:50051 cinder.v1.CinderCacheService/Ping
+grpcurl -plaintext -d '{"key":"foo","value":"bar"}' localhost:50051 cinder.v1.CinderCacheService/Set
+grpcurl -plaintext -d '{"key":"foo"}' localhost:50051 cinder.v1.CinderCacheService/Get
+```
+
+- Compile-time opt-in via `CINDER_ENABLE_GRPC` (the `debug-grpc` preset enables it).
+- Runs on a separate port with gRPC's own thread pool; shares the same `CacheStore`, `ConsistentHashRing`, `ReplicationManager`, and `MembershipTable` as the TCP server.
+- Supports 10 RPCs: `Get`, `Set`, `Delete`, `GetVersioned`, `Ping`, `MultiGet`, `MultiSet`, `Info`, `ClusterInfo`, `RingInfo`.
+- Internal opcodes (Gossip, Replicate, Hint, AntiEntropy) are never exposed to external clients.
+- Proto definition at `cinder/v1/cache.proto`; generate with `just proto-generate`.
 
 ### Replication
 
@@ -271,27 +303,33 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 | `--tls-cert` | `""` | Path to TLS certificate chain (PEM) |
 | `--tls-key` | `""` | Path to TLS private key (PEM) |
 | `--tls-ca` | `""` | Path to CA certificate for peer verification (PEM) |
+| `--anti-entropy-interval` | `30000` | Anti-entropy repair interval in ms (`0` = disabled) |
+| `--anti-entropy-buckets` | `256` | Anti-entropy hash bucket count |
+| `--grpc-port` | `0` | gRPC gateway port (`0` = disabled, requires `CINDER_ENABLE_GRPC` build) |
 
 ## Tests
 
 ```
- 224 unit tests (20 suites):    Result, LruStore, LfuStore, LfuConcurrent,
-                                TtlWheel, Protocol, ConsistentHashRing,
-                                CacheClient routing + redirects,
+ 260 unit tests (32 suites):    LruStore, LfuStore, TtlWheel, ConsistentHashRing,
+                                Protocol, Result, CacheClient routing + redirects,
+                                RetryBackoff, JitterBackoff, Retryable, RetryableBatch,
                                 VersionedStore (LRU/LFU), parsePeer,
-                                Membership, Config, Persistence, TcpServer,
-                                RpcTimeout, Gossip, ErrorProvenance, Metrics
-                                (incl. latency histogram), HttpParser
+                                Membership, Config, Persistence, TcpServer strand stress,
+                                RpcTimeout, PoolRpcTimeout, AntiEntropy digest/encode/sync/
+                                partner/handler/exchange/runround, Gossip, ErrorProvenance,
+                                LfuConcurrent, Metrics (incl. latency histogram), HttpParser
   35 sim tests (5 suites):      replication (async/quorum/hinted-handoff/read-repair),
                                 read repair, gossip partition (suspect/dead/incarnation/
                                 degraded/graceful-leave, late-joiner), rebalancing (keys
                                 migrate on join, quarantine, replicas spread to all new
                                 owners, concurrent rapid join/leave)
-  19 integration tests (7 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
+  24 integration tests (8 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
                                 LargeValue, replica failover (fanout, failover read,
                                 quorum, hinted handoff, 3-node fanout, TTL-over-wire),
                                 rebalance on join, rebalance RF=2, read repair, multi-get,
-                                TLS (SetGetOverTls, PingOverTls, PlaintextRejected)
+                                TLS (SetGetOverTls, PingOverTls, PlaintextRejected),
+                                admin (InfoReturnsJson, ClusterReturnsNodeList,
+                                RingReturnsJson, CompactReturnsOk, ConfigReloadReturnsOk)
    5 CLI tests:                 Ping, SetGet, GetNotFound, ConnectRefused, Del
 ```
 
@@ -315,9 +353,9 @@ Seven libFuzzer harnesses with ASan + UBSan:
 
 | Target | Entry point | What it fuzzes |
 |---|---|---|
-| `protocol_decode_fuzz` | `net::decode()` / `decodeResponse()` | Malformed wire frames, truncated payloads, integer overflow in `expires_at` |
+| `protocol_decode_fuzz` | `net::decode()` / `decodeResponse()` | Malformed wire frames, truncated payloads, integer overflow in `expires_at`; protocol dictionary with opcodes 1–16 |
 | `gossip_parse_fuzz` | `gossip::parseEntry()` + `handleMessage()` (full `decodeView` path) | Gossip text format edge cases, semicolon-delimited multi-entry parsing |
-| `store_put_fuzz` | `LruStore` / `LfuStore` — put, get, remove, putVersioned, evictExpired | Arbitrary key/value lengths, versioned writes, capacity edge cases |
+| `store_put_fuzz` | `LruStore` / `LfuStore` — put, get, remove, putVersioned, evictExpired, plus op-dispatch (Set/Get/Del/Ping) | Arbitrary key/value lengths, versioned writes, capacity edge cases |
 | `snapshot_fuzz` | `SnapshotReader::readAll()` | Crafted snapshot files, oversized `entry_count`, truncated data |
 | `wal_fuzz` | `WalReader::next()` + `PersistenceManager::recover()` | WAL checksummed/legacy formats, truncated entries, replay through persistence |
 | `anti_entropy_fuzz` | `decodeDigest()`, `decodeBucketIds()`, `applyEntries()`, `onSyncRequest()`, `onDigestRequest()` | Anti-entropy binary blobs, malformed digests, truncated entry streams |
@@ -335,7 +373,7 @@ so partition behavior is reproducible without real sockets.
 ```
 cinder/
 ├── CMakeLists.txt               # Build system (dual-compiler, clang-tidy hooks)
-├── CMakePresets.json            # 15 presets (GCC/Clang, sanitizers, CI, TLS, fuzz)
+├── CMakePresets.json            # 20 presets (GCC/Clang, sanitizers, CI, TLS, fuzz, gRPC)
 ├── Justfile                     # Build/run/test/bench/format/fuzz/clean (just command runner)
 ├── cinderd.yaml                 # Example YAML configuration
 ├── suppressions/                # Sanitizer suppressions
@@ -371,7 +409,9 @@ cinder/
 │   │   ├── protocol.hpp         # Wire protocol v3 (encode/decode, consteval frame size)
 │   │   ├── tcp_server.hpp       # TcpServer (strand, acceptor, TLS opt-in)
 │   │   ├── tcp_connection.hpp   # TcpConnection (strand, 1MB read buffer, write queue)
-│   │   └── tcp_transport.hpp    # TcpTransport (per-node coroutines, RPC deadline, flat_map)
+│   │   ├── tcp_transport.hpp    # TcpTransport (per-node coroutines, RPC deadline, flat_map)
+│   │   ├── http_parser.hpp      # HTTP parser for Prometheus /metrics endpoint
+│   │   └── grpc_gateway.hpp     # gRPC gateway (opt-in, protobuf → internal cache ops)
 │   ├── client/
 │   │   ├── cache_client.hpp     # CacheClient (ring routing, redirect retry, multiGet)
 │   │   └── connection_pool.hpp  # ConnectionPool (coroutine send, batch pipeline, TLS)
@@ -379,7 +419,8 @@ cinder/
 │   │   ├── cache_node_server.hpp # CacheNodeServer (assembles store + ring + repl + gossip)
 │   │   ├── shard_manager.hpp    # ShardManager (two-phase rebalance, quarantine-aware)
 │   │   ├── replication_manager.hpp # ReplicationManager (async/quorum writes, read repair)
-│   │   └── hint_queue.hpp       # HintQueue (bounded FIFO, 1024 capacity, 30s TTL)
+│   │   ├── hint_queue.hpp       # HintQueue (bounded FIFO, 1024 capacity, 30s TTL)
+│   │   └── anti_entropy.hpp     # AntiEntropyManager (range-hash bucketing, LWW sync)
 │   └── cluster/
 │       ├── clock.hpp            # Clock/RealClock, steady↔system conversions
 │       ├── membership.hpp       # MembershipTable (flat_map, incarnation guard, onChange)
@@ -389,10 +430,14 @@ cinder/
 ├── src/                         # Implementations
 ├── tools/
 │   ├── cinderd_main.cpp         # Server entry point (CLI11, YAML config, TLS setup)
-│   └── cinder_cli.cpp           # CLI client (get/set/del/ping, TLS support)
+│   ├── cinder_cli.cpp           # CLI client (get/set/del/ping, TLS support)
+│   └── cinder_admin.cpp         # Admin CLI (info/cluster/ring/compact/config-reload/shutdown)
+├── cinder/
+│   └── v1/
+│       └── cache.proto          # gRPC service definition
 ├── tests/
 │   ├── unit/                    # 224 unit tests (GoogleTest)
-│   ├── integration/             # 19 integration + 5 CLI tests (fork real cinderd)
+│   ├── integration/             # 24 integration + 5 CLI tests (fork real cinderd)
 │   ├── sim/                     # 35 simulation tests (SimClock/SimBus)
 │   ├── fuzz/                    # 7 libFuzzer harnesses + corpus + generate_corpus.py
 │   │   ├── protocol_decode_fuzz.cpp
@@ -417,6 +462,9 @@ cinder/
 just format            # clang-format all sources
 just check-format      # verify formatting (CI)
 just build PRESET=ci   # Clang + clang-tidy inline — catches lint at build time
+just proto-lint        # lint protobuf definitions
+just proto-generate    # generate C++ from cache.proto
+just proto-breaking    # check for breaking proto changes
 just info              # show resolved PRESET/build paths
 just kill-stale        # kill leftover cinderd daemons holding test ports
 just --list            # all targets
@@ -438,3 +486,4 @@ just --list            # all targets
 - [mimalloc](https://github.com/microsoft/mimalloc) — allocator baseline
 - [GoogleTest](https://github.com/google/googletest) — unit/integration/CLI tests
 - [GoogleBenchmark](https://github.com/google/benchmark) — microbenchmarks
+- [gRPC](https://github.com/grpc/grpc) — optional, for multi-language gRPC gateway (`CINDER_ENABLE_GRPC`)

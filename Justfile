@@ -1,4 +1,3 @@
-# ── Settings ────────────────────────────────────────────────────────────────
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
@@ -8,18 +7,18 @@ jobs := `nproc`
 args := ""
 
 fuzz_targets := "protocol_decode gossip_parse store_put snapshot wal anti_entropy http_parse"
-fuzz_opts_protocol_decode := "-dict=tests/fuzz/corpus/protocol_decode/protocol.dict"
+fuzz_opts_protocol_decode := "-max_len=8192 -dict=tests/fuzz/corpus/protocol_decode/protocol.dict"
+fuzz_opts_gossip_parse := "-max_len=1024 -dict=tests/fuzz/corpus/gossip_parse/gossip.dict"
 fuzz_opts_wal := "-max_len=4096 -rss_limit_mb=512"
 fuzz_opts_snapshot := "-max_len=4096"
 fuzz_opts_anti_entropy := "-max_len=8192"
 fuzz_opts_store_put := "-max_len=1024"
+fuzz_opts_http_parse := "-max_len=2048"
 fuzz_opts_default := "-timeout=5"
 
 # Show all available recipes
 default:
     @just --list
-
-# ── Build ───────────────────────────────────────────────────────────────────
 
 [group('build')]
 configure:
@@ -28,8 +27,6 @@ configure:
 [group('build')]
 build:
     cmake --build --preset {{ preset }} -j{{ jobs }}
-
-# ── Test ────────────────────────────────────────────────────────────────────
 
 [group('test')]
 test: build
@@ -68,7 +65,21 @@ test-all: build kill-stale
     echo "════════════════════════════════════════"
     echo "All test suites passed ({{ preset }})."
 
-# ── Sanitizer tests ─────────────────────────────────────────────────────────
+[group('test')]
+grpc-test: build kill-stale
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for bin in cinder_unit_tests cinder_integration_tests; do
+        echo ""
+        echo "==> $bin (debug-grpc)..."
+        echo "────────────────────────────────────────"
+        build/debug-grpc/tests/"$bin" --gtest_also_run_disabled_tests {{ args }} \
+            || { echo ""; echo "FAILED: $bin (debug-grpc)"; exit 1; }
+        echo "PASSED: $bin"
+    done
+    echo ""
+    echo "════════════════════════════════════════"
+    echo "gRPC test suites passed."
 
 [group('sanitizers')]
 asan-test:
@@ -86,8 +97,6 @@ ubsan-test:
 asan-clang-test:
     @just preset=asan-clang test
 
-# ── Run ─────────────────────────────────────────────────────────────────────
-
 [group('run')]
 run: build
     ./build/{{ preset }}/bin/cinderd {{ args }}
@@ -104,8 +113,6 @@ run-admin: build
 kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
 
-# ── Preset shortcuts ─────────────────────────────────────────────────────────
-
 [group('presets')]
 debug-tls: (build)
 
@@ -115,8 +122,6 @@ fast: (build)
 [group('presets')]
 ci:
     cmake --workflow --preset ci
-
-# ── Fuzzing ─────────────────────────────────────────────────────────────────
 
 [private]
 fuzz-build:
@@ -132,10 +137,12 @@ _fuzz-run duration label: fuzz-build
         echo "────────────────────────────────────────"
         case "$t" in
             protocol_decode)  opts="{{ fuzz_opts_protocol_decode }}" ;;
+            gossip_parse)     opts="{{ fuzz_opts_gossip_parse }}" ;;
             wal)              opts="{{ fuzz_opts_wal }}" ;;
             snapshot)         opts="{{ fuzz_opts_snapshot }}" ;;
             anti_entropy)     opts="{{ fuzz_opts_anti_entropy }}" ;;
             store_put)        opts="{{ fuzz_opts_store_put }}" ;;
+            http_parse)       opts="{{ fuzz_opts_http_parse }}" ;;
             *)                opts="" ;;
         esac
         build/fuzz/tests/"${t}"_fuzz \
@@ -153,8 +160,6 @@ fuzz-test: (_fuzz-run "10" "10s")
 
 [group('fuzz')]
 fuzz-long: (_fuzz-run "300" "5min")
-
-# ── Coverage-guided minimization ────────────────────────────────────────────
 
 [private]
 fuzz-coverage-build:
@@ -208,8 +213,6 @@ fuzz-coverage-all: fuzz-coverage-build
     echo "════════════════════════════════════════"
     echo "Coverage minimization complete."
 
-# ── Lint ──────────────────────────────────────────────────────────────────
-
 [group('lint')]
 format:
     cmake --build build/{{ preset }} --target format -j{{ jobs }}
@@ -226,7 +229,17 @@ cppcheck: build
 lint: build
     cmake --build build/{{ preset }} --target lint -j{{ jobs }}
 
-# ── Other ───────────────────────────────────────────────────────────────────
+[group('proto')]
+proto-lint:
+    buf lint
+
+[group('proto')]
+proto-generate:
+    buf generate
+
+[group('proto')]
+proto-breaking:
+    buf breaking --against '.git#branch=main'
 
 [group('misc')]
 bench: build

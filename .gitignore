@@ -51,6 +51,9 @@ cmake_install.cmake
 install_manifest.txt
 compile_commands.json
 
+# buf generated protobuf/gRPC code
+generated/
+
 # Temporary files
 *.tmp
 *.log

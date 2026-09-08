@@ -57,6 +57,8 @@ struct Config {
     std::string config_path;
     // Metrics HTTP port (0 = disabled)
     uint16_t metrics_port = 0;
+    // gRPC gateway port (0 = disabled)
+    uint16_t grpc_port = 0;
 };
 
 // Load configuration from a YAML file. Missing fields use defaults.

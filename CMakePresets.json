@@ -231,6 +231,17 @@
             "CINDER_ENABLE_COVERAGE":"ON",
             "CINDER_ENABLE_ASAN":"ON"
          }
+      },
+      {
+         "name":"debug-grpc",
+         "displayName":"Debug + gRPC",
+         "description":"Debug build with gRPC gateway enabled (fetches gRPC + protobuf + abseil)",
+         "generator":"Ninja",
+         "binaryDir":"${sourceDir}/build/debug-grpc",
+         "cacheVariables":{
+            "CMAKE_BUILD_TYPE":"Debug",
+            "CINDER_ENABLE_GRPC":"ON"
+         }
       }
    ],
    "buildPresets":[
@@ -252,7 +263,8 @@
       { "name":"analyze", "configurePreset":"analyze" },
       { "name":"iwyu", "configurePreset":"iwyu" },
       { "name":"fuzz", "configurePreset":"fuzz" },
-      { "name":"fuzz-coverage", "configurePreset":"fuzz-coverage" }
+      { "name":"fuzz-coverage", "configurePreset":"fuzz-coverage" },
+      { "name":"debug-grpc", "configurePreset":"debug-grpc" }
    ],
    "testPresets":[
       {
@@ -305,7 +317,8 @@
       { "name":"profile", "configurePreset":"profile", "inherits":"test-common" },
       { "name":"ci", "configurePreset":"ci", "inherits":"test-common" },
       { "name":"ci-gcc", "configurePreset":"ci-gcc", "inherits":"test-common" },
-      { "name":"fuzz", "configurePreset":"fuzz", "inherits":"test-common" }
+      { "name":"fuzz", "configurePreset":"fuzz", "inherits":"test-common" },
+      { "name":"debug-grpc", "configurePreset":"debug-grpc", "inherits":"test-common" }
    ],
    "workflowPresets":[
       {
@@ -322,6 +335,14 @@
             { "type":"configure", "name":"ci-gcc" },
             { "type":"build",     "name":"ci-gcc" },
             { "type":"test",      "name":"ci-gcc" }
+         ]
+      },
+      {
+         "name":"debug-grpc",
+         "steps":[
+            { "type":"configure", "name":"debug-grpc" },
+            { "type":"build",     "name":"debug-grpc" },
+            { "type":"test",      "name":"debug-grpc" }
          ]
       }
    ]

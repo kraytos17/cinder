@@ -7,6 +7,12 @@
 #include "cinder/common/logger.hpp"
 #include "cinder/node/cache_node_server.hpp"
 
+#ifdef CINDER_ENABLE_GRPC
+#include <memory>
+
+#include "cinder/net/grpc_gateway.hpp"
+#endif
+
 using std::chrono::milliseconds;
 
 auto
@@ -40,6 +46,11 @@ main(int argc, char* argv[]) -> int {
     int rpc_timeout_ms = 5'000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
+
+#ifdef CINDER_ENABLE_GRPC
+    uint16_t grpc_port = 0;
+    app.add_option("--grpc-port", grpc_port, "gRPC gateway port (0 = disabled)");
+#endif
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -89,14 +100,6 @@ main(int argc, char* argv[]) -> int {
         cfg = std::move(result.value());
     }
 
-    // Only override if the CLI flag was explicitly set by the user.
-    // Since CLI11 always writes to the variable, we detect "was it set"
-    // by checking if the config file already populated it. For simplicity,
-    // CLI flags always win when provided on the command line.
-    if (!config_path.empty()) {
-        // Config file loaded — CLI flags override via fallthrough below.
-    }
-
     cinder::Logger::init("cinderd", cinder::logLevelFromString(log_level));
     cinder::Logger::info("starting cinderd on port {}", port);
 
@@ -125,7 +128,6 @@ main(int argc, char* argv[]) -> int {
     options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
     options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
     if (!config_path.empty()) {
-        // Config-file values are the base; explicit CLI flags override them.
         if (app.count("--anti-entropy-interval") == 0) {
             options.anti_entropy_interval = milliseconds(cfg.anti_entropy_interval_ms);
         }
@@ -152,9 +154,27 @@ main(int argc, char* argv[]) -> int {
         return 1;
     }
 
+#ifdef CINDER_ENABLE_GRPC
+    std::unique_ptr<cinder::grpc::GrpcGateway> grpc_gateway;
+    auto actual_grpc_port = grpc_port > 0 ? grpc_port : cfg.grpc_port;
+    if (actual_grpc_port > 0) {
+        auto handle = server.gatewayHandle();
+        grpc_gateway =
+            std::make_unique<cinder::grpc::GrpcGateway>(std::move(handle), actual_grpc_port);
+        grpc_gateway->start();
+    }
+#endif
+
     cinder::Logger::info(
         "listening on port {} (replication factor {}, {})", port, replica_factor, consistency);
     server.run();
+
+#ifdef CINDER_ENABLE_GRPC
+    if (grpc_gateway) {
+        grpc_gateway->shutdown();
+    }
+#endif
+
     cinder::Logger::info("stopped");
     return 0;
 }

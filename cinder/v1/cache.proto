@@ -1,0 +1,112 @@
+syntax = "proto3";
+package cinder.v1;
+
+option cc_enable_arenas = true;
+
+// Status codes mirroring cinder::Errc.
+enum StatusCode {
+    STATUS_CODE_UNSPECIFIED = 0;
+    STATUS_CODE_NOT_FOUND = 1;
+    STATUS_CODE_CAPACITY_EXCEEDED = 2;
+    STATUS_CODE_INVALID_ARGUMENT = 3;
+    STATUS_CODE_TTL_EXPIRED = 4;
+    STATUS_CODE_NOT_SUPPORTED = 5;
+    STATUS_CODE_INTERNAL_ERROR = 6;
+    STATUS_CODE_TIMEOUT = 7;
+    STATUS_CODE_NOT_READY = 8;
+}
+
+message GetRequest {
+    string key = 1;
+}
+
+message GetResponse {
+    StatusCode status = 1;
+    optional string value = 2;
+}
+
+message SetRequest {
+    string key = 1;
+    string value = 2;
+    // TTL in milliseconds; 0 = no expiry.
+    uint64 ttl_ms = 3;
+}
+
+message SetResponse {
+    StatusCode status = 1;
+}
+
+message DeleteRequest {
+    string key = 1;
+}
+
+message DeleteResponse {
+    StatusCode status = 1;
+}
+
+message GetVersionedRequest {
+    string key = 1;
+}
+
+message GetVersionedResponse {
+    StatusCode status = 1;
+    optional string value = 2;
+    uint64 version = 3;
+    uint64 writer_node_hash = 4;
+    // Wall-clock expiry as unix-millis (0 = no expiry).
+    uint64 expires_at_ms = 5;
+}
+
+message PingRequest {}
+message PingResponse {
+    StatusCode status = 1;
+}
+
+message InfoRequest {}
+message InfoResponse {
+    string json = 1;
+}
+
+message ClusterInfoRequest {}
+message ClusterInfoResponse {
+    string json = 1;
+}
+
+message RingInfoRequest {}
+message RingInfoResponse {
+    string json = 1;
+}
+
+message MultiGetRequest {
+    repeated string keys = 1;
+}
+
+message MultiGetResponse {
+    repeated GetResponse responses = 1;
+}
+
+message MultiSetRequest {
+    repeated SetRequest requests = 1;
+}
+
+message MultiSetResponse {
+    repeated SetResponse responses = 1;
+}
+
+service CinderCacheService {
+    // Single key operations
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Set(SetRequest) returns (SetResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+    rpc GetVersioned(GetVersionedRequest) returns (GetVersionedResponse);
+    rpc Ping(PingRequest) returns (PingResponse);
+
+    // Bulk operations
+    rpc MultiGet(MultiGetRequest) returns (MultiGetResponse);
+    rpc MultiSet(MultiSetRequest) returns (MultiSetResponse);
+
+    // Admin (JSON responses matching internal admin opcodes)
+    rpc Info(InfoRequest) returns (InfoResponse);
+    rpc ClusterInfo(ClusterInfoRequest) returns (ClusterInfoResponse);
+    rpc RingInfo(RingInfoRequest) returns (RingInfoResponse);
+}

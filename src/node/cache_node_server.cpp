@@ -71,6 +71,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
       replica_factor_(options.replica_factor),
+      mode_(options.mode),
       anti_entropy_interval_(options.anti_entropy_interval),
       anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
           options.anti_entropy_buckets, &metrics_),

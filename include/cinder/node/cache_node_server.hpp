@@ -127,6 +127,34 @@ class CacheNodeServer {
     void run();
     void shutdown();
 
+    // Handle for external subsystems that need direct
+    // access to the cache internals without going through the binary protocol.
+    struct GatewayHandle {
+        CacheStore& store;
+        ConsistentHashRing& ring;
+        ReplicationManager& repl;
+        MembershipTable& table;
+        const MetricsCollector& metrics;
+        const Config& config;
+        NodeId node_id;
+        int replica_factor;
+        ConsistencyMode mode;
+    };
+
+    auto gatewayHandle() -> GatewayHandle {
+        return {
+            .store = *store_,
+            .ring = ring_,
+            .repl = repl_,
+            .table = table_,
+            .metrics = metrics_,
+            .config = current_config_,
+            .node_id = node_id_,
+            .replica_factor = replica_factor_,
+            .mode = mode_,
+        };
+    }
+
   private:
 
     void scheduleReplay();
@@ -159,6 +187,7 @@ class CacheNodeServer {
     GossipManager gossip_;
     ShardManager shard_;
     int replica_factor_ = 1;
+    ConsistencyMode mode_ = ConsistencyMode::Async;
     milliseconds anti_entropy_interval_{30'000};
     AntiEntropyManager anti_entropy_;
     net::TcpServer server_;

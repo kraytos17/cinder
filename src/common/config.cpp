@@ -76,6 +76,7 @@ formatConfigJson(const Config& cfg) -> std::string {
     out += "\"max_wal_entries\":" + std::to_string(cfg.max_wal_entries) + ",";
     out += "\"tls_enabled\":" + std::string(cfg.tls.enabled ? "true" : "false") + ",";
     out += "\"metrics_port\":" + std::to_string(cfg.metrics_port) + ",";
+    out += "\"grpc_port\":" + std::to_string(cfg.grpc_port) + ",";
     out += R"("log_level":")" + escapeJsonString(cfg.log_level) + "\",";
     out += R"("config_path":")" + escapeJsonString(cfg.config_path) + "\"";
     out += "}";
@@ -167,6 +168,9 @@ diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::str
     if (old_cfg.metrics_port != new_cfg.metrics_port) {
         changed.emplace_back("metrics_port");
     }
+    if (old_cfg.grpc_port != new_cfg.grpc_port) {
+        changed.emplace_back("grpc_port");
+    }
     return changed;
 }
 
@@ -237,6 +241,10 @@ loadConfig(const std::string& path) -> Result<Config> {
     // Logging
     if (auto log = root["logging"]) {
         cfg.log_level = log["level"].as<std::string>(cfg.log_level);
+    }
+    // gRPC
+    if (auto grpc = root["grpc"]) {
+        cfg.grpc_port = grpc["port"].as<uint16_t>(cfg.grpc_port);
     }
     return cfg;
 }

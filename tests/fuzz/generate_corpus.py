@@ -256,6 +256,15 @@ def generate_store_corpus():
         "binary": bytes(range(256)),
         "all_zero": b"\x00" * 64,
         "all_ff": b"\xff" * 64,
+        # TTL-bearing seeds (op=0 LRU, payload = key + value + ttl_u32)
+        "ttl_zero": bytes([0x00]) + b"k" + b"v" + b"\x00\x00\x00\x00",
+        "ttl_1ms": bytes([0x00]) + b"k" + b"v" + b"\x00\x00\x00\x01",
+        "ttl_5000ms": bytes([0x00]) + b"k" + b"v" + b"\x00\x00\x13\x88",
+        "ttl_max_u32": bytes([0x00]) + b"k" + b"v" + b"\xff\xff\xff\xff",
+        # TTL-bearing seeds (op=0 LFU)
+        "ttl_lfu_5000ms": bytes([0x01]) + b"k" + b"v" + b"\x00\x00\x13\x88",
+        # putVersioned with TTL (op=1, entry needs 17+ bytes, ttl extracted from trailing bytes)
+        "versioned_with_ttl": bytes([0x02]) + b"k" + b"v" + b"\x00" * 9 + b"\x00\x00\x13\x88",
     }
 
     n = write_seeds(d, seeds)
