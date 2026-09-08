@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 using asio::async_connect;
 using asio::async_read;
@@ -102,6 +102,7 @@ ConnectionPool::getOrCreateConn(const NodeId& node_id) -> NodeConn& {
 auto
 ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     -> asio::awaitable<Result<net::Response>> {
+    Span span("pool.send");
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT
 
@@ -127,7 +128,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         });
     }
     if (!conn.connected) {
-        Logger::debug("cinder pool: reconnecting node={}", conn.addr.host);
+        Event::debug("reconnecting node", {{"node", conn.addr.host}});
         tcp::resolver resolver(ex);
         auto endpoints = co_await resolver.async_resolve(
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
@@ -166,7 +167,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
-        Logger::debug("cinder pool: connected to node={}", conn.addr.host);
+        Event::debug("connected to node", {{"node", conn.addr.host}});
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -180,7 +181,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         conn.connected = false;
-        Logger::warn("cinder pool: send failed node={} phase={}", conn.addr.host, "write");
+        Event::warn("send failed", {{"node", conn.addr.host}, {"phase", "write"}});
         co_return err<net::Response>(poolError(timed_out, "write", ec));
     }
 
@@ -241,6 +242,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 auto
 ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::byte>> all_data)
     -> asio::awaitable<Result<std::vector<net::Response>>> {
+    Span span("pool.send_batch");
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT
     bool timed_out = false;

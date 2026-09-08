@@ -9,8 +9,8 @@
 #endif
 
 #include "cinder/client/connection_pool.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
 using asio::io_context;
@@ -40,8 +40,7 @@ main(int argc, char* argv[]) -> int {
     app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
 
     CLI11_PARSE(app, argc, argv);
-
-    cinder::Logger::init("cinder-admin",
+    cinder::initLogger("cinder-admin",
         verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
         cinder::LogSink::Stderr);
 
@@ -81,7 +80,7 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "shutdown") {
         req.opcode = cinder::net::Opcode::AdminShutdown;
     } else {
-        cinder::Logger::error("unknown command: {}", cmd);
+        cinder::Event::error("unknown command", {{"cmd", cmd}});
         std::println(stderr, "unknown command: {}", cmd);
         std::println(
             stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown");
@@ -102,16 +101,18 @@ main(int argc, char* argv[]) -> int {
         io.run();
     });
 
-    cinder::Logger::debug("sending {} to {}:{}", cmd, host, port);
-    auto res = pool.send("server", req);
+    cinder::Event::debug("sending",
+        {cinder::Field{"cmd", cmd},
+            cinder::Field{"host", host},
+            cinder::Field{"port", std::to_string(port)}});
 
+    auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
-        cinder::Logger::error("request failed: {}", res.error().message());
+        cinder::Event::error("request failed", {{"reason", res.error().message()}});
         std::println(stderr, "error: {}", res.error().message());
         return 1;
     }
-
     if (res->value.has_value()) {
         std::println("{}", res->value.value());
     } else if (res->status == cinder::Errc::OK) {

@@ -13,10 +13,10 @@
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/persistence.hpp"
@@ -420,8 +420,9 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         Derived& self = d();
         auto entries_before = self.index_.size();
         while (current_bytes_ > capacity_bytes_ && !self.list_.empty()) {
-            Logger::trace(
-                "cinder store: evicting to fit bytes={}/{}", current_bytes_, capacity_bytes_);
+            Event::trace("evicting to fit",
+                {{"bytes", std::to_string(current_bytes_)},
+                    {"capacity", std::to_string(capacity_bytes_)}});
             self.evictOne();
         }
         if (metrics_) {

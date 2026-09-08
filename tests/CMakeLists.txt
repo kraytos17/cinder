@@ -15,6 +15,7 @@ cinder_add_test(cinder_unit_tests
     unit/ttl_wheel_test.cpp
     unit/consistent_hash_ring_test.cpp
     unit/protocol_framing_test.cpp
+    unit/tracing_test.cpp
     unit/status_test.cpp
     unit/client_routing_test.cpp
     unit/versioned_store_test.cpp

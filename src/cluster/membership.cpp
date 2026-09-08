@@ -2,7 +2,7 @@
 
 #include <utility>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -28,7 +28,7 @@ MembershipTable::setSelfAddress(const std::string& host, uint16_t port) {
 void
 MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
     std::scoped_lock lock(mutex_);
-    Logger::info("cinder membership: seeded {} peers", peers.size());
+    Event::info("membership seeded", {{"peers", std::to_string(peers.size())}});
     for (const auto& peer : peers) {
         if (peer.id == self_) {
             continue;
@@ -46,6 +46,7 @@ MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
 
 void
 MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
+    Span span("membership.apply_rumor");
     bool changed = false;
     {
         std::scoped_lock lock(mutex_);
@@ -63,11 +64,10 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
         } else {
             NodeInfo& local = it->second;
             if (rumor.incarnation < local.incarnation) {
-                Logger::trace(
-                    "cinder membership: stale rumor ignored id={} rumor_inc={} local_inc={}",
-                    rumor.id,
-                    rumor.incarnation,
-                    local.incarnation);
+                Event::trace("stale rumor ignored",
+                    {{"id", rumor.id},
+                        {"rumor_inc", std::to_string(rumor.incarnation)},
+                        {"local_inc", std::to_string(local.incarnation)}});
                 return; // stale rumor — ignore
             }
             if (rumor.incarnation == local.incarnation && rumor.state == local.state) {
@@ -97,6 +97,7 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
 
 void
 MembershipTable::markSuspect(const NodeId& id) {
+    Span span("membership.mark_suspect");
     bool changed = false;
     {
         std::scoped_lock lock(mutex_);
@@ -111,13 +112,14 @@ MembershipTable::markSuspect(const NodeId& id) {
         changed = true;
     }
     if (changed) {
-        Logger::info("cinder membership: node suspect id={}", id);
+        Event::info("node suspect", {{"id", id}});
         fireCallbacks();
     }
 }
 
 void
 MembershipTable::markDead(const NodeId& id) {
+    Span span("membership.mark_dead");
     bool changed = false;
     {
         std::scoped_lock lock(mutex_);
@@ -129,13 +131,14 @@ MembershipTable::markDead(const NodeId& id) {
         changed = true;
     }
     if (changed) {
-        Logger::info("cinder membership: node dead id={}", id);
+        Event::info("node dead", {{"id", id}});
         fireCallbacks();
     }
 }
 
 void
 MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
+    Span span("membership.mark_alive");
     bool changed = false;
     {
         std::scoped_lock lock(mutex_);
@@ -150,9 +153,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         }
         // A node recovering from Dead/Suspect starts a fresh quarantine window.
         if (info.state != NodeState::Alive) {
-            Logger::info("cinder membership: node recovered from {} id={}",
-                (info.state == NodeState::Suspect ? "suspect" : "dead"),
-                id);
+            Event::info("node recovered from suspect", {{"id", id}});
             info.joined_at = steady_clock::now();
         }
 
@@ -161,7 +162,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         changed = true;
     }
     if (changed) {
-        Logger::info("cinder membership: node alive id={} incarnation={}", id, incarnation);
+        Event::info("node alive", {{"id", id}, {"incarnation", std::to_string(incarnation)}});
         fireCallbacks();
     }
 }
@@ -279,10 +280,10 @@ MembershipTable::refuteSelfRumor(const NodeInfo& rumor) {
 
     NodeInfo& self = it->second;
     uint64_t new_incarnation = std::max(self.incarnation, rumor.incarnation) + 1;
-    Logger::warn("cinder membership: refuting self-rumor id={} rumor_inc={} new_inc={}",
-        rumor.id,
-        rumor.incarnation,
-        new_incarnation);
+    Event::warn("refuting self-rumor",
+        {{"id", rumor.id},
+            {"rumor_inc", std::to_string(rumor.incarnation)},
+            {"new_inc", std::to_string(new_incarnation)}});
     bool changed = false;
     if (self.incarnation <= rumor.incarnation) {
         self.incarnation = new_incarnation;

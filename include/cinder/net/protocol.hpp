@@ -17,7 +17,7 @@ using std::chrono::system_clock;
 namespace cinder::net {
 
 constexpr uint8_t K_MAGIC = 0xC1;
-constexpr uint8_t K_VERSION = 3;
+constexpr uint8_t K_VERSION = 4;
 constexpr size_t K_MAX_MESSAGE_SIZE = 67'108'864;
 
 // Magic + version + opcode + payload-length. The flags byte is the first
@@ -38,6 +38,7 @@ static_assert(K_FRAME_HEADER_SIZE == 7);
 // Request flags byte.
 constexpr uint8_t K_FLAG_HAS_TTL = uint8_t{1} << 0U;
 constexpr uint8_t K_FLAG_HAS_EXPIRES_AT = uint8_t{1} << 1U;
+constexpr uint8_t K_FLAG_HAS_TRACE = uint8_t{1} << 2U; // trace_id + span_id (16 bytes)
 
 enum class Opcode : uint8_t {
     Get = 1,
@@ -105,6 +106,11 @@ struct Request {
     // Replication metadata — present on Set/Replicate/Hint writes.
     Version version = 0;
     uint64_t writer_node_hash = 0;
+    // Structured tracing — 64-bit trace-id + 64-bit span-id. When non-zero,
+    // encoded on the wire via flag 0x04 (16 bytes after value). Backward-
+    // compatible: old nodes ignore trailing payload bytes.
+    uint64_t trace_id = 0;
+    uint64_t span_id = 0;
 };
 
 struct Response {
@@ -116,6 +122,9 @@ struct Response {
     // Absolute wall-clock expiry — carried in GetVersioned responses so read-repair
     // and quorum reads preserve TTL semantics across nodes.
     std::optional<system_clock::time_point> expires_at = std::nullopt;
+    // Structured tracing — echoed back for correlation.
+    uint64_t trace_id = 0;
+    uint64_t span_id = 0;
 };
 
 auto

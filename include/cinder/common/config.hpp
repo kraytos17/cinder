@@ -6,8 +6,8 @@
 
 #include "cinder/cluster/membership.hpp"
 #include "cinder/common/cluster_config.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 
 namespace cinder {

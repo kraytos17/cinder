@@ -5,8 +5,8 @@
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/http_parser.hpp"
 #include "cinder/node/replication_manager.hpp"
 
@@ -36,13 +36,14 @@ TcpServer::TcpServer(
       mode_(mode),
       gossip_(gossip),
       anti_entropy_(anti_entropy),
-      metrics_(metrics)
+      metrics_(metrics),
+      config_getter_(std::move(config_getter))
 #ifdef CINDER_ENABLE_TLS
       ,
       ssl_ctx_(ssl_ctx)
 #endif
       ,
-      config_getter_(std::move(config_getter)) {
+      emfile_timer_(io) {
     std::error_code ec;
     acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
     if (metrics_port > 0 && metrics_) {
@@ -65,14 +66,14 @@ TcpServer::start() -> Result<void> {
     std::error_code ec;
     auto ep = acceptor_.local_endpoint(ec);
     if (!ec) {
-        Logger::info("cinder tcp_server: listening on port={}", ep.port());
+        Event::info("listening on port", {{"port", std::to_string(ep.port())}});
     }
 
     asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
     if (metrics_acceptor_) {
         auto mep = metrics_acceptor_->local_endpoint(ec);
         if (!ec) {
-            Logger::info("cinder tcp_server: metrics HTTP listening on port={}", mep.port());
+            Event::info("metrics HTTP listening on port", {{"port", std::to_string(mep.port())}});
         }
         asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
     }
@@ -82,17 +83,15 @@ TcpServer::start() -> Result<void> {
 void
 TcpServer::shutdown() {
     asio::post(asio::bind_executor(strand_, [this] {
+        Span span("server.shutdown");
         stopping_ = true;
         std::error_code ec;
         acceptor_.close(ec);
         if (metrics_acceptor_) {
             metrics_acceptor_->close(ec);
         }
-        // Drain every connection: let in-flight requests (and their queued
-        // responses) complete within K_DRAIN_TIMEOUT before force-closing.
-        // Connections that are idle close immediately; the drain backstop on
-        // each busy connection force-closes it after the grace period. Each
-        // drain() captures its own shared_ptr, so clearing the vector is safe.
+        auto count = connections_.size();
+        Event::info("shutdown draining connections", {{"count", std::to_string(count)}});
         for (auto& conn : connections_) {
             if (conn) {
                 conn->drain();
@@ -119,8 +118,7 @@ TcpServer::doAccept() {
             if (active_connections_.load(std::memory_order_relaxed) >= K_MAX_CONNECTIONS) {
                 std::error_code close_ec;
                 socket.close(close_ec);
-                Logger::warn(
-                    "cinder tcp_server: rejecting connection, max={} reached", K_MAX_CONNECTIONS);
+                Event::warn("rejecting connection", {{"max", std::to_string(K_MAX_CONNECTIONS)}});
             } else {
                 active_connections_.fetch_add(1, std::memory_order_relaxed);
                 std::shared_ptr<std::atomic<size_t>> counter(&active_connections_,
@@ -153,8 +151,18 @@ TcpServer::doAccept() {
                 connections_.push_back(conn);
                 conn->start();
             }
+        } else if (ec == asio::error::no_descriptors) {
+            Event::warn("accept EMFILE, retrying in 100ms");
+            emfile_timer_.expires_after(std::chrono::milliseconds(100));
+            std::weak_ptr<std::atomic<size_t>> weak;
+            emfile_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code timer_ec) {
+                if (!timer_ec && !stopping_ && acceptor_.is_open()) {
+                    doAccept();
+                }
+            }));
+            return;
         } else if (ec != asio::error::operation_aborted) {
-            Logger::warn("cinder tcp_server: accept error: {}", ec.message());
+            Event::warn("accept error", {{"err", ec.message()}});
         }
         if (!stopping_ && acceptor_.is_open()) {
             doAccept();
@@ -168,7 +176,7 @@ TcpServer::doAcceptMetrics() {
         asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
         if (ec) {
             if (ec != asio::error::operation_aborted && !stopping_) {
-                Logger::warn("cinder tcp_server: metrics accept error: {}", ec.message());
+                Event::warn("metrics accept error", {{"err", ec.message()}});
                 doAcceptMetrics();
             }
             return;
@@ -181,6 +189,7 @@ TcpServer::doAcceptMetrics() {
             asio::bind_executor(strand_,
                 [this, self = std::make_shared<tcp::socket>(std::move(socket)), buf](
                     std::error_code read_ec, std::size_t /*n*/) {
+            Span span("metrics.request");
             std::string response;
             if (!read_ec) {
                 auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));

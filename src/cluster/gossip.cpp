@@ -7,8 +7,8 @@
 #include <utility>
 #include <vector>
 
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
 using std::chrono::milliseconds;
@@ -25,11 +25,12 @@ GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable
 
 void
 GossipManager::leave() {
+    Span span("gossip.leave");
     // Bump incarnation so the Dead rumor about self overrides any stale Alive
     // rumor held by peers.
     table_.markDead(self_);
 
-    Logger::info("cinder gossip: broadcasting leave to all peers");
+    Event::info("broadcasting leave to all peers");
     std::vector<NodeId> targets;
     {
         std::scoped_lock lk(peers_mutex_);
@@ -37,7 +38,7 @@ GossipManager::leave() {
     }
 
     for (const auto& peer : targets) {
-        Logger::debug("cinder gossip: sending leave to peer={}", peer);
+        Event::debug("sending leave to peer", {{"peer", peer}});
         sendView(peer);
     }
 }
@@ -48,8 +49,9 @@ GossipManager::start() {
         std::scoped_lock lk(peers_mutex_);
         rebuildPeersLocked();
     }
-    Logger::info("cinder gossip: started interval={}ms",
-        std::chrono::duration_cast<milliseconds>(gossip_interval_).count());
+    Event::info("gossip started",
+        {{"interval_ms",
+            std::to_string(std::chrono::duration_cast<milliseconds>(gossip_interval_).count())}});
 
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
@@ -61,11 +63,12 @@ GossipManager::start() {
 
 void
 GossipManager::tick() {
+    Span span("gossip.tick");
     NodeId target;
     {
         std::scoped_lock lk(peers_mutex_);
         if (peers_.empty()) {
-            Logger::debug("cinder gossip: no peers to gossip to");
+            Event::debug("no peers to gossip to");
             return;
         }
 
@@ -75,7 +78,7 @@ GossipManager::tick() {
         target = peers_[dist(rng)];
     }
 
-    Logger::debug("cinder gossip: gossip round target={}", target);
+    Event::debug("gossip round target", {{"target", target}});
     sendView(target);
     if (metrics_) {
         metrics_->clusterMetrics().gossip_rounds.fetch_add(1, std::memory_order_relaxed);
@@ -84,8 +87,10 @@ GossipManager::tick() {
 
 void
 GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
+    Span span("gossip.handle");
     auto rumors = decodeView(req.value);
-    Logger::debug("cinder gossip: state disseminated from={} entries={}", from, rumors.size());
+    Event::debug(
+        "state disseminated", {{"from", from}, {"entries", std::to_string(rumors.size())}});
     for (const auto& rumor : rumors) {
         table_.applyRumor(from, rumor);
     }
@@ -215,7 +220,7 @@ GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
         start = end + 1;
     }
     if (malformed > 0) {
-        Logger::debug("cinder gossip: {} malformed entries rejected", malformed);
+        Event::debug("malformed entries rejected", {{"count", std::to_string(malformed)}});
     }
     return result;
 }

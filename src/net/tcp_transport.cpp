@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 using asio::async_connect;
 using asio::async_read;
@@ -113,6 +113,7 @@ TcpTransport::getOrCreateConn(const NodeId& id) -> NodeConn& {
 auto
 TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     -> asio::awaitable<Result<net::Response>> {
+    Span span("transport.rpc");
     std::error_code ec;
     auto ex = co_await asio::this_coro::executor; // NOLINT(clang-analyzer-core.CallAndMessage) —
                                                   // false positive in asio awaitable internals
@@ -180,7 +181,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
-        Logger::debug("cinder transport: connected to node={}", conn.addr.host);
+        Event::debug("connected to node", {{"node", conn.addr.host}});
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -195,9 +196,9 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     if (ec) {
         conn.connected = false;
         if (timed_out) {
-            Logger::warn("cinder transport: RPC timed out node={}", conn.addr.host);
+            Event::warn("RPC timed out", {{"node", conn.addr.host}});
         } else {
-            Logger::warn("cinder transport: send failed node={} phase={}", conn.addr.host, "write");
+            Event::warn("send failed", {{"node", conn.addr.host}, {"phase", "write"}});
         }
         co_return err<net::Response>(rpcError(timed_out, "write", ec));
     }

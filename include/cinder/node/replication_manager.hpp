@@ -52,13 +52,14 @@ class ReplicationManager {
     //   Quorum — after W = R/2+1 acks (incl. local) are observed, or when all
     //            replicas answered with fewer than W (fails closed NotReady).
     void writeAsync(const std::string& key, std::string value, std::optional<milliseconds> ttl,
-        const std::vector<NodeId>& replica_nodes, ConsistencyMode mode, WriteCallback on_done);
+        const std::vector<NodeId>& replica_nodes, ConsistencyMode mode, WriteCallback on_done,
+        uint64_t trace_id = 0, uint64_t span_id = 0);
 
     // Quorum read: reads from local store + fans out GetVersioned to replicas.
     // Returns the entry with the highest version (LWW). Stale replicas are
     // repaired in the background via a best-effort Replicate write-back.
     void readAsync(const std::string& key, const std::vector<NodeId>& replica_nodes, size_t R,
-        ReadCallback on_done);
+        ReadCallback on_done, uint64_t trace_id = 0, uint64_t span_id = 0);
 
     // Retry queued hints against now-healthy replicas. Invokes `on_done` with
     // the count replayed (expired hints are dropped). Call periodically.

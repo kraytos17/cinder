@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 namespace cinder {
 
@@ -20,7 +20,8 @@ TtlWheel::insert(const std::string& key, size_t ttl_ticks) {
         key_to_slot_[key] = slot;
     } else {
         auto absolute_tick = tick_count_ + ttl_ticks;
-        Logger::trace("cinder ttl_wheel: heap insert key={} absolute_tick={}", key, absolute_tick);
+        Event::trace(
+            "heap insert", {{"key", key}, {"absolute_tick", std::to_string(absolute_tick)}});
         heap_.push_back({absolute_tick, key});
         std::push_heap(heap_.begin(), heap_.end(), [](const HeapEntry& a, const HeapEntry& b) {
             return a.absolute_tick > b.absolute_tick;

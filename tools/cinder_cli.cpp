@@ -10,8 +10,8 @@
 #endif
 
 #include "cinder/client/connection_pool.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 
 using asio::io_context;
 using std::chrono::milliseconds;
@@ -47,8 +47,7 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--ttl", ttl_ms, "TTL in ms (set only)");
 
     CLI11_PARSE(app, argc, argv);
-
-    cinder::Logger::init("cinder-cli",
+    cinder::initLogger("cinder-cli",
         verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
         cinder::LogSink::Stderr);
 
@@ -91,7 +90,7 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "ping") {
         req.opcode = cinder::net::Opcode::Ping;
     } else {
-        cinder::Logger::error("unknown command: {}", cmd);
+        cinder::Event::error("unknown command", {{"cmd", cmd}});
         return 1;
     }
 
@@ -109,12 +108,15 @@ main(int argc, char* argv[]) -> int {
         io.run();
     });
 
-    cinder::Logger::debug("sending {} to {}:{}", cmd, host, port);
-    auto res = pool.send("server", req);
+    cinder::Event::debug("sending",
+        {cinder::Field{"cmd", cmd},
+            cinder::Field{"host", host},
+            cinder::Field{"port", std::to_string(port)}});
 
+    auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
-        cinder::Logger::error("request failed: {}", res.error().message());
+        cinder::Event::error("request failed", {{"reason", res.error().message()}});
         return 1;
     }
 

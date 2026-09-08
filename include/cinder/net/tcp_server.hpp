@@ -93,6 +93,7 @@ class TcpServer {
 #endif
     std::vector<std::shared_ptr<TcpConnection>> connections_;
     std::unique_ptr<tcp::acceptor> metrics_acceptor_;
+    asio::steady_timer emfile_timer_;
     std::function<std::string()> config_getter_;
     std::atomic<size_t> active_connections_{0};
     AdminCallbacks admin_callbacks_;

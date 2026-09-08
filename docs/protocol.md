@@ -1,4 +1,4 @@
-# Cinder Wire Protocol v3
+# Cinder Wire Protocol v4
 
 Binary, length-prefixed, request-response protocol over TCP. All multi-byte
 integers on the wire are **big-endian** (network byte order). On-disk formats
@@ -12,7 +12,7 @@ compile time via `consteval` and verified with `static_assert`.
 | Offset | Size | Field         | Description |
 |--------|------|---------------|--------------|
 | 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
-| 1      | 1    | `version`     | `0x03` |
+| 1      | 1    | `version`     | `0x04` |
 | 2      | 1    | `opcode`      | Request: 1–16 (see [Opcodes](#opcodes)). Response: `0x00` |
 | 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
@@ -35,6 +35,8 @@ depending on which flags are set.
 | `flags`             | 1    | always |
 | `ttl_ms`            | 4    | `flags & 0x01` |
 | `expires_at_ms`     | 8    | `flags & 0x02` |
+| `trace_id`          | 8    | `flags & 0x04` |
+| `span_id`           | 8    | `flags & 0x04` |
 | `version`           | 8    | always |
 | `writer_node_hash`  | 8    | always |
 | `key_len`           | 4    | always |
@@ -42,7 +44,7 @@ depending on which flags are set.
 | `val_len`           | 4    | always |
 | `value`             | M    | always (may be empty) |
 
-- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`.
+- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`; bit 2: `has_trace`.
 - **`ttl_ms`** (`uint32`) — relative TTL in milliseconds. Sent by clients on
   `SET`; the server converts it to an absolute expiry using its own clock.
 - **`expires_at_ms`** (`uint64`) — absolute wall-clock expiry (Unix epoch ms).
@@ -54,6 +56,13 @@ depending on which flags are set.
   ≈ year 2262) are rejected. This prevents overflow when the value is later
   converted from `milliseconds` to a nanosecond-resolution `time_point`
   (a ×1,000,000 multiply).
+- **`trace_id`** / **`span_id`** (`uint64` each) — distributed trace context
+  for end-to-end request correlation. When a client sends `trace_id = 0`, the
+  server generates one; the value is echoed back in the response and propagated
+  to replicas on `REPLICATE`/`HINT`. A receiver that does not understand this
+  flag ignores the trailing 16 bytes (backward-compatible: old nodes treat the
+  extra bytes as part of the value field and reject via `InvalidArgument`,
+  but forward-compatible nodes skip over unknown trailing data).
 - **`version`** (`uint64`) — monotonic LWW version. Meaningful on
   `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
 - **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
@@ -92,17 +101,21 @@ The opcode byte on a response frame is always `0x00`.
 | Field              | Size | Present when |
 |--------------------|------|---------------|
 | `status`            | 1    | always |
-| `flags`             | 1    | always (bit 0: version metadata; bit 1: `expires_at`) |
+| `flags`             | 1    | always (bit 0: version metadata; bit 1: `expires_at`; bit 2: trace) |
 | `version`           | 8    | `flags & 0x01` |
 | `writer_node_hash`  | 8    | `flags & 0x01` |
 | `expires_at`        | 8    | `flags & 0x02` |
+| `trace_id`          | 8    | `flags & 0x04` |
+| `span_id`           | 8    | `flags & 0x04` |
 | `has_val`           | 4    | always |
 | `value`             | M    | `has_val != 0` |
 
 The `flags` byte has been present unconditionally since protocol v3. Bit 0
 carries `version` + `writer_node_hash` (used by `GET_VERSIONED` responses for
 LWW comparison in quorum reads and read repair). Bit 1 carries `expires_at`,
-the absolute wall-clock expiry, so TTL semantics survive across nodes.
+the absolute wall-clock expiry, so TTL semantics survive across nodes. Bit 2
+carries `trace_id` + `span_id` for distributed tracing correlation — the
+server echoes the client's trace context back and propagates it to replicas.
 
 ## Status Codes
 
@@ -130,7 +143,7 @@ rather than as exceptions (`std::bad_expected_access`) or undefined behavior.
 
 ## Worked Example: `SET "foo" "bar"`, 30s TTL
 
-Payload is 35 bytes:
+Payload is 35 bytes (without trace) or 51 bytes (with trace). Without trace:
 
 ```
 flags               0x01                        has_ttl, no expires_at
@@ -163,8 +176,49 @@ Response:
   62 61 72                 value: "bar"
 ```
 
+With trace (flags = 0x05: has_ttl + has_trace), the request gains 16 bytes
+(`trace_id` + `span_id` = 51 bytes total):
+
+```
+Request:
+  C1 03 02 00 00 00 33     header: magic=0xC1, v=3, op=SET, len=51
+  05                        flags: has_ttl=1, has_trace=1
+  00 00 00 1E              ttl_ms: 30,000
+  00 00 00 00 00 00 00 07  trace_id: 7
+  00 00 00 00 00 00 00 0A  span_id: 10
+  00 00 00 00 00 00 00 02  version: 2
+  00 00 00 00 00 00 00 42  writer_node_hash: 66
+  00 00 00 03              key_len: 3
+  66 6F 6F                 key: "foo"
+  00 00 00 03              val_len: 3
+  62 61 72                 value: "bar"
+
+Response:
+  C1 03 00 00 00 00 19     header: magic=0xC1, v=3, op=0, len=25
+  00                        status: OK
+  04                        flags: has_trace=1
+  00 00 00 00 00 00 00 07  trace_id: 7 (echoed)
+  00 00 00 00 00 00 00 0A  span_id: 10 (echoed)
+  00 00 00 01              has_val: 1
+  62 61 72                 value: "bar"
+```
+
 A `GET_VERSIONED` response would instead set `flags = 0x01` and include the
 16 bytes of version metadata between `flags` and `has_val`.
+
+## Trace Context
+
+When `flags & 0x04` is set, 16 bytes of trace context (`trace_id` + `span_id`,
+both `uint64`) are appended after the conditional `ttl_ms`/`expires_at_ms`
+fields in requests and after `expires_at` in responses. This is
+backward-compatible: older nodes that do not recognize bit 2 will read the
+extra 16 bytes as part of the next field and reject the frame, while
+forward-compatible nodes skip unknown trailing bytes.
+
+Trace context enables end-to-end request correlation across the client, server,
+and replication layer. The server generates a `trace_id` when one is not
+provided (`trace_id == 0`), echoes it in the response, and propagates it to
+replicas on `REPLICATE`/`HINT`.
 
 ## Anti-Entropy Payloads
 

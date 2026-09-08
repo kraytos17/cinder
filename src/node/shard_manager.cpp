@@ -4,8 +4,8 @@
 #include <utility>
 #include <vector>
 
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
 namespace cinder {
@@ -24,7 +24,8 @@ ShardManager::ShardManager(CacheStore& store, ConsistentHashRing& ring, Transpor
 
 auto
 ShardManager::rebalance() -> bool {
-    Logger::info("cinder shard_manager: rebalance started");
+    Span span("shard.rebalance");
+    Event::info("rebalance started");
 
     // Collect pending migrations; do not send here — a synchronous transport
     // would invoke the remove callback re-entrantly and deadlock on the store
@@ -95,9 +96,9 @@ ShardManager::rebalance() -> bool {
         migrateKey(p.key, p.entry, p.primary);
     }
 
-    Logger::info("cinder shard_manager: rebalance completed copies={} migrations={}",
-        copies.size(),
-        migrates.size());
+    Event::info("rebalance completed",
+        {{"copies", std::to_string(copies.size())},
+            {"migrations", std::to_string(migrates.size())}});
     if (metrics_) {
         metrics_->clusterMetrics().rebalance_copies.fetch_add(
             copies.size(), std::memory_order_relaxed);
@@ -124,25 +125,24 @@ ShardManager::makeReplicateRequest(const std::string& key, const VersionedEntry&
 
 void
 ShardManager::migrateKey(const std::string& key, const VersionedEntry& entry, const NodeId& owner) {
+    Span span("shard.migrate");
     auto info = table_.get(owner);
     if (info.has_value() && info->state != NodeState::Alive) {
-        Logger::debug("cinder shard_manager: skip migrate key={} owner={} state={}",
-            key,
-            owner,
-            static_cast<int>(info->state));
+        Event::debug("skip migrate",
+            {{"key", key},
+                {"owner", owner},
+                {"state", std::to_string(static_cast<int>(info->state))}});
         return;
     }
 
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [this, key, owner](Result<void> r) {
         if (r.has_value()) {
-            Logger::debug("cinder shard_manager: migrated key={} to={}", key, owner);
+            Event::debug("migrated key", {{"key", key}, {"to", owner}});
             store_.remove(key);
         } else {
-            Logger::warn("cinder shard_manager: migrate failed key={} to={} reason={}",
-                key,
-                owner,
-                r.error().message());
+            Event::warn(
+                "migrate failed", {{"key", key}, {"to", owner}, {"reason", r.error().message()}});
         }
     });
 }
@@ -150,21 +150,20 @@ ShardManager::migrateKey(const std::string& key, const VersionedEntry& entry, co
 void
 ShardManager::pushReplica(
     const std::string& key, const VersionedEntry& entry, const NodeId& owner) {
+    Span span("shard.push");
     auto info = table_.get(owner);
     if (info.has_value() && info->state != NodeState::Alive) {
-        Logger::debug("cinder shard_manager: skip replica key={} owner={} state={}",
-            key,
-            owner,
-            static_cast<int>(info->state));
+        Event::debug("skip replica",
+            {{"key", key},
+                {"owner", owner},
+                {"state", std::to_string(static_cast<int>(info->state))}});
         return;
     }
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [key, owner](Result<void> r) {
         if (!r.has_value()) {
-            Logger::warn("cinder shard_manager: push failed key={} to={} reason={}",
-                key,
-                owner,
-                r.error().message());
+            Event::warn(
+                "push failed", {{"key", key}, {"to", owner}, {"reason", r.error().message()}});
         }
     });
 }

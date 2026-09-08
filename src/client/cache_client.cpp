@@ -1,6 +1,6 @@
 #include "cinder/client/cache_client.hpp"
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 using std::chrono::milliseconds;
 
@@ -34,18 +34,18 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
     Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
     for (int attempt = 0; attempt <= max_retries_; ++attempt) {
         auto node = routePrimary(key);
-        Logger::trace("cinder client: route key={} primary={} attempt={}/{}",
-            key,
-            node,
-            attempt,
-            max_retries_);
+        Event::trace("route",
+            {{"key", key},
+                {"primary", node},
+                {"attempt", std::to_string(attempt)},
+                {"max", std::to_string(max_retries_)}});
 
         res = pool_.send(node, req);
         if (res.has_value() && res.value().status == Errc::NotReady) {
             // The node redirected us to the ring owner — follow once, then give up.
             auto target = parseRedirect(res.value().value.value_or(""));
             if (target.has_value() && *target != node) {
-                Logger::debug("cinder client: redirect key={} from={} to={}", key, node, *target);
+                Event::debug("redirect", {{"key", key}, {"from", node}, {"to", *target}});
                 res = pool_.send(*target, req);
             }
         }
@@ -61,6 +61,7 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
 auto
 CacheClient::set(const std::string& key, const std::string& value, std::optional<milliseconds> ttl)
     -> Result<void> {
+    Span span("client.set");
     net::Request req{net::Opcode::Set, key, value, ttl};
     return sendToOwner(key, req).and_then([](const net::Response& res) -> Result<void> {
         if (res.status != Errc::OK) {
@@ -72,6 +73,7 @@ CacheClient::set(const std::string& key, const std::string& value, std::optional
 
 auto
 CacheClient::get(const std::string& key) -> std::optional<std::string> {
+    Span span("client.get");
     net::Request req{net::Opcode::Get, key, {}, std::nullopt};
     return sendToOwner(key, req).transform([](net::Response res) {
         return std::move(res.value);
@@ -80,6 +82,7 @@ CacheClient::get(const std::string& key) -> std::optional<std::string> {
 
 auto
 CacheClient::remove(const std::string& key) -> bool {
+    Span span("client.remove");
     net::Request req{net::Opcode::Del, key, {}, std::nullopt};
     return sendToOwner(key, req)
         .and_then([](const net::Response& res) -> Result<bool> {
@@ -90,6 +93,7 @@ CacheClient::remove(const std::string& key) -> bool {
 auto
 CacheClient::multiGet(const std::vector<std::string>& keys)
     -> std::unordered_map<std::string, std::string> {
+    Span span("client.multi_get");
     // Group keys by their ring owner, then pipeline all Gets per node.
     std::unordered_map<NodeId, std::vector<std::string>> by_owner;
     for (const auto& key : keys) {
@@ -107,11 +111,11 @@ CacheClient::multiGet(const std::vector<std::string>& keys)
         Result<std::vector<net::Response>> res =
             err<std::vector<net::Response>>(Error(Errc::NotReady, "no attempts made"));
         for (int attempt = 0; attempt <= max_retries_; ++attempt) {
-            Logger::trace("cinder client: batch node={} keys={} attempt={}/{}",
-                node,
-                node_keys.size(),
-                attempt,
-                max_retries_);
+            Event::trace("batch",
+                {{"node", node},
+                    {"keys", std::to_string(keys.size())},
+                    {"attempt", std::to_string(attempt)},
+                    {"max", std::to_string(max_retries_)}});
 
             res = pool_.sendBatch(node, reqs);
             if (!retryable(res) || attempt == max_retries_) {

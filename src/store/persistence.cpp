@@ -4,7 +4,7 @@
 #include <filesystem>
 #include <utility>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/snapshot.hpp"
 #include "cinder/store/wal.hpp"
@@ -25,12 +25,13 @@ PersistenceManager::PersistenceManager(Options opts, CacheStore& store, Clock* c
 
 auto
 PersistenceManager::recover() -> Result<void> {
+    Span span("persistence.recover");
     if (!opts_.enabled) {
         return ok();
     }
 
     std::filesystem::create_directories(opts_.data_dir);
-    Logger::debug("cinder persistence: data directory ready path={}", opts_.data_dir);
+    Event::debug("data directory ready", {{"path", opts_.data_dir}});
     loading_ = true;
 
     // Load snapshot if present
@@ -72,7 +73,8 @@ PersistenceManager::recover() -> Result<void> {
             [[maybe_unused]] auto res = store_.putVersioned(entry.key, std::move(ve));
         }
 
-        Logger::info("recovered {} entries from snapshot", data.entries.size());
+        Event::info(
+            "recovered entries from snapshot", {{"count", std::to_string(data.entries.size())}});
     }
 
     // Replay WAL if present
@@ -122,7 +124,7 @@ PersistenceManager::drainQueueLocked() {
 
     for (auto& entry : batch) {
         if (auto result = wal_->append(entry); !result.has_value()) {
-            Logger::error("WAL append failed: {}", result.error().message());
+            Event::error("WAL append failed", {{"reason", result.error().message()}});
             break;
         }
         ++wal_entry_count_;
@@ -140,6 +142,7 @@ PersistenceManager::flush() {
 
 auto
 PersistenceManager::compact() -> Result<void> {
+    Span span("persistence.compact");
     if (!opts_.enabled) {
         return ok();
     }
@@ -151,7 +154,7 @@ PersistenceManager::compact() -> Result<void> {
     //   2. snapshot the store (captures every entry applied before step 2)
     //   3. final drain, then swap writers; anything enqueued between steps
     //      lands in the fresh WAL (duplicate application is idempotent).
-    Logger::info("cinder persistence: compaction started");
+    Event::info("compaction started");
     std::scoped_lock lock(mutex_);
     if (wal_) {
         drainQueueLocked();
@@ -176,7 +179,7 @@ PersistenceManager::compact() -> Result<void> {
     std::filesystem::remove(wal_path, ec);
     wal_ = std::make_unique<WalWriter>(wal_path.string());
     wal_entry_count_ = 0;
-    Logger::info("cinder persistence: compaction complete entries={}", entry_count);
+    Event::info("compaction complete", {{"entries", std::to_string(entry_count)}});
     return ok();
 }
 
@@ -194,8 +197,7 @@ PersistenceManager::shutdown() {
 
     auto snap_result = createSnapshot();
     if (!snap_result.has_value()) {
-        Logger::error("cinder persistence: shutdown snapshot failed reason={}",
-            snap_result.error().message());
+        Event::error("shutdown snapshot failed", {{"reason", snap_result.error().message()}});
     }
 }
 
@@ -232,13 +234,14 @@ PersistenceManager::createSnapshot() -> Result<void> {
     SnapshotWriter writer(snap_path.string());
     auto write_result = writer.write(next_version, all_entries);
     if (write_result.has_value()) {
-        Logger::debug("cinder persistence: snapshot written entries={}", all_entries.size());
+        Event::debug("snapshot written", {{"entries", std::to_string(all_entries.size())}});
     }
     return write_result;
 }
 
 auto
 PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<void> {
+    Span span("persistence.replay");
     WalReader reader(wal_path.string());
 
     size_t replayed = 0;
@@ -259,7 +262,7 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
             // recover()).
             const uint64_t now_ms = nowSystemMs(clock_);
             if (entry->expires_at_ms <= now_ms) {
-                Logger::trace("cinder persistence: skipped expired WAL entry key={}", entry->key);
+                Event::trace("skipped expired WAL entry", {{"key", entry->key}});
                 continue; // skip expired
             }
 
@@ -277,7 +280,7 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
         ++replayed;
     }
     if (replayed > 0) {
-        Logger::info("replayed {} WAL entries", replayed);
+        Event::info("replayed WAL entries", {{"count", std::to_string(replayed)}});
     }
     return ok();
 }

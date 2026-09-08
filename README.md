@@ -5,7 +5,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 ## Features
 
 - **Eviction store** with LRU and LFU policies, backed by a policy-templated CRTP base (`EvictionStoreBase`) that eliminates duplication across eviction strategies; a 256-slot `TtlWheel` with a min-heap for long TTLs (>256 ticks) reaps expiries without repeated wheel reinsertion
-- **Binary wire protocol** (v3) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 16 opcodes (1–16), max 64 MiB messages
+- **Binary wire protocol** (v4) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 16 opcodes (1–16), max 64 MiB messages
 - **Async TCP server** using Asio, per-connection strand serialization, 1 MiB read buffers, write-queue backpressure (max 64 queued writes **and** 4 MiB in-flight bytes, with the connection closed on overflow), a 30s idle timeout that reaps silent connections, and a hard 10k concurrent-connection cap
 - **Observability** — Prometheus `/metrics` endpoint (counters, gauges, per-opcode request-latency summaries `cinder_request_latency_seconds` with p50/p95/p99/p999) and a `/config` endpoint exposing the live running configuration as JSON
 - **Consistent hash ring** — xxHash3 virtual nodes (150/physical node), immutable-snapshot atomic swap via `std::atomic<shared_ptr>`, lock-free reads with binary search; cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
@@ -21,7 +21,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Transport coroutines** — `TcpTransport` and `ConnectionPool` use `asio::co_spawn` + `asio::awaitable` for clean async request-response; per-node strand serialization, configurable RPC deadlines
 - **Thread-pool event loop** — `--io-threads` for N-worker `io_context`; auto-detects `min(4, hardware_concurrency)` when unset
 - **Slab allocator** — `SlabAllocator<Node>` for store lists; 256-slot slabs, lock-free CAS free-list, `std::start_lifetime_as` for well-defined type-punning on the free-list overlay
-- **Structured logging** — spdlog-backed `Logger` with `Stdout`/`Stderr` sink, `std::format`-based API, subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
+- **Structured logging** — spdlog-backed `Event` API with structured key-value fields, `Span` RAII trace context (thread-local save/restore), trace-id propagation over the wire, and subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`); **live hot-reload** — the running node watches the config file and applies changed log level, gossip/suspect intervals, and store capacity without a restart
 - **Persistence** — append-only WAL + periodic snapshot; WAL entries carry per-entry XXH3-64 checksums (8-byte `WAL0` header + format version); atomic snapshot via write-to-temp + rename; crash recovery replays WAL from last snapshot; backward-compatible with older headerless WAL files
 - **Error provenance** — `Error::wrap()` chains error origins across call layers with `std::source_location`; full Rule of Five (deep copy of `cause_` chain, move, assignment)
@@ -310,26 +310,29 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
- 260 unit tests (32 suites):    LruStore, LfuStore, TtlWheel, ConsistentHashRing,
+ 296 unit tests (36 suites):    LruStore, LfuStore, TtlWheel, ConsistentHashRing,
                                 Protocol, Result, CacheClient routing + redirects,
                                 RetryBackoff, JitterBackoff, Retryable, RetryableBatch,
                                 VersionedStore (LRU/LFU), parsePeer,
                                 Membership, Config, Persistence, TcpServer strand stress,
                                 RpcTimeout, PoolRpcTimeout, AntiEntropy digest/encode/sync/
                                 partner/handler/exchange/runround, Gossip, ErrorProvenance,
-                                LfuConcurrent, Metrics (incl. latency histogram), HttpParser
+                                LfuConcurrent, Metrics (incl. latency histogram), HttpParser,
+                                Event, Span, SplitMix64, BoundedLoad, DiffConfig,
+                                FormatConfigJson
   35 sim tests (5 suites):      replication (async/quorum/hinted-handoff/read-repair),
                                 read repair, gossip partition (suspect/dead/incarnation/
                                 degraded/graceful-leave, late-joiner), rebalancing (keys
                                 migrate on join, quarantine, replicas spread to all new
                                 owners, concurrent rapid join/leave)
-  24 integration tests (8 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
+  25 integration tests (8 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
                                 LargeValue, replica failover (fanout, failover read,
                                 quorum, hinted handoff, 3-node fanout, TTL-over-wire),
                                 rebalance on join, rebalance RF=2, read repair, multi-get,
                                 TLS (SetGetOverTls, PingOverTls, PlaintextRejected),
                                 admin (InfoReturnsJson, ClusterReturnsNodeList,
-                                RingReturnsJson, CompactReturnsOk, ConfigReloadReturnsOk)
+                                RingReturnsJson, CompactReturnsOk, ConfigReloadReturnsOk,
+                                ShutdownReturnsOk)
    5 CLI tests:                 Ping, SetGet, GetNotFound, ConnectRefused, Del
 ```
 
@@ -385,10 +388,10 @@ cinder/
 ├── .gitignore
 ├── include/cinder/
 │   ├── common/                  # Core types, Result<T>, Error (Rule of Five + wrap),
-│   │   │                        #   Logger, Config, SlabAllocator (start_lifetime_as)
+│   │   │                        #   Tracing (Event/Span), Config, SlabAllocator (start_lifetime_as)
 │   │   ├── cluster_config.hpp   # ClusterConfig (NodeConfig)
 │   │   ├── config.hpp           # Config struct + YAML loader
-│   │   ├── logger.hpp           # spdlog-backed Logger (std::format API)
+│   │   ├── tracing.hpp          # Event-based tracing (Span, Event, LogLevel)
 │   │   ├── slab_allocator.hpp   # SlabAllocator with lock-free CAS free-list
 │   │   ├── status.hpp           # Error (wrap/cause, Rule of Five), Result<T>
 │   │   └── types.hpp            # VersionedEntry, ConsistencyMode, Bytes, NodeId
@@ -406,7 +409,7 @@ cinder/
 │   ├── hashing/
 │   │   └── consistent_hash_ring.hpp  # xxHash3 virtual nodes, atomic snapshot, binary search
 │   ├── net/
-│   │   ├── protocol.hpp         # Wire protocol v3 (encode/decode, consteval frame size)
+│   │   ├── protocol.hpp         # Wire protocol v4 (encode/decode, consteval frame size)
 │   │   ├── tcp_server.hpp       # TcpServer (strand, acceptor, TLS opt-in)
 │   │   ├── tcp_connection.hpp   # TcpConnection (strand, 1MB read buffer, write queue)
 │   │   ├── tcp_transport.hpp    # TcpTransport (per-node coroutines, RPC deadline, flat_map)
@@ -452,7 +455,7 @@ cinder/
 │   └── fixtures/                # Test certificates (ca.pem, server.pem, server-key.pem)
 ├── benchmarks/                  # throughput, allocator, and ring benchmarks
 └── docs/
-    ├── protocol.md              # Wire protocol v3 (opcodes, payload format, hex dump)
+    ├── protocol.md              # Wire protocol v4 (opcodes, payload format, hex dump)
     └── rebalance.md             # Membership, failure detection, rebalance, quarantine
 ```
 

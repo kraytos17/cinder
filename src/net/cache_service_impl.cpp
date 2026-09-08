@@ -5,7 +5,7 @@
 #include <string>
 
 #include "cinder/common/config.hpp"
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/grpc_gateway.hpp"
 #include "cinder/v1/cache.grpc.pb.h"
 
@@ -47,8 +47,17 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
     explicit CinderCacheServiceImpl(CacheNodeServer::GatewayHandle handle)
         : handle_(std::move(handle)) {}
 
+    static auto makeTraceId() -> std::pair<uint64_t, uint64_t> {
+        static std::atomic<uint64_t> next_id{1};
+        static std::atomic<uint64_t> next_span{1};
+        return {next_id.fetch_add(1, std::memory_order_relaxed),
+            next_span.fetch_add(1, std::memory_order_relaxed)};
+    }
+
     ::grpc::Status Get(::grpc::ServerContext* /*ctx*/, const cinder::v1::GetRequest* req,
         cinder::v1::GetResponse* resp) override {
+        auto [trace_id, span_id] = makeTraceId();
+        cinder::Span span("grpc.get", span_id);
         if (handle_.replica_factor > 1) {
             auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
             std::vector<NodeId> replicas;
@@ -63,8 +72,9 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
             handle_.repl.readAsync(req->key(),
                 replicas,
                 static_cast<size_t>(handle_.replica_factor),
-                [&promise](
-                    Result<VersionedEntry> result) { promise.set_value(std::move(result)); });
+                [&promise](Result<VersionedEntry> result) { promise.set_value(std::move(result)); },
+                span.traceId(),
+                span.spanId());
 
             auto result = future.get();
             if (result.has_value()) {
@@ -88,6 +98,8 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
 
     ::grpc::Status Set(::grpc::ServerContext* /*ctx*/, const cinder::v1::SetRequest* req,
         cinder::v1::SetResponse* resp) override {
+        auto [trace_id, span_id] = makeTraceId();
+        cinder::Span span("grpc.set", span_id);
         auto owner = handle_.ring.getNode(req->key());
         if (owner != handle_.node_id) {
             resp->set_status(cinder::v1::STATUS_CODE_NOT_READY);
@@ -114,7 +126,9 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
                 ttl,
                 replicas,
                 handle_.mode,
-                [&promise](Result<void> result) { promise.set_value(std::move(result)); });
+                [&promise](Result<void> result) { promise.set_value(std::move(result)); },
+                span.traceId(),
+                span.spanId());
 
             auto result = future.get();
             resp->set_status(result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
@@ -129,6 +143,7 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
 
     ::grpc::Status Delete(::grpc::ServerContext* /*ctx*/, const cinder::v1::DeleteRequest* req,
         cinder::v1::DeleteResponse* resp) override {
+        cinder::Span span("grpc.delete");
         handle_.store.remove(req->key());
         resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
         return grpc::Status::OK;
@@ -152,12 +167,14 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
 
     ::grpc::Status Ping(::grpc::ServerContext* /*ctx*/, const cinder::v1::PingRequest* /*req*/,
         cinder::v1::PingResponse* resp) override {
+        cinder::Span span("grpc.ping");
         resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
         return grpc::Status::OK;
     }
 
     ::grpc::Status MultiGet(::grpc::ServerContext* /*ctx*/, const cinder::v1::MultiGetRequest* req,
         cinder::v1::MultiGetResponse* resp) override {
+        cinder::Span span("grpc.multi_get");
         for (const auto& key : req->keys()) {
             auto* r = resp->add_responses();
             auto val = handle_.store.get(key);
@@ -173,6 +190,7 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
 
     ::grpc::Status MultiSet(::grpc::ServerContext* /*ctx*/, const cinder::v1::MultiSetRequest* req,
         cinder::v1::MultiSetResponse* resp) override {
+        cinder::Span span("grpc.multi_set");
         for (const auto& set_req : req->requests()) {
             auto* r = resp->add_responses();
             std::optional<milliseconds> ttl;
@@ -195,6 +213,7 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
 
     ::grpc::Status Info(::grpc::ServerContext* /*ctx*/, const cinder::v1::InfoRequest* /*req*/,
         cinder::v1::InfoResponse* resp) override {
+        cinder::Span span("grpc.info");
         resp->set_json(formatNodeInfoJson(handle_.node_id,
             handle_.config,
             handle_.metrics.shardMetrics().current_bytes.load(),
@@ -205,12 +224,14 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
     ::grpc::Status ClusterInfo(::grpc::ServerContext* /*ctx*/,
         const cinder::v1::ClusterInfoRequest* /*req*/,
         cinder::v1::ClusterInfoResponse* resp) override {
+        cinder::Span span("grpc.cluster_info");
         resp->set_json(formatClusterJson(handle_.table.snapshot()));
         return grpc::Status::OK;
     }
 
     ::grpc::Status RingInfo(::grpc::ServerContext* /*ctx*/,
         const cinder::v1::RingInfoRequest* /*req*/, cinder::v1::RingInfoResponse* resp) override {
+        cinder::Span span("grpc.ring_info");
         resp->set_json(formatRingJson(handle_.node_id));
         return grpc::Status::OK;
     }

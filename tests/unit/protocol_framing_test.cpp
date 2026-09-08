@@ -476,5 +476,61 @@ TEST(ProtocolTest, DecodeResponseTruncatedAfterStatus) {
     auto result = decodeResponse(frame);
     EXPECT_FALSE(result.has_value());
 }
+
+TEST(ProtocolTest, EncodeDecodeRequestWithTrace) {
+    Request req;
+    req.opcode = Opcode::Set;
+    req.key = "key";
+    req.value = "val";
+    req.trace_id = 0xDEADBEEF;
+    req.span_id = 0x12345678;
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decode(*encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->trace_id, 0xDEADBEEF);
+    EXPECT_EQ(decoded->span_id, 0x12345678);
+}
+
+TEST(ProtocolTest, EncodeDecodeResponseWithTrace) {
+    Response res;
+    res.status = Errc::OK;
+    res.value = "hello";
+    res.trace_id = 0xAABBCCDD;
+    res.span_id = 0x55667788;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decodeResponse(*encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->trace_id, 0xAABBCCDD);
+    EXPECT_EQ(decoded->span_id, 0x55667788);
+}
+
+TEST(ProtocolTest, RequestWithoutTraceHasZeroIds) {
+    Request req;
+    req.opcode = Opcode::Get;
+    req.key = "key";
+
+    auto encoded = encode(req);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decode(*encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->trace_id, 0);
+    EXPECT_EQ(decoded->span_id, 0);
+}
+
+TEST(ProtocolTest, ResponseWithoutTraceHasZeroIds) {
+    Response res;
+    res.status = Errc::OK;
+
+    auto encoded = encode(res);
+    ASSERT_TRUE(encoded.has_value());
+    auto decoded = decodeResponse(*encoded);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->trace_id, 0);
+    EXPECT_EQ(decoded->span_id, 0);
+}
 } // namespace
 } // namespace cinder::net

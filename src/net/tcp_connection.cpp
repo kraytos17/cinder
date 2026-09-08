@@ -4,9 +4,9 @@
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/replication_manager.hpp"
@@ -81,7 +81,7 @@ TcpConnection::startOnStrand() {
         ssl_stream_->async_handshake(asio::ssl::stream_base::server,
             asio::bind_executor(strand_, [this, self = shared_from_this()](std::error_code ec) {
             if (ec) {
-                Logger::warn("cinder tcp_connection: TLS handshake failed err={}", ec.message());
+                Event::warn("TLS handshake failed", {{"err", ec.message()}});
                 if (metrics_) {
                     metrics_->connectionMetrics().connections_closed.fetch_add(
                         1, std::memory_order_relaxed);
@@ -97,11 +97,10 @@ TcpConnection::startOnStrand() {
     std::error_code ec;
     auto ep = socket_.remote_endpoint(ec);
     if (!ec) {
-        Logger::info("cinder tcp_connection: connection opened peer={}:{}",
-            ep.address().to_string(),
-            ep.port());
+        Event::info("connection opened",
+            {{"peer", std::format("{}:{}", ep.address().to_string(), ep.port())}});
     } else {
-        Logger::info("cinder tcp_connection: connection opened peer=<unknown>");
+        Event::info("connection opened", {{"peer", "<unknown>"}});
     }
     resetIdleTimer();
     maybeRead();
@@ -109,6 +108,7 @@ TcpConnection::startOnStrand() {
 
 void
 TcpConnection::close() {
+    Span span("tcp.close");
     auto self = shared_from_this();
     asio::post(strand_,
         [this, self]() { closeConnection("server shutdown", asio::error::operation_aborted); });
@@ -180,13 +180,12 @@ TcpConnection::closeConnection(const char* reason, std::error_code ec) {
                      || std::string_view(reason) == "server shutdown";
     if (transient) {
         if (ec) {
-            Logger::debug(
-                "cinder tcp_connection: closing connection reason={} err={}", reason, ec.message());
+            Event::debug("closing connection", {{"reason", reason}, {"err", ec.message()}});
         } else {
-            Logger::debug("cinder tcp_connection: closing connection reason={}", reason);
+            Event::debug("closing connection", {{"reason", reason}});
         }
     } else {
-        Logger::warn("cinder tcp_connection: closing connection reason={}", reason);
+        Event::warn("closing connection", {{"reason", reason}});
     }
 
     idle_timer_.cancel();
@@ -227,15 +226,16 @@ TcpConnection::doReadHeader() {
 
 void
 TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
+    Span span("tcp.onHeader");
     if (ec) {
         return;
     }
 
     resetIdleTimer();
     if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
-        Logger::warn("cinder tcp_connection: bad protocol header magic={:#x} version={:#x}",
-            std::to_integer<int>(read_buf_[0]),
-            std::to_integer<int>(read_buf_[1]));
+        Event::warn("bad protocol header",
+            {{"magic", std::format("{:#x}", std::to_integer<int>(read_buf_[0]))},
+                {"version", std::format("{:#x}", std::to_integer<int>(read_buf_[1]))}});
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -247,7 +247,7 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     std::memcpy(&net_len, &read_buf_[3], sizeof(net_len));
     payload_len_ = std::byteswap(net_len);
     if (payload_len_ > K_MAX_MESSAGE_SIZE || payload_len_ + K_FRAME_HEADER_SIZE > K_BUFFER_SIZE) {
-        Logger::warn("cinder tcp_connection: oversized payload len={}", payload_len_);
+        Event::warn("oversized payload", {{"len", std::to_string(payload_len_)}});
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -285,7 +285,7 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     resetIdleTimer();
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
-        Logger::debug("cinder tcp_connection: decode failed");
+        Event::debug("decode failed");
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -294,16 +294,69 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         sendResponse(res);
         return;
     }
-    handleRequest(result.value());
+
+    auto req = std::move(result.value());
+    // Generate structured trace-id at the connection entry point if not already
+    // present
+    if (req.trace_id == 0) {
+        static std::atomic<uint64_t> s_next_trace_id{1};
+        req.trace_id = s_next_trace_id.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (req.span_id == 0) {
+        static std::atomic<uint64_t> s_next_span_id{1};
+        req.span_id = s_next_span_id.fetch_add(1, std::memory_order_relaxed);
+    }
+    handleRequest(req);
+}
+
+static auto
+getOperationName(Opcode op) -> std::string_view {
+    switch (op) {
+        case Opcode::Get:
+            return "tcp.get";
+        case Opcode::Set:
+            return "tcp.set";
+        case Opcode::Del:
+            return "tcp.del";
+        case Opcode::Ping:
+            return "tcp.ping";
+        case Opcode::Replicate:
+            return "replication.write";
+        case Opcode::Hint:
+            return "replication.hint";
+        case Opcode::GetVersioned:
+            return "tcp.getVersioned";
+        case Opcode::Gossip:
+            return "gossip.handle";
+        case Opcode::AntiEntropyDigest:
+            return "anti_entropy.digest";
+        case Opcode::AntiEntropySync:
+            return "anti_entropy.sync";
+        case Opcode::AdminInfo:
+            return "admin.info";
+        case Opcode::AdminCluster:
+            return "admin.cluster";
+        case Opcode::AdminRing:
+            return "admin.ring";
+        case Opcode::AdminCompact:
+            return "admin.compact";
+        case Opcode::AdminConfigReload:
+            return "admin.config_reload";
+        case Opcode::AdminShutdown:
+            return "admin.shutdown";
+        default:
+            return "unknown";
+    }
 }
 
 void
 TcpConnection::handleRequest(const Request& req) {
     pending_opcode_ = req.opcode;
     request_start_ = std::chrono::steady_clock::now();
-    Logger::debug("cinder tcp_connection: request received opcode={} key={}",
-        static_cast<int>(req.opcode),
-        req.key);
+
+    Span span(getOperationName(req.opcode), req.span_id);
+    Event::debug("request received",
+        {{"opcode", std::to_string(static_cast<int>(req.opcode))}, {"key", req.key}});
 
     if (metrics_) {
         switch (req.opcode) {
@@ -377,7 +430,7 @@ TcpConnection::handleRequest(const Request& req) {
     if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
-            Logger::debug("cinder tcp_connection: redirect key={} to={}", req.key, owner);
+            Event::debug("redirect", {{"key", req.key}, {"to", owner}});
             if (metrics_) {
                 metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
             }
@@ -402,14 +455,18 @@ TcpConnection::handleRequest(const Request& req) {
 
                 ring_.incrementLoad(node_id_);
                 auto self = shared_from_this();
+                auto trace_id = req.trace_id;
+                auto span_id = req.span_id;
                 repl_->readAsync(req.key,
                     replicas,
                     static_cast<size_t>(replica_factor_),
-                    [this, self](Result<VersionedEntry> result) {
+                    [this, self, trace_id, span_id](Result<VersionedEntry> result) {
                     ring_.decrementLoad(node_id_);
                     // Quorum completion lands on an arbitrary pool thread —
                     // hop back onto this connection's strand.
-                    asio::post(strand_, [this, self, result = std::move(result)]() mutable {
+                    asio::post(strand_,
+                        [this, self, result = std::move(result), trace_id, span_id]() mutable {
+                        Span async_span("replication.read.quorum", span_id);
                         Response async_res;
                         if (result.has_value()) {
                             async_res.status = Errc::OK;
@@ -417,10 +474,15 @@ TcpConnection::handleRequest(const Request& req) {
                         } else {
                             async_res.status = result.error().code();
                         }
+
+                        async_res.trace_id = trace_id;
+                        async_res.span_id = span_id;
                         sendResponse(async_res);
                         maybeRead();
                     });
-                });
+                },
+                    trace_id,
+                    span_id);
                 return;
             }
 
@@ -470,24 +532,32 @@ TcpConnection::handleRequest(const Request& req) {
 
                 ring_.incrementLoad(node_id_);
                 auto self = shared_from_this();
+                auto trace_id = req.trace_id;
+                auto span_id = req.span_id;
                 repl_->writeAsync(req.key,
                     req.value,
                     req.ttl,
                     replicas,
                     mode_,
-                    [this, self](Result<void> result) {
+                    [this, self, trace_id, span_id](Result<void> result) {
                     ring_.decrementLoad(node_id_);
                     // Quorum completion lands on an arbitrary pool thread —
                     // hop back onto this connection's strand.
-                    asio::post(strand_, [this, self, result]() {
+                    asio::post(strand_, [this, self, result, trace_id, span_id]() {
+                        Span async_span("replication.write.quorum", span_id);
                         Response async_res{
                             .status = result.has_value() ? Errc::OK : result.error().code(),
                             .value = std::nullopt,
                         };
+
+                        async_res.trace_id = trace_id;
+                        async_res.span_id = span_id;
                         sendResponse(async_res);
                         maybeRead();
                     });
-                });
+                },
+                    trace_id,
+                    span_id);
                 return; // response sent asynchronously from the write callback
             } else {
                 ring_.incrementLoad(node_id_);
@@ -496,10 +566,10 @@ TcpConnection::handleRequest(const Request& req) {
                 res.status = result.has_value() ? Errc::OK : result.error().code();
             }
 
-            Logger::trace("cinder tcp_connection: opcode={} key={} status={}",
-                static_cast<int>(req.opcode),
-                req.key,
-                static_cast<int>(res.status));
+            Event::trace("opcode completed",
+                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
+                    {"key", req.key},
+                    {"status", std::to_string(static_cast<int>(res.status))}});
             break;
         }
         case Opcode::Del: {
@@ -507,10 +577,10 @@ TcpConnection::handleRequest(const Request& req) {
             store_.remove(req.key);
             ring_.decrementLoad(node_id_);
             res.status = Errc::OK;
-            Logger::trace("cinder tcp_connection: opcode={} key={} status={}",
-                static_cast<int>(req.opcode),
-                req.key,
-                static_cast<int>(res.status));
+            Event::trace("opcode completed",
+                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
+                    {"key", req.key},
+                    {"status", std::to_string(static_cast<int>(res.status))}});
             break;
         }
         case Opcode::Ping: {
@@ -609,12 +679,17 @@ TcpConnection::handleRequest(const Request& req) {
         }
     }
 
+    // Echo trace context back to the client for correlation.
+    res.trace_id = req.trace_id;
+    res.span_id = req.span_id;
+    res.span_id = req.span_id;
     sendResponse(res);
     maybeRead();
 }
 
 void
 TcpConnection::sendResponse(const Response& res) {
+    Span span("tcp.sendResponse");
     if (pending_opcode_.has_value() && metrics_) {
         auto elapsed_ns =
             static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -626,8 +701,10 @@ TcpConnection::sendResponse(const Response& res) {
     // Encode into the scratch buffer, then hand ownership to the write queue.
     auto result = encodeInto(res, encode_buf_);
     if (!result.has_value()) {
-        Logger::warn("cinder tcp_connection: encode failed opcode={}",
-            pending_opcode_.has_value() ? std::to_underlying(*pending_opcode_) : -1);
+        Event::warn("encode failed",
+            {{"opcode",
+                pending_opcode_.has_value() ? std::to_string(std::to_underlying(*pending_opcode_))
+                                            : "-1"}});
         if (metrics_) {
             metrics_->connectionMetrics().write_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -656,6 +733,7 @@ TcpConnection::sendResponse(const Response& res) {
 
 void
 TcpConnection::doWrite() {
+    Span span("tcp.doWrite");
     if (write_queue_.empty()) {
         writing_ = false;
         return;
@@ -668,9 +746,9 @@ TcpConnection::doWrite() {
         if (ec) {
             if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
                 || ec == asio::error::operation_aborted || ec == asio::error::bad_descriptor) {
-                Logger::debug("cinder tcp_connection: write failed: {}", ec.message());
+                Event::debug("write failed", {{"err", ec.message()}});
             } else {
-                Logger::warn("cinder tcp_connection: write failed: {}", ec.message());
+                Event::warn("write failed", {{"err", ec.message()}});
             }
 
             if (metrics_) {

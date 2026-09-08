@@ -3,8 +3,8 @@
 #include <algorithm>
 #include <utility>
 
-#include "cinder/common/logger.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 
 namespace cinder {
 
@@ -24,8 +24,10 @@ FailureDetector::start() {
         std::scoped_lock lock(state_mutex_);
         rebuildPeersLocked();
     }
-    Logger::info("cinder failure_detector: started suspect_timeout={}ms",
-        std::chrono::duration_cast<milliseconds>(suspect_timeout_).count());
+
+    Event::info("failure_detector started",
+        {{"suspect_timeout_ms",
+            std::to_string(std::chrono::duration_cast<milliseconds>(suspect_timeout_).count())}});
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
     table_.onChange([this] {
@@ -47,6 +49,7 @@ FailureDetector::rebuildPeersLocked() {
 
 void
 FailureDetector::tick() {
+    Span span("failure.probe");
     // Work items deferred outside state_mutex_: membership mutations and the
     // ping send. sendAsync may complete synchronously (sim transport), and its
     // callback re-enters onProbeResult which takes state_mutex_ — so neither
@@ -93,12 +96,12 @@ FailureDetector::tick() {
                 break;
             }
         } else {
-            Logger::debug("cinder failure_detector: no peers to probe");
+            Event::debug("no peers to probe");
         }
     }
 
     for (const auto& peer : timed_out) {
-        Logger::info("cinder failure_detector: suspect marked peer={} reason=timeout", peer);
+        Event::info("suspect marked", {{"peer", peer}, {"reason", "timeout"}});
         table_.markSuspect(peer);
         if (metrics_) {
             metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
@@ -114,7 +117,7 @@ FailureDetector::tick() {
         return;
     }
 
-    Logger::debug("cinder failure_detector: ping sent peer={}", probe_target);
+    Event::debug("ping sent", {{"peer", probe_target}});
     net::Request ping;
     ping.opcode = net::Opcode::Ping;
     transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
@@ -127,6 +130,7 @@ FailureDetector::tick() {
 
 void
 FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
+    Span span("failure.on_probe_result");
     bool known_probe = false;
     {
         std::scoped_lock lock(state_mutex_);
@@ -148,7 +152,7 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
         return;
     }
     if (acked) {
-        Logger::debug("cinder failure_detector: ping received peer={}", peer);
+        Event::debug("ping received", {{"peer", peer}});
         auto info = table_.get(peer);
         table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
         if (metrics_) {
@@ -159,7 +163,7 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     }
 
     // Unreachable: suspect now, record when; escalation promotes to Dead later.
-    Logger::info("cinder failure_detector: suspect marked peer={} reason=unreachable", peer);
+    Event::info("suspect marked", {{"peer", peer}, {"reason", "unreachable"}});
     table_.markSuspect(peer);
     if (metrics_) {
         metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
@@ -181,7 +185,7 @@ FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
         }
     }
     for (const auto& peer : to_dead) {
-        Logger::info("cinder failure_detector: suspect\u2192dead peer={}", peer);
+        Event::info("suspect→dead", {{"peer", peer}});
         suspect_since_.erase(peer);
     }
     return to_dead;

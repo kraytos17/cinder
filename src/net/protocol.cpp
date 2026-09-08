@@ -80,6 +80,11 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
         payload_size += sizeof(uint64_t);
     }
 
+    bool has_trace = req.trace_id != 0;
+    if (has_trace) {
+        payload_size += sizeof(uint64_t) * 2; // trace_id + span_id
+    }
+
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     if (total > K_MAX_MESSAGE_SIZE) {
         return err(Error(Errc::InvalidArgument, "message too large"));
@@ -100,6 +105,9 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     if (req.expires_at.has_value()) {
         flags |= K_FLAG_HAS_EXPIRES_AT;
     }
+    if (has_trace) {
+        flags |= K_FLAG_HAS_TRACE;
+    }
 
     w.writeByte(flags);
     if (req.ttl.has_value()) {
@@ -118,6 +126,10 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     w.write(static_cast<uint32_t>(req.value.size()));
     if (!req.value.empty()) {
         w.writeString(req.value);
+    }
+    if (has_trace) {
+        w.write(req.trace_id);
+        w.write(req.span_id);
     }
     return ok();
 }
@@ -237,6 +249,17 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
         }
         req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), *val_len);
     }
+    // Trace context — optional trailing data gated by flag 0x04.
+    if (*flags & K_FLAG_HAS_TRACE) {
+        if (r.remaining() >= sizeof(uint64_t) * 2) {
+            auto tid = mustRead<uint64_t>(r);
+            auto sid = mustRead<uint64_t>(r);
+            if (tid && sid) {
+                req.trace_id = *tid;
+                req.span_id = *sid;
+            }
+        }
+    }
     return ok(std::move(req));
 }
 
@@ -261,6 +284,11 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
         flags |= K_FLAG_HAS_EXPIRES_AT;
     }
 
+    bool has_trace = res.trace_id != 0;
+    if (has_trace) {
+        flags |= K_FLAG_HAS_TRACE;
+    }
+
     size_t payload_size = sizeof(uint8_t); // status
     payload_size += sizeof(uint8_t);       // flags
     payload_size += sizeof(uint32_t);      // has_val
@@ -273,6 +301,9 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     }
     if (res.value.has_value()) {
         payload_size += res.value->size();
+    }
+    if (has_trace) {
+        payload_size += sizeof(uint64_t) * 2;
     }
 
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
@@ -298,6 +329,10 @@ encodeInto(const Response& res, std::vector<std::byte>& out) -> Result<void> {
     w.write(static_cast<uint32_t>(res.value.has_value() ? 1 : 0));
     if (res.value.has_value()) {
         w.writeString(*res.value);
+    }
+    if (has_trace) {
+        w.write(res.trace_id);
+        w.write(res.span_id);
     }
     return ok();
 }
@@ -393,7 +428,10 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
         return err<Response>(has_val.error());
     }
     if (*has_val) {
-        size_t val_len = r.remaining();
+        // Account for trace context bytes that follow the value.
+        size_t trace_size = (flags & K_FLAG_HAS_TRACE) ? (sizeof(uint64_t) * 2) : 0;
+        size_t remaining = r.remaining();
+        size_t val_len = (remaining > trace_size) ? (remaining - trace_size) : 0;
         if (val_len > 0) {
             auto val_bytes = r.readBytes(val_len);
             if (!val_bytes) {
@@ -402,6 +440,17 @@ decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
             res.value = std::string(reinterpret_cast<const char*>(val_bytes->data()), val_len);
         }
     }
+    if (flags & K_FLAG_HAS_TRACE) {
+        if (r.remaining() >= sizeof(uint64_t) * 2) {
+            auto tid = mustRead<uint64_t>(r);
+            auto sid = mustRead<uint64_t>(r);
+            if (tid && sid) {
+                res.trace_id = *tid;
+                res.span_id = *sid;
+            }
+        }
+    }
+
     return ok(std::move(res));
 }
 } // namespace cinder::net

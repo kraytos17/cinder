@@ -4,7 +4,7 @@
 #include <csignal>
 
 #include "cinder/common/config.hpp"
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
 
@@ -136,7 +136,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         if (persistence_.enabled()) {
             auto result = persistence_.compact();
             if (!result.has_value()) {
-                Logger::error("admin compact failed: {}", result.error().message());
+                Event::error("admin compact failed", {{"reason", result.error().message()}});
             }
         }
     },
@@ -144,10 +144,10 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
     });
 
-    Logger::info("eviction policy: {}", options.eviction_policy);
-    Logger::info("anti-entropy: interval_ms={} buckets={}",
-        options.anti_entropy_interval.count(),
-        options.anti_entropy_buckets);
+    Event::info("eviction policy", {{"policy", options.eviction_policy}});
+    Event::info("anti-entropy",
+        {{"interval_ms", std::to_string(options.anti_entropy_interval.count())},
+            {"buckets", std::to_string(options.anti_entropy_buckets)}});
 }
 
 auto
@@ -161,14 +161,14 @@ CacheNodeServer::run() {
     if (persistence_.enabled()) {
         auto res = persistence_.recover();
         if (!res.has_value()) {
-            Logger::error("persistence recovery failed: {}", res.error().message());
+            Event::error("persistence recovery failed", {{"reason", res.error().message()}});
             return;
         }
-        Logger::info("recovered {} entries from disk", store_->size());
+        Event::info("recovered entries from disk", {{"count", std::to_string(store_->size())}});
     }
 
     signals_.async_wait([this](std::error_code, int) {
-        Logger::info("shutting down...");
+        Event::info("shutting down...");
         shutdown();
     });
 
@@ -192,9 +192,9 @@ CacheNodeServer::run() {
         workers = hw == 0 ? 1 : std::min(4U, hw);
     }
 
-    Logger::info("cinder node: io threads={}", workers);
+    Event::info("node started", {{"io_threads", std::to_string(workers)}});
     if (metrics_port_ > 0) {
-        Logger::info("cinder node: metrics endpoint on port={}", metrics_port_);
+        Event::info("metrics endpoint", {{"port", std::to_string(metrics_port_)}});
     }
     if (workers <= 1) {
         io_.run();
@@ -259,7 +259,7 @@ CacheNodeServer::scheduleReplay() {
         if (repl_.hintCount() > 0) {
             repl_.replayHints([](size_t replayed) {
                 if (replayed > 0) {
-                    Logger::info("replayed {} hinted write(s)", replayed);
+                    Event::info("replayed hinted writes", {{"count", std::to_string(replayed)}});
                 }
             });
         }
@@ -354,7 +354,7 @@ CacheNodeServer::scheduleCompact() {
             return;
         }
         if (auto result = persistence_.compact(); !result.has_value()) {
-            Logger::error("compact failed: {}", result.error().message());
+            Event::error("compact failed", {{"reason", result.error().message()}});
         }
         scheduleCompact();
     });
@@ -395,13 +395,14 @@ CacheNodeServer::scheduleConfigReload() {
 
 void
 CacheNodeServer::applyConfig() {
+    Span span("config.reload");
     if (config_path_.empty()) {
         return;
     }
 
     auto new_config = loadConfig(config_path_);
     if (!new_config.has_value()) {
-        Logger::error("cinder config: reload failed reason={}", new_config.error().message());
+        Event::error("config reload failed", {{"reason", new_config.error().message()}});
         return;
     }
 
@@ -418,13 +419,13 @@ CacheNodeServer::applyConfig() {
         changed_str += changed[i];
     }
 
-    Logger::info("config changed: {}", changed_str);
+    Event::info("config changed", {{"fields", changed_str}});
     current_config_ = *new_config;
     for (const auto& field : changed) {
         if (field == "log_level") {
-            Logger::setLevel(logLevelFromString(new_config->log_level));
+            setLogLevel(logLevelFromString(new_config->log_level));
         } else if (field == "ping_interval_ms") {
-            Logger::warn("config field '{}' requires restart to take effect", field);
+            Event::warn("config field requires restart", {{"field", field}});
         } else if (field == "suspect_timeout_ms") {
             detector_.setSuspectTimeout(milliseconds(new_config->suspect_timeout_ms));
         } else if (field == "gossip_interval_ms") {
@@ -442,9 +443,9 @@ CacheNodeServer::applyConfig() {
                 scheduleAntiEntropy();
             }
         } else if (field == "anti_entropy_buckets") {
-            Logger::warn("config field '{}' requires restart to take effect", field);
+            Event::warn("config field requires restart", {{"field", field}});
         } else {
-            Logger::warn("config field '{}' requires restart to take effect", field);
+            Event::warn("config field requires restart", {{"field", field}});
         }
     }
 }

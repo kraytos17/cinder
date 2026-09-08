@@ -2,7 +2,7 @@
 
 #include "cinder/net/grpc_gateway.hpp"
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 
 namespace cinder::grpc {
 
@@ -20,19 +20,21 @@ GrpcGateway::~GrpcGateway() {
 
 void
 GrpcGateway::start() {
+    Span span("grpc.gateway.start");
     service_ = createCacheService(handle_);
     grpc::ServerBuilder builder;
     builder.AddListeningPort("0.0.0.0:" + std::to_string(port_), grpc::InsecureServerCredentials());
 
     builder.RegisterService(service_.get());
     server_ = builder.BuildAndStart();
-    Logger::info("gRPC gateway listening on port {}", port_);
+    Event::info("gRPC gateway listening on port", {{"port", std::to_string(port_)}});
 }
 
 void
 GrpcGateway::shutdown() {
+    Span span("grpc.gateway.shutdown");
     if (server_) {
-        Logger::info("gRPC gateway shutting down");
+        Event::info("gRPC gateway shutting down");
         server_->Shutdown();
         server_->Wait();
         server_.reset();

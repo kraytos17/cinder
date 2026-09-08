@@ -3,7 +3,7 @@
 #include <sstream>
 #include <xxhash.h>
 
-#include "cinder/common/logger.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 
 using namespace cinder::detail;
@@ -169,7 +169,7 @@ WalReader::next() -> std::optional<WalEntry> {
         XXH3_freeState(state);
 
         if (computed != stored_checksum.value()) {
-            Logger::warn("cinder wal: checksum mismatch at entry — corrupt data");
+            Event::warn("checksum mismatch at entry — corrupt data");
             return std::nullopt;
         }
         return WalEntry{

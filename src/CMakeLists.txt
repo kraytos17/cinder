@@ -1,5 +1,5 @@
 set(CINDER_CORE_SOURCES
-    common/logger.cpp
+    common/tracing.cpp
     common/config.cpp
     common/metrics.cpp
     store/lru_store.cpp
