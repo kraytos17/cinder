@@ -218,11 +218,15 @@ AntiEntropyManager::collectEntries(const std::vector<uint32_t>& bucket_ids) cons
     };
 
     std::vector<Item> items;
+    constexpr size_t K_MAX_ENTRIES_PER_SYNC = 1'000;
     store_.forEach([this, &wanted, &items](const std::string& key, const VersionedEntry& entry) {
         if (wanted[bucketFor(key)]) {
             items.push_back({key, entry});
         }
     });
+    if (items.size() > K_MAX_ENTRIES_PER_SYNC) {
+        items.resize(K_MAX_ENTRIES_PER_SYNC);
+    }
     // Deterministic wire order so both sides hash/apply identically.
     std::sort(
         items.begin(), items.end(), [](const Item& a, const Item& b) { return a.key < b.key; });
@@ -295,9 +299,20 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
             entry.expires_at =
                 toSteadyExpiry(clock_, system_clock::time_point(milliseconds(expires_ms)));
         }
-        // LWW apply is idempotent: stale entries are no-ops, so replaying the
-        // same sync blob is always safe.
-        if (store_.putVersioned(key, std::move(entry)).has_value()) {
+        // Only count as repaired if the entry is actually newer than what we
+        // have. putVersioned always returns ok() (LWW accepts or discards),
+        // so we must pre-check to get an accurate repair count.
+        bool is_new = false;
+        auto existing = store_.getVersioned(key);
+        if (!existing.has_value()) {
+            is_new = true;
+        } else if (version > existing->version
+                   || (version == existing->version && writer_hash > existing->writer_node_hash)) {
+            is_new = true;
+        }
+
+        [[maybe_unused]] auto put_result = store_.putVersioned(key, std::move(entry));
+        if (is_new) {
             ++applied;
         }
     }

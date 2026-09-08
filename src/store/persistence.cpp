@@ -123,6 +123,7 @@ PersistenceManager::drainQueueLocked() {
     for (auto& entry : batch) {
         if (auto result = wal_->append(entry); !result.has_value()) {
             Logger::error("WAL append failed: {}", result.error().message());
+            break;
         }
         ++wal_entry_count_;
     }
@@ -190,7 +191,12 @@ PersistenceManager::shutdown() {
         drainQueueLocked();
         wal_->flush();
     }
-    [[maybe_unused]] auto snap_result = createSnapshot();
+
+    auto snap_result = createSnapshot();
+    if (!snap_result.has_value()) {
+        Logger::error("cinder persistence: shutdown snapshot failed reason={}",
+            snap_result.error().message());
+    }
 }
 
 auto

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <cstdio>
 #include <cstring>
 #include <format>
@@ -14,8 +15,9 @@ hash64(std::string_view data) -> uint64_t {
     return XXH3_64bits(data.data(), data.size());
 }
 
-ConsistentHashRing::ConsistentHashRing(int vnodes_per_node)
-    : vnodes_per_node_(vnodes_per_node) {
+ConsistentHashRing::ConsistentHashRing(int vnodes_per_node, double bounded_load_factor)
+    : vnodes_per_node_(vnodes_per_node),
+      bounded_load_factor_(bounded_load_factor) {
     snapshot_.store(std::make_shared<const RingSnapshot>());
 }
 
@@ -49,6 +51,11 @@ ConsistentHashRing::addNode(const NodeId& node_id) {
 
         std::sort(snap->ring.begin(), snap->ring.end());
         if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
+            // Initialize load counter for the new node (zero in-flight).
+            {
+                std::unique_lock lock(load_mu_);
+                load_.try_emplace(node_id, 0ULL);
+            }
             return;
         }
         // Another mutator published first — retry on its snapshot.
@@ -77,6 +84,11 @@ ConsistentHashRing::removeNode(std::string_view node_id) {
             }
         }
         if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
+            // Remove load counter for the departed node.
+            {
+                std::unique_lock lock(load_mu_);
+                load_.erase(std::string(node_id));
+            }
             return;
         }
     }
@@ -144,6 +156,127 @@ ConsistentHashRing::getNodes(std::string_view key, int replica_count) const -> s
         }
     }
     return result;
+}
+
+auto
+ConsistentHashRing::getNodeBounded(std::string_view key) const -> NodeId {
+    if (bounded_load_factor_ <= 0.0) {
+        return getNode(key);
+    }
+
+    auto snap = snapshot_.load();
+    if (snap->ring.empty()) {
+        return {};
+    }
+
+    auto h = hashKey(key);
+    auto it = std::lower_bound(snap->ring.begin(),
+        snap->ring.end(),
+        h,
+        [](const std::pair<uint64_t, NodeId>& entry, uint64_t val) static {
+        return entry.first < val;
+    });
+
+    if (it == snap->ring.end()) {
+        it = snap->ring.begin();
+    }
+
+    // Compute max load per node: ceil(avg_load * factor).
+    const auto num_nodes = snap->physical_nodes.size();
+    if (num_nodes == 0) {
+        return {};
+    }
+    if (num_nodes == 1) {
+        return it->second;
+    }
+
+    uint64_t total = 0;
+    {
+        std::shared_lock lock(load_mu_);
+        for (const auto& [id, cnt] : load_) {
+            total += cnt.load(std::memory_order_relaxed);
+        }
+    }
+
+    const double avg = static_cast<double>(total) / static_cast<double>(num_nodes);
+    const auto max_load = static_cast<uint64_t>(std::ceil(avg * bounded_load_factor_));
+    // Walk the ring from the hash position. Return the first node whose
+    // in-flight load is below the max. Wrap around at most once.
+    auto start = it;
+    do {
+        std::shared_lock lock(load_mu_);
+        auto it2 = load_.find(it->second);
+        uint64_t node_load = 0;
+        if (it2 != load_.end()) {
+            node_load = it2->second.load(std::memory_order_relaxed);
+        }
+        if (node_load < max_load) {
+            return it->second;
+        }
+
+        ++it;
+        if (it == snap->ring.end()) {
+            it = snap->ring.begin();
+        }
+    } while (it != start);
+    // All nodes overloaded — return the original match (graceful degradation).
+    return start->second;
+}
+
+void
+ConsistentHashRing::incrementLoad(std::string_view node) const {
+    std::shared_lock lock(load_mu_);
+    auto it = load_.find(std::string(node));
+    if (it != load_.end()) {
+        it->second.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void
+ConsistentHashRing::decrementLoad(std::string_view node) const {
+    std::shared_lock lock(load_mu_);
+    auto it = load_.find(std::string(node));
+    if (it != load_.end()) {
+        auto prev = it->second.fetch_sub(1, std::memory_order_relaxed);
+        assert(prev > 0 && "decrementLoad called without matching incrementLoad");
+        (void)prev;
+    }
+}
+
+auto
+ConsistentHashRing::currentLoad(std::string_view node) const -> uint64_t {
+    std::shared_lock lock(load_mu_);
+    auto it = load_.find(std::string(node));
+    if (it != load_.end()) {
+        return it->second.load(std::memory_order_relaxed);
+    }
+    return 0;
+}
+
+auto
+ConsistentHashRing::totalLoad() const -> uint64_t {
+    uint64_t total = 0;
+    std::shared_lock lock(load_mu_);
+    for (const auto& [id, cnt] : load_) {
+        total += cnt.load(std::memory_order_relaxed);
+    }
+    return total;
+}
+
+auto
+ConsistentHashRing::loadFactor() const -> double {
+    std::shared_lock lock(load_mu_);
+    const auto num_nodes = load_.size();
+    if (num_nodes == 0) {
+        return 0.0;
+    }
+
+    uint64_t total = 0;
+    for (const auto& [id, cnt] : load_) {
+        total += cnt.load(std::memory_order_relaxed);
+    }
+    const double avg = static_cast<double>(total) / static_cast<double>(num_nodes);
+    return avg * bounded_load_factor_;
 }
 
 auto

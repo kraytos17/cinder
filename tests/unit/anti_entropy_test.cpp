@@ -161,11 +161,11 @@ TEST(AntiEntropySyncTest, ApplyIsLWW) {
     AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
     AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8);
 
-    // Stale write is a no-op success.
-    EXPECT_EQ(mb.applyEntries(ma.collectEntries(allBuckets(8))), 1);
+    // Stale write is a no-op: returns 0 (not counted as repair).
+    EXPECT_EQ(mb.applyEntries(ma.collectEntries(allBuckets(8))), 0);
     EXPECT_EQ(b.store.getVersioned("k")->value, "new");
 
-    // Newer write wins.
+    // Newer write wins: returns 1 (counted as repair).
     EXPECT_EQ(ma.applyEntries(mb.collectEntries(allBuckets(8))), 1);
     EXPECT_EQ(a.store.getVersioned("k")->value, "new");
 }
@@ -328,5 +328,62 @@ TEST(AntiEntropyRunRoundTest, TransportFailureIsBenign) {
     ma.runRound(2);
 }
 
+TEST(AntiEntropySyncTest, StaleEntryNotCountedAsRepair) {
+    Node a;
+    Node b;
+    // B already has k1 at version 10 (newer than A's version 1).
+    ASSERT_TRUE(a.store.putVersioned("k1", makeEntry("old", 1)).has_value());
+    ASSERT_TRUE(b.store.putVersioned("k1", makeEntry("new", 10)).has_value());
+
+    AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8, &b.metrics);
+    // A sends its stale entry (version 1) — B should NOT count it as a repair.
+    AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+    auto blob = ma.collectEntries(allBuckets(8));
+
+    // Apply to B — stale entry is a no-op, repair count should be 0.
+    size_t applied = mb.applyEntries(blob);
+    EXPECT_EQ(applied, 0);
+    // k1 should still have B's newer value.
+    EXPECT_EQ(b.store.getVersioned("k1")->value, "new");
+    EXPECT_EQ(b.metrics.replicationMetrics().anti_entropy_keys_repaired.load(), 0);
+}
+
+TEST(AntiEntropySyncTest, NewEntryCountedAsRepair) {
+    Node a;
+    Node b;
+    // A has k1 at version 5, B has k1 at version 1 (A is newer).
+    ASSERT_TRUE(a.store.putVersioned("k1", makeEntry("newer", 5)).has_value());
+    ASSERT_TRUE(b.store.putVersioned("k1", makeEntry("older", 1)).has_value());
+
+    AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8, &b.metrics);
+    AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+    auto blob = ma.collectEntries(allBuckets(8));
+
+    size_t applied = mb.applyEntries(blob);
+    EXPECT_EQ(applied, 1);
+    EXPECT_EQ(b.store.getVersioned("k1")->value, "newer");
+}
+
+TEST(AntiEntropySyncTest, CollectEntriesCapsAtLimit) {
+    Node a;
+    AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+
+    // Insert 1500 entries — all should land in bucket 0 for 8 buckets if
+    // we use keys that all hash to the same bucket. Since we can't control
+    // the hash, just insert 1500 entries and verify the blob doesn't
+    // contain all of them.
+    for (int i = 0; i < 1'500; i++) {
+        auto key = "key" + std::to_string(i);
+        ASSERT_TRUE(a.store.putVersioned(key, makeEntry("v", i)).has_value());
+    }
+
+    auto blob = ma.collectEntries(allBuckets(8));
+    // Decode the entry count from the blob: first 4 bytes = u32 count.
+    uint32_t count = 0;
+    std::memcpy(&count, blob.data(), sizeof(count));
+    // The cap is 1000; some entries may be in different buckets, so the
+    // collected count should be <= 1000 (not all 1500).
+    EXPECT_LE(count, 1'000U);
+}
 } // namespace
 } // namespace cinder

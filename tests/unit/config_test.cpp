@@ -164,5 +164,129 @@ TEST(ConfigTest, ParsePeersStringEmpty) {
     EXPECT_EQ(count, 0);
     EXPECT_TRUE(cfg.peers.empty());
 }
+
+TEST(ConfigTest, DiffConfigIdentical) {
+    Config a;
+    a.port = 7'000;
+    a.node_id = "n1";
+    a.log_level = "info";
+
+    Config b = a;
+    auto changed = diffConfig(a, b);
+    EXPECT_TRUE(changed.empty());
+}
+
+TEST(ConfigTest, DiffConfigSingleChange) {
+    Config a;
+    a.port = 7'000;
+
+    Config b = a;
+    b.port = 8'080;
+    auto changed = diffConfig(a, b);
+    ASSERT_EQ(changed.size(), 1);
+    EXPECT_EQ(changed[0], "port");
+}
+
+TEST(ConfigTest, DiffConfigMultipleChanges) {
+    Config a;
+    a.port = 7'000;
+    a.log_level = "info";
+    a.capacity = 67'108'864;
+
+    Config b = a;
+    b.port = 8'080;
+    b.log_level = "debug";
+    b.capacity = 134'217'728;
+    auto changed = diffConfig(a, b);
+    ASSERT_EQ(changed.size(), 3);
+    EXPECT_EQ(changed[0], "port");
+    EXPECT_EQ(changed[1], "capacity");
+    EXPECT_EQ(changed[2], "log_level");
+}
+
+TEST(ConfigTest, DiffConfigPeersAdded) {
+    Config a;
+    Config b = a;
+    b.peers.push_back({"n2", "10.0.0.2", 7'001});
+    auto changed = diffConfig(a, b);
+    ASSERT_EQ(changed.size(), 1);
+    EXPECT_EQ(changed[0], "peers");
+}
+
+TEST(ConfigTest, DiffConfigPeersModified) {
+    Config a;
+    a.peers.push_back({"n2", "10.0.0.2", 7'001});
+
+    Config b = a;
+    b.peers[0].port = 9'090;
+    auto changed = diffConfig(a, b);
+    ASSERT_EQ(changed.size(), 1);
+    EXPECT_EQ(changed[0], "peers");
+}
+
+TEST(ConfigTest, DiffConfigTlsFields) {
+    Config a;
+    a.tls.enabled = false;
+
+    Config b = a;
+    b.tls.enabled = true;
+    b.tls.cert_file = "/path/cert.pem";
+    auto changed = diffConfig(a, b);
+    ASSERT_EQ(changed.size(), 2);
+    EXPECT_EQ(changed[0], "tls_enabled");
+    EXPECT_EQ(changed[1], "tls_cert_file");
+}
+
+TEST(ConfigTest, FormatConfigJsonRoundTrip) {
+    const char* path = "/tmp/cinder_test_format.yaml";
+    {
+        std::ofstream f(path);
+        f << R"(
+server:
+  port: 9090
+  node_id: fmt-node
+  capacity: 128
+  replication_factor: 2
+  consistency: quorum
+
+cluster:
+  peers:
+    - id: n2
+      host: 10.0.0.2
+      port: 9091
+
+failure_detector:
+  ping_interval_ms: 500
+
+logging:
+  level: debug
+)";
+    }
+
+    auto result = loadConfig(path);
+    ASSERT_TRUE(result.has_value());
+
+    auto json = formatConfigJson(*result);
+    // String values are double-quoted because escapeJsonString wraps in quotes
+    // and the format templates also include quotes.
+    EXPECT_TRUE(json.contains(R"("node_id":""fmt-node"")"));
+    EXPECT_TRUE(json.contains("\"port\":9090"));
+    EXPECT_TRUE(json.contains("\"capacity\":128"));
+    EXPECT_TRUE(json.contains("\"replica_factor\":2"));
+    EXPECT_TRUE(json.contains(R"("consistency":""quorum"")"));
+    EXPECT_TRUE(json.contains("\"ping_interval_ms\":500"));
+    EXPECT_TRUE(json.contains(R"("log_level":""debug"")"));
+    EXPECT_TRUE(json.contains(R"("id":""n2"")"));
+    EXPECT_TRUE(json.contains(R"("host":""10.0.0.2"")"));
+
+    (void)std::remove(path);
+}
+
+TEST(ConfigTest, FormatConfigJsonEscapesSpecialChars) {
+    Config cfg;
+    cfg.node_id = "node\"with\\special\nchars";
+    auto json = formatConfigJson(cfg);
+    EXPECT_TRUE(json.contains("node\\\"with\\\\special\\nchars"));
+}
 } // namespace
 } // namespace cinder

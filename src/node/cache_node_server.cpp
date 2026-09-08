@@ -401,6 +401,7 @@ CacheNodeServer::applyConfig() {
 
     auto new_config = loadConfig(config_path_);
     if (!new_config.has_value()) {
+        Logger::error("cinder config: reload failed reason={}", new_config.error().message());
         return;
     }
 

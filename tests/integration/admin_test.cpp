@@ -73,4 +73,15 @@ TEST(AdminTest, ConfigReloadReturnsOk) {
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
 }
+
+TEST(AdminTest, ShutdownReturnsOk) {
+    constexpr int K_PORT = 17'942;
+    NodeProcGuard node{spawnNode(K_PORT, "node1", "")};
+    ASSERT_TRUE(waitForPort(K_PORT));
+
+    cinder::net::Request req{.opcode = cinder::net::Opcode::AdminShutdown, .key = {}, .value = {}};
+    auto res = rawRequest(K_PORT, req);
+    ASSERT_TRUE(res.has_value());
+    EXPECT_EQ(res->status, cinder::Errc::OK);
+}
 } // namespace

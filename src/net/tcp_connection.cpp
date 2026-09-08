@@ -81,8 +81,12 @@ TcpConnection::startOnStrand() {
         ssl_stream_->async_handshake(asio::ssl::stream_base::server,
             asio::bind_executor(strand_, [this, self = shared_from_this()](std::error_code ec) {
             if (ec) {
-                std::error_code close_ec;
-                socket_.close(close_ec);
+                Logger::warn("cinder tcp_connection: TLS handshake failed err={}", ec.message());
+                if (metrics_) {
+                    metrics_->connectionMetrics().connections_closed.fetch_add(
+                        1, std::memory_order_relaxed);
+                }
+                closeConnection("TLS handshake failed");
                 return;
             }
             maybeRead();
@@ -229,6 +233,13 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
 
     resetIdleTimer();
     if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
+        Logger::warn("cinder tcp_connection: bad protocol header magic={:#x} version={:#x}",
+            std::to_integer<int>(read_buf_[0]),
+            std::to_integer<int>(read_buf_[1]));
+        if (metrics_) {
+            metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        closeConnection("bad protocol header");
         return;
     }
 
@@ -236,6 +247,11 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     std::memcpy(&net_len, &read_buf_[3], sizeof(net_len));
     payload_len_ = std::byteswap(net_len);
     if (payload_len_ > K_MAX_MESSAGE_SIZE || payload_len_ + K_FRAME_HEADER_SIZE > K_BUFFER_SIZE) {
+        Logger::warn("cinder tcp_connection: oversized payload len={}", payload_len_);
+        if (metrics_) {
+            metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        closeConnection("oversized payload");
         return;
     }
     doReadPayload(payload_len_);
@@ -384,11 +400,13 @@ TcpConnection::handleRequest(const Request& req) {
                     }
                 }
 
+                ring_.incrementLoad(node_id_);
                 auto self = shared_from_this();
                 repl_->readAsync(req.key,
                     replicas,
                     static_cast<size_t>(replica_factor_),
                     [this, self](Result<VersionedEntry> result) {
+                    ring_.decrementLoad(node_id_);
                     // Quorum completion lands on an arbitrary pool thread —
                     // hop back onto this connection's strand.
                     asio::post(strand_, [this, self, result = std::move(result)]() mutable {
@@ -450,6 +468,7 @@ TcpConnection::handleRequest(const Request& req) {
                     }
                 }
 
+                ring_.incrementLoad(node_id_);
                 auto self = shared_from_this();
                 repl_->writeAsync(req.key,
                     req.value,
@@ -457,6 +476,7 @@ TcpConnection::handleRequest(const Request& req) {
                     replicas,
                     mode_,
                     [this, self](Result<void> result) {
+                    ring_.decrementLoad(node_id_);
                     // Quorum completion lands on an arbitrary pool thread —
                     // hop back onto this connection's strand.
                     asio::post(strand_, [this, self, result]() {
@@ -470,7 +490,9 @@ TcpConnection::handleRequest(const Request& req) {
                 });
                 return; // response sent asynchronously from the write callback
             } else {
+                ring_.incrementLoad(node_id_);
                 auto result = store_.put(req.key, req.value, req.ttl);
+                ring_.decrementLoad(node_id_);
                 res.status = result.has_value() ? Errc::OK : result.error().code();
             }
 
@@ -481,7 +503,9 @@ TcpConnection::handleRequest(const Request& req) {
             break;
         }
         case Opcode::Del: {
+            ring_.incrementLoad(node_id_);
             store_.remove(req.key);
+            ring_.decrementLoad(node_id_);
             res.status = Errc::OK;
             Logger::trace("cinder tcp_connection: opcode={} key={} status={}",
                 static_cast<int>(req.opcode),
@@ -602,6 +626,12 @@ TcpConnection::sendResponse(const Response& res) {
     // Encode into the scratch buffer, then hand ownership to the write queue.
     auto result = encodeInto(res, encode_buf_);
     if (!result.has_value()) {
+        Logger::warn("cinder tcp_connection: encode failed opcode={}",
+            pending_opcode_.has_value() ? std::to_underlying(*pending_opcode_) : -1);
+        if (metrics_) {
+            metrics_->connectionMetrics().write_failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        closeConnection("encode failed");
         return;
     }
 

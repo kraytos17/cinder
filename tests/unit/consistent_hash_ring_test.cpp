@@ -235,5 +235,181 @@ TEST(ConsistentHashRingTest, AddNodeIdempotent) {
         EXPECT_EQ(ring.getNodes(key, 2).size(), 2);
     }
 }
+
+TEST(BoundedLoadTest, SingleNodeAlwaysReturnsThatNode) {
+    ConsistentHashRing ring(10, 1.0);
+    ring.addNode("node1");
+
+    for (int i = 0; i < 100; i++) {
+        auto key = "key" + std::to_string(i);
+        EXPECT_EQ(ring.getNodeBounded(key), "node1");
+    }
+}
+
+TEST(BoundedLoadTest, BalancedLoadDistributes) {
+    ConsistentHashRing ring(50, 1.0);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    // With no load, getNodeBounded behaves like getNode.
+    std::map<std::string, int> counts;
+    for (int i = 0; i < 10'000; i++) {
+        auto key = "key" + std::to_string(i);
+        counts[ring.getNodeBounded(key)]++;
+    }
+
+    EXPECT_NEAR(counts["node1"], 5'000, 1'500);
+    EXPECT_NEAR(counts["node2"], 5'000, 1'500);
+}
+
+TEST(BoundedLoadTest, OverloadedNodeSpills) {
+    ConsistentHashRing ring(50, 1.0);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    // Find a key that maps to node1 without load.
+    std::string spill_key;
+    for (int i = 0; i < 10'000; i++) {
+        auto key = "spill" + std::to_string(i);
+        if (ring.getNode(key) == "node1" && ring.getNode(key) != ring.getNodeBounded(key)) {
+            // Not useful yet — no load.
+        }
+        if (ring.getNode(key) == "node1") {
+            spill_key = key;
+            break;
+        }
+    }
+
+    ASSERT_FALSE(spill_key.empty());
+    // With no load, getNodeBounded returns node1.
+    EXPECT_EQ(ring.getNodeBounded(spill_key), "node1");
+
+    // Artificially overload node1 so its load exceeds the bounded limit.
+    // avg_load = 0, max_load = ceil(0 * 1.0) = 0, so load >= 1 triggers spillover.
+    ring.incrementLoad("node1");
+    ring.incrementLoad("node1");
+
+    // Now getNodeBounded should spill to node2.
+    EXPECT_EQ(ring.getNodeBounded(spill_key), "node2");
+
+    ring.decrementLoad("node1");
+    ring.decrementLoad("node1");
+}
+
+TEST(BoundedLoadTest, AllOverloadedWrapsAround) {
+    ConsistentHashRing ring(50, 1.0);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    // Overload both nodes.
+    for (int i = 0; i < 10; i++) {
+        ring.incrementLoad("node1");
+        ring.incrementLoad("node2");
+    }
+
+    // All overloaded — should still return a valid node (graceful degradation).
+    for (int i = 0; i < 100; i++) {
+        auto key = "key" + std::to_string(i);
+        auto node = ring.getNodeBounded(key);
+        EXPECT_TRUE(node == "node1" || node == "node2");
+    }
+    for (int i = 0; i < 10; i++) {
+        ring.decrementLoad("node1");
+        ring.decrementLoad("node2");
+    }
+}
+
+TEST(BoundedLoadTest, LoadCounterTracking) {
+    ConsistentHashRing ring(10, 1.0);
+    ring.addNode("node1");
+
+    EXPECT_EQ(ring.currentLoad("node1"), 0);
+    EXPECT_EQ(ring.totalLoad(), 0);
+
+    ring.incrementLoad("node1");
+    ring.incrementLoad("node1");
+    EXPECT_EQ(ring.currentLoad("node1"), 2);
+    EXPECT_EQ(ring.totalLoad(), 2);
+
+    ring.decrementLoad("node1");
+    EXPECT_EQ(ring.currentLoad("node1"), 1);
+    EXPECT_EQ(ring.totalLoad(), 1);
+
+    ring.decrementLoad("node1");
+    EXPECT_EQ(ring.currentLoad("node1"), 0);
+    EXPECT_EQ(ring.totalLoad(), 0);
+}
+
+TEST(BoundedLoadTest, BackwardCompatFactorZero) {
+    // When bounded_load_factor is 0 (default), getNodeBounded behaves like getNode.
+    ConsistentHashRing ring(50, 0.0);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    for (int i = 0; i < 100; i++) {
+        auto key = "key" + std::to_string(i);
+        EXPECT_EQ(ring.getNodeBounded(key), ring.getNode(key));
+    }
+}
+
+TEST(BoundedLoadTest, LoadTrackingPersistsAcrossMembershipChange) {
+    ConsistentHashRing ring(50, 1.0);
+    ring.addNode("node1");
+    ring.addNode("node2");
+
+    ring.incrementLoad("node1");
+    ring.incrementLoad("node1");
+    EXPECT_EQ(ring.currentLoad("node1"), 2);
+
+    // Adding a node should not reset existing load counters.
+    ring.addNode("node3");
+    EXPECT_EQ(ring.currentLoad("node1"), 2);
+
+    // Removing a node should erase its load counter.
+    ring.removeNode("node2");
+    EXPECT_EQ(ring.currentLoad("node2"), 0);
+    EXPECT_EQ(ring.currentLoad("node1"), 2);
+
+    ring.decrementLoad("node1");
+    ring.decrementLoad("node1");
+}
+
+TEST(BoundedLoadTest, ConcurrentBoundedReadsUnderLoadChurn) {
+    ConsistentHashRing ring(64, 1.0);
+    ring.addNode("n0");
+    ring.addNode("n1");
+
+    std::atomic<bool> stop{false};
+    std::vector<std::thread> threads;
+
+    // Readers: hammer getNodeBounded while load fluctuates.
+    for (int t = 0; t < 4; t++) {
+        threads.emplace_back([&ring, &stop, t]() {
+            for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
+                auto key = "k" + std::to_string(t) + "-" + std::to_string(i);
+                auto node = ring.getNodeBounded(key);
+                EXPECT_TRUE(node == "n0" || node == "n1");
+            }
+        });
+    }
+
+    // Load chummers: rapidly increment/decrement to stress the mutex.
+    for (int t = 0; t < 2; t++) {
+        threads.emplace_back([&ring, &stop]() {
+            for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
+                const auto* node = (i % 2 == 0) ? "n0" : "n1";
+                ring.incrementLoad(node);
+                ring.decrementLoad(node);
+            }
+        });
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    stop.store(true, std::memory_order_relaxed);
+    for (auto& th : threads) {
+        th.join();
+    }
+    EXPECT_EQ(ring.totalLoad(), 0);
+}
 } // namespace
 } // namespace cinder
