@@ -40,6 +40,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
+
       - name: Install just
         uses: extractions/setup-just@v2
 
@@ -94,6 +97,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
+
       - name: Cache FetchContent
         uses: actions/cache@v4
         with:
@@ -139,6 +145,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
+
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
         uses: extractions/setup-just@v2
@@ -191,6 +200,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
+
       - name: Install just
         uses: extractions/setup-just@v2
 
@@ -241,6 +253,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache clang-tidy clang-format cppcheck libssl-dev
+
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
         uses: extractions/setup-just@v2
@@ -298,6 +313,9 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
+
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Cache FetchContent
         uses: actions/cache@v4
