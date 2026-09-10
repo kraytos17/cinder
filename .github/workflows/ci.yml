@@ -1,0 +1,341 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.cache/fetchcontent
+
+jobs:
+  build-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: debug
+            label: GCC Debug
+          - preset: release
+            label: GCC Release
+          - preset: debug-clang
+            label: Clang Debug
+    runs-on: ubuntu-latest
+    name: ${{ matrix.label }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache libssl-dev
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-${{ matrix.preset }}-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-${{ matrix.preset }}-${{ github.sha }}
+          restore-keys: ccache-${{ matrix.preset }}-
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
+
+      - name: Unit tests
+        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
+
+      - name: Sim tests
+        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
+
+      - name: CLI tests
+        run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  feature-flags:
+    runs-on: ubuntu-latest
+    name: Feature Flags (TLS + gRPC)
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache libssl-dev
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-feature-flags-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-feature-flags-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-feature-flags-${{ github.sha }}
+          restore-keys: ccache-feature-flags-
+
+      - name: Configure (TLS + gRPC)
+        run: |
+          cmake -B build/feature-flags \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCINDER_ENABLE_TLS=ON \
+            -DCINDER_ENABLE_GRPC=ON \
+            -DCINDER_ENABLE_CRYPTO=ON
+
+      - name: Build
+        run: cmake --build build/feature-flags -j$(nproc)
+
+      - name: Unit tests
+        run: |
+          cd build/feature-flags
+          ctest -L unit --output-on-failure
+
+  sanitize:
+    runs-on: ubuntu-latest
+    name: Sanitizers (GCC)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache libssl-dev
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-sanitize-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-sanitize-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-sanitize-${{ github.sha }}
+          restore-keys: ccache-sanitize-
+
+      - name: Configure
+        run: cmake --preset ci-gcc
+
+      - name: Build
+        run: cmake --build --preset ci-gcc -j$(nproc)
+
+      - name: Unit tests
+        run: ctest --preset ci-gcc -L unit --output-on-failure
+
+      - name: Sim tests
+        run: ctest --preset ci-gcc -L sim --output-on-failure
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-sanitize
+          path: build/ci-gcc/build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  tsan:
+    runs-on: ubuntu-latest
+    name: TSan (GCC)
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache libssl-dev
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-tsan-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-tsan-
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-tsan-${{ github.sha }}
+          restore-keys: ccache-tsan-
+
+      - name: Configure
+        run: cmake --preset tsan
+
+      - name: Build
+        run: cmake --build --preset tsan -j$(nproc)
+
+      - name: Unit tests
+        run: ctest --preset tsan -L unit --output-on-failure
+
+      - name: Sim tests
+        run: ctest --preset tsan -L sim --output-on-failure
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-tsan
+          path: build/tsan/build/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  lint:
+    runs-on: ubuntu-latest
+    name: Lint (Clang + cppcheck)
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache clang-tidy clang-format cppcheck libssl-dev
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-lint-
+
+      - name: Configure (clang-tidy runs inline)
+        run: cmake --preset ci
+
+      - name: Build
+        run: cmake --build --preset ci -j$(nproc)
+
+      - name: Check formatting
+        run: just check-format
+
+      - name: cppcheck
+        run: just cppcheck
+
+  codeql:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Release
+            configure: cmake --preset release
+            build: cmake --build --preset release -j$(nproc)
+            category: release
+          - label: TLS + gRPC
+            configure: >
+              cmake -B build/codeql-tls-grpc -G Ninja
+              -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+              -DCMAKE_C_COMPILER_LAUNCHER=ccache
+              -DCINDER_ENABLE_TLS=ON
+              -DCINDER_ENABLE_GRPC=ON
+              -DCINDER_ENABLE_CRYPTO=ON
+            build: cmake --build build/codeql-tls-grpc -j$(nproc)
+            category: tls-grpc
+    runs-on: ubuntu-latest
+    name: CodeQL (${{ matrix.label }})
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build lld ccache libssl-dev
+
+      - name: Cache FetchContent
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FETCHCONTENT_BASE_DIR }}
+          key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-codeql-${{ matrix.category }}-
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: cpp
+
+      - name: Build
+        run: |
+          ${{ matrix.configure }}
+          ${{ matrix.build }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/variant:${{ matrix.category }}"
+
+  ci-success:
+    name: CI Success
+    if: always()
+    needs: [build-test, feature-flags, sanitize, tsan, lint, codeql]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check all jobs succeeded
+        run: |
+          echo "Job results:"
+          echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || \
+             [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+            echo ""
+            echo "One or more required jobs failed or were cancelled"
+            exit 1
+          fi
+          echo "All required jobs passed"
