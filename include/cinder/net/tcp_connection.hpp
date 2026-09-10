@@ -57,7 +57,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
         int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
         GossipManager* gossip = nullptr,
         std::shared_ptr<std::atomic<size_t>> conn_counter = nullptr,
-        AntiEntropyManager* anti_entropy = nullptr
+        AntiEntropyManager* anti_entropy = nullptr, std::string shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -87,20 +87,47 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
-    // Admin callback setters — called by TcpServer after construction.
+    // Admin opcode handlers, supplied by TcpServer after construction.
+    struct AdminCallbacks {
+        std::function<std::string()> info_getter;
+        std::function<std::string()> cluster_getter;
+        std::function<std::string()> ring_getter;
+        std::function<void()> compact_trigger;
+        std::function<void()> config_reload_trigger;
+        std::function<void()> shutdown_trigger;
+    };
+
     void setAdminCallbacks(std::function<std::string()> info_getter,
         std::function<std::string()> cluster_getter, std::function<std::string()> ring_getter,
         std::function<void()> compact_trigger, std::function<void()> config_reload_trigger,
         std::function<void()> shutdown_trigger) {
-        admin_info_getter_ = std::move(info_getter);
-        admin_cluster_getter_ = std::move(cluster_getter);
-        admin_ring_getter_ = std::move(ring_getter);
-        admin_compact_trigger_ = std::move(compact_trigger);
-        admin_config_reload_trigger_ = std::move(config_reload_trigger);
-        admin_shutdown_trigger_ = std::move(shutdown_trigger);
+        if (!admin_) {
+            admin_ = std::make_unique<AdminCallbacks>();
+        }
+
+        admin_->info_getter = std::move(info_getter);
+        admin_->cluster_getter = std::move(cluster_getter);
+        admin_->ring_getter = std::move(ring_getter);
+        admin_->compact_trigger = std::move(compact_trigger);
+        admin_->config_reload_trigger = std::move(config_reload_trigger);
+        admin_->shutdown_trigger = std::move(shutdown_trigger);
     }
 
     [[nodiscard]] auto isAlive() const -> bool { return socket_.is_open(); }
+
+    [[nodiscard]] auto isWriting() const -> bool { return flags_ & 0x01U; }
+
+    [[nodiscard]] auto isReading() const -> bool { return flags_ & 0x02U; }
+
+    [[nodiscard]] auto isDraining() const -> bool { return flags_ & 0x04U; }
+
+    void setWriting(bool v) { flags_ = static_cast<uint8_t>((flags_ & ~0x01U) | (v ? 0x01U : 0U)); }
+
+    void setReading(bool v) { flags_ = static_cast<uint8_t>((flags_ & ~0x02U) | (v ? 0x02U : 0U)); }
+
+    void setDraining(bool v) {
+        flags_ = static_cast<uint8_t>((flags_ & ~0x04U) | (v ? 0x04U : 0U));
+    }
 
   private:
 
@@ -109,7 +136,7 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     void doReadPayload(size_t len);
     void onPayload(std::error_code ec, size_t bytes);
 
-    void handleRequest(const Request& req);
+    void handleRequest(const Request& req, std::string_view auth_token);
     void sendResponse(const Response& res);
 
     void doWrite();
@@ -126,29 +153,17 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     template <typename ConstBufferSequence, typename Handler>
     void doAsyncWrite(const ConstBufferSequence& buf, Handler handler);
 
-    // Hot path: socket + control flags in the same cache line.
     alignas(64) tcp::socket socket_;
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::stream<tcp::socket&>> ssl_stream_;
 #endif
     size_t payload_len_ = 0;
-    bool writing_ = false;
-    bool reading_ = false;
-    // True once drain() is called: no new reads are issued, and the connection
-    // closes once the in-flight request and its response write complete.
-    bool draining_ = false;
-    // Latency instrumentation: set when a request is dispatched, consumed by
-    // sendResponse() to record per-opcode handling latency. Only touched
-    // on-strand, so no locking required.
+    uint8_t flags_ = 0; // bit 0: writing_, bit 1: reading_, bit 2: draining_
     std::optional<Opcode> pending_opcode_;
     std::chrono::steady_clock::time_point request_start_{};
-
-    // Serializes this connection's entire handler chain (read state machine,
-    // write queue, encode scratch). With a pooled io_context the repl_* quorum
-    // callbacks and timer-driven completions land on arbitrary threads; every
-    // async handler is bound to this strand and cross-component continuations
-    // are posted onto it, so reading_/writing_/write_queue_/encode_buf_/read_buf_
-    // are only ever touched on-strand.
+    // Serializes this connection's handler chain. Completion handlers from
+    // the io_context thread pool are dispatched through this strand, so all
+    // connection state below is accessed from a single logical thread.
     asio::strand<asio::any_io_executor> strand_;
     asio::steady_timer idle_timer_;
 
@@ -161,20 +176,17 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     std::string_view node_id_;
     int replica_factor_;
     ConsistencyMode mode_;
+    // Shared secret for HMAC-based node authentication. Empty disables auth.
+    std::string shared_secret_;
 
-    std::array<std::byte, K_BUFFER_SIZE> read_buf_;
     std::deque<std::vector<std::byte>> write_queue_;
     size_t write_queue_bytes_ = 0;
-    std::vector<std::byte> encode_buf_; // scratch; pre-allocated for typical requests
+    std::vector<std::byte> encode_buf_; // Scratch buffer, recycled across writes.
     std::shared_ptr<std::atomic<size_t>> conn_counter_;
     MetricsCollector* metrics_ = nullptr;
+    // Admin opcode callbacks, populated by TcpServer after construction.
+    std::unique_ptr<AdminCallbacks> admin_;
 
-    // Admin opcode callbacks — populated by TcpServer from CacheNodeServer.
-    std::function<std::string()> admin_info_getter_;
-    std::function<std::string()> admin_cluster_getter_;
-    std::function<std::string()> admin_ring_getter_;
-    std::function<void()> admin_compact_trigger_;
-    std::function<void()> admin_config_reload_trigger_;
-    std::function<void()> admin_shutdown_trigger_;
+    std::array<std::byte, K_BUFFER_SIZE> read_buf_{};
 };
 } // namespace cinder::net

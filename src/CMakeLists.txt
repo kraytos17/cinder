@@ -1,6 +1,7 @@
 set(CINDER_CORE_SOURCES
     common/tracing.cpp
     common/config.cpp
+    common/hmac.cpp
     common/metrics.cpp
     store/lru_store.cpp
     store/lfu_store.cpp

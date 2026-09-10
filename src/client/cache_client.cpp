@@ -62,7 +62,7 @@ auto
 CacheClient::set(const std::string& key, const std::string& value, std::optional<milliseconds> ttl)
     -> Result<void> {
     Span span("client.set");
-    net::Request req{net::Opcode::Set, key, value, ttl};
+    net::Request req{.opcode = net::Opcode::Set, .key = key, .value = value, .ttl = ttl};
     return sendToOwner(key, req).and_then([](const net::Response& res) -> Result<void> {
         if (res.status != Errc::OK) {
             return err(Error(res.status));
@@ -74,7 +74,7 @@ CacheClient::set(const std::string& key, const std::string& value, std::optional
 auto
 CacheClient::get(const std::string& key) -> std::optional<std::string> {
     Span span("client.get");
-    net::Request req{net::Opcode::Get, key, {}, std::nullopt};
+    net::Request req{.opcode = net::Opcode::Get, .key = key, .value = {}};
     return sendToOwner(key, req).transform([](net::Response res) {
         return std::move(res.value);
     }).value_or(std::nullopt);
@@ -83,7 +83,7 @@ CacheClient::get(const std::string& key) -> std::optional<std::string> {
 auto
 CacheClient::remove(const std::string& key) -> bool {
     Span span("client.remove");
-    net::Request req{net::Opcode::Del, key, {}, std::nullopt};
+    net::Request req{.opcode = net::Opcode::Del, .key = key, .value = {}};
     return sendToOwner(key, req)
         .and_then([](const net::Response& res) -> Result<bool> {
         return ok(res.status == Errc::OK);
@@ -105,7 +105,7 @@ CacheClient::multiGet(const std::vector<std::string>& keys)
         std::vector<net::Request> reqs;
         reqs.reserve(node_keys.size());
         for (const auto& key : node_keys) {
-            reqs.push_back({net::Opcode::Get, key, {}, std::nullopt});
+            reqs.push_back({.opcode = net::Opcode::Get, .key = key, .value = {}});
         }
 
         Result<std::vector<net::Response>> res =

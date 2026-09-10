@@ -41,10 +41,10 @@ struct RebalanceNode {
             }
             VersionedEntry e;
             e.value = req.value;
-            e.version = req.version;
+            e.setVersion(req.version);
             e.writer_node_hash = req.writer_node_hash;
             if (req.expires_at.has_value()) {
-                e.has_ttl = true;
+                e.setHasTtl(true);
                 e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE

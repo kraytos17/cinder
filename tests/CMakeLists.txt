@@ -30,6 +30,7 @@ cinder_add_test(cinder_unit_tests
     unit/error_provenance_test.cpp
     unit/lfu_concurrent_test.cpp
     unit/metrics_test.cpp
+    unit/auth_test.cpp
     sim/sim_clock.cpp
 )
 gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")

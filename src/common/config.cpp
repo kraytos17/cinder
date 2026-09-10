@@ -75,6 +75,9 @@ formatConfigJson(const Config& cfg) -> std::string {
     out += "\"snapshot_interval_s\":" + std::to_string(cfg.snapshot_interval_s) + ",";
     out += "\"max_wal_entries\":" + std::to_string(cfg.max_wal_entries) + ",";
     out += "\"tls_enabled\":" + std::string(cfg.tls.enabled ? "true" : "false") + ",";
+    out +=
+        "\"auth_enabled\":" + std::string(cfg.auth.shared_secret.empty() ? "false" : "true") + ",";
+
     out += "\"metrics_port\":" + std::to_string(cfg.metrics_port) + ",";
     out += "\"grpc_port\":" + std::to_string(cfg.grpc_port) + ",";
     out += R"("log_level":")" + escapeJsonString(cfg.log_level) + "\",";
@@ -162,6 +165,9 @@ diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::str
     if (old_cfg.tls.ca_file != new_cfg.tls.ca_file) {
         changed.emplace_back("tls_ca_file");
     }
+    if (old_cfg.auth.shared_secret != new_cfg.auth.shared_secret) {
+        changed.emplace_back("auth_shared_secret");
+    }
     if (old_cfg.log_level != new_cfg.log_level) {
         changed.emplace_back("log_level");
     }
@@ -237,6 +243,10 @@ loadConfig(const std::string& path) -> Result<Config> {
         cfg.tls.cert_file = tls["cert_file"].as<std::string>(cfg.tls.cert_file);
         cfg.tls.key_file = tls["key_file"].as<std::string>(cfg.tls.key_file);
         cfg.tls.ca_file = tls["ca_file"].as<std::string>(cfg.tls.ca_file);
+    }
+    // Auth
+    if (auto auth = root["auth"]) {
+        cfg.auth.shared_secret = auth["shared_secret"].as<std::string>(cfg.auth.shared_secret);
     }
     // Logging
     if (auto log = root["logging"]) {
@@ -317,6 +327,9 @@ formatNodeInfoJson(const NodeId& node_id, const Config& config, size_t store_siz
     out += "\"anti_entropy_interval_ms\":" + std::to_string(config.anti_entropy_interval_ms) + ",";
     out += "\"anti_entropy_buckets\":" + std::to_string(config.anti_entropy_buckets) + ",";
     out += "\"tls_enabled\":" + std::string(config.tls.enabled ? "true" : "false") + ",";
+    out += "\"auth_enabled\":" + std::string(config.auth.shared_secret.empty() ? "false" : "true")
+           + ",";
+
     out += R"("log_level":")" + escapeJsonString(config.log_level) + "\",";
     out += "\"peers\":[";
     for (size_t i = 0; i < config.peers.size(); ++i) {

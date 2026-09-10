@@ -58,7 +58,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
               .max_wal_entries = options.max_wal_entries,
           },
           *store_, &clock_),
-      transport_(io_
+      transport_(io_, options.node_id, options.shared_secret
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -77,7 +77,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
           options.anti_entropy_buckets, &metrics_),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_,
-          [this]() { return formatConfigJson(current_config_); }, &anti_entropy_
+          [this]() { return formatConfigJson(current_config_); }, &anti_entropy_,
+          options.shared_secret
 #ifdef CINDER_ENABLE_TLS
           ,
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -126,8 +127,8 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         .info_getter = [this]() -> std::string {
         return formatNodeInfoJson(node_id_,
             current_config_,
-            metrics_.shardMetrics().current_bytes.load(),
-            metrics_.shardMetrics().current_entries.load());
+            metrics_.shardMetrics().live.current_bytes.load(),
+            metrics_.shardMetrics().live.current_entries.load());
     },
         .cluster_getter = [this]() -> std::string { return formatClusterJson(table_.snapshot()); },
         .ring_getter = [this]() -> std::string { return formatRingJson(node_id_); },

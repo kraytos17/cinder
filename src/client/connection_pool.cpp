@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/hmac.hpp"
 #include "cinder/common/tracing.hpp"
 
 using asio::async_connect;
@@ -27,13 +28,16 @@ poolError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Er
 
 namespace cinder {
 
-ConnectionPool::ConnectionPool(const ClusterConfig& config, io_context& io
+ConnectionPool::ConnectionPool(
+    const ClusterConfig& config, io_context& io, std::string node_id, std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
 #endif
     )
-    : io_(io)
+    : io_(io),
+      node_id_(std::move(node_id)),
+      shared_secret_(std::move(shared_secret))
 #ifdef CINDER_ENABLE_TLS
       ,
       ssl_ctx_(ssl_ctx)
@@ -409,7 +413,12 @@ ConnectionPool::sendAsync(const NodeId& node_id, const net::Request& req,
         }
     }
 
-    auto encoded = net::encode(req);
+    std::string auth_token;
+    if (!shared_secret_.empty() && !node_id_.empty()) {
+        auth_token = generateAuthToken(shared_secret_, node_id_);
+    }
+
+    auto encoded = net::encode(req, auth_token);
     if (!encoded.has_value()) {
         on_done(err<net::Response>(encoded.error()));
         return;
@@ -449,8 +458,12 @@ ConnectionPool::sendBatchAsync(const NodeId& node_id, const std::vector<net::Req
 
     std::vector<std::vector<std::byte>> all_data;
     all_data.reserve(reqs.size());
+    std::string auth_token;
+    if (!shared_secret_.empty() && !node_id_.empty()) {
+        auth_token = generateAuthToken(shared_secret_, node_id_);
+    }
     for (const auto& req : reqs) {
-        auto encoded = net::encode(req);
+        auto encoded = net::encode(req, auth_token);
         if (!encoded.has_value()) {
             on_done(err<std::vector<net::Response>>(encoded.error()));
             return;

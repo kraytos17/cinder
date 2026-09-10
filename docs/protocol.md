@@ -1,4 +1,4 @@
-# Cinder Wire Protocol v4
+# Cinder Wire Protocol v5
 
 Binary, length-prefixed, request-response protocol over TCP. All multi-byte
 integers on the wire are **big-endian** (network byte order). On-disk formats
@@ -12,7 +12,7 @@ compile time via `consteval` and verified with `static_assert`.
 | Offset | Size | Field         | Description |
 |--------|------|---------------|--------------|
 | 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
-| 1      | 1    | `version`     | `0x04` |
+| 1      | 1    | `version`     | `0x05` |
 | 2      | 1    | `opcode`      | Request: 1–16 (see [Opcodes](#opcodes)). Response: `0x00` |
 | 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
@@ -35,16 +35,17 @@ depending on which flags are set.
 | `flags`             | 1    | always |
 | `ttl_ms`            | 4    | `flags & 0x01` |
 | `expires_at_ms`     | 8    | `flags & 0x02` |
-| `trace_id`          | 8    | `flags & 0x04` |
-| `span_id`           | 8    | `flags & 0x04` |
 | `version`           | 8    | always |
 | `writer_node_hash`  | 8    | always |
 | `key_len`           | 4    | always |
 | `key`               | N    | always (may be empty) |
 | `val_len`           | 4    | always |
 | `value`             | M    | always (may be empty) |
+| `trace_id`          | 8    | `flags & 0x04` |
+| `span_id`           | 8    | `flags & 0x04` |
+| `auth_token`        | 32   | `flags & 0x08` |
 
-- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`; bit 2: `has_trace`.
+- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`; bit 2: `has_trace`; bit 3: `has_auth`.
 - **`ttl_ms`** (`uint32`) — relative TTL in milliseconds. Sent by clients on
   `SET`; the server converts it to an absolute expiry using its own clock.
 - **`expires_at_ms`** (`uint64`) — absolute wall-clock expiry (Unix epoch ms).
@@ -63,6 +64,13 @@ depending on which flags are set.
   flag ignores the trailing 16 bytes (backward-compatible: old nodes treat the
   extra bytes as part of the value field and reject via `InvalidArgument`,
   but forward-compatible nodes skip over unknown trailing data).
+- **`auth_token`** (32 bytes) — HMAC-SHA256 node authentication token. When
+  `shared_secret` is configured on the server, internal opcodes (REPLICATE,
+  HINT, GOSSIP, ANTI_ENTROPY_*, ADMIN_*) must include this field. The token
+  is `HMAC-SHA256(shared_secret, node_id + ":" + unix_seconds/10)`, truncated
+  to 10-second windows for clock-skew tolerance. Client opcodes (GET, SET,
+  DEL, PING) skip auth. When `shared_secret` is empty, the field is omitted
+  and no authentication is performed.
 - **`version`** (`uint64`) — monotonic LWW version. Meaningful on
   `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
 - **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
@@ -105,10 +113,10 @@ The opcode byte on a response frame is always `0x00`.
 | `version`           | 8    | `flags & 0x01` |
 | `writer_node_hash`  | 8    | `flags & 0x01` |
 | `expires_at`        | 8    | `flags & 0x02` |
-| `trace_id`          | 8    | `flags & 0x04` |
-| `span_id`           | 8    | `flags & 0x04` |
 | `has_val`           | 4    | always |
 | `value`             | M    | `has_val != 0` |
+| `trace_id`          | 8    | `flags & 0x04` |
+| `span_id`           | 8    | `flags & 0x04` |
 
 The `flags` byte has been present unconditionally since protocol v3. Bit 0
 carries `version` + `writer_node_hash` (used by `GET_VERSIONED` responses for
@@ -130,6 +138,7 @@ server echoes the client's trace context back and propagates it to replicas.
 | 6 | `InternalError` | Server internal error |
 | 7 | `Timeout` | Operation timed out |
 | 8 | `NotReady` | Node not ready; body may carry `"moved to <node>"` |
+| 9 | `PermissionDenied` | Auth failed — missing or invalid `auth_token` on an internal opcode |
 
 `NotReady` covers two distinct cases: ownership redirects (value field carries
 `"moved to <node-id>"`) and failed quorum writes.
@@ -158,7 +167,7 @@ value                   62 61 72                 "bar"
 
 ```
 Request:
-  C1 03 02 00 00 00 23     header: magic=0xC1, v=3, op=SET, len=35
+  C1 05 02 00 00 00 23     header: magic=0xC1, v=5, op=SET, len=35
   01                        flags: has_ttl=1
   00 00 00 1E              ttl_ms: 30,000
   00 00 00 00 00 00 00 02  version: 2
@@ -169,7 +178,7 @@ Request:
   62 61 72                 value: "bar"
 
 Response:
-  C1 03 00 00 00 00 09     header: magic=0xC1, v=3, op=0, len=9
+  C1 05 00 00 00 00 09     header: magic=0xC1, v=5, op=0, len=9
   00                        status: OK
   00                        flags: no version metadata, no expires_at
   00 00 00 01              has_val: 1
@@ -181,44 +190,116 @@ With trace (flags = 0x05: has_ttl + has_trace), the request gains 16 bytes
 
 ```
 Request:
-  C1 03 02 00 00 00 33     header: magic=0xC1, v=3, op=SET, len=51
+  C1 05 02 00 00 00 33     header: magic=0xC1, v=5, op=SET, len=51
   05                        flags: has_ttl=1, has_trace=1
   00 00 00 1E              ttl_ms: 30,000
-  00 00 00 00 00 00 00 07  trace_id: 7
-  00 00 00 00 00 00 00 0A  span_id: 10
   00 00 00 00 00 00 00 02  version: 2
   00 00 00 00 00 00 00 42  writer_node_hash: 66
   00 00 00 03              key_len: 3
   66 6F 6F                 key: "foo"
   00 00 00 03              val_len: 3
   62 61 72                 value: "bar"
+  00 00 00 00 00 00 00 07  trace_id: 7
+  00 00 00 00 00 00 00 0A  span_id: 10
 
 Response:
-  C1 03 00 00 00 00 19     header: magic=0xC1, v=3, op=0, len=25
+  C1 05 00 00 00 00 19     header: magic=0xC1, v=5, op=0, len=25
   00                        status: OK
   04                        flags: has_trace=1
-  00 00 00 00 00 00 00 07  trace_id: 7 (echoed)
-  00 00 00 00 00 00 00 0A  span_id: 10 (echoed)
   00 00 00 01              has_val: 1
   62 61 72                 value: "bar"
+  00 00 00 00 00 00 00 07  trace_id: 7 (echoed)
+  00 00 00 00 00 00 00 0A  span_id: 10 (echoed)
 ```
 
 A `GET_VERSIONED` response would instead set `flags = 0x01` and include the
 16 bytes of version metadata between `flags` and `has_val`.
 
+## Worked Example: Auth Token on `REPLICATE`
+
+With trace + auth (flags = 0x0C: has_trace + has_auth), the request gains
+16 bytes (trace) + 32 bytes (auth) = 48 extra bytes:
+
+```
+Request:
+  C1 05 06 00 00 00 57     header: magic=0xC1, v=5, op=REPLICATE, len=87
+  0C                        flags: has_trace=1, has_auth=1
+  00 00 00 00 00 00 00 02  version: 2
+  00 00 00 00 00 00 00 42  writer_node_hash: 66
+  00 00 00 03              key_len: 3
+  66 6F 6F                 key: "foo"
+  00 00 00 03              val_len: 3
+  62 61 72                 value: "bar"
+  00 00 00 00 00 00 00 07  trace_id: 7
+  00 00 00 00 00 00 00 0A  span_id: 10
+  AB AB AB AB AB AB AB AB  auth_token: 32-byte HMAC-SHA256
+  AB AB AB AB AB AB AB AB
+  AB AB AB AB AB AB AB AB
+  AB AB AB AB AB AB AB AB
+```
+
+The auth token is appended after trace context at the end of the payload. The
+server validates it against the configured `shared_secret` before processing
+the request.
+
 ## Trace Context
 
 When `flags & 0x04` is set, 16 bytes of trace context (`trace_id` + `span_id`,
-both `uint64`) are appended after the conditional `ttl_ms`/`expires_at_ms`
-fields in requests and after `expires_at` in responses. This is
-backward-compatible: older nodes that do not recognize bit 2 will read the
-extra 16 bytes as part of the next field and reject the frame, while
-forward-compatible nodes skip unknown trailing bytes.
+both `uint64`) are appended at the end of the payload, after the `value`
+field in requests and after `value` in responses. This placement ensures
+backward compatibility: old nodes validate the fixed-layout prefix and reject
+frames with unknown trailing data, while new nodes extract the optional
+trailing context.
 
 Trace context enables end-to-end request correlation across the client, server,
 and replication layer. The server generates a `trace_id` when one is not
 provided (`trace_id == 0`), echoes it in the response, and propagates it to
 replicas on `REPLICATE`/`HINT`.
+
+## Node Authentication
+
+When `flags & 0x08` is set, 32 bytes of authentication data (`auth_token`,
+an HMAC-SHA256 digest) are appended at the end of the payload, after trace
+context when present. Old nodes validate the fixed-layout prefix and reject
+frames with unknown trailing data.
+
+Authentication is enforced on **internal opcodes only** (REPLICATE, HINT,
+GOSSIP, ANTI_ENTROPY_DIGEST, ANTI_ENTROPY_SYNC, and ADMIN_*). Client opcodes
+(GET, SET, DEL, PING) are not authenticated — they are protected by the
+ring-ownership redirect mechanism instead.
+
+The token is computed as:
+```
+auth_token = HMAC-SHA256(shared_secret, node_id + ":" + (unix_seconds / 10))
+```
+
+The timestamp is truncated to 10-second windows so nodes with slight clock
+skew (up to ~30 seconds) can still authenticate. The server checks the
+current window and the two preceding windows.
+
+When `shared_secret` is empty or not configured, no authentication is performed
+and the `auth_token` field is omitted from requests.
+
+Configuration:
+```yaml
+auth:
+  shared_secret: "my-cluster-secret"
+```
+
+Or via CLI: `cinderd --shared-secret "my-cluster-secret"`
+
+A node with `shared_secret` configured will reject any internal request that
+is missing a valid `auth_token` with status code `PermissionDenied` (9).
+
+### Version Bump
+
+Protocol v5 (introduced in this version) is **not backward-compatible** with
+v4. The version check uses strict equality — a v5 node will reject v4 frames
+and vice versa. All nodes in a cluster must be upgraded simultaneously.
+
+The only wire-format change from v4 to v5 is the addition of `K_FLAG_HAS_AUTH`
+(bit 3) and the `auth_token` field. Nodes running v4 will reject v5 frames
+at the version check before reaching the flags byte.
 
 ## Anti-Entropy Payloads
 

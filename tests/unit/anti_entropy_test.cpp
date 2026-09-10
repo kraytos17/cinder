@@ -34,7 +34,7 @@ auto
 makeEntry(std::string value, Version version, uint64_t writer = 7) -> VersionedEntry {
     VersionedEntry e;
     e.value = std::move(value);
-    e.version = version;
+    e.setVersion(version);
     e.writer_node_hash = writer;
     return e;
 }
@@ -147,7 +147,7 @@ TEST(AntiEntropySyncTest, CollectApplyRoundTrip) {
     auto e1 = b.store.getVersioned("k1");
     ASSERT_TRUE(e1.has_value());
     EXPECT_EQ(e1->value, "v1");
-    EXPECT_EQ(e1->version, 10);
+    EXPECT_EQ(e1->version(), 10);
     auto e2 = b.store.getVersioned("k2");
     ASSERT_TRUE(e2.has_value());
     EXPECT_EQ(e2->value, "v2");
@@ -183,7 +183,7 @@ TEST(AntiEntropySyncTest, TtlPreserved) {
     Node a;
     Node b;
     VersionedEntry e = makeEntry("ephemeral", 3);
-    e.has_ttl = true;
+    e.setHasTtl(true);
     e.expires_at = a.clock.now() + seconds(60);
     ASSERT_TRUE(a.store.putVersioned("tk", std::move(e)).has_value());
 
@@ -194,7 +194,7 @@ TEST(AntiEntropySyncTest, TtlPreserved) {
     auto got = b.store.getVersioned("tk");
     ASSERT_TRUE(got.has_value());
     EXPECT_EQ(got->value, "ephemeral");
-    EXPECT_TRUE(got->has_ttl);
+    EXPECT_TRUE(got->hasTtl());
 }
 
 TEST(AntiEntropyPartnerTest, NoPartnerWhenSingleReplica) {

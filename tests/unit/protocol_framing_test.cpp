@@ -34,10 +34,10 @@ TEST(ProtocolTest, EncodeDecodeGet) {
 
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded.value().opcode, Opcode::Get);
-    EXPECT_EQ(decoded.value().key, "mykey");
-    EXPECT_TRUE(decoded.value().value.empty());
-    EXPECT_FALSE(decoded.value().ttl.has_value());
+    EXPECT_EQ(decoded.value().req.opcode, Opcode::Get);
+    EXPECT_EQ(decoded.value().req.key, "mykey");
+    EXPECT_TRUE(decoded.value().req.value.empty());
+    EXPECT_FALSE(decoded.value().req.ttl.has_value());
 }
 
 TEST(ProtocolTest, EncodeDecodeSet) {
@@ -52,11 +52,11 @@ TEST(ProtocolTest, EncodeDecodeSet) {
 
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded.value().opcode, Opcode::Set);
-    EXPECT_EQ(decoded.value().key, "k");
-    EXPECT_EQ(decoded.value().value, "v");
-    ASSERT_TRUE(decoded.value().ttl.has_value());
-    EXPECT_EQ(decoded.value().ttl->count(), 5'000);
+    EXPECT_EQ(decoded.value().req.opcode, Opcode::Set);
+    EXPECT_EQ(decoded.value().req.key, "k");
+    EXPECT_EQ(decoded.value().req.value, "v");
+    ASSERT_TRUE(decoded.value().req.ttl.has_value());
+    EXPECT_EQ(decoded.value().req.ttl->count(), 5'000);
 }
 
 TEST(ProtocolTest, EncodeDecodeDel) {
@@ -69,8 +69,8 @@ TEST(ProtocolTest, EncodeDecodeDel) {
 
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded.value().opcode, Opcode::Del);
-    EXPECT_EQ(decoded.value().key, "delete_me");
+    EXPECT_EQ(decoded.value().req.opcode, Opcode::Del);
+    EXPECT_EQ(decoded.value().req.key, "delete_me");
 }
 
 TEST(ProtocolTest, DecodeBadMagic) {
@@ -200,9 +200,9 @@ TEST(ProtocolTest, EncodeDecodeExpiresAt) {
     ASSERT_TRUE(encoded.has_value());
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_TRUE(decoded.value().expires_at.has_value());
-    EXPECT_EQ(*decoded.value().expires_at, *req.expires_at);
-    EXPECT_FALSE(decoded.value().ttl.has_value());
+    EXPECT_TRUE(decoded.value().req.expires_at.has_value());
+    EXPECT_EQ(*decoded.value().req.expires_at, *req.expires_at);
+    EXPECT_FALSE(decoded.value().req.ttl.has_value());
 }
 
 TEST(ProtocolTest, EncodeDecodeExpiresAtAbsent) {
@@ -216,9 +216,9 @@ TEST(ProtocolTest, EncodeDecodeExpiresAtAbsent) {
     ASSERT_TRUE(encoded.has_value());
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_FALSE(decoded.value().expires_at.has_value());
-    ASSERT_TRUE(decoded.value().ttl.has_value());
-    EXPECT_EQ(decoded.value().ttl->count(), 5'000);
+    EXPECT_FALSE(decoded.value().req.expires_at.has_value());
+    ASSERT_TRUE(decoded.value().req.ttl.has_value());
+    EXPECT_EQ(decoded.value().req.ttl->count(), 5'000);
 }
 
 TEST(ProtocolTest, EncodeDecodeGetVersionedRequest) {
@@ -230,8 +230,8 @@ TEST(ProtocolTest, EncodeDecodeGetVersionedRequest) {
     ASSERT_TRUE(encoded.has_value());
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded.value().opcode, Opcode::GetVersioned);
-    EXPECT_EQ(decoded.value().key, "my-key");
+    EXPECT_EQ(decoded.value().req.opcode, Opcode::GetVersioned);
+    EXPECT_EQ(decoded.value().req.key, "my-key");
 }
 
 TEST(ProtocolTest, EncodeDecodeVersionedResponse) {
@@ -313,8 +313,8 @@ TEST(ProtocolTest, EncodeEmptyKey) {
 
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded.value().key, "");
-    EXPECT_EQ(decoded.value().value, "value");
+    EXPECT_EQ(decoded.value().req.key, "");
+    EXPECT_EQ(decoded.value().req.value, "value");
 }
 
 TEST(ProtocolTest, EncodeBothTtlAndExpiresAt) {
@@ -331,8 +331,8 @@ TEST(ProtocolTest, EncodeBothTtlAndExpiresAt) {
     auto decoded = decode(encoded.value());
     ASSERT_TRUE(decoded.has_value());
     // Both should be present in decoded request
-    EXPECT_TRUE(decoded.value().ttl.has_value());
-    EXPECT_TRUE(decoded.value().expires_at.has_value());
+    EXPECT_TRUE(decoded.value().req.ttl.has_value());
+    EXPECT_TRUE(decoded.value().req.expires_at.has_value());
 }
 
 TEST(ProtocolTest, DecodeTruncatedResponse) {
@@ -489,8 +489,8 @@ TEST(ProtocolTest, EncodeDecodeRequestWithTrace) {
     ASSERT_TRUE(encoded.has_value());
     auto decoded = decode(*encoded);
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded->trace_id, 0xDEADBEEF);
-    EXPECT_EQ(decoded->span_id, 0x12345678);
+    EXPECT_EQ(decoded->req.trace_id, 0xDEADBEEF);
+    EXPECT_EQ(decoded->req.span_id, 0x12345678);
 }
 
 TEST(ProtocolTest, EncodeDecodeResponseWithTrace) {
@@ -517,8 +517,8 @@ TEST(ProtocolTest, RequestWithoutTraceHasZeroIds) {
     ASSERT_TRUE(encoded.has_value());
     auto decoded = decode(*encoded);
     ASSERT_TRUE(decoded.has_value());
-    EXPECT_EQ(decoded->trace_id, 0);
-    EXPECT_EQ(decoded->span_id, 0);
+    EXPECT_EQ(decoded->req.trace_id, 0);
+    EXPECT_EQ(decoded->req.span_id, 0);
 }
 
 TEST(ProtocolTest, ResponseWithoutTraceHasZeroIds) {

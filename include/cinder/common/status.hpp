@@ -21,6 +21,7 @@ enum class Errc : uint8_t {
     InternalError,
     Timeout,
     NotReady,
+    PermissionDenied,
 };
 
 class Error {
@@ -114,6 +115,8 @@ toString(Errc code) -> std::string_view {
             return "(timeout)";
         case Errc::NotReady:
             return "(not ready)";
+        case Errc::PermissionDenied:
+            return "(permission denied)";
     }
     return "(unknown)";
 }

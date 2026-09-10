@@ -30,7 +30,7 @@ namespace cinder {
 class TcpTransport final : public Transport {
   public:
 
-    explicit TcpTransport(io_context& io
+    explicit TcpTransport(io_context& io, std::string node_id = {}, std::string shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx = nullptr
@@ -88,6 +88,8 @@ class TcpTransport final : public Transport {
         -> asio::awaitable<Result<net::Response>>;
 
     io_context& io_;
+    std::string node_id_;
+    std::string shared_secret_;
 #ifdef CINDER_ENABLE_TLS
     asio::ssl::context* ssl_ctx_ = nullptr;
 #endif

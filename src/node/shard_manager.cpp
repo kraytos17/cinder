@@ -115,9 +115,9 @@ ShardManager::makeReplicateRequest(const std::string& key, const VersionedEntry&
     req.opcode = net::Opcode::Replicate;
     req.key = key;
     req.value = entry.value;
-    req.version = entry.version;
+    req.version = entry.version();
     req.writer_node_hash = entry.writer_node_hash;
-    if (entry.has_ttl) {
+    if (entry.hasTtl()) {
         req.expires_at = toSystemExpiry(clock_, entry.expires_at);
     }
     return req;

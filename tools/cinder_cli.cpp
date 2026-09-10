@@ -96,7 +96,9 @@ main(int argc, char* argv[]) -> int {
 
     io_context io;
     cinder::ConnectionPool pool(config,
-        io
+        io,
+        {},
+        {}
 #ifdef CINDER_ENABLE_TLS
         ,
         ssl_ctx ? &*ssl_ctx : nullptr

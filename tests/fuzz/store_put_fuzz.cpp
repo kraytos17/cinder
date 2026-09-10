@@ -59,8 +59,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 auto v = payload.substr(1);
                 cinder::VersionedEntry entry;
                 entry.value = std::string(v);
-                entry.version = 0;
-                std::memcpy(&entry.version, data + 1, sizeof(uint64_t));
+                entry.version_and_ttl = 0;
+                std::memcpy(&entry.version_and_ttl, data + 1, sizeof(uint64_t));
                 entry.writer_node_hash = 0;
                 std::memcpy(&entry.writer_node_hash, data + 9, sizeof(uint64_t));
                 // NOLINTNEXTLINE
@@ -141,8 +141,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 auto v = payload.substr(1);
                 cinder::VersionedEntry entry;
                 entry.value = std::string(v);
-                entry.version = 0;
-                std::memcpy(&entry.version, data + 1, sizeof(uint64_t));
+                entry.version_and_ttl = 0;
+                std::memcpy(&entry.version_and_ttl, data + 1, sizeof(uint64_t));
                 entry.writer_node_hash = 0;
                 std::memcpy(&entry.writer_node_hash, data + 9, sizeof(uint64_t));
                 // NOLINTNEXTLINE

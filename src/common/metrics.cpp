@@ -55,48 +55,55 @@ auto
 MetricsCollector::formatPrometheus() const -> std::string {
     std::ostringstream os;
     // Store metrics
-    appendCounter(os, "cache_hits_total", shard_.hits.load());
-    appendCounter(os, "cache_misses_total", shard_.misses.load());
-    appendCounter(os, "cache_writes_total", shard_.writes.load());
-    appendCounter(os, "cache_deletes_total", shard_.deletes.load());
-    appendCounter(os, "cache_evictions_total", shard_.evictions_ttl.load(), "cause", "ttl");
+    appendCounter(os, "cache_hits_total", shard_.live.hits.load());
+    appendCounter(os, "cache_misses_total", shard_.live.misses.load());
+    appendCounter(os, "cache_writes_total", shard_.live.writes.load());
+    appendCounter(os, "cache_deletes_total", shard_.live.deletes.load());
+    appendCounter(os, "cache_evictions_total", shard_.cap.evictions_ttl.load(), "cause", "ttl");
     appendCounter(
-        os, "cache_evictions_total", shard_.evictions_capacity.load(), "cause", "capacity");
+        os, "cache_evictions_total", shard_.cap.evictions_capacity.load(), "cause", "capacity");
 
-    appendCounter(os, "cache_expires_on_read_total", shard_.expires_on_read.load());
-    appendGauge(os, "store_bytes", shard_.current_bytes.load());
-    appendGauge(os, "store_entries", shard_.current_entries.load());
-    appendGauge(os, "store_capacity_bytes", shard_.capacity_bytes.load());
+    appendCounter(os, "cache_expires_on_read_total", shard_.cap.expires_on_read.load());
+    appendGauge(os, "store_bytes", shard_.live.current_bytes.load());
+    appendGauge(os, "store_entries", shard_.live.current_entries.load());
+    appendGauge(os, "store_capacity_bytes", shard_.cap.capacity_bytes.load());
 
     // Operation counters
-    appendCounter(os, "operations_total", opcode_.gets.load(), "opcode", "get");
-    appendCounter(os, "operations_total", opcode_.sets.load(), "opcode", "set");
-    appendCounter(os, "operations_total", opcode_.dels.load(), "opcode", "del");
-    appendCounter(os, "operations_total", opcode_.pings.load(), "opcode", "ping");
-    appendCounter(os, "operations_total", opcode_.replicates.load(), "opcode", "replicate");
-    appendCounter(os, "operations_total", opcode_.hints.load(), "opcode", "hint");
-    appendCounter(os, "operations_total", opcode_.gets_versioned.load(), "opcode", "get_versioned");
+    appendCounter(os, "operations_total", opcode_.client.gets.load(), "opcode", "get");
+    appendCounter(os, "operations_total", opcode_.client.sets.load(), "opcode", "set");
+    appendCounter(os, "operations_total", opcode_.client.dels.load(), "opcode", "del");
+    appendCounter(os, "operations_total", opcode_.client.pings.load(), "opcode", "ping");
+    appendCounter(os, "operations_total", opcode_.repl.replicates.load(), "opcode", "replicate");
+    appendCounter(os, "operations_total", opcode_.repl.hints.load(), "opcode", "hint");
+    appendCounter(
+        os, "operations_total", opcode_.repl.gets_versioned.load(), "opcode", "get_versioned");
+
     appendCounter(os,
         "operations_total",
-        opcode_.anti_entropy_digest.load(),
+        opcode_.repl.anti_entropy_digest.load(),
         "opcode",
         "anti_entropy_digest");
 
-    appendCounter(
-        os, "operations_total", opcode_.anti_entropy_sync.load(), "opcode", "anti_entropy_sync");
-
-    appendCounter(os, "operations_total", opcode_.admin_info.load(), "opcode", "admin_info");
-    appendCounter(os, "operations_total", opcode_.admin_cluster.load(), "opcode", "admin_cluster");
-    appendCounter(os, "operations_total", opcode_.admin_ring.load(), "opcode", "admin_ring");
-    appendCounter(os, "operations_total", opcode_.admin_compact.load(), "opcode", "admin_compact");
     appendCounter(os,
         "operations_total",
-        opcode_.admin_config_reload.load(),
+        opcode_.repl.anti_entropy_sync.load(),
+        "opcode",
+        "anti_entropy_sync");
+
+    appendCounter(os, "operations_total", opcode_.admin.info.load(), "opcode", "admin_info");
+    appendCounter(os, "operations_total", opcode_.admin.cluster.load(), "opcode", "admin_cluster");
+
+    appendCounter(os, "operations_total", opcode_.admin.ring.load(), "opcode", "admin_ring");
+    appendCounter(os, "operations_total", opcode_.admin.compact.load(), "opcode", "admin_compact");
+
+    appendCounter(os,
+        "operations_total",
+        opcode_.admin.config_reload.load(),
         "opcode",
         "admin_config_reload");
 
     appendCounter(
-        os, "operations_total", opcode_.admin_shutdown.load(), "opcode", "admin_shutdown");
+        os, "operations_total", opcode_.admin.shutdown.load(), "opcode", "admin_shutdown");
 
     // Per-opcode latency summaries (p50/p95/p99/p999 + sum + count).
     for (size_t i = 0; i < opcode_.latency.size(); ++i) {

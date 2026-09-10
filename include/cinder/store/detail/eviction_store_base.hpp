@@ -66,10 +66,10 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         entry.value = std::move(value);
         // Mint under the lock — an unlocked ++ here races the Lamport bump in
         // putVersioned() and can hand duplicate versions to concurrent writers.
-        entry.version = self.mintVersion();
+        entry.setVersion(self.mintVersion());
         if (ttl.has_value()) {
             entry.expires_at = now() + *ttl;
-            entry.has_ttl = true;
+            entry.setHasTtl(true);
         }
         return putVersioned(key, std::move(entry));
     }
@@ -82,17 +82,17 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         if (it != self.index_.end()) {
             auto& node = it->second;
             // Idempotent apply: reject stale/equal-lower writes (replay-safe).
-            if (entry.version < Derived::nodeEntry(*node).version) {
+            if (entry.version() < Derived::nodeEntry(*node).version()) {
                 return ok();
             }
-            if (entry.version == Derived::nodeEntry(*node).version
+            if (entry.version() == Derived::nodeEntry(*node).version()
                 && entry.writer_node_hash < Derived::nodeEntry(*node).writer_node_hash) {
                 return ok();
             }
 
             // Lamport bump: advance past any observed version so
             // this node wins LWW if it later coordinates the same key.
-            next_version_ = std::max(next_version_, entry.version + 1);
+            next_version_ = std::max(next_version_, entry.version() + 1);
             current_bytes_ -= Derived::nodeSize(*node);
             self.applyExisting(node, std::move(entry));
             current_bytes_ += Derived::nodeSize(*node);
@@ -100,10 +100,10 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             updateWheel(node);
             writeWal(key);
             if (metrics_) {
-                metrics_->shardMetrics().writes.fetch_add(1, std::memory_order_relaxed);
-                metrics_->shardMetrics().current_bytes.store(
+                metrics_->shardMetrics().live.writes.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.current_bytes.store(
                     current_bytes_, std::memory_order_relaxed);
-                metrics_->shardMetrics().current_entries.store(
+                metrics_->shardMetrics().live.current_entries.store(
                     self.index_.size(), std::memory_order_relaxed);
             }
             return ok();
@@ -114,16 +114,17 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             return err(Error(Errc::CapacityExceeded, "value exceeds capacity"));
         }
 
-        next_version_ = std::max(next_version_, entry.version + 1);
+        next_version_ = std::max(next_version_, entry.version() + 1);
         auto new_it = self.insertNew(key, std::move(entry));
         current_bytes_ += entry_size;
         evictIfNeeded();
         updateWheel(new_it);
         writeWal(key);
         if (metrics_) {
-            metrics_->shardMetrics().writes.fetch_add(1, std::memory_order_relaxed);
-            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
-            metrics_->shardMetrics().current_entries.store(
+            metrics_->shardMetrics().live.writes.fetch_add(1, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.current_bytes.store(
+                current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.current_entries.store(
                 self.index_.size(), std::memory_order_relaxed);
         }
         return ok();
@@ -136,27 +137,28 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         auto it = self.index_.find(key);
         if (it == self.index_.end()) {
             if (metrics_) {
-                metrics_->shardMetrics().misses.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.misses.fetch_add(1, std::memory_order_relaxed);
             }
             return std::nullopt;
         }
 
         auto& node = it->second;
-        if (Derived::nodeEntry(*node).has_ttl && Derived::nodeEntry(*node).expires_at <= now()) {
+        if (Derived::nodeEntry(*node).hasTtl() && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
             self.wheel_.remove(Derived::nodeKey(*node));
             self.list_.erase(node);
             self.index_.erase(it);
             if (metrics_) {
-                metrics_->shardMetrics().expires_on_read.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().cap.expires_on_read.fetch_add(
+                    1, std::memory_order_relaxed);
             }
             return std::nullopt;
         }
 
         self.onAccess(node);
         if (metrics_) {
-            metrics_->shardMetrics().hits.fetch_add(1, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.hits.fetch_add(1, std::memory_order_relaxed);
         }
         return Derived::nodeEntry(*node).value;
     }
@@ -168,25 +170,26 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         auto it = self.index_.find(key);
         if (it == self.index_.end()) {
             if (metrics_) {
-                metrics_->shardMetrics().misses.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.misses.fetch_add(1, std::memory_order_relaxed);
             }
             return std::nullopt;
         }
 
         auto& node = it->second;
-        if (Derived::nodeEntry(*node).has_ttl && Derived::nodeEntry(*node).expires_at <= now()) {
+        if (Derived::nodeEntry(*node).hasTtl() && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
             self.wheel_.remove(Derived::nodeKey(*node));
             self.list_.erase(node);
             self.index_.erase(it);
             if (metrics_) {
-                metrics_->shardMetrics().expires_on_read.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().cap.expires_on_read.fetch_add(
+                    1, std::memory_order_relaxed);
             }
             return std::nullopt;
         }
         if (metrics_) {
-            metrics_->shardMetrics().hits.fetch_add(1, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.hits.fetch_add(1, std::memory_order_relaxed);
         }
         return Derived::nodeEntry(*node);
     }
@@ -205,7 +208,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             WalEntry we;
             we.op = WalEntry::Op::Del;
             we.key = key;
-            we.version = Derived::nodeEntry(*node).version;
+            we.version = Derived::nodeEntry(*node).version();
             we.writer_node_hash = Derived::nodeEntry(*node).writer_node_hash;
             we.has_ttl = false;
             we.expires_at_ms = 0;
@@ -218,7 +221,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         self.list_.erase(node);
         self.index_.erase(it);
         if (metrics_) {
-            metrics_->shardMetrics().deletes.fetch_add(1, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.deletes.fetch_add(1, std::memory_order_relaxed);
         }
         return true;
     }
@@ -250,7 +253,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
                 }
 
                 auto& node = kit->second;
-                if (Derived::nodeEntry(*node).has_ttl
+                if (Derived::nodeEntry(*node).hasTtl()
                     && Derived::nodeEntry(*node).expires_at <= current) {
                     current_bytes_ -= Derived::nodeSize(*node);
                     auto list_it = node;
@@ -259,7 +262,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
                     self.list_.erase(list_it);
                     ++evicted;
                     if (metrics_) {
-                        metrics_->shardMetrics().evictions_ttl.fetch_add(
+                        metrics_->shardMetrics().cap.evictions_ttl.fetch_add(
                             1, std::memory_order_relaxed);
                     }
                 } else {
@@ -271,8 +274,9 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             });
         }
         if (metrics_ && evicted > 0) {
-            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
-            metrics_->shardMetrics().current_entries.store(
+            metrics_->shardMetrics().live.current_bytes.store(
+                current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.current_entries.store(
                 self.index_.size(), std::memory_order_relaxed);
         }
         return evicted;
@@ -293,7 +297,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             items.reserve(self.list_.size());
             auto snap_time = now();
             for (const auto& node : self.list_) {
-                if (Derived::nodeEntry(node).has_ttl
+                if (Derived::nodeEntry(node).hasTtl()
                     && Derived::nodeEntry(node).expires_at <= snap_time) {
                     continue; // expired — skip
                 }
@@ -316,7 +320,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
             items.reserve(self.list_.size());
             auto snap_time = now();
             for (const auto& node : self.list_) {
-                if (Derived::nodeEntry(node).has_ttl
+                if (Derived::nodeEntry(node).hasTtl()
                     && Derived::nodeEntry(node).expires_at <= snap_time) {
                     continue; // expired — skip
                 }
@@ -334,14 +338,14 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
     void setMetrics(MetricsCollector* m) final {
         metrics_ = m;
         if (m) {
-            m->shardMetrics().capacity_bytes.store(capacity_bytes_);
+            m->shardMetrics().cap.capacity_bytes.store(capacity_bytes_);
         }
     }
 
     void setCapacity(size_t new_capacity) final {
         capacity_bytes_ = new_capacity;
         if (metrics_) {
-            metrics_->shardMetrics().capacity_bytes.store(new_capacity);
+            metrics_->shardMetrics().cap.capacity_bytes.store(new_capacity);
         }
         if (new_capacity < current_bytes_) {
             Derived& self = d();
@@ -380,7 +384,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
     void updateWheel(ListIt it) {
         Derived& self = d();
         auto& entry = Derived::nodeEntry(*it);
-        if (entry.has_ttl) {
+        if (entry.hasTtl()) {
             self.wheel_.insert(Derived::nodeKey(*it), expiryTicks(entry.expires_at));
         } else {
             self.wheel_.remove(Derived::nodeKey(*it));
@@ -405,10 +409,10 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         we.op = WalEntry::Op::Set;
         we.key = key;
         we.value = entry.value;
-        we.version = entry.version;
+        we.version = entry.version();
         we.writer_node_hash = entry.writer_node_hash;
-        we.has_ttl = entry.has_ttl;
-        if (entry.has_ttl) {
+        we.has_ttl = entry.hasTtl();
+        if (entry.hasTtl()) {
             we.expires_at_ms = expiryToSystemMs(entry.expires_at);
         } else {
             we.expires_at_ms = 0;
@@ -428,12 +432,13 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         if (metrics_) {
             auto entries_after = self.index_.size();
             if (entries_after < entries_before) {
-                metrics_->shardMetrics().evictions_capacity.fetch_add(
+                metrics_->shardMetrics().cap.evictions_capacity.fetch_add(
                     entries_before - entries_after, std::memory_order_relaxed);
             }
 
-            metrics_->shardMetrics().current_bytes.store(current_bytes_, std::memory_order_relaxed);
-            metrics_->shardMetrics().current_entries.store(
+            metrics_->shardMetrics().live.current_bytes.store(
+                current_bytes_, std::memory_order_relaxed);
+            metrics_->shardMetrics().live.current_entries.store(
                 entries_after, std::memory_order_relaxed);
         }
     }

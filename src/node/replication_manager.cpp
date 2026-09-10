@@ -47,18 +47,18 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
 
     VersionedEntry entry;
     entry.value = value;
-    entry.version = version;
+    entry.setVersion(version);
     entry.writer_node_hash = writer;
     if (ttl.has_value()) {
         entry.expires_at = clock_.now() + *ttl;
-        entry.has_ttl = true;
+        entry.setHasTtl(true);
     }
 
     // Capture the absolute wall-clock expiry before `entry` is moved into the
     // store below. Carried on the wire (not a relative ttl) so every replica
     // expires the key at the same instant regardless of delivery delay.
     std::optional<system_clock::time_point> wire_expiry;
-    if (entry.has_ttl) {
+    if (entry.hasTtl()) {
         wire_expiry = toSystemExpiry(clock_, entry.expires_at);
     }
 
@@ -223,7 +223,7 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     state->pending = replica_nodes.size();
     if (local_entry.has_value()) {
         state->acks = 1;
-        state->best_version = local_entry->version;
+        state->best_version = local_entry->version();
         state->best_writer_hash = local_entry->writer_node_hash;
         state->best_entry = std::move(*local_entry);
     }
@@ -249,10 +249,10 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
 
                         VersionedEntry entry;
                         entry.value = std::move(*r->value);
-                        entry.version = r->version;
+                        entry.setVersion(r->version);
                         entry.writer_node_hash = r->writer_node_hash;
                         if (r->expires_at.has_value()) {
-                            entry.has_ttl = true;
+                            entry.setHasTtl(true);
                             entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
                         }
                         state->best_entry = std::move(entry);
@@ -330,19 +330,19 @@ ReplicationManager::sendRepairFanOut(
     Span span("replication.repair.fanout");
     Event::info("repair fan-out",
         {{"key", key},
-            {"version", std::to_string(winner.version)},
+            {"version", std::to_string(winner.version())},
             {"targets", std::to_string(targets.size())}});
 
     net::Request repair;
     repair.opcode = net::Opcode::Replicate;
     repair.key = key;
     repair.value = winner.value;
-    repair.version = winner.version;
+    repair.version = winner.version();
     repair.writer_node_hash = winner.writer_node_hash;
     // Propagate trace context for end-to-end correlation.
     repair.trace_id = span.traceId();
     repair.span_id = span.spanId();
-    if (winner.has_ttl) {
+    if (winner.hasTtl()) {
         repair.expires_at = toSystemExpiry(clock_, winner.expires_at);
     }
     for (const auto& target : targets) {

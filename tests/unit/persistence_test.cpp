@@ -487,7 +487,7 @@ TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromSnapshot) {
 
     auto ve = store2.getVersioned("ttl");
     ASSERT_TRUE(ve.has_value());
-    EXPECT_TRUE(ve->has_ttl);
+    EXPECT_TRUE(ve->hasTtl());
 
     auto remaining = duration_cast<milliseconds>(ve->expires_at - sim.now()).count();
     EXPECT_GE(remaining, 9'900); // ~full lifetime preserved (not 1ms)
@@ -516,7 +516,7 @@ TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromWal) {
 
     auto ve = store2.getVersioned("ttl");
     ASSERT_TRUE(ve.has_value());
-    EXPECT_TRUE(ve->has_ttl);
+    EXPECT_TRUE(ve->hasTtl());
 
     auto remaining = duration_cast<milliseconds>(ve->expires_at - sim.now()).count();
     EXPECT_GE(remaining, 4'900);

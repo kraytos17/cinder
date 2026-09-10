@@ -19,6 +19,13 @@ struct TlsConfig {
     std::string ca_file;
 };
 
+// Node authentication. A non-empty shared secret requires an HMAC-SHA256
+// auth token on internal opcodes (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*,
+// ADMIN_*). Client opcodes are unaffected. Empty disables authentication.
+struct AuthConfig {
+    std::string shared_secret;
+};
+
 struct Config {
     // Server
     std::string node_id = "node1";
@@ -51,6 +58,8 @@ struct Config {
 
     // TLS
     TlsConfig tls;
+    // Auth
+    AuthConfig auth;
     // Logging
     std::string log_level = "info";
     // Config file path (empty = no file, hot-reload disabled)

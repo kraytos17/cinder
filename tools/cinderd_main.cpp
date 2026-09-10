@@ -43,6 +43,7 @@ main(int argc, char* argv[]) -> int {
     std::string tls_key_file;
     std::string tls_ca_file;
     std::string eviction_policy = "lru";
+    std::string shared_secret;
     int rpc_timeout_ms = 5'000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
@@ -79,6 +80,7 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--eviction-policy", eviction_policy, "Eviction policy: lru|lfu")
         ->check(CLI::IsMember({"lru", "lfu"}));
 
+    app.add_option("--shared-secret", shared_secret, "Shared secret for node authentication");
     app.add_option(
         "--rpc-timeout", rpc_timeout_ms, "Per-RPC deadline in milliseconds (0 = no timeout)");
     app.add_option("--anti-entropy-interval",
@@ -123,6 +125,7 @@ main(int argc, char* argv[]) -> int {
     options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;
     options.tls_key_file = tls_key_file.empty() ? cfg.tls.key_file : tls_key_file;
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
+    options.shared_secret = shared_secret.empty() ? cfg.auth.shared_secret : shared_secret;
     options.eviction_policy = eviction_policy;
     options.rpc_timeout = milliseconds(rpc_timeout_ms);
     options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);

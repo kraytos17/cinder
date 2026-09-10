@@ -63,6 +63,8 @@ struct CacheNodeServerOptions {
     std::string tls_cert_file;
     std::string tls_key_file;
     std::string tls_ca_file;
+    // Node authentication
+    std::string shared_secret;
     std::string eviction_policy = "lru";
     // RPC deadline — max time for a single peer RPC before cancellation.
     milliseconds rpc_timeout{5'000};

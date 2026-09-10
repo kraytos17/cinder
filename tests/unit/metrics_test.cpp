@@ -17,8 +17,8 @@ TEST(MetricsTest, ZeroCounters) {
 
 TEST(MetricsTest, HitMissCounters) {
     MetricsCollector m;
-    m.shardMetrics().hits.fetch_add(5);
-    m.shardMetrics().misses.fetch_add(3);
+    m.shardMetrics().live.hits.fetch_add(5);
+    m.shardMetrics().live.misses.fetch_add(3);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_cache_hits_total 5"), std::string::npos);
@@ -27,9 +27,9 @@ TEST(MetricsTest, HitMissCounters) {
 
 TEST(MetricsTest, OpcodeCounters) {
     MetricsCollector m;
-    m.opcodeMetrics().gets.fetch_add(10);
-    m.opcodeMetrics().sets.fetch_add(2);
-    m.opcodeMetrics().dels.fetch_add(1);
+    m.opcodeMetrics().client.gets.fetch_add(10);
+    m.opcodeMetrics().client.sets.fetch_add(2);
+    m.opcodeMetrics().client.dels.fetch_add(1);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_operations_total{opcode=\"get\"} 10"), std::string::npos);
@@ -39,8 +39,8 @@ TEST(MetricsTest, OpcodeCounters) {
 
 TEST(MetricsTest, EvictionCounters) {
     MetricsCollector m;
-    m.shardMetrics().evictions_ttl.fetch_add(7);
-    m.shardMetrics().evictions_capacity.fetch_add(3);
+    m.shardMetrics().cap.evictions_ttl.fetch_add(7);
+    m.shardMetrics().cap.evictions_capacity.fetch_add(3);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_cache_evictions_total{cause=\"ttl\"} 7"), std::string::npos);
@@ -111,9 +111,9 @@ TEST(MetricsTest, ReplicaLag) {
 
 TEST(MetricsTest, StoreGauges) {
     MetricsCollector m;
-    m.shardMetrics().current_bytes.store(1'024);
-    m.shardMetrics().current_entries.store(42);
-    m.shardMetrics().capacity_bytes.store(1'048'576);
+    m.shardMetrics().live.current_bytes.store(1'024);
+    m.shardMetrics().live.current_entries.store(42);
+    m.shardMetrics().cap.capacity_bytes.store(1'048'576);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_store_bytes 1024"), std::string::npos);
@@ -123,7 +123,7 @@ TEST(MetricsTest, StoreGauges) {
 
 TEST(MetricsTest, PrometheusFormatStructure) {
     MetricsCollector m;
-    m.shardMetrics().hits.fetch_add(1);
+    m.shardMetrics().live.hits.fetch_add(1);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("# HELP cinder_cache_hits_total"), std::string::npos);
@@ -243,7 +243,7 @@ TEST(HttpParserTest, EmptyBody) {
 
 TEST(HttpParserTest, MetricsEndpoint) {
     MetricsCollector m;
-    m.shardMetrics().hits.fetch_add(42);
+    m.shardMetrics().live.hits.fetch_add(42);
     auto body = m.formatPrometheus();
     auto resp = cinder::net::formatHttpResponse(body);
 

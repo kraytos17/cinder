@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "cinder/common/hmac.hpp"
 #include "cinder/common/tracing.hpp"
 
 using asio::async_connect;
@@ -27,13 +28,15 @@ rpcError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Err
 
 namespace cinder {
 
-TcpTransport::TcpTransport(io_context& io
+TcpTransport::TcpTransport(io_context& io, std::string node_id, std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
 #endif
     )
-    : io_(io)
+    : io_(io),
+      node_id_(std::move(node_id)),
+      shared_secret_(std::move(shared_secret))
 #ifdef CINDER_ENABLE_TLS
       ,
       ssl_ctx_(ssl_ctx)
@@ -267,7 +270,12 @@ TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback 
         }
     }
 
-    auto encoded = net::encode(req);
+    std::string auth_token;
+    if (!shared_secret_.empty() && !node_id_.empty()) {
+        auth_token = generateAuthToken(shared_secret_, node_id_);
+    }
+
+    auto encoded = net::encode(req, auth_token);
     if (!encoded.has_value()) {
         on_done(err(encoded.error()));
         return;
@@ -305,7 +313,13 @@ TcpTransport::sendRequestAsync(const NodeId& to, const net::Request& req, Reques
         }
     }
 
-    auto encoded = net::encode(req);
+    // Generate auth token at the transport layer when shared_secret is configured.
+    std::string auth_token;
+    if (!shared_secret_.empty() && !node_id_.empty()) {
+        auth_token = generateAuthToken(shared_secret_, node_id_);
+    }
+
+    auto encoded = net::encode(req, auth_token);
     if (!encoded.has_value()) {
         on_done(err<net::Response>(encoded.error()));
         return;

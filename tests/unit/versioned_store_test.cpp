@@ -31,7 +31,7 @@ makeVersionedEntry(const std::string& value, Version version, uint64_t writer = 
     -> VersionedEntry {
     VersionedEntry e;
     e.value = value;
-    e.version = version;
+    e.setVersion(version);
     e.writer_node_hash = writer;
     return e;
 }
@@ -50,7 +50,7 @@ TYPED_TEST(VersionedStoreTest, NewerVersionWins) {
     auto e = store.getVersioned("k");
     ASSERT_TRUE(e.has_value());
     EXPECT_EQ(e->value, "v2");
-    EXPECT_EQ(e->version, 2);
+    EXPECT_EQ(e->version(), 2);
 }
 
 TYPED_TEST(VersionedStoreTest, StaleVersionIgnored) {
@@ -81,14 +81,14 @@ TYPED_TEST(VersionedStoreTest, PutAssignsMonotonicVersion) {
     ASSERT_TRUE(store.put("k1", "b").has_value());
     ASSERT_TRUE(store.put("k2", "c").has_value());
     // Overwrite of existing key must carry a higher version than the prior write.
-    EXPECT_GT(store.getVersioned("k1")->version, 1);
-    EXPECT_NE(store.getVersioned("k1")->version, store.getVersioned("k2")->version);
+    EXPECT_GT(store.getVersioned("k1")->version(), 1);
+    EXPECT_NE(store.getVersioned("k1")->version(), store.getVersioned("k2")->version());
 }
 
 TYPED_TEST(VersionedStoreTest, TtlExpiresVersioned) {
     TypeParam store(1'024);
     auto entry = makeVersionedEntry("v", 1, 10);
-    entry.has_ttl = true;
+    entry.setHasTtl(true);
     entry.expires_at = steady_clock::now() - seconds(1);
     ASSERT_TRUE(store.putVersioned("k", entry).has_value());
     EXPECT_FALSE(store.getVersioned("k").has_value());
@@ -109,7 +109,7 @@ TYPED_TEST(VersionedStoreTest, MintVersionIsMonotonic) {
     ASSERT_TRUE(store.put("k", "v").has_value());
     Version c = store.mintVersion();
     EXPECT_GT(c, b);
-    EXPECT_GT(store.getVersioned("k")->version, a);
+    EXPECT_GT(store.getVersioned("k")->version(), a);
 }
 
 TYPED_TEST(VersionedStoreTest, LamportBumpOnAcceptedWrite) {
@@ -167,7 +167,7 @@ TYPED_TEST(VersionedStoreTest, ForEachSkipsExpired) {
     TypeParam store(1'048'576, &clock);
 
     auto entry = makeVersionedEntry("gone", 1, 0);
-    entry.has_ttl = true;
+    entry.setHasTtl(true);
     entry.expires_at = clock.now() - seconds(1); // relative to injected clock
     ASSERT_TRUE(store.putVersioned("gone", entry).has_value());
 

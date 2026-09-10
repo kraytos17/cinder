@@ -79,9 +79,9 @@ hashEntry(XXH3_state_t* state, const std::string& key, const VersionedEntry& ent
         XXH3_64bits_update(state, entry.value.data(), entry.value.size());
     }
 
-    XXH3_64bits_update(state, &entry.version, sizeof(entry.version));
+    XXH3_64bits_update(state, &entry.version_and_ttl, sizeof(entry.version_and_ttl));
     XXH3_64bits_update(state, &entry.writer_node_hash, sizeof(entry.writer_node_hash));
-    uint8_t ht = entry.has_ttl ? 1 : 0;
+    uint8_t ht = entry.hasTtl() ? 1 : 0;
     XXH3_64bits_update(state, &ht, sizeof(ht));
 }
 } // namespace
@@ -236,10 +236,10 @@ AntiEntropyManager::collectEntries(const std::vector<uint32_t>& bucket_ids) cons
     for (const auto& item : items) {
         appendU32(out, static_cast<uint32_t>(item.key.size()));
         out.append(item.key);
-        appendU64(out, item.entry.version);
+        appendU64(out, item.entry.version());
         appendU64(out, item.entry.writer_node_hash);
-        out.push_back(item.entry.has_ttl ? static_cast<char>(1) : static_cast<char>(0));
-        if (item.entry.has_ttl) {
+        out.push_back(item.entry.hasTtl() ? static_cast<char>(1) : static_cast<char>(0));
+        if (item.entry.hasTtl()) {
             appendU64(out, toSystemMs(clock_, item.entry.expires_at));
         }
         appendU32(out, static_cast<uint32_t>(item.entry.value.size()));
@@ -291,11 +291,11 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
         }
 
         VersionedEntry entry;
-        entry.version = version;
+        entry.setVersion(version);
         entry.writer_node_hash = writer_hash;
         entry.value = std::move(value);
         if (has_ttl == 1) {
-            entry.has_ttl = true;
+            entry.setHasTtl(true);
             entry.expires_at =
                 toSteadyExpiry(clock_, system_clock::time_point(milliseconds(expires_ms)));
         }
@@ -306,8 +306,9 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
         auto existing = store_.getVersioned(key);
         if (!existing.has_value()) {
             is_new = true;
-        } else if (version > existing->version
-                   || (version == existing->version && writer_hash > existing->writer_node_hash)) {
+        } else if (version > existing->version()
+                   || (version == existing->version()
+                       && writer_hash > existing->writer_node_hash)) {
             is_new = true;
         }
 

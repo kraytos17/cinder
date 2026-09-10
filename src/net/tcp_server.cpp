@@ -15,11 +15,11 @@ using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(
-    io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
-    std::string node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
-    ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port, MetricsCollector* metrics,
-    std::function<std::string()> config_getter, AntiEntropyManager* anti_entropy
+TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
+    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
+    int replica_factor, ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port,
+    MetricsCollector* metrics, std::function<std::string()> config_getter,
+    AntiEntropyManager* anti_entropy, std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -37,13 +37,12 @@ TcpServer::TcpServer(
       gossip_(gossip),
       anti_entropy_(anti_entropy),
       metrics_(metrics),
-      config_getter_(std::move(config_getter))
 #ifdef CINDER_ENABLE_TLS
-      ,
-      ssl_ctx_(ssl_ctx)
+      ssl_ctx_(ssl_ctx),
 #endif
-      ,
-      emfile_timer_(io) {
+      shared_secret_(std::move(shared_secret)),
+      emfile_timer_(io),
+      config_getter_(std::move(config_getter)) {
     std::error_code ec;
     acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
     if (metrics_port > 0 && metrics_) {
@@ -134,7 +133,8 @@ TcpServer::doAccept() {
                     mode_,
                     gossip_,
                     counter,
-                    anti_entropy_
+                    anti_entropy_,
+                    shared_secret_
 #ifdef CINDER_ENABLE_TLS
                     ,
                     ssl_ctx_

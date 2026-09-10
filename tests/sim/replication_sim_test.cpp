@@ -44,10 +44,10 @@ class TwoNodeCluster {
 
             VersionedEntry e;
             e.value = req.value;
-            e.version = req.version;
+            e.setVersion(req.version);
             e.writer_node_hash = req.writer_node_hash;
             if (req.expires_at.has_value()) {
-                e.has_ttl = true;
+                e.setHasTtl(true);
                 e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
@@ -176,10 +176,10 @@ TEST(ReplicationSimTest, FanoutToMultipleReplicas) {
 
             VersionedEntry e;
             e.value = req.value;
-            e.version = req.version;
+            e.setVersion(req.version);
             e.writer_node_hash = req.writer_node_hash;
             if (req.expires_at.has_value()) {
-                e.has_ttl = true;
+                e.setHasTtl(true);
                 e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE(bugprone-unused-return-value, cert-err33-c)
@@ -235,10 +235,10 @@ TEST(ReplicationSimTest, QuorumMetMajorityWithThreeNodes) {
 
         VersionedEntry e;
         e.value = req.value;
-        e.version = req.version;
+        e.setVersion(req.version);
         e.writer_node_hash = req.writer_node_hash;
         if (req.expires_at.has_value()) {
-            e.has_ttl = true;
+            e.setHasTtl(true);
             e.expires_at = toSteadyExpiry(c.clock, *req.expires_at);
         }
         // NOLINTNEXTLINE
@@ -322,7 +322,7 @@ TEST(ReplicationSimTest, ObservedPeerVersionThenLocalWriteWins) {
     c.clock.advance(5ms);
     c.bus.deliver();
     ASSERT_TRUE(c.store2.get("k").has_value());
-    Version observed = c.store2.getVersioned("k")->version;
+    Version observed = c.store2.getVersioned("k")->version();
 
     // The store's counter must have advanced past the observed version
     // (Lamport bump), so a local write on node2 outranks the primary's.
@@ -333,11 +333,11 @@ TEST(ReplicationSimTest, ObservedPeerVersionThenLocalWriteWins) {
     Version fresh = c.store2.mintVersion();
     VersionedEntry entry;
     entry.value = "v2";
-    entry.version = fresh;
+    entry.setVersion(fresh);
     entry.writer_node_hash = 0x42;
     ASSERT_TRUE(c.store2.putVersioned("k", std::move(entry)).has_value());
     EXPECT_EQ(c.store2.get("k").value(), "v2");
-    EXPECT_GT(c.store2.getVersioned("k")->version, observed);
+    EXPECT_GT(c.store2.getVersioned("k")->version(), observed);
 }
 
 // Cluster with both Replicate (fire-and-forget) and GetVersioned
@@ -371,10 +371,10 @@ class ReadRepairCluster {
 
             VersionedEntry e;
             e.value = req.value;
-            e.version = req.version;
+            e.setVersion(req.version);
             e.writer_node_hash = req.writer_node_hash;
             if (req.expires_at.has_value()) {
-                e.has_ttl = true;
+                e.setHasTtl(true);
                 e.expires_at = toSteadyExpiry(clock, *req.expires_at);
             }
             // NOLINTNEXTLINE
@@ -394,9 +394,9 @@ class ReadRepairCluster {
             }
             net::Response resp{.status = Errc::OK,
                 .value = entry->value,
-                .version = entry->version,
+                .version = entry->version(),
                 .writer_node_hash = entry->writer_node_hash};
-            if (entry->has_ttl) {
+            if (entry->hasTtl()) {
                 resp.expires_at = toSystemExpiry(clock, entry->expires_at);
             }
             return resp;
@@ -430,13 +430,13 @@ TEST(ReadRepairSimTest, ReadRepairFixesStaleReplica) {
     // Record the current version on node1 (from the second write).
     auto v2_entry = c.store1.getVersioned("key1");
     ASSERT_TRUE(v2_entry.has_value());
-    Version v2_version = v2_entry->version;
+    Version v2_version = v2_entry->version();
 
     // Now simulate a stale replica: manually revert node2 to an older version.
     c.store2.remove("key1");
     VersionedEntry stale;
     stale.value = "v1";
-    stale.version = v2_version - 1;
+    stale.setVersion(v2_version - 1);
     stale.writer_node_hash = 100;
     ASSERT_TRUE(c.store2.putVersioned("key1", std::move(stale)).has_value());
     ASSERT_EQ(c.store2.get("key1"), "v1");
@@ -445,12 +445,12 @@ TEST(ReadRepairSimTest, ReadRepairFixesStaleReplica) {
     auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->value, "v2");
-    EXPECT_EQ(result->version, v2_version);
+    EXPECT_EQ(result->version(), v2_version);
 
     // Deliver the repair Replicate from node1 to node2.
     c.bus.deliver();
     EXPECT_EQ(c.store2.get("key1"), "v2");
-    EXPECT_EQ(c.store2.getVersioned("key1")->version, v2_version);
+    EXPECT_EQ(c.store2.getVersioned("key1")->version(), v2_version);
 }
 
 TEST(ReadRepairSimTest, ReadRepairSkipsWhenAllAgree) {
@@ -476,13 +476,13 @@ TEST(ReadRepairSimTest, ReadRepairReturnsBestVersion) {
     // Seed node1 with v3, node2 with v1 (node2 is behind).
     VersionedEntry e1;
     e1.value = "v3";
-    e1.version = 3;
+    e1.setVersion(3);
     e1.writer_node_hash = 100;
     ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
 
     VersionedEntry e2;
     e2.value = "v1";
-    e2.version = 1;
+    e2.setVersion(1);
     e2.writer_node_hash = 200;
     ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
 
@@ -490,7 +490,7 @@ TEST(ReadRepairSimTest, ReadRepairReturnsBestVersion) {
     auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->value, "v3");
-    EXPECT_EQ(result->version, 3);
+    EXPECT_EQ(result->version(), 3);
 }
 
 TEST(ReadRepairSimTest, ReadRepairFallsBackToLocalOnReplicaFailure) {
@@ -498,7 +498,7 @@ TEST(ReadRepairSimTest, ReadRepairFallsBackToLocalOnReplicaFailure) {
 
     VersionedEntry e1;
     e1.value = "local-v";
-    e1.version = 5;
+    e1.setVersion(5);
     e1.writer_node_hash = 100;
     ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
 
@@ -517,13 +517,13 @@ TEST(ReadRepairSimTest, QuorumFailureStillRepairsStaleReplica) {
     // Seed node1 with v2, node2 with stale v1.
     VersionedEntry e1;
     e1.value = "v2";
-    e1.version = 2;
+    e1.setVersion(2);
     e1.writer_node_hash = 100;
     ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
 
     VersionedEntry e2;
     e2.value = "v1-stale";
-    e2.version = 1;
+    e2.setVersion(1);
     e2.writer_node_hash = 200;
     ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
 
@@ -532,12 +532,12 @@ TEST(ReadRepairSimTest, QuorumFailureStillRepairsStaleReplica) {
     auto result = runRead(c.mgr1, "key1", {"node2"}, 3);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->value, "v2");
-    EXPECT_EQ(result->version, 2);
+    EXPECT_EQ(result->version(), 2);
 
     // Repair Replicate from node1 arrives at node2.
     c.bus.deliver();
     EXPECT_EQ(c.store2.get("key1"), "v2");
-    EXPECT_EQ(c.store2.getVersioned("key1")->version, 2);
+    EXPECT_EQ(c.store2.getVersioned("key1")->version(), 2);
 }
 
 TEST(ReadRepairSimTest, QuorumFailureNotFoundStillRepairs) {
@@ -546,7 +546,7 @@ TEST(ReadRepairSimTest, QuorumFailureNotFoundStillRepairs) {
     // node1 has the key, node2 does not (NotFound → needs_repair).
     VersionedEntry e1;
     e1.value = "only-local";
-    e1.version = 1;
+    e1.setVersion(1);
     e1.writer_node_hash = 100;
     ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
 
@@ -558,7 +558,7 @@ TEST(ReadRepairSimTest, QuorumFailureNotFoundStillRepairs) {
     // Repair fanned out — node2 now has the key.
     c.bus.deliver();
     EXPECT_EQ(c.store2.get("key1"), "only-local");
-    EXPECT_EQ(c.store2.getVersioned("key1")->version, 1);
+    EXPECT_EQ(c.store2.getVersioned("key1")->version(), 1);
 }
 
 TEST(ReadRepairSimTest, ReadRepairPreservesTtl) {
@@ -567,16 +567,16 @@ TEST(ReadRepairSimTest, ReadRepairPreservesTtl) {
     // Seed node1 with a TTL'd entry at version 2.
     VersionedEntry e1;
     e1.value = "ttl-v2";
-    e1.version = 2;
+    e1.setVersion(2);
     e1.writer_node_hash = 100;
-    e1.has_ttl = true;
+    e1.setHasTtl(true);
     e1.expires_at = c.clock.now() + 10s;
     ASSERT_TRUE(c.store1.putVersioned("key1", std::move(e1)).has_value());
 
     // Seed node2 with a stale v1 without TTL.
     VersionedEntry e2;
     e2.value = "stale-v1";
-    e2.version = 1;
+    e2.setVersion(1);
     e2.writer_node_hash = 200;
     ASSERT_TRUE(c.store2.putVersioned("key1", std::move(e2)).has_value());
 
@@ -584,8 +584,8 @@ TEST(ReadRepairSimTest, ReadRepairPreservesTtl) {
     auto result = runRead(c.mgr1, "key1", {"node2"}, 2);
     ASSERT_TRUE(result.has_value());
     EXPECT_EQ(result->value, "ttl-v2");
-    EXPECT_EQ(result->version, 2);
-    EXPECT_TRUE(result->has_ttl);
+    EXPECT_EQ(result->version(), 2);
+    EXPECT_TRUE(result->hasTtl());
 
     // Self-heal: local entry is already the winner, putVersioned is a no-op.
     // Repair fan-out: node2 receives the TTL'd entry.
@@ -593,8 +593,8 @@ TEST(ReadRepairSimTest, ReadRepairPreservesTtl) {
     auto node2_entry = c.store2.getVersioned("key1");
     ASSERT_TRUE(node2_entry.has_value());
     EXPECT_EQ(node2_entry->value, "ttl-v2");
-    EXPECT_EQ(node2_entry->version, 2);
-    EXPECT_TRUE(node2_entry->has_ttl);
+    EXPECT_EQ(node2_entry->version(), 2);
+    EXPECT_TRUE(node2_entry->hasTtl());
 }
 } // namespace
 } // namespace cinder

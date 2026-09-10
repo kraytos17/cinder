@@ -6,6 +6,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cinder/common/status.hpp"
@@ -17,7 +18,7 @@ using std::chrono::system_clock;
 namespace cinder::net {
 
 constexpr uint8_t K_MAGIC = 0xC1;
-constexpr uint8_t K_VERSION = 4;
+constexpr uint8_t K_VERSION = 5;
 constexpr size_t K_MAX_MESSAGE_SIZE = 67'108'864;
 
 // Magic + version + opcode + payload-length. The flags byte is the first
@@ -39,6 +40,7 @@ static_assert(K_FRAME_HEADER_SIZE == 7);
 constexpr uint8_t K_FLAG_HAS_TTL = uint8_t{1} << 0U;
 constexpr uint8_t K_FLAG_HAS_EXPIRES_AT = uint8_t{1} << 1U;
 constexpr uint8_t K_FLAG_HAS_TRACE = uint8_t{1} << 2U; // trace_id + span_id (16 bytes)
+constexpr uint8_t K_FLAG_HAS_AUTH = uint8_t{1} << 3U;  // auth_token (32 bytes, HMAC-SHA256)
 
 enum class Opcode : uint8_t {
     Get = 1,
@@ -96,21 +98,26 @@ static_assert(opcodeRangeCoverage());
 
 struct Request {
     Opcode opcode = Opcode::Get;
+    // Structured tracing — 64-bit trace-id + 64-bit span-id. When non-zero,
+    // encoded on the wire via flag 0x04 (16 bytes after value).
+    uint64_t trace_id = 0;
+    uint64_t span_id = 0;
     std::string key;
     std::string value;
+    Version version = 0;
+    uint64_t writer_node_hash = 0;
     std::optional<milliseconds> ttl = std::nullopt;
     // Absolute wall-clock expiry — set on Replicate/Hint by the primary so every
     // replica expires the key at the same instant (delay-independent). Set from
     // clients uses the relative `ttl` instead.
     std::optional<system_clock::time_point> expires_at = std::nullopt;
-    // Replication metadata — present on Set/Replicate/Hint writes.
-    Version version = 0;
-    uint64_t writer_node_hash = 0;
-    // Structured tracing — 64-bit trace-id + 64-bit span-id. When non-zero,
-    // encoded on the wire via flag 0x04 (16 bytes after value). Backward-
-    // compatible: old nodes ignore trailing payload bytes.
-    uint64_t trace_id = 0;
-    uint64_t span_id = 0;
+};
+
+// Decode result. The request carries pure message data; the auth token is a
+// transport-layer credential extracted from flag 0x08 when present.
+struct DecodedRequest {
+    Request req;
+    std::string auth_token;
 };
 
 struct Response {
@@ -128,15 +135,15 @@ struct Response {
 };
 
 auto
-encode(const Request& req) -> Result<std::vector<std::byte>>;
+encode(const Request& req, std::string_view auth_token = {}) -> Result<std::vector<std::byte>>;
 
 // Encodes into a caller-provided buffer, reusing its capacity when possible
-// (avoids a fresh allocation on hot paths).
 auto
-encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void>;
+encodeInto(const Request& req, std::vector<std::byte>& out, std::string_view auth_token = {})
+    -> Result<void>;
 
 auto
-decode(std::span<const std::byte> frame) -> Result<Request>;
+decode(std::span<const std::byte> frame) -> Result<DecodedRequest>;
 
 auto
 encode(const Response& res) -> Result<std::vector<std::byte>>;

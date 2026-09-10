@@ -48,9 +48,9 @@ PersistenceManager::recover() -> Result<void> {
         for (auto& entry : data.entries) {
             VersionedEntry ve;
             ve.value = std::move(entry.value);
-            ve.version = entry.version;
+            ve.setVersion(entry.version);
             ve.writer_node_hash = entry.writer_node_hash;
-            ve.has_ttl = entry.has_ttl;
+            ve.setHasTtl(entry.has_ttl);
 
             if (entry.has_ttl && entry.expires_at_ms > 0) {
                 // Preserve the entry's remaining wall-clock lifetime across
@@ -214,19 +214,19 @@ PersistenceManager::createSnapshot() -> Result<void> {
         SnapshotEntry se;
         se.key = key;
         se.value = ve.value;
-        se.version = ve.version;
+        se.version = ve.version();
         se.writer_node_hash = ve.writer_node_hash;
-        se.has_ttl = ve.has_ttl;
+        se.has_ttl = ve.hasTtl();
 
-        if (ve.has_ttl) {
+        if (ve.hasTtl()) {
             se.expires_at_ms = toSystemMsOrDefault(clock_, ve.expires_at);
         } else {
             se.expires_at_ms = 0;
         }
 
         se.freq = 0;
-        if (ve.version >= next_version) {
-            next_version = ve.version + 1;
+        if (ve.version() >= next_version) {
+            next_version = ve.version() + 1;
         }
         all_entries.push_back(std::move(se));
     }
@@ -253,9 +253,9 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
 
         VersionedEntry ve;
         ve.value = std::move(entry->value);
-        ve.version = entry->version;
+        ve.setVersion(entry->version);
         ve.writer_node_hash = entry->writer_node_hash;
-        ve.has_ttl = entry->has_ttl;
+        ve.setHasTtl(entry->has_ttl);
 
         if (entry->has_ttl && entry->expires_at_ms > 0) {
             // Preserve remaining wall-clock lifetime across restart (see

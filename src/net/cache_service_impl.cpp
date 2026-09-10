@@ -216,8 +216,8 @@ class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Serv
         cinder::Span span("grpc.info");
         resp->set_json(formatNodeInfoJson(handle_.node_id,
             handle_.config,
-            handle_.metrics.shardMetrics().current_bytes.load(),
-            handle_.metrics.shardMetrics().current_entries.load()));
+            handle_.metrics.shardMetrics().live.current_bytes.load(),
+            handle_.metrics.shardMetrics().live.current_entries.load()));
         return grpc::Status::OK;
     }
 

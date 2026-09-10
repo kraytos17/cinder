@@ -55,9 +55,9 @@ mustRead(ByteReader& r) -> Result<T> {
 }
 
 auto
-encode(const Request& req) -> Result<std::vector<std::byte>> {
+encode(const Request& req, std::string_view auth_token) -> Result<std::vector<std::byte>> {
     std::vector<std::byte> buf;
-    auto result = encodeInto(req, buf);
+    auto result = encodeInto(req, buf, auth_token);
     if (!result.has_value()) {
         return err<std::vector<std::byte>>(result.error());
     }
@@ -65,7 +65,8 @@ encode(const Request& req) -> Result<std::vector<std::byte>> {
 }
 
 auto
-encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
+encodeInto(const Request& req, std::vector<std::byte>& out, std::string_view auth_token)
+    -> Result<void> {
     size_t payload_size = 0;
     payload_size += sizeof(uint32_t) + req.key.size();
     payload_size += sizeof(uint32_t) + req.value.size();
@@ -85,11 +86,18 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
         payload_size += sizeof(uint64_t) * 2; // trace_id + span_id
     }
 
+    bool has_auth = !auth_token.empty();
+    if (has_auth) {
+        if (auth_token.size() != 32) {
+            return err(Error(Errc::InvalidArgument, "auth token must be 32 bytes"));
+        }
+        payload_size += 32; // HMAC-SHA256 digest
+    }
+
     size_t total = K_FRAME_HEADER_SIZE + payload_size;
     if (total > K_MAX_MESSAGE_SIZE) {
         return err(Error(Errc::InvalidArgument, "message too large"));
     }
-
     out.resize(total); // reuses capacity across calls
     ByteWriter w(out);
 
@@ -107,6 +115,9 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
     }
     if (has_trace) {
         flags |= K_FLAG_HAS_TRACE;
+    }
+    if (has_auth) {
+        flags |= K_FLAG_HAS_AUTH;
     }
 
     w.writeByte(flags);
@@ -131,64 +142,69 @@ encodeInto(const Request& req, std::vector<std::byte>& out) -> Result<void> {
         w.write(req.trace_id);
         w.write(req.span_id);
     }
+    if (has_auth) {
+        // Size validated as exactly 32 above — writeString emits s.size() bytes.
+        w.writeString(auth_token);
+    }
     return ok();
 }
 
 auto
-decode(std::span<const std::byte> frame) -> Result<Request> {
+decode(std::span<const std::byte> frame) -> Result<DecodedRequest> {
     if (frame.size() < K_FRAME_HEADER_SIZE) {
-        return err<Request>(Error(Errc::InvalidArgument, "frame too small"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "frame too small"));
     }
     if (frame[0] != std::byte{K_MAGIC}) {
-        return err<Request>(Error(Errc::InvalidArgument, "bad magic"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "bad magic"));
     }
     if (frame[1] != std::byte{K_VERSION}) {
-        return err<Request>(Error(Errc::InvalidArgument, "bad version"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "bad version"));
     }
 
     uint32_t payload_len = readBe32(&frame[3]);
     if (payload_len > K_MAX_MESSAGE_SIZE) {
-        return err<Request>(Error(Errc::InvalidArgument, "payload too large"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "payload too large"));
     }
     if (K_FRAME_HEADER_SIZE + payload_len > frame.size()) {
-        return err<Request>(Error(Errc::InvalidArgument, "truncated frame"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "truncated frame"));
     }
 
     ByteReader r(frame);
     {
         auto v = mustRead<uint8_t>(r);
         if (!v) {
-            return err<Request>(v.error());
+            return err<DecodedRequest>(v.error());
         }
     } // magic
     {
         auto v = mustRead<uint8_t>(r);
         if (!v) {
-            return err<Request>(v.error());
+            return err<DecodedRequest>(v.error());
         }
     } // version
 
-    Request req;
+    DecodedRequest decoded;
+    Request& req = decoded.req;
     auto raw_opcode = mustRead<uint8_t>(r);
     if (!raw_opcode) {
-        return err<Request>(raw_opcode.error());
+        return err<DecodedRequest>(raw_opcode.error());
     }
     if (*raw_opcode < std::to_underlying(Opcode::Get)
         || *raw_opcode > std::to_underlying(Opcode::AdminShutdown)) {
-        return err<Request>(Error(Errc::InvalidArgument, "unknown opcode"));
+        return err<DecodedRequest>(Error(Errc::InvalidArgument, "unknown opcode"));
     }
 
     req.opcode = static_cast<Opcode>(*raw_opcode);
     {
         auto v = mustRead<uint32_t>(r);
         if (!v) {
-            return err<Request>(v.error());
+            return err<DecodedRequest>(v.error());
         }
     }
 
     auto flags = mustRead<uint8_t>(r);
     if (!flags) {
-        return err<Request>(flags.error());
+        return err<DecodedRequest>(flags.error());
     }
 
     bool has_ttl = (*flags & K_FLAG_HAS_TTL) != 0;
@@ -196,56 +212,56 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
     if (has_ttl) {
         auto ttl = mustRead<uint32_t>(r);
         if (!ttl) {
-            return err<Request>(ttl.error());
+            return err<DecodedRequest>(ttl.error());
         }
         req.ttl = milliseconds(*ttl);
     }
     if (has_expires_at) {
         auto expires_at = mustRead<uint64_t>(r);
         if (!expires_at) {
-            return err<Request>(expires_at.error());
+            return err<DecodedRequest>(expires_at.error());
         }
         // Guard against overflow when milliseconds → nanoseconds (×1'000'000)
         // inside the system_clock::time_point conversion.
         constexpr auto K_MAX_MS = std::numeric_limits<int64_t>::max() / 1'000'000;
         if (*expires_at > K_MAX_MS) {
-            return err<Request>(Error(Errc::InvalidArgument, "expires_at overflow"));
+            return err<DecodedRequest>(Error(Errc::InvalidArgument, "expires_at overflow"));
         }
         req.expires_at = system_clock::time_point(milliseconds(*expires_at));
     }
 
     auto version = mustRead<uint64_t>(r);
     if (!version) {
-        return err<Request>(version.error());
+        return err<DecodedRequest>(version.error());
     }
 
     req.version = *version;
     auto writer_node_hash = mustRead<uint64_t>(r);
     if (!writer_node_hash) {
-        return err<Request>(writer_node_hash.error());
+        return err<DecodedRequest>(writer_node_hash.error());
     }
 
     req.writer_node_hash = *writer_node_hash;
     auto key_len = mustRead<uint32_t>(r);
     if (!key_len) {
-        return err<Request>(key_len.error());
+        return err<DecodedRequest>(key_len.error());
     }
     if (*key_len > 0) {
         auto key_bytes = r.readBytes(*key_len);
         if (!key_bytes) {
-            return err<Request>(key_bytes.error());
+            return err<DecodedRequest>(key_bytes.error());
         }
         req.key.assign(reinterpret_cast<const char*>(key_bytes->data()), *key_len);
     }
 
     auto val_len = mustRead<uint32_t>(r);
     if (!val_len) {
-        return err<Request>(val_len.error());
+        return err<DecodedRequest>(val_len.error());
     }
     if (*val_len > 0) {
         auto val_bytes = r.readBytes(*val_len);
         if (!val_bytes) {
-            return err<Request>(val_bytes.error());
+            return err<DecodedRequest>(val_bytes.error());
         }
         req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), *val_len);
     }
@@ -260,7 +276,16 @@ decode(std::span<const std::byte> frame) -> Result<Request> {
             }
         }
     }
-    return ok(std::move(req));
+    // Auth token — optional trailing data gated by flag 0x08.
+    if (*flags & K_FLAG_HAS_AUTH) {
+        if (r.remaining() >= 32) {
+            auto auth_bytes = r.readBytes(32);
+            if (auth_bytes) {
+                decoded.auth_token.assign(reinterpret_cast<const char*>(auth_bytes->data()), 32);
+            }
+        }
+    }
+    return ok(std::move(decoded));
 }
 
 auto

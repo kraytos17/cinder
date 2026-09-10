@@ -35,5 +35,8 @@ tls:
   key_file: /etc/cinder/key.pem     # server private key (PEM)
   ca_file: /etc/cinder/ca.pem       # CA cert for peer verification (PEM, optional)
 
+auth:
+  shared_secret: ""                 # shared secret for node authentication (empty = disabled)
+
 logging:
   level: info                # trace | debug | info | warn | error

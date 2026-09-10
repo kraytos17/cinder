@@ -7,9 +7,10 @@
          "description":"Debug build with Ninja (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/debug",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"debug-tls",
@@ -28,11 +29,12 @@
          "description":"Debug build with Ninja and Clang",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/debug-clang",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"release",
@@ -40,10 +42,11 @@
          "description":"Optimized release build with LTO (GCC)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/release",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Release",
-            "CINDER_ENABLE_LTO":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Release",
+             "CINDER_ENABLE_LTO":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"release-clang",
@@ -51,12 +54,13 @@
          "description":"Optimized release build with LTO (Clang)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/release-clang",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Release",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_LTO":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Release",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_LTO":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"asan",
@@ -64,11 +68,12 @@
          "description":"Debug build with ASan+UBSan; mimalloc auto-disabled",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/asan",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"asan-clang",
@@ -76,13 +81,14 @@
          "description":"Clang debug with ASan+UBSan + use-after-scope/return + ignorelist; mimalloc auto-disabled",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/asan-clang",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"msan",
@@ -90,12 +96,13 @@
          "description":"Clang with MemorySanitizer — requires an MSan-instrumented libc++ to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/msan",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_MSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_MSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"tsan",
@@ -103,10 +110,11 @@
          "description":"Debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/tsan",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_TSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_TSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"ubsan",
@@ -114,10 +122,11 @@
          "description":"Debug build with UBSan only",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/ubsan",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_UBSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"ci",
@@ -125,12 +134,13 @@
          "description":"CI build with clang-tidy (Clang, no ASan)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/ci",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_CLANG_TIDY":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_CLANG_TIDY":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"ci-gcc",
@@ -138,11 +148,12 @@
          "description":"CI build with GCC, ASan+UBSan; mimalloc auto-disabled",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/ci-gcc",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"fast",
@@ -150,10 +161,11 @@
          "description":"Debug build with unity/jumbo merging and lld (GCC) — fastest edit-compile-test loop, not representative of real performance",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/fast",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_UNITY_BUILD":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_UNITY_BUILD":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"release-unity",
@@ -161,10 +173,11 @@
          "description":"Optimized build with unity/jumbo merging — fast rebuilds for perf-iteration work",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/release-unity",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Release",
-            "CINDER_UNITY_BUILD":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Release",
+             "CINDER_UNITY_BUILD":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"profile",
@@ -172,10 +185,11 @@
          "description":"RelWithDebInfo with frame pointers preserved — for perf/flamegraph work",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/profile",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-            "CINDER_KEEP_FRAME_POINTER":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
+             "CINDER_KEEP_FRAME_POINTER":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"analyze",
@@ -183,11 +197,12 @@
          "description":"Debug build with GCC's static analyzer (-fanalyzer)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/analyze",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_GCC_ANALYZER":"ON",
-            "CINDER_BUILD_BENCHMARKS":"OFF"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_GCC_ANALYZER":"ON",
+             "CINDER_BUILD_BENCHMARKS":"OFF",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"iwyu",
@@ -195,13 +210,14 @@
          "description":"Clang build running include-what-you-use during compilation",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/iwyu",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_IWYU":"ON",
-            "CINDER_BUILD_BENCHMARKS":"OFF"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_IWYU":"ON",
+             "CINDER_BUILD_BENCHMARKS":"OFF",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"fuzz",
@@ -209,14 +225,15 @@
          "description":"Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/fuzz",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_FUZZER":"ON",
-            "CINDER_ENABLE_ASAN":"ON",
-            "CINDER_ENABLE_UBSAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_FUZZER":"ON",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_UBSAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"fuzz-coverage",
@@ -224,13 +241,14 @@
          "description":"Clang build with coverage instrumentation for corpus minimization",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/fuzz-coverage",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CMAKE_CXX_COMPILER":"clang++",
-            "CMAKE_C_COMPILER":"clang",
-            "CINDER_ENABLE_COVERAGE":"ON",
-            "CINDER_ENABLE_ASAN":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CMAKE_CXX_COMPILER":"clang++",
+             "CMAKE_C_COMPILER":"clang",
+             "CINDER_ENABLE_COVERAGE":"ON",
+             "CINDER_ENABLE_ASAN":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       },
       {
          "name":"debug-grpc",
@@ -238,10 +256,11 @@
          "description":"Debug build with gRPC gateway enabled (fetches gRPC + protobuf + abseil)",
          "generator":"Ninja",
          "binaryDir":"${sourceDir}/build/debug-grpc",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_GRPC":"ON"
-         }
+          "cacheVariables":{
+             "CMAKE_BUILD_TYPE":"Debug",
+             "CINDER_ENABLE_GRPC":"ON",
+             "CINDER_ENABLE_CRYPTO":"ON"
+          }
       }
    ],
    "buildPresets":[

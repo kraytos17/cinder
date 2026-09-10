@@ -4,6 +4,7 @@
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
+#include "cinder/common/hmac.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
@@ -20,7 +21,7 @@ namespace cinder::net {
 TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const ConsistentHashRing& ring,
     std::string_view node_id, Clock& clock, ReplicationManager* repl, int replica_factor,
     ConsistencyMode mode, GossipManager* gossip, std::shared_ptr<std::atomic<size_t>> conn_counter,
-    AntiEntropyManager* anti_entropy
+    AntiEntropyManager* anti_entropy, std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
     ,
     asio::ssl::context* ssl_ctx
@@ -38,8 +39,8 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       node_id_(node_id),
       replica_factor_(replica_factor),
       mode_(mode),
-      read_buf_{},
-      encode_buf_(512), // pre-allocate for typical requests
+      shared_secret_(std::move(shared_secret)),
+      encode_buf_(512),
       conn_counter_(std::move(conn_counter)) {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_ctx) {
@@ -118,8 +119,8 @@ void
 TcpConnection::drain() {
     auto self = shared_from_this();
     asio::post(strand_, [this, self]() {
-        draining_ = true;
-        if (!pending_opcode_.has_value() && write_queue_.empty() && !writing_) {
+        setDraining(true);
+        if (!pending_opcode_.has_value() && write_queue_.empty() && !isWriting()) {
             closeConnection("drained");
             return;
         }
@@ -137,10 +138,10 @@ TcpConnection::drain() {
 
 void
 TcpConnection::maybeRead() {
-    if (draining_
-        || (!reading_ && write_queue_.size() < K_MAX_WRITE_QUEUE
+    if (isDraining()
+        || (!isReading() && write_queue_.size() < K_MAX_WRITE_QUEUE
             && write_queue_bytes_ < K_MAX_WRITE_QUEUE_BYTES)) {
-        reading_ = true;
+        setReading(true);
         doReadHeader();
     }
 }
@@ -277,7 +278,7 @@ TcpConnection::doReadPayload(size_t len) {
 
 void
 TcpConnection::onPayload(std::error_code ec, size_t bytes) {
-    reading_ = false;
+    setReading(false);
     if (ec) {
         return;
     }
@@ -295,7 +296,8 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         return;
     }
 
-    auto req = std::move(result.value());
+    auto decoded = std::move(result.value());
+    auto& req = decoded.req;
     // Generate structured trace-id at the connection entry point if not already
     // present
     if (req.trace_id == 0) {
@@ -306,7 +308,7 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         static std::atomic<uint64_t> s_next_span_id{1};
         req.span_id = s_next_span_id.fetch_add(1, std::memory_order_relaxed);
     }
-    handleRequest(req);
+    handleRequest(req, decoded.auth_token);
 }
 
 static auto
@@ -350,7 +352,7 @@ getOperationName(Opcode op) -> std::string_view {
 }
 
 void
-TcpConnection::handleRequest(const Request& req) {
+TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
     pending_opcode_ = req.opcode;
     request_start_ = std::chrono::steady_clock::now();
 
@@ -361,51 +363,53 @@ TcpConnection::handleRequest(const Request& req) {
     if (metrics_) {
         switch (req.opcode) {
             case Opcode::Get:
-                metrics_->opcodeMetrics().gets.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().client.gets.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::Set:
-                metrics_->opcodeMetrics().sets.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().client.sets.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::Del:
-                metrics_->opcodeMetrics().dels.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().client.dels.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::Ping:
-                metrics_->opcodeMetrics().pings.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().client.pings.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::Replicate:
-                metrics_->opcodeMetrics().replicates.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().repl.replicates.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::Hint:
-                metrics_->opcodeMetrics().hints.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().repl.hints.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::GetVersioned:
-                metrics_->opcodeMetrics().gets_versioned.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().repl.gets_versioned.fetch_add(
+                    1, std::memory_order_relaxed);
                 break;
             case Opcode::AntiEntropyDigest:
-                metrics_->opcodeMetrics().anti_entropy_digest.fetch_add(
+                metrics_->opcodeMetrics().repl.anti_entropy_digest.fetch_add(
                     1, std::memory_order_relaxed);
                 break;
             case Opcode::AntiEntropySync:
-                metrics_->opcodeMetrics().anti_entropy_sync.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
+                    1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminInfo:
-                metrics_->opcodeMetrics().admin_info.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().admin.info.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminCluster:
-                metrics_->opcodeMetrics().admin_cluster.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().admin.cluster.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminRing:
-                metrics_->opcodeMetrics().admin_ring.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().admin.ring.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminCompact:
-                metrics_->opcodeMetrics().admin_compact.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().admin.compact.fetch_add(1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminConfigReload:
-                metrics_->opcodeMetrics().admin_config_reload.fetch_add(
+                metrics_->opcodeMetrics().admin.config_reload.fetch_add(
                     1, std::memory_order_relaxed);
                 break;
             case Opcode::AdminShutdown:
-                metrics_->opcodeMetrics().admin_shutdown.fetch_add(1, std::memory_order_relaxed);
+                metrics_->opcodeMetrics().admin.shutdown.fetch_add(1, std::memory_order_relaxed);
                 break;
             default:
                 break;
@@ -421,6 +425,25 @@ TcpConnection::handleRequest(const Request& req) {
                        || req.opcode == Opcode::AdminCompact
                        || req.opcode == Opcode::AdminConfigReload
                        || req.opcode == Opcode::AdminShutdown;
+
+    // Node authentication — validate auth token on internal opcodes when a
+    // shared_secret is configured. Client opcodes (Get/Set/Del/Ping) skip
+    // auth since they go through the normal ring-ownership path.
+    if (is_internal && !shared_secret_.empty()) {
+        if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
+            Event::warn("auth failed",
+                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
+                    {"node", std::string(node_id_)}});
+            if (metrics_) {
+                metrics_->connectionMetrics().connections_closed.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+
+            sendResponse({.status = Errc::PermissionDenied, .value = "auth failed"});
+            maybeRead();
+            return;
+        }
+    }
 
     // Reads are served from the local store when present — a replica holds a
     // copy and can keep serving reads after the primary fails (failover read).
@@ -505,9 +528,9 @@ TcpConnection::handleRequest(const Request& req) {
             if (entry.has_value()) {
                 res.status = Errc::OK;
                 res.value = std::move(entry->value);
-                res.version = entry->version;
+                res.version = entry->version();
                 res.writer_node_hash = entry->writer_node_hash;
-                if (entry->has_ttl) {
+                if (entry->hasTtl()) {
                     res.expires_at = toSystemExpiry(clock_, entry->expires_at);
                 }
             } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
@@ -591,13 +614,13 @@ TcpConnection::handleRequest(const Request& req) {
         case Opcode::Hint: {
             VersionedEntry entry;
             entry.value = req.value;
-            entry.version = req.version;
+            entry.setVersion(req.version);
             entry.writer_node_hash = req.writer_node_hash;
             // Apply the primary's absolute wall-clock expiry on the local steady
             // basis, so all replicas expire the key at the same instant.
             if (req.expires_at.has_value()) {
                 entry.expires_at = toSteadyExpiry(clock_, *req.expires_at);
-                entry.has_ttl = true;
+                entry.setHasTtl(true);
             }
 
             auto result = store_.putVersioned(req.key, std::move(entry));
@@ -639,38 +662,38 @@ TcpConnection::handleRequest(const Request& req) {
             break;
         }
         case Opcode::AdminInfo: {
-            if (admin_info_getter_) {
-                res.value = admin_info_getter_();
+            if (admin_ && admin_->info_getter) {
+                res.value = admin_->info_getter();
             }
             break;
         }
         case Opcode::AdminCluster: {
-            if (admin_cluster_getter_) {
-                res.value = admin_cluster_getter_();
+            if (admin_ && admin_->cluster_getter) {
+                res.value = admin_->cluster_getter();
             }
             break;
         }
         case Opcode::AdminRing: {
-            if (admin_ring_getter_) {
-                res.value = admin_ring_getter_();
+            if (admin_ && admin_->ring_getter) {
+                res.value = admin_->ring_getter();
             }
             break;
         }
         case Opcode::AdminCompact: {
-            if (admin_compact_trigger_) {
-                admin_compact_trigger_();
+            if (admin_ && admin_->compact_trigger) {
+                admin_->compact_trigger();
             }
             break;
         }
         case Opcode::AdminConfigReload: {
-            if (admin_config_reload_trigger_) {
-                admin_config_reload_trigger_();
+            if (admin_ && admin_->config_reload_trigger) {
+                admin_->config_reload_trigger();
             }
             break;
         }
         case Opcode::AdminShutdown: {
-            if (admin_shutdown_trigger_) {
-                admin_shutdown_trigger_();
+            if (admin_ && admin_->shutdown_trigger) {
+                admin_->shutdown_trigger();
             }
             break;
         }
@@ -681,7 +704,6 @@ TcpConnection::handleRequest(const Request& req) {
 
     // Echo trace context back to the client for correlation.
     res.trace_id = req.trace_id;
-    res.span_id = req.span_id;
     res.span_id = req.span_id;
     sendResponse(res);
     maybeRead();
@@ -721,12 +743,12 @@ TcpConnection::sendResponse(const Response& res) {
         closeConnection("write queue overflow");
         return;
     }
-    if (!writing_) {
+    if (!isWriting()) {
         doWrite();
     }
     // A drain with no pending request and nothing left to write (e.g. the
     // decode-failure path replies without a queued write) can finish here.
-    if (draining_ && !pending_opcode_.has_value() && write_queue_.empty() && !writing_) {
+    if (isDraining() && !pending_opcode_.has_value() && write_queue_.empty() && !isWriting()) {
         closeConnection("drained");
     }
 }
@@ -735,11 +757,11 @@ void
 TcpConnection::doWrite() {
     Span span("tcp.doWrite");
     if (write_queue_.empty()) {
-        writing_ = false;
+        setWriting(false);
         return;
     }
 
-    writing_ = true;
+    setWriting(true);
     auto self = shared_from_this();
     auto& buf = write_queue_.front();
     auto on_write_done = [this, self](std::error_code ec) {
@@ -758,7 +780,7 @@ TcpConnection::doWrite() {
 
             write_queue_.clear();
             write_queue_bytes_ = 0;
-            writing_ = false;
+            setWriting(false);
             closeConnection("write failure", ec);
             return;
         }
@@ -771,8 +793,8 @@ TcpConnection::doWrite() {
         if (!write_queue_.empty()) {
             doWrite();
         } else {
-            writing_ = false;
-            if (draining_) {
+            setWriting(false);
+            if (isDraining()) {
                 closeConnection("drained");
             } else {
                 maybeRead();
