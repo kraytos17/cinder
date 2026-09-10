@@ -18,7 +18,7 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
-struct LruNode {
+struct LruNode : WheelNode {
     std::string key;
     VersionedEntry entry;
 };
@@ -54,6 +54,6 @@ class LruStore : public EvictionStoreBase<LruStore, LruNode> {
     mutable std::shared_mutex mutex_;
     std::list<LruNode, SlabAllocator<LruNode>> list_;
     std::unordered_map<std::string, ListIt> index_;
-    TtlWheel wheel_;
+    TtlWheel<LruNode> wheel_;
 };
 } // namespace cinder

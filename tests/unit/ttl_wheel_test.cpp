@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <string>
 #include <vector>
 
 #include "cinder/store/ttl_wheel.hpp"
@@ -6,18 +7,26 @@
 namespace cinder {
 namespace {
 
+// Simple test node that inherits from WheelNode for intrusive wheel linkage.
+struct TestNode : WheelNode {
+    std::string key;
+};
+
 // Helper: tick once and collect expired keys via callback.
 auto
-tickCollect(TtlWheel& wheel) -> std::vector<std::string> {
+tickCollect(TtlWheel<TestNode>& wheel) -> std::vector<std::string> {
     std::vector<std::string> expired;
-    wheel.tick([&](const std::string& key) { expired.push_back(key); });
+    wheel.tick([&](TestNode& node) { expired.push_back(node.key); });
     return expired;
 }
 
 TEST(TtlWheelTest, InsertAndTick) {
-    TtlWheel wheel;
-    wheel.insert("key1", 1);
-    wheel.insert("key2", 2);
+    TtlWheel<TestNode> wheel;
+    TestNode n1{.key = "key1"};
+    TestNode n2{.key = "key2"};
+
+    wheel.insert(&n1, 1);
+    wheel.insert(&n2, 2);
 
     auto expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 1);
@@ -29,8 +38,9 @@ TEST(TtlWheelTest, InsertAndTick) {
 }
 
 TEST(TtlWheelTest, NoExpiryBeforeSlot) {
-    TtlWheel wheel;
-    wheel.insert("key", 5);
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
+    wheel.insert(&node, 5);
 
     for (int i = 0; i < 4; i++) {
         auto expired = tickCollect(wheel);
@@ -39,27 +49,33 @@ TEST(TtlWheelTest, NoExpiryBeforeSlot) {
 }
 
 TEST(TtlWheelTest, MultipleExpiries) {
-    TtlWheel wheel;
-    wheel.insert("a", 1);
-    wheel.insert("b", 1);
+    TtlWheel<TestNode> wheel;
+    TestNode a{.key = "a"};
+    TestNode b{.key = "b"};
+
+    wheel.insert(&a, 1);
+    wheel.insert(&b, 1);
 
     auto expired = tickCollect(wheel);
     ASSERT_EQ(expired.size(), 2);
 }
 
 TEST(TtlWheelTest, RemoveBeforeExpiry) {
-    TtlWheel wheel;
-    wheel.insert("key", 1);
-    wheel.remove("key");
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
+    wheel.insert(&node, 1);
+    wheel.remove(&node);
 
     auto expired = tickCollect(wheel);
     EXPECT_TRUE(expired.empty());
 }
 
 TEST(TtlWheelTest, InsertOverwritesRemovesOldSlot) {
-    TtlWheel wheel;
-    wheel.insert("key", 1);
-    wheel.insert("key", 10); // expiry moved — must leave slot 1
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
+    wheel.insert(&node, 1);
+    wheel.insert(&node, 10); // expiry moved — must leave slot 1
+
     for (int i = 0; i < 9; i++) {
         auto expired = tickCollect(wheel);
         EXPECT_TRUE(expired.empty()) << "stale entry fired from old slot at tick " << i;
@@ -71,9 +87,11 @@ TEST(TtlWheelTest, InsertOverwritesRemovesOldSlot) {
 }
 
 TEST(TtlWheelTest, WrapAround) {
-    TtlWheel wheel;
-    wheel.insert("key", TtlWheel::K_SLOT_COUNT);
-    for (size_t i = 0; i < TtlWheel::K_SLOT_COUNT; i++) {
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
+    wheel.insert(&node, TtlWheel<TestNode>::K_SLOT_COUNT);
+
+    for (size_t i = 0; i < TtlWheel<TestNode>::K_SLOT_COUNT; i++) {
         auto expired = tickCollect(wheel);
         if (!expired.empty()) {
             ASSERT_EQ(expired.size(), 1);
@@ -85,8 +103,9 @@ TEST(TtlWheelTest, WrapAround) {
 }
 
 TEST(TtlWheelTest, LongTtlFiresWithoutReinsert) {
-    TtlWheel wheel;
-    wheel.insert("long_key", TtlWheel::K_SLOT_COUNT + 100); // 356 ticks
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "long_key"};
+    wheel.insert(&node, TtlWheel<TestNode>::K_SLOT_COUNT + 100); // 356 ticks
 
     // Tick 355 times — should not fire.
     for (size_t i = 0; i < 355; ++i) {
@@ -101,21 +120,24 @@ TEST(TtlWheelTest, LongTtlFiresWithoutReinsert) {
 }
 
 TEST(TtlWheelTest, LongTtlRemovePreventsFire) {
-    TtlWheel wheel;
-    wheel.insert("long_key", TtlWheel::K_SLOT_COUNT + 200);
-    wheel.remove("long_key");
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "long_key"};
+    wheel.insert(&node, TtlWheel<TestNode>::K_SLOT_COUNT + 200);
+    wheel.remove(&node);
 
     // Tick past the would-be expiry — key must never fire.
-    for (size_t i = 0; i < TtlWheel::K_SLOT_COUNT + 201; ++i) {
+    for (size_t i = 0; i < TtlWheel<TestNode>::K_SLOT_COUNT + 201; ++i) {
         auto expired = tickCollect(wheel);
         EXPECT_TRUE(expired.empty()) << "removed key fired at tick " << i;
     }
 }
 
 TEST(TtlWheelTest, MixedShortAndLongTtl) {
-    TtlWheel wheel;
-    wheel.insert("short", 1);
-    wheel.insert("long", TtlWheel::K_SLOT_COUNT + 50); // 306 ticks
+    TtlWheel<TestNode> wheel;
+    TestNode short_node{.key = "short"};
+    TestNode long_node{.key = "long"};
+    wheel.insert(&short_node, 1);
+    wheel.insert(&long_node, TtlWheel<TestNode>::K_SLOT_COUNT + 50); // 306 ticks
 
     // Tick 1 — short fires, long does not.
     auto expired = tickCollect(wheel);
@@ -135,11 +157,12 @@ TEST(TtlWheelTest, MixedShortAndLongTtl) {
 }
 
 TEST(TtlWheelTest, LongTtlOverwriteRoutesToWheel) {
-    TtlWheel wheel;
-    wheel.insert("key", TtlWheel::K_SLOT_COUNT + 100); // heap path
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
+    wheel.insert(&node, TtlWheel<TestNode>::K_SLOT_COUNT + 100); // heap path
 
     // Overwrite with a short TTL — should move to the wheel.
-    wheel.insert("key", 3);
+    wheel.insert(&node, 3);
 
     // Tick 2 — should not fire.
     for (int i = 0; i < 2; ++i) {
@@ -154,7 +177,8 @@ TEST(TtlWheelTest, LongTtlOverwriteRoutesToWheel) {
 }
 
 TEST(TtlWheelTest, TickCountMonotonicallyIncreases) {
-    TtlWheel wheel;
+    TtlWheel<TestNode> wheel;
+    TestNode node{.key = "key"};
     EXPECT_EQ(wheel.tickCount(), 0);
     tickCollect(wheel);
     EXPECT_EQ(wheel.tickCount(), 1);

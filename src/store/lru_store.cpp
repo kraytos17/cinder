@@ -15,7 +15,10 @@ LruStore::applyExisting(ListIt it, VersionedEntry entry) {
 
 auto
 LruStore::insertNew(const std::string& key, VersionedEntry entry) -> ListIt {
-    list_.push_front({.key = key, .entry = std::move(entry)});
+    LruNode n{};
+    n.key = key;
+    n.entry = std::move(entry);
+    list_.push_front(std::move(n));
     index_[key] = list_.begin();
     return list_.begin();
 }
@@ -26,15 +29,13 @@ LruStore::onAccess(ListIt it) {
 }
 
 void
-LruStore::onEvictExpired(ListIt /*it*/) {
-    // no frequency bookkeeping — nothing to clean up on expiry
-}
+LruStore::onEvictExpired(ListIt /*it*/) {}
 
 void
 LruStore::evictOne() {
     auto& node = list_.back();
     current_bytes_ -= node.key.size() + node.entry.value.size() + sizeof(LruNode);
-    wheel_.remove(node.key);
+    wheel_.remove(&node);
     index_.erase(node.key);
     list_.pop_back();
 }

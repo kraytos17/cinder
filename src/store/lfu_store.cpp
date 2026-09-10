@@ -1,6 +1,5 @@
 #include "cinder/store/lfu_store.hpp"
 
-#include <algorithm>
 #include <utility>
 
 namespace cinder {
@@ -16,8 +15,13 @@ LfuStore::applyExisting(ListIt it, VersionedEntry entry) {
 
 auto
 LfuStore::insertNew(const std::string& key, VersionedEntry entry) -> ListIt {
-    list_.push_front({.freq = 1, .key = key, .entry = std::move(entry)});
+    LfuNode n{};
+    n.freq = 1;
+    n.key = key;
+    n.entry = std::move(entry);
+    list_.push_front(std::move(n));
     index_[key] = list_.begin();
+    list_.begin()->freq_index = freq_buckets_[1].size();
     freq_buckets_[1].push_back(list_.begin());
     min_freq_ = 1;
     return list_.begin();
@@ -40,15 +44,24 @@ LfuStore::evictOne() {
         return;
     }
 
-    auto node_it = bucket_it->second.front();
-    bucket_it->second.erase(bucket_it->second.begin());
-    if (bucket_it->second.empty()) {
+    auto& vec = bucket_it->second;
+    // Swap front to back for O(1) removal while preserving eviction order
+    // (oldest entry at min_freq is at front, pushed earliest).
+    auto node_it = vec.front();
+    if (vec.size() > 1) {
+        auto back_it = vec.back();
+        back_it->freq_index = 0;
+        vec[0] = back_it;
+    }
+
+    vec.pop_back();
+    if (vec.empty()) {
         freq_buckets_.erase(bucket_it);
         min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
     }
 
     current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
-    wheel_.remove(node_it->key);
+    wheel_.remove(&(*node_it));
     index_.erase(node_it->key);
     list_.erase(node_it);
 }
@@ -60,6 +73,7 @@ LfuStore::incrementFreq(ListIt it) {
     it->freq = new_freq;
 
     removeFromFreqBucket(it, old_freq);
+    it->freq_index = freq_buckets_[new_freq].size();
     freq_buckets_[new_freq].push_back(it);
     if (old_freq == min_freq_ && freq_buckets_[old_freq].empty()) {
         ++min_freq_;
@@ -74,14 +88,23 @@ LfuStore::removeFromFreqBucket(ListIt it) {
 void
 LfuStore::removeFromFreqBucket(ListIt it, size_t freq) {
     auto bucket_it = freq_buckets_.find(freq);
-    if (bucket_it != freq_buckets_.end()) {
-        auto& vec = bucket_it->second;
-        vec.erase(std::remove(vec.begin(), vec.end(), it), vec.end());
-        if (vec.empty()) {
-            freq_buckets_.erase(bucket_it);
-            if (freq == min_freq_) {
-                min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
-            }
+    if (bucket_it == freq_buckets_.end()) {
+        return;
+    }
+
+    auto& vec = bucket_it->second;
+    auto idx = it->freq_index;
+    if (idx != vec.size() - 1) {
+        auto last = vec.back();
+        last->freq_index = idx;
+        vec[idx] = last;
+    }
+
+    vec.pop_back();
+    if (vec.empty()) {
+        freq_buckets_.erase(bucket_it);
+        if (freq == min_freq_) {
+            min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
         }
     }
 }

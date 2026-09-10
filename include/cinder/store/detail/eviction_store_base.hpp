@@ -146,7 +146,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         if (Derived::nodeEntry(*node).hasTtl() && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
-            self.wheel_.remove(Derived::nodeKey(*node));
+            self.wheel_.remove(&(*node));
             self.list_.erase(node);
             self.index_.erase(it);
             if (metrics_) {
@@ -179,7 +179,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         if (Derived::nodeEntry(*node).hasTtl() && Derived::nodeEntry(*node).expires_at <= now()) {
             current_bytes_ -= Derived::nodeSize(*node);
             self.onEvictExpired(node);
-            self.wheel_.remove(Derived::nodeKey(*node));
+            self.wheel_.remove(&(*node));
             self.list_.erase(node);
             self.index_.erase(it);
             if (metrics_) {
@@ -217,7 +217,7 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
         current_bytes_ -= Derived::nodeSize(*node);
         self.onEvictExpired(node);
-        self.wheel_.remove(Derived::nodeKey(*node));
+        self.wheel_.remove(&(*node));
         self.list_.erase(node);
         self.index_.erase(it);
         if (metrics_) {
@@ -246,30 +246,29 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         last_evict_ = current;
         size_t evicted = 0;
         for (size_t i = 0; i < ticks; ++i) {
-            self.wheel_.tick([&](const std::string& key) {
-                auto kit = self.index_.find(key);
+            self.wheel_.tick([&](Node& node) {
+                auto& entry = Derived::nodeEntry(node);
+                if (!entry.hasTtl() || entry.expires_at > current) {
+                    // Fired early (wheel wrap, sub-second drift): re-schedule so the
+                    // key is still reaped at its true expiry.
+                    self.wheel_.insert(&node, expiryTicks(entry.expires_at));
+                    return;
+                }
+
+                auto kit = self.index_.find(Derived::nodeKey(node));
                 if (kit == self.index_.end()) {
                     return; // already removed
                 }
 
-                auto& node = kit->second;
-                if (Derived::nodeEntry(*node).hasTtl()
-                    && Derived::nodeEntry(*node).expires_at <= current) {
-                    current_bytes_ -= Derived::nodeSize(*node);
-                    auto list_it = node;
-                    self.onEvictExpired(list_it);
-                    self.index_.erase(kit);
-                    self.list_.erase(list_it);
-                    ++evicted;
-                    if (metrics_) {
-                        metrics_->shardMetrics().cap.evictions_ttl.fetch_add(
-                            1, std::memory_order_relaxed);
-                    }
-                } else {
-                    // Fired early (wheel wrap, sub-second drift): re-schedule so the
-                    // key is still reaped at its true expiry.
-                    self.wheel_.insert(
-                        Derived::nodeKey(*node), expiryTicks(Derived::nodeEntry(*node).expires_at));
+                auto list_it = kit->second;
+                current_bytes_ -= Derived::nodeSize(node);
+                self.onEvictExpired(list_it);
+                self.index_.erase(kit);
+                self.list_.erase(list_it);
+                ++evicted;
+                if (metrics_) {
+                    metrics_->shardMetrics().cap.evictions_ttl.fetch_add(
+                        1, std::memory_order_relaxed);
                 }
             });
         }
@@ -377,17 +376,22 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
 
   private:
 
-    [[nodiscard]] auto d() const -> const Derived& { return *static_cast<const Derived*>(this); }
-
-    [[nodiscard]] auto d() -> Derived& { return *static_cast<Derived*>(this); }
+    template <typename Self>
+    [[nodiscard]] auto d(this Self&& self)
+        -> std::conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const Derived&,
+            Derived&> {
+        using Ret = std::
+            conditional_t<std::is_const_v<std::remove_reference_t<Self>>, const Derived&, Derived&>;
+        return static_cast<Ret>(self);
+    }
 
     void updateWheel(ListIt it) {
         Derived& self = d();
         auto& entry = Derived::nodeEntry(*it);
         if (entry.hasTtl()) {
-            self.wheel_.insert(Derived::nodeKey(*it), expiryTicks(entry.expires_at));
+            self.wheel_.insert(&(*it), expiryTicks(entry.expires_at));
         } else {
-            self.wheel_.remove(Derived::nodeKey(*it));
+            self.wheel_.remove(&(*it));
         }
     }
 

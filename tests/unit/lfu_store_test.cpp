@@ -124,10 +124,10 @@ TEST(LfuStoreTest, MaxSizeValue) {
 }
 
 TEST(LfuStoreTest, FrequencyResetAfterEviction) {
-    // sizeof(LfuNode) ≈ 96 bytes (std::string SSO overhead)
-    // Each entry: key(1) + value(10) + sizeof(LfuNode) ≈ 107 bytes
-    // Capacity 250 holds 2 entries; 3rd triggers eviction
-    LfuStore store(250);
+    // sizeof(LfuNode) = 128 bytes (includes WheelNode base)
+    // Each entry: key(1) + value(10) + sizeof(LfuNode) ≈ 139 bytes
+    // Capacity 400 holds 2 entries; 3rd triggers eviction
+    LfuStore store(400);
     EXPECT_TRUE(store.put("a", std::string(10, 'x')).has_value());
     EXPECT_TRUE(store.put("b", std::string(10, 'x')).has_value());
     // Access "a" many times to increase its frequency

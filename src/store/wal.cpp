@@ -1,6 +1,6 @@
 #include "cinder/store/wal.hpp"
 
-#include <sstream>
+#include <cstring>
 #include <xxhash.h>
 
 #include "cinder/common/tracing.hpp"
@@ -28,34 +28,42 @@ WalWriter::append(const WalEntry& entry) -> Result<void> {
         return err(Error(Errc::InternalError, "WAL file not open"));
     }
 
-    std::ostringstream buf;
-    auto key_len = static_cast<uint32_t>(entry.key.size());
-    auto val_len = static_cast<uint32_t>(entry.value.size());
-    auto write_buf_u8 = [&buf](uint8_t v) {
-        buf.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    // Pre-size scratch buffer: 1(op) + 4(key_len) + key + 4(val_len) + value
+    // + 8(version) + 8(writer_node_hash) + 8(expires_at_ms) + 1(has_ttl)
+    const size_t size = 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 8 + 1;
+    scratch_.resize(size);
+
+    size_t off = 0;
+    auto write_u8 = [&](uint8_t v) {
+        std::memcpy(&scratch_[off], &v, sizeof(v));
+        off += sizeof(v);
     };
-    auto write_buf_u32 = [&buf](uint32_t v) {
-        buf.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    auto write_u32 = [&](uint32_t v) {
+        std::memcpy(&scratch_[off], &v, sizeof(v));
+        off += sizeof(v);
     };
-    auto write_buf_u64 = [&buf](uint64_t v) {
-        buf.write(reinterpret_cast<const char*>(&v), sizeof(v));
+    auto write_u64 = [&](uint64_t v) {
+        std::memcpy(&scratch_[off], &v, sizeof(v));
+        off += sizeof(v);
+    };
+    auto write_bytes = [&](const void* data, size_t len) {
+        std::memcpy(&scratch_[off], data, len);
+        off += len;
     };
 
-    write_buf_u8(static_cast<uint8_t>(entry.op));
-    write_buf_u32(key_len);
-    buf.write(entry.key.data(), static_cast<std::streamsize>(key_len));
+    write_u8(std::to_underlying(entry.op));
+    write_u32(static_cast<uint32_t>(entry.key.size()));
+    write_bytes(entry.key.data(), entry.key.size());
+    write_u32(static_cast<uint32_t>(entry.value.size()));
+    write_bytes(entry.value.data(), entry.value.size());
+    write_u64(entry.version);
+    write_u64(entry.writer_node_hash);
+    write_u64(entry.expires_at_ms);
+    write_u8(entry.has_ttl ? 1 : 0);
 
-    write_buf_u32(val_len);
-    buf.write(entry.value.data(), static_cast<std::streamsize>(val_len));
-
-    write_buf_u64(entry.version);
-    write_buf_u64(entry.writer_node_hash);
-    write_buf_u64(entry.expires_at_ms);
-    write_buf_u8(entry.has_ttl ? 1 : 0);
-
-    auto entry_str = buf.str();
-    auto digest = XXH3_64bits(entry_str.data(), entry_str.size());
-    out_.write(entry_str.data(), static_cast<std::streamsize>(entry_str.size()));
+    auto digest = XXH3_64bits(scratch_.data(), scratch_.size());
+    out_.write(reinterpret_cast<const char*>(scratch_.data()),
+        static_cast<std::streamsize>(scratch_.size()));
     writeU64(out_, digest);
     if (!out_.good()) {
         return err(Error(Errc::InternalError, "WAL write failed"));

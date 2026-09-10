@@ -6,6 +6,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <utility>
 #include <vector>
 
 #include "cinder/common/tracing.hpp"
@@ -118,7 +119,7 @@ template <typename T> class SlabAllocator {
                 free_count_.fetch_sub(1, std::memory_order_relaxed);
                 return std::start_lifetime_as<T>(head);
             }
-            return nullptr; // unreachable
+            std::unreachable();
         }
 
         std::vector<std::byte*> slabs_;

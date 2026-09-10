@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
@@ -44,6 +46,7 @@ class WalWriter {
   private:
 
     std::ofstream out_;
+    std::vector<std::byte> scratch_; // reused buffer for record encoding
 };
 
 class WalReader {

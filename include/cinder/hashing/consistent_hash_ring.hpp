@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <shared_mutex>
 #include <string_view>
@@ -11,8 +13,19 @@
 
 namespace cinder {
 
+// Transparent hash for heterogeneous lookup — avoids std::string allocation
+// when callers already hold std::string_view (incrementLoad/decrementLoad).
+struct TransparentStringHash {
+    using is_transparent = void;
+
+    auto operator()(std::string_view s) const noexcept -> size_t {
+        return std::hash<std::string_view>{}(s);
+    }
+};
+
 struct RingSnapshot {
-    std::vector<std::pair<uint64_t, NodeId>> ring;
+    std::vector<uint64_t> hashes;     // sorted, binary-searched
+    std::vector<uint16_t> node_index; // parallel: index into physical_nodes
     std::vector<NodeId> physical_nodes;
 };
 
@@ -73,6 +86,8 @@ class ConsistentHashRing {
     // logically orthogonal to the ring's snapshot immutability — readers
     // call incrementLoad/decrementLoad on a const ring reference.
     mutable std::shared_mutex load_mu_;
-    mutable std::unordered_map<NodeId, std::atomic<uint64_t>> load_;
+    mutable std::unordered_map<NodeId, std::atomic<uint64_t>, TransparentStringHash,
+        std::equal_to<>>
+        load_;
 };
 } // namespace cinder

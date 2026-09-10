@@ -4,11 +4,11 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 
 ## Features
 
-- **Eviction store** with LRU and LFU policies, backed by a policy-templated CRTP base (`EvictionStoreBase`) that eliminates duplication across eviction strategies; a 256-slot `TtlWheel` with a min-heap for long TTLs (>256 ticks) reaps expiries without repeated wheel reinsertion
-- **Binary wire protocol** (v4) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 16 opcodes (1–16), max 64 MiB messages
+- **Eviction store** with LRU and LFU policies, backed by a policy-templated CRTP base (`EvictionStoreBase`) that eliminates duplication across eviction strategies; LFU uses O(1) swap-and-pop frequency buckets with `freq_index` back-pointers (no linear scan on cache hits); a 256-slot intrusive `TtlWheel` (`WheelNode` base struct, `WheelNodeLike` concept) with a min-heap for long TTLs (>256 ticks) reaps expiries without repeated wheel reinsertion
+- **Binary wire protocol** (v5) over TCP — length-prefixed frames with compile-time-validated header layout (`consteval` + `static_assert`), big-endian fields, 16 opcodes (1–16), max 64 MiB messages
 - **Async TCP server** using Asio, per-connection strand serialization, 1 MiB read buffers, write-queue backpressure (max 64 queued writes **and** 4 MiB in-flight bytes, with the connection closed on overflow), a 30s idle timeout that reaps silent connections, and a hard 10k concurrent-connection cap
 - **Observability** — Prometheus `/metrics` endpoint (counters, gauges, per-opcode request-latency summaries `cinder_request_latency_seconds` with p50/p95/p99/p999) and a `/config` endpoint exposing the live running configuration as JSON
-- **Consistent hash ring** — xxHash3 virtual nodes (150/physical node), immutable-snapshot atomic swap via `std::atomic<shared_ptr>`, lock-free reads with binary search; cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
+- **Consistent hash ring** — xxHash3 virtual nodes (150/physical node), SoA layout (flat `uint64_t` hashes vector, maximally cache-dense binary search), immutable-snapshot atomic swap via `std::atomic<shared_ptr>`, lock-free reads; transparent `string_view` hashing for zero-allocation load counters (`TransparentStringHash`); cluster-scale maps (`MembershipTable`, `ConnectionPool`, `TcpTransport`) use `std::flat_map` for cache-friendly lookups
 - **Cluster-aware routing** — each node owns a hash-ring range; non-owned keys return a `moved to <node>` redirect
 - **Primary-driven replication** — async or quorum (`W = R/2+1`) writes with monotonic versioned LWW conflict resolution; `writer_node_hash` breaks version ties
 - **Failover reads** — a replica serves `GetVersioned` locally, so data stays available if the primary dies
@@ -23,7 +23,7 @@ Distributed in-memory cache in C++23 — minimal, fast, no external dependencies
 - **Slab allocator** — `SlabAllocator<Node>` for store lists; 256-slot slabs, lock-free CAS free-list, `std::start_lifetime_as` for well-defined type-punning on the free-list overlay
 - **Structured logging** — spdlog-backed `Event` API with structured key-value fields, `Span` RAII trace context (thread-local save/restore), trace-id propagation over the wire, and subsystem-level logging across TCP, replication, membership, failure detection, gossip, and shard management
 - **YAML configuration** — `cinderd.yaml` config file with CLI flag override (`--config`, `--log-level`, `--verbose`); **live hot-reload** — the running node watches the config file and applies changed log level, gossip/suspect intervals, and store capacity without a restart
-- **Persistence** — append-only WAL + periodic snapshot; WAL entries carry per-entry XXH3-64 checksums (8-byte `WAL0` header + format version); atomic snapshot via write-to-temp + rename; crash recovery replays WAL from last snapshot; backward-compatible with older headerless WAL files
+- **Persistence** — append-only WAL + periodic snapshot; WAL entries carry per-entry XXH3-64 checksums (8-byte `WAL0` header + format version); native byte order, zero-allocation encoding via pre-sized scratch buffer, atomic snapshot via write-to-temp + rename; crash recovery replays WAL from last snapshot; backward-compatible with older headerless WAL files
 - **Error provenance** — `Error::wrap()` chains error origins across call layers with `std::source_location`; full Rule of Five (deep copy of `cause_` chain, move, assignment)
 - **Admin CLI** (`cinder-admin`) — operational tooling: `info`, `cluster`, `ring`, `compact`, `config-reload`, `shutdown`; connects via the same binary protocol with TLS support
 - **gRPC gateway** — compile-time opt-in (`CINDER_ENABLE_GRPC`) protobuf gateway for multi-language clients; translates gRPC RPCs (Get/Set/Delete/Ping/MultiGet/MultiSet/Info/ClusterInfo/RingInfo) into internal cache operations on a separate port
@@ -310,7 +310,7 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
 ## Tests
 
 ```
- 296 unit tests (36 suites):    LruStore, LfuStore, TtlWheel, ConsistentHashRing,
+ 313 unit tests (38 suites):    LruStore, LfuStore, TtlWheel, ConsistentHashRing,
                                 Protocol, Result, CacheClient routing + redirects,
                                 RetryBackoff, JitterBackoff, Retryable, RetryableBatch,
                                 VersionedStore (LRU/LFU), parsePeer,
@@ -319,17 +319,16 @@ cinderd --port 7000 --capacity 67108864 --node-id node1 \
                                 partner/handler/exchange/runround, Gossip, ErrorProvenance,
                                 LfuConcurrent, Metrics (incl. latency histogram), HttpParser,
                                 Event, Span, SplitMix64, BoundedLoad, DiffConfig,
-                                FormatConfigJson
+                                FormatConfigJson, Auth
   35 sim tests (5 suites):      replication (async/quorum/hinted-handoff/read-repair),
                                 read repair, gossip partition (suspect/dead/incarnation/
                                 degraded/graceful-leave, late-joiner), rebalancing (keys
                                 migrate on join, quarantine, replicas spread to all new
                                 owners, concurrent rapid join/leave)
-  25 integration tests (8 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
+  22 integration tests (7 suites): SetGetDelPing, TTLExpiry, CapacityEviction,
                                 LargeValue, replica failover (fanout, failover read,
                                 quorum, hinted handoff, 3-node fanout, TTL-over-wire),
                                 rebalance on join, rebalance RF=2, read repair, multi-get,
-                                TLS (SetGetOverTls, PingOverTls, PlaintextRejected),
                                 admin (InfoReturnsJson, ClusterReturnsNodeList,
                                 RingReturnsJson, CompactReturnsOk, ConfigReloadReturnsOk,
                                 ShutdownReturnsOk)
@@ -392,22 +391,22 @@ cinder/
 │   │   ├── cluster_config.hpp   # ClusterConfig (NodeConfig)
 │   │   ├── config.hpp           # Config struct + YAML loader
 │   │   ├── tracing.hpp          # Event-based tracing (Span, Event, LogLevel)
-│   │   ├── slab_allocator.hpp   # SlabAllocator with lock-free CAS free-list
+│   │   ├── slab_allocator.hpp   # SlabAllocator with lock-free CAS free-list, std::unreachable()
 │   │   ├── status.hpp           # Error (wrap/cause, Rule of Five), Result<T>
 │   │   └── types.hpp            # VersionedEntry, ConsistencyMode, Bytes, NodeId
 │   ├── store/
 │   │   ├── cache_store.hpp      # CacheStore abstract base (liveEntries, forEach, mintVersion)
 │   │   ├── lru_store.hpp        # LruStore (inherits EvictionStoreBase)
 │   │   ├── lfu_store.hpp        # LfuStore (inherits EvictionStoreBase)
-│   │   ├── ttl_wheel.hpp        # TtlWheel (256-slot wheel + min-heap for long TTLs)
+│   │   ├── ttl_wheel.hpp        # TtlWheel (intrusive circular list, min-heap, WheelNodeLike concept)
 │   │   ├── persistence.hpp      # PersistenceManager (WAL drain-queue, snapshot compaction)
-│   │   ├── wal.hpp              # WalWriter/WalReader (XXH3 checksums, WAL0 header)
+│   │   ├── wal.hpp              # WalWriter/WalReader (scratch-buffer encoding, XXH3 checksums)
 │   │   ├── snapshot.hpp         # SnapshotWriter/Reader (CSNP header, format v1)
 │   │   └── detail/
-│   │       ├── eviction_store_base.hpp  # CRTP policy base (shared store skeleton)
+│   │       ├── eviction_store_base.hpp  # CRTP policy base (deducing this, intrusive wheel)
 │   │       └── io_utils.hpp     # Binary I/O helpers (readU32, readU64, readString)
 │   ├── hashing/
-│   │   └── consistent_hash_ring.hpp  # xxHash3 virtual nodes, atomic snapshot, binary search
+│   │   └── consistent_hash_ring.hpp  # xxHash3 SoA ring, transparent hashing, atomic snapshot
 │   ├── net/
 │   │   ├── protocol.hpp         # Wire protocol v4 (encode/decode, consteval frame size)
 │   │   ├── tcp_server.hpp       # TcpServer (strand, acceptor, TLS opt-in)

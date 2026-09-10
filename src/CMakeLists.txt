@@ -5,7 +5,6 @@ set(CINDER_CORE_SOURCES
     common/metrics.cpp
     store/lru_store.cpp
     store/lfu_store.cpp
-    store/ttl_wheel.cpp
     store/wal.cpp
     store/snapshot.cpp
     store/persistence.cpp

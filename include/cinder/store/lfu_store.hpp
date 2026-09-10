@@ -18,8 +18,9 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
-struct LfuNode {
+struct LfuNode : WheelNode {
     size_t freq = 1;
+    size_t freq_index = 0; // position within freq_buckets_[freq]
     std::string key;
     VersionedEntry entry;
 };
@@ -58,7 +59,7 @@ class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
     mutable std::shared_mutex mutex_;
     std::list<LfuNode, SlabAllocator<LfuNode>> list_;
     std::unordered_map<std::string, ListIt> index_;
-    TtlWheel wheel_;
+    TtlWheel<LfuNode> wheel_;
     std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
     size_t min_freq_ = 1;
 };
