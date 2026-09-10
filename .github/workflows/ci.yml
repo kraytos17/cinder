@@ -28,7 +28,7 @@ jobs:
             label: GCC Release
           - preset: debug-clang
             label: Clang Debug
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: ${{ matrix.label }}
     timeout-minutes: 20
     steps:
@@ -85,7 +85,7 @@ jobs:
           retention-days: 7
 
   feature-flags:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Feature Flags (TLS + gRPC)
     timeout-minutes: 20
     steps:
@@ -134,7 +134,7 @@ jobs:
           ctest -L unit --output-on-failure
 
   sanitize:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Sanitizers (GCC)
     timeout-minutes: 30
     steps:
@@ -188,7 +188,7 @@ jobs:
           retention-days: 7
 
   tsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: TSan (GCC)
     timeout-minutes: 30
     steps:
@@ -242,7 +242,7 @@ jobs:
           retention-days: 7
 
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: Lint (Clang + cppcheck)
     timeout-minutes: 20
     steps:
@@ -299,7 +299,7 @@ jobs:
               -DCINDER_ENABLE_CRYPTO=ON
             build: cmake --build build/codeql-tls-grpc -j$(nproc)
             category: tls-grpc
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     name: CodeQL (${{ matrix.label }})
     timeout-minutes: 20
     permissions:
@@ -343,7 +343,7 @@ jobs:
     name: CI Success
     if: always()
     needs: [build-test, feature-flags, sanitize, tsan, lint, codeql]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Check all jobs succeeded
