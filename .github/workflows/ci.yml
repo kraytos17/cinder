@@ -15,7 +15,7 @@ concurrency:
 
 env:
   SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_CACHE_VERSION: "1"
+  SCCACHE_GHA_VERSION: "1"
 
 jobs:
   build-test:
@@ -276,7 +276,7 @@ jobs:
       - name: Install Clang 22
         uses: ./.github/actions/install-clang22
         with:
-          tools: 'clang-tools-extra'
+          tools: 'clang-tools'
 
       - name: Install CMake & Ninja
         uses: lukka/get-cmake@latest
