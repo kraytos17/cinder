@@ -53,7 +53,7 @@ cmake --preset fast && cmake --build --preset fast
 | Preset | Compiler | Config | Use |
 |---|---|---|---|
 | `debug` | GCC | Debug, per-file | Editor indexing + incremental dev |
-| `debug-tls` | GCC | Debug + **TLS** | TLS development and testing |
+| `debug-tls` / `debug-tls-clang` | GCC / Clang | Debug + **TLS** | TLS development and testing |
 | `debug-grpc` | GCC | Debug + **gRPC gateway** | gRPC gateway development |
 | `fast` | GCC | Debug, **unity** | One-time full builds |
 | `release` | GCC | Release + LTO | Production |
@@ -62,7 +62,8 @@ cmake --preset fast && cmake --build --preset fast
 | `ci` | Clang | RelWithDebInfo + **clang-tidy** | Lint-gated CI |
 | `ci-gcc` | GCC | RelWithDebInfo + ASan/UBSan | Sanitizer CI |
 | `asan` / `asan-clang` | GCC / Clang | Debug + ASan/UBSan | Memory checking |
-| `tsan` | GCC | Debug + ThreadSanitizer | Race detection |
+| `tsan` / `tsan-clang` | GCC / Clang | Debug + ThreadSanitizer | Race detection |
+| `tls-grpc` / `tls-grpc-clang` | GCC / Clang | Release + **TLS** + **gRPC** | TLS + gRPC gateway CI |
 | `ubsan` | GCC | Debug + UBSan | Undefined behavior |
 | `msan` | Clang | Debug + MemorySanitizer | Uninitialized reads |
 | `fuzz` | Clang | Debug + libFuzzer + ASan/UBSan | Fuzz testing |
