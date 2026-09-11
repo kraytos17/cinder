@@ -11,7 +11,6 @@ runs:
           -c conda-forge
           gcc_linux-64>=16,<17
           gxx_linux-64>=16,<17
-          openssl
         cache-environment: true
 
     - name: Setup Compiler Aliases & Exports
@@ -27,5 +26,4 @@ runs:
 
         echo "CC=$PREFIX/gcc-16" >> "$GITHUB_ENV"
         echo "CXX=$PREFIX/g++-16" >> "$GITHUB_ENV"
-        echo "CONDA_PREFIX=${PREFIX%/bin}" >> "$GITHUB_ENV"
         echo "$PREFIX" >> "$GITHUB_PATH"

@@ -5,6 +5,13 @@ project(cinder VERSION 0.1.0
         "Cinder — a distributed, consistent-hash-sharded in-memory cache"
         LANGUAGES CXX)
 
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "16")
+    message(FATAL_ERROR "Cinder requires GCC >= 16 (found ${CMAKE_CXX_COMPILER_VERSION})")
+endif()
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS "22")
+    message(FATAL_ERROR "Cinder requires Clang >= 22 (found ${CMAKE_CXX_COMPILER_VERSION})")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -228,10 +235,16 @@ if(CINDER_UNITY_BUILD)
     message(STATUS "Cinder: unity builds enabled (cinder targets only)")
 endif()
 
+option(CINDER_CLANG_USE_LIBCXX "Use libc++ instead of libstdc++ with Clang" ON)
+
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    add_compile_options(-stdlib=libc++)
-    add_link_options(-stdlib=libc++)
-    message(STATUS "Cinder: Clang using libc++")
+    if(CINDER_CLANG_USE_LIBCXX)
+        add_compile_options(-stdlib=libc++)
+        add_link_options(-stdlib=libc++)
+        message(STATUS "Cinder: Clang using libc++")
+    else()
+        message(STATUS "Cinder: Clang using system libstdc++")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -286,9 +299,10 @@ endif()
 # Common FIND_PACKAGE_ARGS toggle: when ON, each FetchContent_Declare below
 # tries find_package() first (system/vcpkg/conan install) and only falls
 # back to cloning + building from source if nothing satisfying is found.
-# Skips the clang/gcc duplication entirely for anything already installed.
+# Only enabled for GCC/libstdc++ — Clang+libc++ must build C++ deps from
+# source to avoid ABI mismatches with system packages built against libstdc++.
 set(_cinder_fp_args "")
-if(CINDER_PREFER_SYSTEM_DEPS)
+if(CINDER_PREFER_SYSTEM_DEPS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     set(_cinder_fp_args FIND_PACKAGE_ARGS)
 endif()
 

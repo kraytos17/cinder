@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -32,6 +33,12 @@ jobs:
           - preset: debug-clang
             label: Clang Debug
             compiler: clang
+          - preset: release-clang
+            label: Clang Release
+            compiler: clang
+          - preset: asan-clang
+            label: Clang ASan+UBSan
+            compiler: clang
     runs-on: ubuntu-26.04
     name: ${{ matrix.label }}
     timeout-minutes: 20
@@ -42,7 +49,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -112,7 +119,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -131,25 +138,13 @@ jobs:
           restore-keys: fetchcontent-gcc-
 
       - name: Configure (TLS + gRPC)
-        run: |
-          cmake -B build/feature-flags \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=$CONDA_PREFIX/bin/gcc-16 \
-            -DCMAKE_CXX_COMPILER=$CONDA_PREFIX/bin/g++-16 \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCINDER_ENABLE_TLS=ON \
-            -DCINDER_ENABLE_GRPC=ON \
-            -DCINDER_ENABLE_CRYPTO=ON
+        run: cmake --preset tls-grpc
 
       - name: Build
-        run: cmake --build build/feature-flags -j$(nproc)
+        run: cmake --build --preset tls-grpc -j$(nproc)
 
       - name: Unit tests
-        run: |
-          cd build/feature-flags
-          ctest -L unit --output-on-failure
+        run: ctest --preset tls-grpc -L unit --output-on-failure
 
   sanitize:
     runs-on: ubuntu-26.04
@@ -162,7 +157,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -215,7 +210,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -268,7 +263,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld cppcheck
+            lld libssl-dev cppcheck
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -277,6 +272,9 @@ jobs:
         uses: ./.github/actions/install-clang22
         with:
           tools: 'clang-tidy clang-format'
+
+      - name: Install GCC 16
+        uses: ./.github/actions/install-gcc16
 
       - name: Install CMake & Ninja
         uses: lukka/get-cmake@latest
@@ -299,6 +297,9 @@ jobs:
 
       - name: Check formatting
         run: just check-format
+
+      - name: Configure for cppcheck (GCC)
+        run: cmake --preset ci-gcc
 
       - name: cppcheck
         run: just cppcheck
@@ -325,7 +326,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            lld
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -354,16 +355,7 @@ jobs:
 
       - name: Configure (TLS + gRPC)
         if: matrix.category == 'tls-grpc'
-        run: |
-          cmake -B build/codeql-tls-grpc -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=$CONDA_PREFIX/bin/gcc-16 \
-            -DCMAKE_CXX_COMPILER=$CONDA_PREFIX/bin/g++-16 \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
-            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
-            -DCINDER_ENABLE_TLS=ON \
-            -DCINDER_ENABLE_GRPC=ON \
-            -DCINDER_ENABLE_CRYPTO=ON
+        run: cmake --preset tls-grpc
 
       - name: Build (Release)
         if: matrix.category == 'release'
@@ -371,7 +363,7 @@ jobs:
 
       - name: Build (TLS + gRPC)
         if: matrix.category == 'tls-grpc'
-        run: cmake --build build/codeql-tls-grpc -j$(nproc)
+        run: cmake --build --preset tls-grpc -j$(nproc)
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

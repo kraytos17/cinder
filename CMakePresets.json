@@ -1,368 +1,333 @@
 {
-   "version":6,
-   "configurePresets":[
-      {
-         "name":"debug",
-         "displayName":"Debug",
-         "description":"Debug build with Ninja (GCC)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/debug",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"debug-tls",
-         "displayName":"Debug + TLS",
-         "description":"Debug build with TLS/SSL enabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/debug-tls",
-         "cacheVariables":{
-            "CMAKE_BUILD_TYPE":"Debug",
-            "CINDER_ENABLE_TLS":"ON"
-         }
-      },
-      {
-         "name":"debug-clang",
-         "displayName":"Debug (Clang)",
-         "description":"Debug build with Ninja and Clang",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/debug-clang",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"release",
-         "displayName":"Release",
-         "description":"Optimized release build with LTO (GCC)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/release",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Release",
-             "CINDER_ENABLE_LTO":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"release-clang",
-         "displayName":"Release (Clang)",
-         "description":"Optimized release build with LTO (Clang)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/release-clang",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Release",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_LTO":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"asan",
-         "displayName":"ASan+UBSan",
-         "description":"Debug build with ASan+UBSan; mimalloc auto-disabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/asan",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_ASAN":"ON",
-             "CINDER_ENABLE_UBSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"asan-clang",
-         "displayName":"ASan+UBSan (Clang)",
-         "description":"Clang debug with ASan+UBSan + use-after-scope/return + ignorelist; mimalloc auto-disabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/asan-clang",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_ASAN":"ON",
-             "CINDER_ENABLE_UBSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"msan",
-         "displayName":"MSan (Clang)",
-         "description":"Clang with MemorySanitizer — requires an MSan-instrumented libc++ to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/msan",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_MSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"tsan",
-         "displayName":"TSan",
-         "description":"Debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/tsan",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_TSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"ubsan",
-         "displayName":"UBSan",
-         "description":"Debug build with UBSan only",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/ubsan",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_UBSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"ci",
-         "displayName":"CI (Clang + tidy)",
-         "description":"CI build with clang-tidy (Clang, no ASan)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/ci",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_CLANG_TIDY":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"ci-gcc",
-         "displayName":"CI (GCC + sanitizers)",
-         "description":"CI build with GCC, ASan+UBSan; mimalloc auto-disabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/ci-gcc",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-             "CINDER_ENABLE_ASAN":"ON",
-             "CINDER_ENABLE_UBSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"fast",
-         "displayName":"Fast (unity + lld)",
-         "description":"Debug build with unity/jumbo merging and lld (GCC) — fastest edit-compile-test loop, not representative of real performance",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/fast",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_UNITY_BUILD":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"release-unity",
-         "displayName":"Release + Unity",
-         "description":"Optimized build with unity/jumbo merging — fast rebuilds for perf-iteration work",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/release-unity",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Release",
-             "CINDER_UNITY_BUILD":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"profile",
-         "displayName":"Profile",
-         "description":"RelWithDebInfo with frame pointers preserved — for perf/flamegraph work",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/profile",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"RelWithDebInfo",
-             "CINDER_KEEP_FRAME_POINTER":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"analyze",
-         "displayName":"GCC Analyzer",
-         "description":"Debug build with GCC's static analyzer (-fanalyzer)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/analyze",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_GCC_ANALYZER":"ON",
-             "CINDER_BUILD_BENCHMARKS":"OFF",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"iwyu",
-         "displayName":"include-what-you-use",
-         "description":"Clang build running include-what-you-use during compilation",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/iwyu",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_IWYU":"ON",
-             "CINDER_BUILD_BENCHMARKS":"OFF",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"fuzz",
-         "displayName":"Fuzz",
-         "description":"Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/fuzz",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_FUZZER":"ON",
-             "CINDER_ENABLE_ASAN":"ON",
-             "CINDER_ENABLE_UBSAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"fuzz-coverage",
-         "displayName":"Fuzz + Coverage",
-         "description":"Clang build with coverage instrumentation for corpus minimization",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/fuzz-coverage",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CMAKE_CXX_COMPILER":"clang++",
-             "CMAKE_C_COMPILER":"clang",
-             "CINDER_ENABLE_COVERAGE":"ON",
-             "CINDER_ENABLE_ASAN":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
-      },
-      {
-         "name":"debug-grpc",
-         "displayName":"Debug + gRPC",
-         "description":"Debug build with gRPC gateway enabled (fetches gRPC + protobuf + abseil)",
-         "generator":"Ninja",
-         "binaryDir":"${sourceDir}/build/debug-grpc",
-          "cacheVariables":{
-             "CMAKE_BUILD_TYPE":"Debug",
-             "CINDER_ENABLE_GRPC":"ON",
-             "CINDER_ENABLE_CRYPTO":"ON"
-          }
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CINDER_ENABLE_CRYPTO": "ON"
       }
-   ],
-   "buildPresets":[
-      { "name":"debug", "configurePreset":"debug" },
-      { "name":"debug-tls", "configurePreset":"debug-tls" },
-      { "name":"debug-clang", "configurePreset":"debug-clang" },
-      { "name":"release", "configurePreset":"release" },
-      { "name":"release-clang", "configurePreset":"release-clang" },
-      { "name":"asan", "configurePreset":"asan" },
-      { "name":"asan-clang", "configurePreset":"asan-clang" },
-      { "name":"msan", "configurePreset":"msan" },
-      { "name":"tsan", "configurePreset":"tsan" },
-      { "name":"ubsan", "configurePreset":"ubsan" },
-      { "name":"ci", "configurePreset":"ci" },
-      { "name":"ci-gcc", "configurePreset":"ci-gcc" },
-      { "name":"fast", "configurePreset":"fast" },
-      { "name":"release-unity", "configurePreset":"release-unity" },
-      { "name":"profile", "configurePreset":"profile" },
-      { "name":"analyze", "configurePreset":"analyze" },
-      { "name":"iwyu", "configurePreset":"iwyu" },
-      { "name":"fuzz", "configurePreset":"fuzz" },
-      { "name":"fuzz-coverage", "configurePreset":"fuzz-coverage" },
-      { "name":"debug-grpc", "configurePreset":"debug-grpc" }
-   ],
-   "testPresets":[
-      {
-         "name":"test-common",
-         "hidden":true,
-         "output":{ "outputOnFailure":true }
-      },
-      { "name":"debug", "configurePreset":"debug", "inherits":"test-common" },
-      { "name":"debug-tls", "configurePreset":"debug-tls", "inherits":"test-common" },
-      { "name":"debug-clang", "configurePreset":"debug-clang", "inherits":"test-common" },
-      { "name":"release", "configurePreset":"release", "inherits":"test-common" },
-      { "name":"release-clang", "configurePreset":"release-clang", "inherits":"test-common" },
-      {
-         "name":"asan",
-         "configurePreset":"asan",
-         "inherits":"test-common",
-         "environment":{
-            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
-            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
-         }
-      },
-      {
-         "name":"asan-clang",
-         "configurePreset":"asan-clang",
-         "inherits":"test-common",
-         "environment":{
-            "ASAN_OPTIONS":"detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
-            "LSAN_OPTIONS":"suppressions=${sourceDir}/suppressions/lsan.supp"
-         }
-      },
-      {
-         "name":"tsan",
-         "configurePreset":"tsan",
-         "inherits":"test-common",
-         "environment":{
-            "TSAN_OPTIONS":"halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
-         }
-      },
-      {
-         "name":"ubsan",
-         "configurePreset":"ubsan",
-         "inherits":"test-common",
-         "environment":{
-            "UBSAN_OPTIONS":"halt_on_error=1:print_stacktrace=1:suppressions=${sourceDir}/suppressions/ubsan.supp"
-         }
-      },
-      { "name":"msan", "configurePreset":"msan", "inherits":"test-common" },
-      { "name":"fast", "configurePreset":"fast", "inherits":"test-common" },
-      { "name":"release-unity", "configurePreset":"release-unity", "inherits":"test-common" },
-      { "name":"profile", "configurePreset":"profile", "inherits":"test-common" },
-      { "name":"ci", "configurePreset":"ci", "inherits":"test-common" },
-      { "name":"ci-gcc", "configurePreset":"ci-gcc", "inherits":"test-common" },
-      { "name":"fuzz", "configurePreset":"fuzz", "inherits":"test-common" },
-      { "name":"debug-grpc", "configurePreset":"debug-grpc", "inherits":"test-common" }
-   ],
-   "workflowPresets":[
-      {
-         "name":"ci",
-         "steps":[
-            { "type":"configure", "name":"ci" },
-            { "type":"build",     "name":"ci" },
-            { "type":"test",      "name":"ci" }
-         ]
-      },
-      {
-         "name":"ci-gcc",
-         "steps":[
-            { "type":"configure", "name":"ci-gcc" },
-            { "type":"build",     "name":"ci-gcc" },
-            { "type":"test",      "name":"ci-gcc" }
-         ]
-      },
-      {
-         "name":"debug-grpc",
-         "steps":[
-            { "type":"configure", "name":"debug-grpc" },
-            { "type":"build",     "name":"debug-grpc" },
-            { "type":"test",      "name":"debug-grpc" }
-         ]
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "displayName": "Debug",
+      "description": "Debug build with Ninja (GCC)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
       }
-   ]
+    },
+    {
+      "name": "debug-tls",
+      "inherits": "base",
+      "displayName": "Debug + TLS",
+      "description": "Debug build with TLS/SSL enabled",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_TLS": "ON"
+      }
+    },
+    {
+      "name": "debug-clang",
+      "inherits": "base",
+      "displayName": "Debug (Clang)",
+      "description": "Debug build with Ninja and Clang",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release",
+      "description": "Optimized release build with LTO (GCC)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "release-clang",
+      "inherits": "base",
+      "displayName": "Release (Clang)",
+      "description": "Optimized release build with LTO (Clang)",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "asan",
+      "inherits": "base",
+      "displayName": "ASan+UBSan",
+      "description": "Debug build with ASan+UBSan; mimalloc auto-disabled",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_ASAN": "ON",
+        "CINDER_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "asan-clang",
+      "inherits": "base",
+      "displayName": "ASan+UBSan (Clang)",
+      "description": "Clang debug with ASan+UBSan + use-after-scope/return + ignorelist; mimalloc auto-disabled",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_ASAN": "ON",
+        "CINDER_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "msan",
+      "inherits": "base",
+      "displayName": "MSan (Clang)",
+      "description": "Clang with MemorySanitizer — requires an MSan-instrumented libc++ to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_MSAN": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "inherits": "base",
+      "displayName": "TSan",
+      "description": "Debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_TSAN": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "ubsan",
+      "inherits": "base",
+      "displayName": "UBSan",
+      "description": "Debug build with UBSan only",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "ci",
+      "inherits": "base",
+      "displayName": "CI (Clang + tidy)",
+      "description": "CI build with clang-tidy (Clang, no ASan)",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CINDER_ENABLE_CLANG_TIDY": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "ci-gcc",
+      "inherits": "base",
+      "displayName": "CI (GCC + sanitizers)",
+      "description": "CI build with GCC, ASan+UBSan; mimalloc auto-disabled",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CINDER_ENABLE_ASAN": "ON",
+        "CINDER_ENABLE_UBSAN": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "tls-grpc",
+      "inherits": "base",
+      "displayName": "TLS + gRPC",
+      "description": "Release build with TLS and gRPC gateway (GCC)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_TLS": "ON",
+        "CINDER_ENABLE_GRPC": "ON"
+      }
+    },
+    {
+      "name": "fast",
+      "inherits": "base",
+      "displayName": "Fast (unity + lld)",
+      "description": "Debug build with unity/jumbo merging and lld (GCC) — fastest edit-compile-test loop, not representative of real performance",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_UNITY_BUILD": "ON"
+      }
+    },
+    {
+      "name": "release-unity",
+      "inherits": "base",
+      "displayName": "Release + Unity",
+      "description": "Optimized build with unity/jumbo merging — fast rebuilds for perf-iteration work",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_UNITY_BUILD": "ON"
+      }
+    },
+    {
+      "name": "profile",
+      "inherits": "base",
+      "displayName": "Profile",
+      "description": "RelWithDebInfo with frame pointers preserved — for perf/flamegraph work",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CINDER_KEEP_FRAME_POINTER": "ON"
+      }
+    },
+    {
+      "name": "analyze",
+      "inherits": "base",
+      "displayName": "GCC Analyzer",
+      "description": "Debug build with GCC's static analyzer (-fanalyzer)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_GCC_ANALYZER": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "iwyu",
+      "inherits": "base",
+      "displayName": "include-what-you-use",
+      "description": "Clang build running include-what-you-use during compilation",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_IWYU": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "fuzz",
+      "inherits": "base",
+      "displayName": "Fuzz",
+      "description": "Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_FUZZER": "ON",
+        "CINDER_ENABLE_ASAN": "ON",
+        "CINDER_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "fuzz-coverage",
+      "inherits": "base",
+      "displayName": "Fuzz + Coverage",
+      "description": "Clang build with coverage instrumentation for corpus minimization",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_COVERAGE": "ON",
+        "CINDER_ENABLE_ASAN": "ON"
+      }
+    },
+    {
+      "name": "debug-grpc",
+      "inherits": "base",
+      "displayName": "Debug + gRPC",
+      "description": "Debug build with gRPC gateway enabled (fetches gRPC + protobuf + abseil)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_GRPC": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "debug",          "configurePreset": "debug" },
+    { "name": "debug-tls",      "configurePreset": "debug-tls" },
+    { "name": "debug-clang",    "configurePreset": "debug-clang" },
+    { "name": "release",        "configurePreset": "release" },
+    { "name": "release-clang",  "configurePreset": "release-clang" },
+    { "name": "asan",           "configurePreset": "asan" },
+    { "name": "asan-clang",     "configurePreset": "asan-clang" },
+    { "name": "msan",           "configurePreset": "msan" },
+    { "name": "tsan",           "configurePreset": "tsan" },
+    { "name": "ubsan",          "configurePreset": "ubsan" },
+    { "name": "ci",             "configurePreset": "ci" },
+    { "name": "ci-gcc",         "configurePreset": "ci-gcc" },
+    { "name": "tls-grpc",       "configurePreset": "tls-grpc" },
+    { "name": "fast",           "configurePreset": "fast" },
+    { "name": "release-unity",  "configurePreset": "release-unity" },
+    { "name": "profile",        "configurePreset": "profile" },
+    { "name": "analyze",        "configurePreset": "analyze" },
+    { "name": "iwyu",           "configurePreset": "iwyu" },
+    { "name": "fuzz",           "configurePreset": "fuzz" },
+    { "name": "fuzz-coverage",  "configurePreset": "fuzz-coverage" },
+    { "name": "debug-grpc",     "configurePreset": "debug-grpc" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-common",
+      "hidden": true,
+      "output": { "outputOnFailure": true }
+    },
+    { "name": "debug",          "configurePreset": "debug",          "inherits": "test-common" },
+    { "name": "debug-tls",      "configurePreset": "debug-tls",      "inherits": "test-common" },
+    { "name": "debug-clang",    "configurePreset": "debug-clang",    "inherits": "test-common" },
+    { "name": "release",        "configurePreset": "release",        "inherits": "test-common" },
+    { "name": "release-clang",  "configurePreset": "release-clang",  "inherits": "test-common" },
+    {
+      "name": "asan",
+      "configurePreset": "asan",
+      "inherits": "test-common",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/suppressions/lsan.supp"
+      }
+    },
+    {
+      "name": "asan-clang",
+      "configurePreset": "asan-clang",
+      "inherits": "test-common",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
+        "LSAN_OPTIONS": "suppressions=${sourceDir}/suppressions/lsan.supp"
+      }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "inherits": "test-common",
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
+      }
+    },
+    {
+      "name": "ubsan",
+      "configurePreset": "ubsan",
+      "inherits": "test-common",
+      "environment": {
+        "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1:suppressions=${sourceDir}/suppressions/ubsan.supp"
+      }
+    },
+    { "name": "msan",           "configurePreset": "msan",           "inherits": "test-common" },
+    { "name": "fast",           "configurePreset": "fast",           "inherits": "test-common" },
+    { "name": "release-unity",  "configurePreset": "release-unity",  "inherits": "test-common" },
+    { "name": "profile",        "configurePreset": "profile",        "inherits": "test-common" },
+    { "name": "ci",             "configurePreset": "ci",             "inherits": "test-common" },
+    { "name": "ci-gcc",         "configurePreset": "ci-gcc",         "inherits": "test-common" },
+    { "name": "tls-grpc",       "configurePreset": "tls-grpc",       "inherits": "test-common" },
+    { "name": "fuzz",           "configurePreset": "fuzz",           "inherits": "test-common" },
+    { "name": "debug-grpc",     "configurePreset": "debug-grpc",     "inherits": "test-common" }
+  ]
 }
