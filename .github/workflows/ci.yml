@@ -276,7 +276,7 @@ jobs:
       - name: Install Clang 22
         uses: ./.github/actions/install-clang22
         with:
-          tools: 'clang-tools'
+          tools: 'clang-tidy clang-format'
 
       - name: Install CMake & Ninja
         uses: lukka/get-cmake@latest

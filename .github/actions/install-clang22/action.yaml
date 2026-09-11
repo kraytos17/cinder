@@ -3,7 +3,7 @@ description: 'Installs Clang/LLVM 22 via micromamba'
 
 inputs:
   tools:
-    description: 'Extra packages to install (e.g. clang-tools-extra)'
+    description: 'Extra packages to install (e.g. clang-tidy clang-format)'
     required: false
     default: ''
 
@@ -19,6 +19,7 @@ runs:
           clangxx_linux-64>=22,<23
           lld>=22,<23
           libcxx
+          libcxx-devel
           openssl
           ${{ inputs.tools }}
         cache-environment: true
@@ -31,11 +32,14 @@ runs:
         # Compiler aliases
         ln -sf "$PREFIX/clang" "$PREFIX/clang-22"
         ln -sf "$PREFIX/clang++" "$PREFIX/clang++-22"
+        ln -sf "$PREFIX/clang" "/usr/local/bin/clang"
+        ln -sf "$PREFIX/clang++" "/usr/local/bin/clang++"
 
         # Create aliases for common extra tools if present
         for bin in clang-tidy clang-format; do
           if [ -f "$PREFIX/$bin" ]; then
             ln -sf "$PREFIX/$bin" "$PREFIX/$bin-22"
+            ln -sf "$PREFIX/$bin" "/usr/local/bin/$bin"
           fi
         done
 
