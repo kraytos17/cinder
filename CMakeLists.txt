@@ -65,7 +65,11 @@ elseif(CCACHE_PROGRAM)
     message(STATUS "Cinder: using ccache (basedir: ${CCACHE_BASEDIR})")
 endif()
 
-if(CINDER_USE_FAST_LINKER)
+# NB: GCC LTO emits slim bytecode objects that neither mold nor lld can
+# read (GCC's LTO plugin interface is GNU-ld-only); combining them breaks
+# the link with `undefined symbol: main`. Clang LTO (LLVM bitcode) works
+# fine with both fast linkers, so gate them out for exactly GNU+LTO.
+if(CINDER_USE_FAST_LINKER AND NOT (CINDER_ENABLE_LTO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
     find_program(MOLD_PROGRAM mold)
     if(MOLD_PROGRAM)
         set(CMAKE_LINKER_TYPE MOLD)
@@ -301,10 +305,19 @@ endif()
 # back to cloning + building from source if nothing satisfying is found.
 # Only enabled for GCC/libstdc++ — Clang+libc++ must build C++ deps from
 # source to avoid ABI mismatches with system packages built against libstdc++.
-set(_cinder_fp_args "")
-if(CINDER_PREFER_SYSTEM_DEPS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set(_cinder_fp_args FIND_PACKAGE_ARGS)
-endif()
+#
+# FIND_PACKAGE_ARGS and its clauses (NAMES <pkg>) must be emitted together
+# or not at all: a bare `NAMES <pkg>` without the keyword is not a valid
+# FetchContent_Declare argument and corrupts the declare (the stray words
+# end up as submodule pathspecs in the generated git-clone script, failing
+# the download step). Hence this helper builds the whole clause or nothing.
+macro(_cinder_find_package_args out_var package_name)
+    if(CINDER_PREFER_SYSTEM_DEPS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(${out_var} FIND_PACKAGE_ARGS NAMES ${package_name})
+    else()
+        set(${out_var} "")
+    endif()
+endmacro()
 
 FetchContent_Declare(
     asio
@@ -335,6 +348,7 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(xxhash)
 
+_cinder_find_package_args(_spdlog_args spdlog)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
@@ -343,11 +357,12 @@ FetchContent_Declare(
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/spdlog-build
     SYSTEM
-    ${_cinder_fp_args} NAMES spdlog
+    ${_spdlog_args}
 )
 set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
 
+_cinder_find_package_args(_cli11_args CLI11)
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
@@ -356,10 +371,11 @@ FetchContent_Declare(
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/cli11-build
     SYSTEM
-    ${_cinder_fp_args} NAMES CLI11
+    ${_cli11_args}
 )
 FetchContent_MakeAvailable(CLI11)
 
+_cinder_find_package_args(_yaml_cpp_args yaml-cpp)
 FetchContent_Declare(
     yaml-cpp
     GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
@@ -368,7 +384,7 @@ FetchContent_Declare(
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/yaml-cpp-build
     SYSTEM
-    ${_cinder_fp_args} NAMES yaml-cpp
+    ${_yaml_cpp_args}
 )
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(yaml-cpp)
@@ -411,6 +427,7 @@ elseif(CINDER_ENABLE_CRYPTO)
 endif()
 
 if(CINDER_BUILD_TESTS)
+    _cinder_find_package_args(_gtest_args GTest)
     FetchContent_Declare(
         googletest
         GIT_REPOSITORY https://github.com/google/googletest.git
@@ -420,7 +437,7 @@ if(CINDER_BUILD_TESTS)
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/googletest-build
         SYSTEM
         EXCLUDE_FROM_ALL
-        ${_cinder_fp_args} NAMES GTest
+        ${_gtest_args}
     )
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -431,6 +448,7 @@ if(CINDER_BUILD_TESTS)
 endif()
 
 if(CINDER_BUILD_BENCHMARKS)
+    _cinder_find_package_args(_benchmark_args benchmark)
     FetchContent_Declare(
         benchmark
         GIT_REPOSITORY https://github.com/google/benchmark.git
@@ -440,7 +458,7 @@ if(CINDER_BUILD_BENCHMARKS)
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/benchmark-build
         SYSTEM
         EXCLUDE_FROM_ALL
-        ${_cinder_fp_args} NAMES benchmark
+        ${_benchmark_args}
     )
     set(BENCHMARK_ENABLE_TESTING        OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL        OFF CACHE BOOL "" FORCE)

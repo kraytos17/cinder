@@ -1,4 +1,4 @@
-name: CI
+name: CI Skip
 
 # Mirrors the paths-ignore list in ci.yml, inverted. GitHub Actions doesn't
 # run a workflow at all for a push/PR that only touches ignored paths, so if

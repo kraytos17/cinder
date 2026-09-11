@@ -32,6 +32,17 @@
       }
     },
     {
+      "name": "debug-tls-clang",
+      "inherits": "base",
+      "displayName": "Debug + TLS (Clang)",
+      "description": "Clang debug build with TLS/SSL enabled",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_TLS": "ON"
+      }
+    },
+    {
       "name": "debug-clang",
       "inherits": "base",
       "displayName": "Debug (Clang)",
@@ -111,6 +122,18 @@
       }
     },
     {
+      "name": "tsan-clang",
+      "inherits": "base",
+      "displayName": "TSan (Clang)",
+      "description": "Clang debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_ENABLE_TSAN": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
       "name": "ubsan",
       "inherits": "base",
       "displayName": "UBSan",
@@ -152,6 +175,18 @@
       "displayName": "TLS + gRPC",
       "description": "Release build with TLS and gRPC gateway (GCC)",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_TLS": "ON",
+        "CINDER_ENABLE_GRPC": "ON"
+      }
+    },
+    {
+      "name": "tls-grpc-clang",
+      "inherits": "base",
+      "displayName": "TLS + gRPC (Clang)",
+      "description": "Release build with TLS and gRPC gateway (Clang + libc++)",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CINDER_ENABLE_TLS": "ON",
@@ -255,6 +290,7 @@
   "buildPresets": [
     { "name": "debug",          "configurePreset": "debug" },
     { "name": "debug-tls",      "configurePreset": "debug-tls" },
+    { "name": "debug-tls-clang", "configurePreset": "debug-tls-clang" },
     { "name": "debug-clang",    "configurePreset": "debug-clang" },
     { "name": "release",        "configurePreset": "release" },
     { "name": "release-clang",  "configurePreset": "release-clang" },
@@ -262,10 +298,12 @@
     { "name": "asan-clang",     "configurePreset": "asan-clang" },
     { "name": "msan",           "configurePreset": "msan" },
     { "name": "tsan",           "configurePreset": "tsan" },
+    { "name": "tsan-clang",     "configurePreset": "tsan-clang" },
     { "name": "ubsan",          "configurePreset": "ubsan" },
     { "name": "ci",             "configurePreset": "ci" },
     { "name": "ci-gcc",         "configurePreset": "ci-gcc" },
     { "name": "tls-grpc",       "configurePreset": "tls-grpc" },
+    { "name": "tls-grpc-clang", "configurePreset": "tls-grpc-clang" },
     { "name": "fast",           "configurePreset": "fast" },
     { "name": "release-unity",  "configurePreset": "release-unity" },
     { "name": "profile",        "configurePreset": "profile" },
@@ -313,6 +351,14 @@
       }
     },
     {
+      "name": "tsan-clang",
+      "configurePreset": "tsan-clang",
+      "inherits": "test-common",
+      "environment": {
+        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
+      }
+    },
+    {
       "name": "ubsan",
       "configurePreset": "ubsan",
       "inherits": "test-common",
@@ -327,6 +373,8 @@
     { "name": "ci",             "configurePreset": "ci",             "inherits": "test-common" },
     { "name": "ci-gcc",         "configurePreset": "ci-gcc",         "inherits": "test-common" },
     { "name": "tls-grpc",       "configurePreset": "tls-grpc",       "inherits": "test-common" },
+    { "name": "tls-grpc-clang", "configurePreset": "tls-grpc-clang", "inherits": "test-common" },
+    { "name": "debug-tls-clang", "configurePreset": "debug-tls-clang", "inherits": "test-common" },
     { "name": "fuzz",           "configurePreset": "fuzz",           "inherits": "test-common" },
     { "name": "debug-grpc",     "configurePreset": "debug-grpc",     "inherits": "test-common" }
   ]

@@ -1,17 +1,16 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_run:
+    workflows: ["Docker CI Image"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event.workflow_run.head_branch || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -26,63 +25,39 @@ jobs:
         include:
           - preset: debug
             label: GCC Debug
-            compiler: gcc
+          - preset: debug-tls
+            label: GCC Debug + TLS
           - preset: release
             label: GCC Release
-            compiler: gcc
           - preset: debug-clang
             label: Clang Debug
-            compiler: clang
+          - preset: debug-tls-clang
+            label: Clang Debug + TLS
           - preset: release-clang
             label: Clang Release
-            compiler: clang
           - preset: asan-clang
             label: Clang ASan+UBSan
-            compiler: clang
     runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
     name: ${{ matrix.label }}
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install GCC 16
-        if: matrix.compiler == 'gcc'
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install Clang 22
-        if: matrix.compiler == 'clang'
-        uses: ./.github/actions/install-clang22
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Install just
-        uses: extractions/setup-just@v4
-
-      - name: Cache FetchContent (gcc)
-        if: matrix.compiler == 'gcc'
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
-
-      - name: Cache FetchContent (clang)
-        if: matrix.compiler == 'clang'
-        uses: actions/cache@v6
-        with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-clang
-          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-clang-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -109,74 +84,67 @@ jobs:
           retention-days: 7
 
   feature-flags:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: tls-grpc
+            label: TLS + gRPC (GCC)
+          - preset: tls-grpc-clang
+            label: TLS + gRPC (Clang)
     runs-on: ubuntu-26.04
-    name: Feature Flags (TLS + gRPC)
-    timeout-minutes: 20
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
+    name: Feature Flags (${{ matrix.label }})
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Cache FetchContent (gcc)
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Configure (TLS + gRPC)
-        run: cmake --preset tls-grpc
+        run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset tls-grpc -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset tls-grpc -L unit --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
 
   sanitize:
     runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
     name: Sanitizers (GCC)
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Install just
-        uses: extractions/setup-just@v4
-
-      - name: Cache FetchContent (gcc)
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-ci-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Configure
         run: cmake --preset ci-gcc
@@ -190,6 +158,9 @@ jobs:
       - name: Sim tests
         run: ctest --preset ci-gcc -L sim --output-on-failure
 
+      - name: CLI tests
+        run: ctest --preset ci-gcc -L cli --output-on-failure
+
       - name: Upload test logs
         if: failure()
         uses: actions/upload-artifact@v7
@@ -200,94 +171,82 @@ jobs:
           retention-days: 7
 
   tsan:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: tsan
+            label: TSan (GCC)
+          - preset: tsan-clang
+            label: TSan (Clang)
     runs-on: ubuntu-26.04
-    name: TSan (GCC)
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
+    name: ${{ matrix.label }}
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Install just
-        uses: extractions/setup-just@v4
-
-      - name: Cache FetchContent (gcc)
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Configure
-        run: cmake --preset tsan
+        run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset tsan -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset tsan -L unit --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
 
       - name: Sim tests
-        run: ctest --preset tsan -L sim --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
+
+      - name: CLI tests
+        run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
       - name: Upload test logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: test-logs-tsan
-          path: build/tsan/Testing/Temporary/LastTest.log
+          name: test-logs-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
 
   lint:
     runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
     name: Lint (Clang + cppcheck)
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev cppcheck
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install Clang 22
-        uses: ./.github/actions/install-clang22
-        with:
-          tools: 'clang-tidy clang-format'
-
-      - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Install just
-        uses: extractions/setup-just@v4
-
-      - name: Cache FetchContent (clang)
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-clang
-          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-clang-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Configure (clang-tidy runs inline)
         run: cmake --preset ci
@@ -314,35 +273,29 @@ jobs:
           - label: TLS + gRPC
             category: tls-grpc
     runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci:latest
     name: CodeQL (${{ matrix.label }})
-    timeout-minutes: 20
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v7
-
-      - name: Install system deps
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            lld libssl-dev
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
-
-      - name: Install CMake & Ninja
-        uses: lukka/get-cmake@latest
-
-      - name: Cache FetchContent (gcc)
+      - name: Cache FetchContent
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-
+          save-always: true
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -379,6 +332,10 @@ jobs:
     steps:
       - name: Check all jobs succeeded
         run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ] && [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
+            echo "Docker CI Image workflow concluded with '${{ github.event.workflow_run.conclusion }}'; refusing to report success"
+            exit 1
+          fi
           echo "Job results:"
           echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
           FAILURES=0

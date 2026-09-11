@@ -1,2 +1,2 @@
-set(CMAKE_C_COMPILER   clang-22)
-set(CMAKE_CXX_COMPILER clang++-22)
+set(CMAKE_C_COMPILER   clang)
+set(CMAKE_CXX_COMPILER clang++)
