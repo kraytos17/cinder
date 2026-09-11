@@ -42,7 +42,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld libssl-dev
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -112,7 +112,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld libssl-dev
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -135,8 +135,8 @@ jobs:
           cmake -B build/feature-flags \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=gcc-16 \
-            -DCMAKE_CXX_COMPILER=g++-16 \
+            -DCMAKE_C_COMPILER=$CONDA_PREFIX/bin/gcc-16 \
+            -DCMAKE_CXX_COMPILER=$CONDA_PREFIX/bin/g++-16 \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCINDER_ENABLE_TLS=ON \
@@ -162,7 +162,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld libssl-dev
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -215,7 +215,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld libssl-dev
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -268,7 +268,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld cppcheck libssl-dev
+            lld cppcheck libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -325,7 +325,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld libssl-dev
+            lld libssl-dev
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -357,8 +357,8 @@ jobs:
         run: |
           cmake -B build/codeql-tls-grpc -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_C_COMPILER=gcc-16 \
-            -DCMAKE_CXX_COMPILER=g++-16 \
+            -DCMAKE_C_COMPILER=$CONDA_PREFIX/bin/gcc-16 \
+            -DCMAKE_CXX_COMPILER=$CONDA_PREFIX/bin/g++-16 \
             -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
             -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCINDER_ENABLE_TLS=ON \
@@ -390,7 +390,7 @@ jobs:
           echo "Job results:"
           echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
           FAILURES=0
-          for result in '${{ toJSON(needs) }}' | jq -r '.[].result'; do
+          for result in $(echo '${{ toJSON(needs) }}' | jq -r '.[].result'); do
             case "$result" in
               success|skipped) ;;
               *) FAILURES=1 ;;

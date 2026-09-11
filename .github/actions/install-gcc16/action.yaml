@@ -1,5 +1,5 @@
-name: 'Install GCC 16.2.1'
-description: 'Installs GCC 16.2.1 via micromamba'
+name: 'Install GCC 16'
+description: 'Installs GCC 16 via micromamba'
 
 runs:
   using: composite
@@ -9,14 +9,15 @@ runs:
         environment-name: gcc16
         create-args: >-
           -c conda-forge
-          gcc_linux-64>=16
-          gxx_linux-64>=16
+          gcc_linux-64>=16,<17
+          gxx_linux-64>=16,<17
         cache-environment: true
 
     - name: Setup Compiler Aliases & Exports
       shell: bash
       run: |
-        PREFIX="/opt/micromamba/envs/gcc16/bin"
+        PREFIX="${MAMBA_ROOT_PREFIX:-/home/runner/micromamba}/envs/gcc16/bin"
+
         # Conda installs target-prefixed binaries
         ln -sf "$PREFIX/x86_64-conda-linux-gnu-gcc" "$PREFIX/gcc-16"
         ln -sf "$PREFIX/x86_64-conda-linux-gnu-g++" "$PREFIX/g++-16"
@@ -25,5 +26,5 @@ runs:
 
         echo "CC=$PREFIX/gcc-16" >> "$GITHUB_ENV"
         echo "CXX=$PREFIX/g++-16" >> "$GITHUB_ENV"
-        echo "CONDA_PREFIX=/opt/micromamba/envs/gcc16" >> "$GITHUB_ENV"
+        echo "CONDA_PREFIX=${PREFIX%/bin}" >> "$GITHUB_ENV"
         echo "$PREFIX" >> "$GITHUB_PATH"

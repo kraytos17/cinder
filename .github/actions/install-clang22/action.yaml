@@ -1,9 +1,9 @@
-name: 'Install Clang 22.1.8'
-description: 'Installs Clang/LLVM 22.1.8 via micromamba'
+name: 'Install Clang 22'
+description: 'Installs Clang/LLVM 22 via micromamba'
 
 inputs:
   tools:
-    description: 'Extra tools, e.g. "clang-tools-extra"'
+    description: 'Extra packages to install (e.g. clang-tools-extra)'
     required: false
     default: ''
 
@@ -15,25 +15,29 @@ runs:
         environment-name: llvm22
         create-args: >-
           -c conda-forge
-          clangxx>=22
-          lld>=22
+          clang_linux-64>=22,<23
+          clangxx_linux-64>=22,<23
+          lld>=22,<23
           ${{ inputs.tools }}
         cache-environment: true
 
     - name: Setup Toolchain Aliases & Exports
       shell: bash
       run: |
-        PREFIX="/opt/micromamba/envs/llvm22/bin"
+        PREFIX="${MAMBA_ROOT_PREFIX:-/home/runner/micromamba}/envs/llvm22/bin"
+
+        # Compiler aliases
         ln -sf "$PREFIX/clang" "$PREFIX/clang-22"
         ln -sf "$PREFIX/clang++" "$PREFIX/clang++-22"
 
-        for t in ${{ inputs.tools }}; do
-          if [ -f "$PREFIX/$t" ]; then
-            ln -sf "$PREFIX/$t" "$PREFIX/$t-22"
+        # Create aliases for common extra tools if present
+        for bin in clang-tidy clang-format; do
+          if [ -f "$PREFIX/$bin" ]; then
+            ln -sf "$PREFIX/$bin" "$PREFIX/$bin-22"
           fi
         done
 
         echo "CC=$PREFIX/clang-22" >> "$GITHUB_ENV"
         echo "CXX=$PREFIX/clang++-22" >> "$GITHUB_ENV"
-        echo "CONDA_PREFIX=/opt/micromamba/envs/llvm22" >> "$GITHUB_ENV"
+        echo "CONDA_PREFIX=${PREFIX%/bin}" >> "$GITHUB_ENV"
         echo "$PREFIX" >> "$GITHUB_PATH"
