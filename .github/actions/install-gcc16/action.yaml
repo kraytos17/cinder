@@ -4,13 +4,13 @@ description: 'Installs GCC 16.2.1 via micromamba'
 runs:
   using: composite
   steps:
-    - uses: mamba-org/setup-micromamba@v2
+    - uses: mamba-org/setup-micromamba@v3
       with:
         environment-name: gcc16
         create-args: >-
           -c conda-forge
-          gcc_linux-64=16.2.1
-          gxx_linux-64=16.2.1
+          gcc_linux-64>=16
+          gxx_linux-64>=16
         cache-environment: true
 
     - name: Setup Compiler Aliases & Exports
