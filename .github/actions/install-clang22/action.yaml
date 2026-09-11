@@ -33,10 +33,11 @@ runs:
         done
         sudo apt-get install -y --no-install-recommends $pkgs
 
-    - name: Alias extra tools
-      if: inputs.tools != ''
+    - name: Alias clang/clang++ and extra tools
       shell: bash
       run: |
+        sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
+        sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
         for t in ${{ inputs.tools }}; do
           if [ -e "/usr/bin/${t}-22" ]; then
             sudo update-alternatives --install "/usr/bin/${t}" "${t}" "/usr/bin/${t}-22" 100
