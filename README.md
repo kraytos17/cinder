@@ -1,6 +1,6 @@
 # Cinder
 
-Distributed in-memory cache in C++23 — minimal, fast, no external dependencies at runtime.
+Distributed in-memory cache in C++23
 
 ## Features
 
@@ -474,7 +474,7 @@ just --list            # all targets
 
 - **clang-tidy** runs inline during `ci` builds; `.clang-tidy` excludes noisy checks for the project's coding style.
 - **clangd** reads `build/debug/compile_commands.json` (per-file). Use `just build` for editor indexing; `fast`/unity builds hide per-file commands from clangd.
-- **ccache** auto-detected; capped at 25 GB.
+- **sccache** auto-detected via CMake; falls back to ccache.
 - **mold** auto-selected as the linker (falls back to lld, then GNU ld) — disable with `-DCINDER_USE_FAST_LINKER=OFF`.
 - **split-dwarf** (`-gsplit-dwarf` + `--gdb-index`) enabled in Debug/RelWithDebInfo for faster linking — disable with `-DCINDER_USE_SPLIT_DWARF=OFF`.
 

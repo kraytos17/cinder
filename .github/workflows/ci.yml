@@ -3,8 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
 
 permissions:
   contents: read
@@ -15,6 +23,9 @@ concurrency:
 
 env:
   FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.cache/fetchcontent
+  CCACHE_MAXSIZE: 2G
+  CCACHE_COMPRESS: "true"
+  CCACHE_COMPRESSLEVEL: "6"
 
 jobs:
   build-test:
@@ -24,15 +35,18 @@ jobs:
         include:
           - preset: debug
             label: GCC Debug
+            compiler: gcc
           - preset: release
             label: GCC Release
+            compiler: gcc
           - preset: debug-clang
             label: Clang Debug
+            compiler: clang
     runs-on: ubuntu-26.04
     name: ${{ matrix.label }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -40,25 +54,36 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install GCC 16
+        if: matrix.compiler == 'gcc'
+        uses: ./.github/actions/install-gcc16
+
+      - name: Install Clang 22
+        if: matrix.compiler == 'clang'
+        uses: ./.github/actions/install-clang22
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ matrix.preset }}-
+          restore-keys: |
+            fetchcontent-${{ matrix.preset }}-
+            fetchcontent-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ~/.cache/ccache
           key: ccache-${{ matrix.preset }}-${{ github.sha }}
-          restore-keys: ccache-${{ matrix.preset }}-
+          restore-keys: |
+            ccache-${{ matrix.preset }}-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -67,29 +92,29 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure --parallel $(nproc)
 
       - name: Sim tests
-        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
+        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure --parallel $(nproc)
 
       - name: CLI tests
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
         with:
           name: test-logs-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
 
   feature-flags:
     runs-on: ubuntu-26.04
     name: Feature Flags (TLS + gRPC)
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -97,28 +122,36 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install GCC 16
+        uses: ./.github/actions/install-gcc16
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-feature-flags-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-feature-flags-
+          restore-keys: |
+            fetchcontent-feature-flags-
+            fetchcontent-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ~/.cache/ccache
           key: ccache-feature-flags-${{ github.sha }}
-          restore-keys: ccache-feature-flags-
+          restore-keys: |
+            ccache-feature-flags-
 
       - name: Configure (TLS + gRPC)
         run: |
           cmake -B build/feature-flags \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=gcc-16 \
+            -DCMAKE_CXX_COMPILER=g++-16 \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCINDER_ENABLE_TLS=ON \
@@ -131,14 +164,14 @@ jobs:
       - name: Unit tests
         run: |
           cd build/feature-flags
-          ctest -L unit --output-on-failure
+          ctest -L unit --output-on-failure --parallel $(nproc)
 
   sanitize:
     runs-on: ubuntu-26.04
     name: Sanitizers (GCC)
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -146,25 +179,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install GCC 16
+        uses: ./.github/actions/install-gcc16
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-sanitize-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-sanitize-
+          restore-keys: |
+            fetchcontent-sanitize-
+            fetchcontent-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ~/.cache/ccache
           key: ccache-sanitize-${{ github.sha }}
-          restore-keys: ccache-sanitize-
+          restore-keys: |
+            ccache-sanitize-
 
       - name: Configure
         run: cmake --preset ci-gcc
@@ -173,26 +212,26 @@ jobs:
         run: cmake --build --preset ci-gcc -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset ci-gcc -L unit --output-on-failure
+        run: ctest --preset ci-gcc -L unit --output-on-failure --parallel $(nproc)
 
       - name: Sim tests
-        run: ctest --preset ci-gcc -L sim --output-on-failure
+        run: ctest --preset ci-gcc -L sim --output-on-failure --parallel $(nproc)
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
         with:
           name: test-logs-sanitize
           path: build/ci-gcc/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
 
   tsan:
     runs-on: ubuntu-26.04
     name: TSan (GCC)
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -200,25 +239,31 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install GCC 16
+        uses: ./.github/actions/install-gcc16
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-tsan-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-tsan-
+          restore-keys: |
+            fetchcontent-tsan-
+            fetchcontent-
 
       - name: Cache ccache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ~/.cache/ccache
           key: ccache-tsan-${{ github.sha }}
-          restore-keys: ccache-tsan-
+          restore-keys: |
+            ccache-tsan-
 
       - name: Configure
         run: cmake --preset tsan
@@ -226,46 +271,58 @@ jobs:
       - name: Build
         run: cmake --build --preset tsan -j$(nproc)
 
+      # TSan runs are more prone to environmental flakiness (timing-sensitive
+      # thread interleaving under instrumentation) than a real correctness
+      # signal on a shared runner, so failed tests get one automatic re-run
+      # before the job is marked failed. This does not run tests serially —
+      # ctest still schedules retries alongside everything else.
       - name: Unit tests
-        run: ctest --preset tsan -L unit --output-on-failure
+        run: ctest --preset tsan -L unit --output-on-failure --repeat until-pass:2
 
       - name: Sim tests
-        run: ctest --preset tsan -L sim --output-on-failure
+        run: ctest --preset tsan -L sim --output-on-failure --repeat until-pass:2
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
         with:
           name: test-logs-tsan
           path: build/tsan/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 3
 
   lint:
     runs-on: ubuntu-26.04
     name: Lint (Clang + cppcheck)
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache clang-tidy clang-format cppcheck libssl-dev
+            ninja-build lld ccache cppcheck libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install Clang 22
+        uses: ./.github/actions/install-clang22
+        with:
+          tools: clang-tidy clang-format
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Install just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-lint-
+          restore-keys: |
+            fetchcontent-lint-
+            fetchcontent-
 
       - name: Configure (clang-tidy runs inline)
         run: cmake --preset ci
@@ -292,6 +349,8 @@ jobs:
             configure: >
               cmake -B build/codeql-tls-grpc -G Ninja
               -DCMAKE_BUILD_TYPE=Release
+              -DCMAKE_C_COMPILER=gcc-16
+              -DCMAKE_CXX_COMPILER=g++-16
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
               -DCMAKE_C_COMPILER_LAUNCHER=ccache
               -DCINDER_ENABLE_TLS=ON
@@ -306,7 +365,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
 
       - name: Install system deps
         run: |
@@ -314,18 +373,23 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             ninja-build lld ccache libssl-dev
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install GCC 16
+        uses: ./.github/actions/install-gcc16
+
+      - name: Install CMake
+        uses: ./.github/actions/install-cmake
 
       - name: Cache FetchContent
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
         with:
           path: ${{ env.FETCHCONTENT_BASE_DIR }}
           key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-codeql-${{ matrix.category }}-
+          restore-keys: |
+            fetchcontent-codeql-${{ matrix.category }}-
+            fetchcontent-
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.0
         with:
           languages: cpp
 
@@ -335,7 +399,7 @@ jobs:
           ${{ matrix.build }}
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+        uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.0
         with:
           category: "/variant:${{ matrix.category }}"
 

@@ -45,20 +45,19 @@ option(CINDER_USE_MIMALLOC          "Override global allocator with mimalloc" ON
 option(CINDER_ENABLE_GRPC          "Build with gRPC gateway for multi-language clients" OFF)
 option(CINDER_PREFER_SYSTEM_DEPS    "Try find_package() before FetchContent for each dep" ON)
 
-# ---------------------------------------------------------------------------
-# ccache
-# ---------------------------------------------------------------------------
+find_program(SCCACHE_PROGRAM sccache)
 find_program(CCACHE_PROGRAM ccache)
-if(CCACHE_PROGRAM)
+if(SCCACHE_PROGRAM)
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+    message(STATUS "Cinder: using sccache")
+elseif(CCACHE_PROGRAM)
     set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
     set(CCACHE_BASEDIR "${CMAKE_SOURCE_DIR}")
     message(STATUS "Cinder: using ccache (basedir: ${CCACHE_BASEDIR})")
 endif()
 
-# ---------------------------------------------------------------------------
-# Fast linker (mold > lld > default)
-# ---------------------------------------------------------------------------
 if(CINDER_USE_FAST_LINKER)
     find_program(MOLD_PROGRAM mold)
     if(MOLD_PROGRAM)

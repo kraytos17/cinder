@@ -1,0 +1,39 @@
+name: CI
+
+# Mirrors the paths-ignore list in ci.yml, inverted. GitHub Actions doesn't
+# run a workflow at all for a push/PR that only touches ignored paths, so if
+# "CI Success" is a required branch-protection check, a docs-only PR would
+# otherwise be stuck forever waiting on a check that never reports.
+#
+# This workflow triggers on exactly the paths the main workflow ignores and
+# immediately reports a green "CI Success" check under the same job name, so
+# branch protection is satisfied without running the real matrix.
+#
+# IMPORTANT: keep this file's paths list and ci.yml's paths-ignore list in
+# sync. If you add a path to one, add it to the other.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+
+permissions:
+  contents: read
+
+jobs:
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    steps:
+      - name: Skip — docs-only change
+        run: echo "Only doc/license paths changed; skipping the full CI matrix."

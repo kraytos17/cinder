@@ -1,0 +1,56 @@
+name: 'Install Clang 22'
+description: 'Installs Clang/LLVM 22 via apt.llvm.org, with apt package caching, and exports CC/CXX'
+
+inputs:
+  tools:
+    description: 'Extra LLVM packages to install (space-separated, versionless suffix applied automatically), e.g. "clang-tidy clang-format"'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Cache apt archives (clang-22)
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      with:
+        path: /var/cache/apt/archives
+        key: apt-clang22-${{ runner.os }}-v1
+
+    - name: Run LLVM install script
+      shell: bash
+      run: |
+        wget -q https://apt.llvm.org/llvm.sh
+        chmod +x llvm.sh
+        sudo ./llvm.sh 22
+
+    - name: Install extra LLVM tools
+      if: inputs.tools != ''
+      shell: bash
+      run: |
+        pkgs=""
+        for t in ${{ inputs.tools }}; do
+          pkgs="$pkgs ${t}-22"
+        done
+        sudo apt-get install -y --no-install-recommends $pkgs
+
+    # Only the extra tools (clang-tidy, clang-format, ...) get an
+    # unversioned alias: Justfile recipes like `just check-format` invoke
+    # them by bare name. clang/clang++ themselves are NOT aliased — every
+    # consumer of this action either uses the exported CC/CXX env vars
+    # below or passes -DCMAKE_C_COMPILER=clang-22 explicitly, so a bare
+    # `clang`/`clang++` alternative would just be unused surface area.
+    - name: Alias extra tools
+      if: inputs.tools != ''
+      shell: bash
+      run: |
+        for t in ${{ inputs.tools }}; do
+          if [ -e "/usr/bin/${t}-22" ]; then
+            sudo update-alternatives --install "/usr/bin/${t}" "${t}" "/usr/bin/${t}-22" 100
+          fi
+        done
+
+    - name: Export CC/CXX
+      shell: bash
+      run: |
+        echo "CC=clang-22" >> "$GITHUB_ENV"
+        echo "CXX=clang++-22" >> "$GITHUB_ENV"
