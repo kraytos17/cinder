@@ -11,6 +11,7 @@ runs:
           -c conda-forge
           gcc_linux-64>=16,<17
           gxx_linux-64>=16,<17
+          openssl
         cache-environment: true
 
     - name: Setup Compiler Aliases & Exports

@@ -203,7 +203,13 @@ function(_cinder_apply_debug_options target)
     if(CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
         target_compile_options(${target} PRIVATE -gdwarf-5 -fdebug-types-section)
     endif()
-    if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo")
+    # Clang hard-errors when a shared PCH is combined with -gsplit-dwarf: the
+    # .dwo path is baked into the PCH at the point the PCH itself is compiled,
+    # and it never matches the .dwo path of whichever TU later includes that
+    # PCH ("definition of macro '_gsplit_dwarf_path' differs..."). GCC only
+    # warns and silently discards the PCH for the mismatching TU, so split
+    # DWARF is safe there. Restrict split-dwarf to non-Clang compilers.
+    if(CINDER_USE_SPLIT_DWARF AND CMAKE_BUILD_TYPE MATCHES "Debug|RelWithDebInfo" AND NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(${target} PRIVATE -gsplit-dwarf)
         if(CINDER_USE_FAST_LINKER AND CMAKE_LINKER_TYPE MATCHES "MOLD|LLD")
             target_link_options(${target} PRIVATE -Wl,--gdb-index)
