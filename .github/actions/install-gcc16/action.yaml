@@ -5,7 +5,7 @@ runs:
   using: composite
   steps:
     - name: Cache apt archives (gcc-16)
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      uses: actions/cache@v6
       with:
         path: /var/cache/apt/archives
         key: apt-gcc16-${{ runner.os }}-v1
@@ -20,10 +20,6 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends gcc-16 g++-16
 
-    # No update-alternatives here on purpose: every consumer of this action
-    # either uses the exported CC/CXX env vars below or passes
-    # -DCMAKE_C_COMPILER=gcc-16 / -DCMAKE_CXX_COMPILER=g++-16 explicitly.
-    # Nothing in this pipeline invokes a bare `gcc`/`g++`.
     - name: Export CC/CXX
       shell: bash
       run: |

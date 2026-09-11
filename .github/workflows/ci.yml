@@ -3,16 +3,8 @@ name: CI
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
   pull_request:
     branches: [main]
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
 
 permissions:
   contents: read
@@ -22,10 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.cache/fetchcontent
-  CCACHE_MAXSIZE: 2G
-  CCACHE_COMPRESS: "true"
-  CCACHE_COMPRESSLEVEL: "6"
+  SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_CACHE_VERSION: "1"
 
 jobs:
   build-test:
@@ -46,44 +36,56 @@ jobs:
     name: ${{ matrix.label }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache libssl-dev
+            ninja-build lld libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install GCC 16
         if: matrix.compiler == 'gcc'
-        uses: ./.github/actions/install-gcc16
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-16 g++-16
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-16 100
 
       - name: Install Clang 22
         if: matrix.compiler == 'clang'
-        uses: ./.github/actions/install-clang22
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
+        uses: extractions/setup-just@v4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (gcc)
+        if: matrix.compiler == 'gcc'
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-${{ matrix.preset }}-
-            fetchcontent-
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-gcc-
 
-      - name: Cache ccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (clang)
+        if: matrix.compiler == 'clang'
+        uses: actions/cache@v6
         with:
-          path: ~/.cache/ccache
-          key: ccache-${{ matrix.preset }}-${{ github.sha }}
-          restore-keys: |
-            ccache-${{ matrix.preset }}-
+          path: ${{ github.workspace }}/.cache/fetchcontent-clang
+          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-clang-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -92,58 +94,56 @@ jobs:
         run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure --parallel $(nproc)
+        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
 
       - name: Sim tests
-        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure --parallel $(nproc)
+        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
 
       - name: CLI tests
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 7
 
   feature-flags:
     runs-on: ubuntu-26.04
     name: Feature Flags (TLS + gRPC)
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache libssl-dev
+            ninja-build lld libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-16 g++-16
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-16 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (gcc)
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-feature-flags-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-feature-flags-
-            fetchcontent-
-
-      - name: Cache ccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
-        with:
-          path: ~/.cache/ccache
-          key: ccache-feature-flags-${{ github.sha }}
-          restore-keys: |
-            ccache-feature-flags-
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-gcc-
 
       - name: Configure (TLS + gRPC)
         run: |
@@ -152,8 +152,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=gcc-16 \
             -DCMAKE_CXX_COMPILER=g++-16 \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
             -DCINDER_ENABLE_TLS=ON \
             -DCINDER_ENABLE_GRPC=ON \
             -DCINDER_ENABLE_CRYPTO=ON
@@ -164,46 +164,44 @@ jobs:
       - name: Unit tests
         run: |
           cd build/feature-flags
-          ctest -L unit --output-on-failure --parallel $(nproc)
+          ctest -L unit --output-on-failure
 
   sanitize:
     runs-on: ubuntu-26.04
     name: Sanitizers (GCC)
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache libssl-dev
+            ninja-build lld libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-16 g++-16
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-16 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
+        uses: extractions/setup-just@v4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (gcc)
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-sanitize-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-sanitize-
-            fetchcontent-
-
-      - name: Cache ccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
-        with:
-          path: ~/.cache/ccache
-          key: ccache-sanitize-${{ github.sha }}
-          restore-keys: |
-            ccache-sanitize-
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-gcc-
 
       - name: Configure
         run: cmake --preset ci-gcc
@@ -212,58 +210,56 @@ jobs:
         run: cmake --build --preset ci-gcc -j$(nproc)
 
       - name: Unit tests
-        run: ctest --preset ci-gcc -L unit --output-on-failure --parallel $(nproc)
+        run: ctest --preset ci-gcc -L unit --output-on-failure
 
       - name: Sim tests
-        run: ctest --preset ci-gcc -L sim --output-on-failure --parallel $(nproc)
+        run: ctest --preset ci-gcc -L sim --output-on-failure
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: test-logs-sanitize
           path: build/ci-gcc/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 7
 
   tsan:
     runs-on: ubuntu-26.04
     name: TSan (GCC)
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache libssl-dev
+            ninja-build lld libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-16 g++-16
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-16 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
+        uses: extractions/setup-just@v4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (gcc)
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-tsan-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-tsan-
-            fetchcontent-
-
-      - name: Cache ccache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
-        with:
-          path: ~/.cache/ccache
-          key: ccache-tsan-${{ github.sha }}
-          restore-keys: |
-            ccache-tsan-
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-gcc-
 
       - name: Configure
         run: cmake --preset tsan
@@ -271,58 +267,60 @@ jobs:
       - name: Build
         run: cmake --build --preset tsan -j$(nproc)
 
-      # TSan runs are more prone to environmental flakiness (timing-sensitive
-      # thread interleaving under instrumentation) than a real correctness
-      # signal on a shared runner, so failed tests get one automatic re-run
-      # before the job is marked failed. This does not run tests serially —
-      # ctest still schedules retries alongside everything else.
       - name: Unit tests
-        run: ctest --preset tsan -L unit --output-on-failure --repeat until-pass:2
+        run: ctest --preset tsan -L unit --output-on-failure
 
       - name: Sim tests
-        run: ctest --preset tsan -L sim --output-on-failure --repeat until-pass:2
+        run: ctest --preset tsan -L sim --output-on-failure
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: test-logs-tsan
           path: build/tsan/build/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 7
 
   lint:
     runs-on: ubuntu-26.04
     name: Lint (Clang + cppcheck)
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache cppcheck libssl-dev
+            ninja-build lld cppcheck libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install Clang 22
-        uses: ./.github/actions/install-clang22
-        with:
-          tools: clang-tidy clang-format
+        run: |
+          wget -q https://apt.llvm.org/llvm.sh
+          chmod +x llvm.sh
+          sudo ./llvm.sh 22
+          sudo apt-get install -y --no-install-recommends clang-tidy-22 clang-format-22
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-22 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-22 100
+          sudo update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-22 100
+          sudo update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-22 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
       - name: Install just
-        uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2.1.0
+        uses: extractions/setup-just@v4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (clang)
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-lint-
-            fetchcontent-
+          path: ${{ github.workspace }}/.cache/fetchcontent-clang
+          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-clang-
 
       - name: Configure (clang-tidy runs inline)
         run: cmake --preset ci
@@ -351,8 +349,8 @@ jobs:
               -DCMAKE_BUILD_TYPE=Release
               -DCMAKE_C_COMPILER=gcc-16
               -DCMAKE_CXX_COMPILER=g++-16
-              -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-              -DCMAKE_C_COMPILER_LAUNCHER=ccache
+              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+              -DCMAKE_C_COMPILER_LAUNCHER=sccache
               -DCINDER_ENABLE_TLS=ON
               -DCINDER_ENABLE_GRPC=ON
               -DCINDER_ENABLE_CRYPTO=ON
@@ -365,31 +363,37 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+      - uses: actions/checkout@v7
 
       - name: Install system deps
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            ninja-build lld ccache libssl-dev
+            ninja-build lld libssl-dev
+
+      - name: Install sccache
+        uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Install GCC 16
-        uses: ./.github/actions/install-gcc16
+        run: |
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-16 g++-16
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-16 100
+          sudo update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-16 100
 
-      - name: Install CMake
-        uses: ./.github/actions/install-cmake
+      - name: Install CMake 4.4
+        run: pip install cmake>=4.4
 
-      - name: Cache FetchContent
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.2.0
+      - name: Cache FetchContent (gcc)
+        uses: actions/cache@v6
         with:
-          path: ${{ env.FETCHCONTENT_BASE_DIR }}
-          key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-codeql-${{ matrix.category }}-
-            fetchcontent-
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: fetchcontent-gcc-
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.0
+        uses: github/codeql-action/init@v4
         with:
           languages: cpp
 
@@ -399,7 +403,7 @@ jobs:
           ${{ matrix.build }}
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@faaca9a8f6edddba5725ffe5adefdab6669a2eca # v3.28.0
+        uses: github/codeql-action/analyze@v4
         with:
           category: "/variant:${{ matrix.category }}"
 
