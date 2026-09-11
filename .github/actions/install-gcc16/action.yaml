@@ -28,4 +28,5 @@ runs:
         echo "CC=$PREFIX/gcc-16" >> "$GITHUB_ENV"
         echo "CXX=$PREFIX/g++-16" >> "$GITHUB_ENV"
         echo "CONDA_PREFIX=${PREFIX%/bin}" >> "$GITHUB_ENV"
+        echo "CPATH=/usr/include" >> "$GITHUB_ENV"
         echo "$PREFIX" >> "$GITHUB_PATH"

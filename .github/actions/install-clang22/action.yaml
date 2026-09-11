@@ -18,6 +18,7 @@ runs:
           clang_linux-64>=22,<23
           clangxx_linux-64>=22,<23
           lld>=22,<23
+          libcxx
           openssl
           ${{ inputs.tools }}
         cache-environment: true

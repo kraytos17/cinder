@@ -228,6 +228,12 @@ if(CINDER_UNITY_BUILD)
     message(STATUS "Cinder: unity builds enabled (cinder targets only)")
 endif()
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-stdlib=libc++)
+    add_link_options(-stdlib=libc++)
+    message(STATUS "Cinder: Clang using libc++")
+endif()
+
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
