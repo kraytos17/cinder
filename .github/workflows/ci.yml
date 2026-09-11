@@ -55,8 +55,8 @@ jobs:
         if: matrix.compiler == 'clang'
         uses: ./.github/actions/install-clang22
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -97,7 +97,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-${{ matrix.preset }}
-          path: build/${{ matrix.preset }}/build/Testing/Temporary/LastTest.log
+          path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -120,8 +120,8 @@ jobs:
       - name: Install GCC 16
         uses: ./.github/actions/install-gcc16
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Cache FetchContent (gcc)
         uses: actions/cache@v6
@@ -170,8 +170,8 @@ jobs:
       - name: Install GCC 16
         uses: ./.github/actions/install-gcc16
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -200,7 +200,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-sanitize
-          path: build/ci-gcc/build/Testing/Temporary/LastTest.log
+          path: build/ci-gcc/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -223,8 +223,8 @@ jobs:
       - name: Install GCC 16
         uses: ./.github/actions/install-gcc16
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -253,7 +253,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: test-logs-tsan
-          path: build/tsan/build/Testing/Temporary/LastTest.log
+          path: build/tsan/Testing/Temporary/LastTest.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -276,10 +276,10 @@ jobs:
       - name: Install Clang 22
         uses: ./.github/actions/install-clang22
         with:
-          tools: 'clang-tidy clang-format'
+          tools: 'clang-tools-extra'
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Install just
         uses: extractions/setup-just@v4
@@ -309,21 +309,8 @@ jobs:
       matrix:
         include:
           - label: Release
-            configure: cmake --preset release
-            build: cmake --build --preset release -j$(nproc)
             category: release
           - label: TLS + gRPC
-            configure: >
-              cmake -B build/codeql-tls-grpc -G Ninja
-              -DCMAKE_BUILD_TYPE=Release
-              -DCMAKE_C_COMPILER=gcc-16
-              -DCMAKE_CXX_COMPILER=g++-16
-              -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
-              -DCMAKE_C_COMPILER_LAUNCHER=sccache
-              -DCINDER_ENABLE_TLS=ON
-              -DCINDER_ENABLE_GRPC=ON
-              -DCINDER_ENABLE_CRYPTO=ON
-            build: cmake --build build/codeql-tls-grpc -j$(nproc)
             category: tls-grpc
     runs-on: ubuntu-26.04
     name: CodeQL (${{ matrix.label }})
@@ -346,8 +333,8 @@ jobs:
       - name: Install GCC 16
         uses: ./.github/actions/install-gcc16
 
-      - name: Install CMake 4.4
-        run: pip install cmake>=4.4
+      - name: Install CMake & Ninja
+        uses: lukka/get-cmake@latest
 
       - name: Cache FetchContent (gcc)
         uses: actions/cache@v6
@@ -361,10 +348,30 @@ jobs:
         with:
           languages: cpp
 
-      - name: Build
+      - name: Configure (Release)
+        if: matrix.category == 'release'
+        run: cmake --preset release
+
+      - name: Configure (TLS + gRPC)
+        if: matrix.category == 'tls-grpc'
         run: |
-          ${{ matrix.configure }}
-          ${{ matrix.build }}
+          cmake -B build/codeql-tls-grpc -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=gcc-16 \
+            -DCMAKE_CXX_COMPILER=g++-16 \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCINDER_ENABLE_TLS=ON \
+            -DCINDER_ENABLE_GRPC=ON \
+            -DCINDER_ENABLE_CRYPTO=ON
+
+      - name: Build (Release)
+        if: matrix.category == 'release'
+        run: cmake --build --preset release -j$(nproc)
+
+      - name: Build (TLS + gRPC)
+        if: matrix.category == 'tls-grpc'
+        run: cmake --build build/codeql-tls-grpc -j$(nproc)
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
@@ -382,10 +389,16 @@ jobs:
         run: |
           echo "Job results:"
           echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
-          if [ "${{ contains(needs.*.result, 'failure') }}" = "true" ] || \
-             [ "${{ contains(needs.*.result, 'cancelled') }}" = "true" ]; then
+          FAILURES=0
+          for result in '${{ toJSON(needs) }}' | jq -r '.[].result'; do
+            case "$result" in
+              success|skipped) ;;
+              *) FAILURES=1 ;;
+            esac
+          done
+          if [ "$FAILURES" -ne 0 ]; then
             echo ""
-            echo "One or more required jobs failed or were cancelled"
+            echo "One or more required jobs failed, were cancelled, or were skipped unexpectedly"
             exit 1
           fi
           echo "All required jobs passed"
