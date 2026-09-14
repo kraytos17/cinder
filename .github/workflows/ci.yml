@@ -304,19 +304,19 @@ jobs:
           restore-keys: fetchcontent-clang-
 
       - name: Configure (clang-tidy runs inline)
-        run: cmake --preset ci
+        run: just preset=ci configure
 
       - name: Build
-        run: cmake --build --preset ci -j$(nproc)
+        run: just preset=ci build
 
       - name: Check formatting
-        run: just check-format
+        run: just preset=ci check-format
 
       - name: Configure for cppcheck (GCC)
-        run: cmake --preset ci-gcc
+        run: just preset=ci-gcc configure
 
       - name: cppcheck
-        run: just cppcheck
+        run: cmake --build build/ci-gcc --target cppcheck
 
       - name: Save FetchContent
         if: always() && (steps.fc-restore-gcc.outputs.cache-hit != 'true' || steps.fc-restore-clang.outputs.cache-hit != 'true')
