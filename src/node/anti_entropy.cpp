@@ -327,17 +327,17 @@ AntiEntropyManager::pickPartner(int replica_factor) -> std::optional<NodeId> {
     }
 
     std::set<NodeId> candidates;
-    for (const auto& [key, entry] : store_.liveEntries()) {
-        (void)entry;
-        for (const auto& node : ring_.getNodes(key, replica_factor)) {
-            if (node != self_) {
-                candidates.insert(node);
+    store_.forEach([&](const std::string& key, const VersionedEntry&) {
+        // forEach has no early exit; guard preserves the original break once
+        // enough candidates were collected (later iterations are no-ops).
+        if (candidates.size() <= 64) {
+            for (const auto& node : ring_.getNodes(key, replica_factor)) {
+                if (node != self_) {
+                    candidates.insert(node);
+                }
             }
         }
-        if (candidates.size() > 64) {
-            break; // enough for fair rotation; avoid full scans on huge stores
-        }
-    }
+    });
     if (candidates.empty()) {
         return std::nullopt;
     }

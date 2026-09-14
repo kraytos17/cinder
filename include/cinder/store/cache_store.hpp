@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
-#include <generator>
 #include <optional>
 #include <string>
 
@@ -49,13 +48,6 @@ class CacheStore {
     // is the single version authority regardless of which write path is used
     // (direct put() or ReplicationManager). Thread-safe (store mutex).
     virtual auto mintVersion() -> Version = 0;
-
-    // Pull-based iteration over live entries. The snapshot is
-    // taken under the store lock; yielded values reference the snapshot
-    // (valid until the generator is destroyed or iterated past). Callers
-    // may safely call store mutators after consuming the generator.
-    virtual auto liveEntries() const
-        -> std::generator<std::pair<const std::string&, const VersionedEntry&>> = 0;
 
     // Push-based visitor: the visitor is invoked outside the store lock over
     // a point-in-time snapshot, so it may safely call store mutators

@@ -127,8 +127,10 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     // operation_aborted.
     bool timed_out = false;
     asio::steady_timer timer(ex, rpc_timeout_);
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsubobject-linkage"
+#endif
     timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
         if (!timer_ec) {
             timed_out = true;
@@ -143,7 +145,9 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
         }
     });
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
     if (!conn.connected) {
         tcp::resolver resolver(ex);

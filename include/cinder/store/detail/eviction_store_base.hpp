@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <functional>
-#include <generator>
 #include <list>
 #include <optional>
 #include <shared_mutex>
@@ -285,29 +284,6 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         Derived& self = d();
         std::scoped_lock lock(self.mutex_);
         return next_version_++;
-    }
-
-    auto liveEntries() const
-        -> std::generator<std::pair<const std::string&, const VersionedEntry&>> override {
-        const Derived& self = d();
-        std::vector<std::pair<std::string, VersionedEntry>> items;
-        {
-            std::shared_lock lock(self.mutex_);
-            items.reserve(self.list_.size());
-            auto snap_time = now();
-            for (const auto& node : self.list_) {
-                if (Derived::nodeEntry(node).hasTtl()
-                    && Derived::nodeEntry(node).expires_at <= snap_time) {
-                    continue; // expired — skip
-                }
-                items.emplace_back(Derived::nodeKey(node), Derived::nodeEntry(node));
-            }
-        }
-
-        // Yield from snapshot — lock is released.
-        for (const auto& [key, entry] : items) {
-            co_yield std::pair<const std::string&, const VersionedEntry&>{key, entry};
-        }
     }
 
     void forEach(

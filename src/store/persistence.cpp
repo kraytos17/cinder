@@ -161,9 +161,9 @@ PersistenceManager::compact() -> Result<void> {
     }
 
     size_t entry_count = 0;
-    for ([[maybe_unused]] const auto& [k, v] : store_.liveEntries()) {
+    store_.forEach([&](const std::string&, const VersionedEntry&) {
         ++entry_count;
-    }
+    });
 
     auto result = createSnapshot();
     if (!result.has_value()) {
@@ -210,7 +210,7 @@ PersistenceManager::createSnapshot() -> Result<void> {
     auto snap_path = std::filesystem::path(opts_.data_dir) / filename;
     std::vector<SnapshotEntry> all_entries;
     Version next_version = 0;
-    for (const auto& [key, ve] : store_.liveEntries()) {
+    store_.forEach([&](const std::string& key, const VersionedEntry& ve) {
         SnapshotEntry se;
         se.key = key;
         se.value = ve.value;
@@ -229,7 +229,7 @@ PersistenceManager::createSnapshot() -> Result<void> {
             next_version = ve.version() + 1;
         }
         all_entries.push_back(std::move(se));
-    }
+    });
 
     SnapshotWriter writer(snap_path.string());
     auto write_result = writer.write(next_version, all_entries);

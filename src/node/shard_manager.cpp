@@ -47,10 +47,10 @@ ShardManager::rebalance() -> bool {
 
     size_t deferred_count = 0;
     auto now = clock_.now();
-    for (const auto& [key, entry] : store_.liveEntries()) {
+    store_.forEach([&](const std::string& key, const VersionedEntry& entry) {
         auto desired = ring_.getNodes(key, replica_factor_);
         if (desired.empty()) {
-            continue;
+            return;
         }
 
         bool staying = std::find(desired.begin(), desired.end(), self_) != desired.end();
@@ -65,7 +65,7 @@ ShardManager::rebalance() -> bool {
                 }
                 copies.push_back({key, entry, owner});
             }
-            continue;
+            return;
         }
 
         // Leaving the set: migrate to the new owners; drop locally only after
@@ -73,7 +73,7 @@ ShardManager::rebalance() -> bool {
         bool primary_quarantined = table_.isQuarantined(desired[0], now, quarantine_interval_);
         if (primary_quarantined) {
             ++deferred_count;
-            continue;
+            return;
         }
 
         migrates.push_back({key, entry, desired[0]});
@@ -84,9 +84,9 @@ ShardManager::rebalance() -> bool {
             }
             copies.push_back({key, entry, desired[i]});
         }
-    }
+    });
 
-    // Send after the generator has been consumed and the lock released;
+    // Send after the snapshot has been collected and the lock released;
     // the remove callback then acquires the mutex cleanly regardless of
     // transport sync/async behavior.
     for (auto& p : copies) {

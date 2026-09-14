@@ -102,7 +102,7 @@
       "name": "msan",
       "inherits": "base",
       "displayName": "MSan (Clang)",
-      "description": "Clang with MemorySanitizer — requires an MSan-instrumented libc++ to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
+      "description": "Clang with MemorySanitizer — requires an MSan-instrumented C++ standard library to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -185,7 +185,7 @@
       "name": "tls-grpc-clang",
       "inherits": "base",
       "displayName": "TLS + gRPC (Clang)",
-      "description": "Release build with TLS and gRPC gateway (Clang + libc++)",
+      "description": "Release build with TLS and gRPC gateway (Clang)",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",

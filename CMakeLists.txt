@@ -35,7 +35,7 @@ option(CINDER_ENABLE_CRYPTO         "Build with OpenSSL crypto (HMAC-SHA256 for 
 option(CINDER_ENABLE_ASAN           "Build with AddressSanitizer"            OFF)
 option(CINDER_ENABLE_UBSAN          "Build with UndefinedBehaviorSanitizer"  OFF)
 option(CINDER_ENABLE_TSAN           "Build with ThreadSanitizer"             OFF)
-option(CINDER_ENABLE_MSAN           "Build with MemorySanitizer (Clang, needs instrumented libc++)" OFF)
+option(CINDER_ENABLE_MSAN           "Build with MemorySanitizer (Clang, needs instrumented C++ stdlib)" OFF)
 option(CINDER_ENABLE_FUZZER         "Build with libFuzzer (implies ASan, Clang only)" OFF)
 option(CINDER_ENABLE_COVERAGE       "Build with coverage instrumentation (Clang only)" OFF)
 option(CINDER_ENABLE_LTO            "Enable link-time optimization"          OFF)
@@ -145,6 +145,12 @@ endif()
 if(CINDER_ENABLE_TSAN)
     list(APPEND SANITIZER_FLAGS "-fsanitize=thread")
     list(APPEND SANITIZER_LINK_FLAGS "-fsanitize=thread")
+    # TSan needs a fixed memory layout: PIE binaries require ASLR disabled
+    # via personality(ADDR_NO_RANDOMIZE), which Docker's default seccomp
+    # profile blocks — every TSan binary (including gtest discovery runs)
+    # dies at startup in containers. Non-PIE executables load at a fixed
+    # address, so ASLR can stay on. Exe-only: shared libs are unaffected.
+    string(APPEND CMAKE_EXE_LINKER_FLAGS " -no-pie")
     message(STATUS "Cinder: ThreadSanitizer enabled")
 endif()
 
@@ -152,7 +158,7 @@ if(CINDER_ENABLE_MSAN)
     list(APPEND SANITIZER_FLAGS "-fsanitize=memory")
     list(APPEND SANITIZER_LINK_FLAGS "-fsanitize=memory")
     message(STATUS "Cinder: MemorySanitizer enabled")
-    message(WARNING "MSan requires ALL code (including libc++) to be MSan-instrumented. "
+    message(WARNING "MSan requires ALL code (including the C++ standard library) to be MSan-instrumented. "
             "Expected false positives from uninstrumented system libraries.")
 endif()
 
@@ -239,18 +245,6 @@ if(CINDER_UNITY_BUILD)
     message(STATUS "Cinder: unity builds enabled (cinder targets only)")
 endif()
 
-option(CINDER_CLANG_USE_LIBCXX "Use libc++ instead of libstdc++ with Clang" ON)
-
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    if(CINDER_CLANG_USE_LIBCXX)
-        add_compile_options(-stdlib=libc++)
-        add_link_options(-stdlib=libc++)
-        message(STATUS "Cinder: Clang using libc++")
-    else()
-        message(STATUS "Cinder: Clang using system libstdc++")
-    endif()
-endif()
-
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
@@ -303,8 +297,8 @@ endif()
 # Common FIND_PACKAGE_ARGS toggle: when ON, each FetchContent_Declare below
 # tries find_package() first (system/vcpkg/conan install) and only falls
 # back to cloning + building from source if nothing satisfying is found.
-# Only enabled for GCC/libstdc++ — Clang+libc++ must build C++ deps from
-# source to avoid ABI mismatches with system packages built against libstdc++.
+# Only enabled for GCC — Clang configurations intentionally keep building
+# C++ deps from source for hermeticity.
 #
 # FIND_PACKAGE_ARGS and its clauses (NAMES <pkg>) must be emitted together
 # or not at all: a bare `NAMES <pkg>` without the keyword is not a valid
