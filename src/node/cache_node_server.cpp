@@ -42,14 +42,31 @@ initSslContext(const CacheNodeServerOptions& opts) -> std::optional<asio::ssl::c
 #endif
 
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
-    : node_id_(options.node_id),
-      ping_interval_(options.ping_interval),
+    : ping_interval_(options.ping_interval),
       quarantine_interval_(options.quarantine_interval),
-      io_threads_(options.io_threads),
+      store_(makeStore(options, &clock_)),
 #ifdef CINDER_ENABLE_TLS
       ssl_ctx_(initSslContext(options)),
 #endif
-      store_(makeStore(options, &clock_)),
+      anti_entropy_interval_(options.anti_entropy_interval),
+      node_id_(options.node_id),
+      config_path_(options.config_path),
+      anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
+          options.anti_entropy_buckets, &metrics_),
+      signals_(io_),
+      shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
+          options.quarantine_interval),
+      replay_timer_(io_),
+      gossip_timer_(io_),
+      probe_timer_(io_),
+      evict_timer_(io_),
+      quarantine_timer_(io_),
+      compact_timer_(io_),
+      config_reload_timer_(io_),
+      anti_entropy_timer_(io_),
+      gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
+      table_(options.node_id),
+      detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
       persistence_(
           PersistenceManager::Options{
               .data_dir = options.data_dir,
@@ -64,17 +81,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
 #endif
           ),
-      repl_(*store_, options.node_id, clock_, transport_),
-      table_(options.node_id),
-      detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
-      gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
-      shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
-          options.quarantine_interval),
-      replica_factor_(options.replica_factor),
-      mode_(options.mode),
-      anti_entropy_interval_(options.anti_entropy_interval),
-      anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
-          options.anti_entropy_buckets, &metrics_),
+      current_config_(options.config),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_,
           [this]() { return formatConfigJson(current_config_); }, &anti_entropy_,
@@ -84,18 +91,11 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
 #endif
           ),
-      replay_timer_(io_),
-      gossip_timer_(io_),
-      probe_timer_(io_),
-      evict_timer_(io_),
-      quarantine_timer_(io_),
-      compact_timer_(io_),
-      config_reload_timer_(io_),
-      anti_entropy_timer_(io_),
-      signals_(io_),
+      repl_(*store_, options.node_id, clock_, transport_),
+      io_threads_(options.io_threads),
+      replica_factor_(options.replica_factor),
       metrics_port_(options.metrics_port),
-      current_config_(options.config),
-      config_path_(options.config_path) {
+      mode_(options.mode) {
     signals_.add(SIGINT);
     signals_.add(SIGTERM);
     ring_.addNode(options.node_id);

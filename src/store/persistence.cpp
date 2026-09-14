@@ -161,9 +161,7 @@ PersistenceManager::compact() -> Result<void> {
     }
 
     size_t entry_count = 0;
-    store_.forEach([&](const std::string&, const VersionedEntry&) {
-        ++entry_count;
-    });
+    store_.forEach([&](const std::string&, const VersionedEntry&) { ++entry_count; });
 
     auto result = createSnapshot();
     if (!result.has_value()) {

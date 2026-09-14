@@ -170,29 +170,21 @@ class CacheNodeServer {
     void scheduleConfigReload();
     void applyConfig();
 
-    io_context io_;
-    NodeId node_id_;
+    MetricsCollector metrics_;
     milliseconds ping_interval_{1'000};
     milliseconds quarantine_interval_{10'000};
-    int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
+    RealClock clock_;
+    std::unique_ptr<CacheStore> store_;
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::context> ssl_ctx_;
 #endif
-    RealClock clock_;
-    std::unique_ptr<CacheStore> store_;
-    PersistenceManager persistence_;
-    ConsistentHashRing ring_;
-    TcpTransport transport_;
-    ReplicationManager repl_;
-    MembershipTable table_;
-    FailureDetector detector_;
-    GossipManager gossip_;
-    ShardManager shard_;
-    int replica_factor_ = 1;
-    ConsistencyMode mode_ = ConsistencyMode::Async;
     milliseconds anti_entropy_interval_{30'000};
+    io_context io_;
+    NodeId node_id_;
+    std::string config_path_;
     AntiEntropyManager anti_entropy_;
-    net::TcpServer server_;
+    signal_set signals_;
+    ShardManager shard_;
     steady_timer replay_timer_;
     steady_timer gossip_timer_;
     steady_timer probe_timer_;
@@ -201,10 +193,18 @@ class CacheNodeServer {
     steady_timer compact_timer_;
     steady_timer config_reload_timer_;
     steady_timer anti_entropy_timer_;
-    signal_set signals_;
-    MetricsCollector metrics_;
-    uint16_t metrics_port_ = 0;
+    GossipManager gossip_;
+    ConsistentHashRing ring_;
+    MembershipTable table_;
+    FailureDetector detector_;
+    PersistenceManager persistence_;
+    TcpTransport transport_;
     Config current_config_;
-    std::string config_path_;
+    net::TcpServer server_;
+    ReplicationManager repl_;
+    int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
+    int replica_factor_ = 1;
+    uint16_t metrics_port_ = 0;
+    ConsistencyMode mode_ = ConsistencyMode::Async;
 };
 } // namespace cinder
