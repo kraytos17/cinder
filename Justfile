@@ -123,6 +123,26 @@ fast: (build)
 ci:
     cmake --workflow --preset ci
 
+[group('presets')]
+configure-all:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    failed=""
+    for p in {{ presets }}; do
+        [ "$p" = "base" ] && continue   # hidden inheritance stub, not configurable
+        echo "==> configuring $p..."
+        if ! cmake --preset "$p"; then
+            echo "FAILED: $p"
+            failed="$failed $p"
+        fi
+    done
+    if [ -n "$failed" ]; then
+        echo ""
+        echo "Presets that failed to configure:$failed"
+        exit 1
+    fi
+    echo "All presets configured."
+
 [private]
 fuzz-build:
     cmake --preset fuzz

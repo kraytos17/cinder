@@ -139,8 +139,8 @@ class CacheNodeServer {
         const MetricsCollector& metrics;
         const Config& config;
         NodeId node_id;
-        int replica_factor;
-        ConsistencyMode mode;
+        int replica_factor = 1;
+        ConsistencyMode mode = ConsistencyMode::Async;
     };
 
     auto gatewayHandle() -> GatewayHandle {
