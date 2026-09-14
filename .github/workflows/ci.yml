@@ -1,24 +1,88 @@
 name: CI
 
 on:
-  workflow_run:
-    workflows: ["Docker CI Image"]
-    types: [completed]
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.event.workflow_run.head_branch || github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_GHA_VERSION: "1"
-
 jobs:
+  build-image:
+    name: Build CI image
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-pushed: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}-ci
+          tags: |
+            type=sha
+            type=ref,event=pr
+            type=raw,value=latest,enable=${{ github.event_name != 'pull_request' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .github/docker
+          push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: Attest image provenance
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/attest@v4
+        with:
+          subject-name: ghcr.io/kraytos17/cinder-ci
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
   build-test:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -46,14 +110,11 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: ${{ matrix.label }}
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -99,6 +160,8 @@ jobs:
           retention-days: 7
 
   feature-flags:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -111,14 +174,11 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: Feature Flags (${{ matrix.label }})
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -149,16 +209,15 @@ jobs:
           key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
 
   sanitize:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: Sanitizers (GCC)
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -204,6 +263,8 @@ jobs:
           retention-days: 7
 
   tsan:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -216,18 +277,15 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
       # TSan needs personality(ADDR_NO_RANDOMIZE), which Docker's default
       # seccomp profile blocks — without this every TSan binary (including
-      # gtest discovery runs) dies at startup.
+      # gtest discovery runs) dies at startup. Scoped to this job only.
       options: --security-opt seccomp=unconfined
     name: ${{ matrix.label }}
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -273,16 +331,15 @@ jobs:
           retention-days: 7
 
   lint:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: Lint (Clang + cppcheck)
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -327,6 +384,8 @@ jobs:
           key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
 
   codeql:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -337,17 +396,14 @@ jobs:
             category: tls-grpc
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci:latest
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: CodeQL (${{ matrix.label }})
-    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 60
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
@@ -397,18 +453,22 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [build-test, feature-flags, sanitize, tsan, lint, codeql]
+    needs: [build-image, build-test, feature-flags, sanitize, tsan, lint, codeql]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Check all jobs succeeded
         run: |
-          if [ "${{ github.event_name }}" = "workflow_run" ] && [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
-            echo "Docker CI Image workflow concluded with '${{ github.event.workflow_run.conclusion }}'; refusing to report success"
-            exit 1
-          fi
           echo "Job results:"
           echo '${{ toJSON(needs) }}' | jq -r 'to_entries[] | "  \(.key): \(.value.result)"'
+          # The image build must succeed outright: if it fails, the matrix is
+          # skipped, and skipped results below would otherwise read as green.
+          if [ '${{ needs.build-image.result }}' != 'success' ]; then
+            echo "Build CI image failed or was cancelled; refusing to report success"
+            exit 1
+          fi
+          # Remaining jobs tolerate 'skipped': fork PRs cannot push the image,
+          # so the matrix is skipped by design and only the image build ran.
           FAILURES=0
           for result in $(echo '${{ toJSON(needs) }}' | jq -r '.[].result'); do
             case "$result" in
@@ -418,7 +478,7 @@ jobs:
           done
           if [ "$FAILURES" -ne 0 ]; then
             echo ""
-            echo "One or more required jobs failed, were cancelled, or were skipped unexpectedly"
+            echo "One or more required jobs failed or were cancelled"
             exit 1
           fi
           echo "All required jobs passed"
