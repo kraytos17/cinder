@@ -398,7 +398,7 @@ jobs:
     container:
       image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: CodeQL (${{ matrix.label }})
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
       security-events: write

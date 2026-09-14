@@ -140,11 +140,11 @@ are returned when not enough alive nodes exist.
 
 **Two-phase design** avoids re-entrant deadlocks with synchronous transports:
 
-1. *Enumerate under lock* — `store_.liveEntries()` (a `std::generator`)
-   snapshots live entries under a shared lock and yields them outside it. For
-   each key, the desired replica set is computed via
-   `ring_.getNodes(key, replica_factor_)`, and migrate/push actions are
-   collected without sending anything.
+1. *Enumerate under lock* — `store_.forEach()` invokes a callback per live
+    entry under a shared lock. For each key, the desired replica set is
+    computed via `ring_.getNodes(key, replica_factor_)`, and migrate/push
+    actions are collected without sending anything (the callback never sends —
+    see phase 2).
 2. *Send after unlock* — the store lock is released, then the collected
    requests are sent sequentially.
 
