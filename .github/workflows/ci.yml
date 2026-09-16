@@ -142,6 +142,9 @@ jobs:
       - name: CLI tests
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
+      - name: Integration tests
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
+
       - name: Save FetchContent
         if: always() && steps.fc-restore.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -200,6 +203,9 @@ jobs:
       - name: Unit tests
         run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
 
+      - name: Integration tests
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
+
       - name: Save FetchContent
         if: always() && steps.fc-restore.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -207,6 +213,15 @@ jobs:
         with:
           path: ${{ github.workspace }}/.cache
           key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Upload test logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-logs-${{ matrix.preset }}
+          path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
+          if-no-files-found: ignore
+          retention-days: 7
 
   sanitize:
     needs: [build-image]
@@ -244,6 +259,9 @@ jobs:
 
       - name: CLI tests
         run: ctest --preset ci-gcc -L cli --output-on-failure
+
+      - name: Integration tests
+        run: ctest --preset ci-gcc -L integration --output-on-failure -j$(nproc)
 
       - name: Save FetchContent
         if: always() && steps.fc-restore.outputs.cache-hit != 'true'
@@ -312,6 +330,9 @@ jobs:
 
       - name: CLI tests
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
+
+      - name: Integration tests
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
 
       - name: Save FetchContent
         if: always() && steps.fc-restore.outputs.cache-hit != 'true'
