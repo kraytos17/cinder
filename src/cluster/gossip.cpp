@@ -30,7 +30,7 @@ GossipManager::leave() {
     // rumor held by peers.
     table_.markDead(self_);
 
-    Event::info("broadcasting leave to all peers");
+    CINDER_INFO("broadcasting leave to all peers");
     std::vector<NodeId> targets;
     {
         std::scoped_lock lk(peers_mutex_);
@@ -38,7 +38,7 @@ GossipManager::leave() {
     }
 
     for (const auto& peer : targets) {
-        Event::debug("sending leave to peer", {{"peer", peer}});
+        CINDER_DEBUG("sending leave to peer", {"peer", peer});
         sendView(peer);
     }
 }
@@ -49,10 +49,9 @@ GossipManager::start() {
         std::scoped_lock lk(peers_mutex_);
         rebuildPeersLocked();
     }
-    Event::info("gossip started",
-        {{"interval_ms",
-            std::to_string(std::chrono::duration_cast<milliseconds>(gossip_interval_).count())}});
 
+    CINDER_INFO("gossip started",
+        {"interval_ms", std::chrono::duration_cast<milliseconds>(gossip_interval_).count()});
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
     table_.onChange([this] {
@@ -68,7 +67,7 @@ GossipManager::tick() {
     {
         std::scoped_lock lk(peers_mutex_);
         if (peers_.empty()) {
-            Event::debug("no peers to gossip to");
+            CINDER_DEBUG("no peers to gossip to");
             return;
         }
 
@@ -78,7 +77,7 @@ GossipManager::tick() {
         target = peers_[dist(rng)];
     }
 
-    Event::debug("gossip round target", {{"target", target}});
+    CINDER_DEBUG("gossip round target", {"target", target});
     sendView(target);
     if (metrics_) {
         metrics_->clusterMetrics().gossip_rounds.fetch_add(1, std::memory_order_relaxed);
@@ -89,8 +88,7 @@ void
 GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
     Span span("gossip.handle");
     auto rumors = decodeView(req.value);
-    Event::debug(
-        "state disseminated", {{"from", from}, {"entries", std::to_string(rumors.size())}});
+    CINDER_DEBUG("state disseminated", {"from", from}, {"entries", rumors.size()});
     for (const auto& rumor : rumors) {
         table_.applyRumor(from, rumor);
     }
@@ -220,7 +218,7 @@ GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
         start = end + 1;
     }
     if (malformed > 0) {
-        Event::debug("malformed entries rejected", {{"count", std::to_string(malformed)}});
+        CINDER_DEBUG("malformed entries rejected", {"count", malformed});
     }
     return result;
 }

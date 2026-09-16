@@ -27,14 +27,14 @@ GrpcGateway::start() {
 
     builder.RegisterService(service_.get());
     server_ = builder.BuildAndStart();
-    Event::info("gRPC gateway listening on port", {{"port", std::to_string(port_)}});
+    CINDER_INFO("gRPC gateway listening on port", {"port", port_});
 }
 
 void
 GrpcGateway::shutdown() {
     Span span("grpc.gateway.shutdown");
     if (server_) {
-        Event::info("gRPC gateway shutting down");
+        CINDER_INFO("gRPC gateway shutting down");
         server_->Shutdown();
         server_->Wait();
         server_.reset();

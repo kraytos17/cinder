@@ -177,7 +177,7 @@ WalReader::next() -> std::optional<WalEntry> {
         XXH3_freeState(state);
 
         if (computed != stored_checksum.value()) {
-            Event::warn("checksum mismatch at entry — corrupt data");
+            CINDER_WARN("checksum mismatch at entry — corrupt data");
             return std::nullopt;
         }
         return WalEntry{

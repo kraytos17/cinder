@@ -90,7 +90,7 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "ping") {
         req.opcode = cinder::net::Opcode::Ping;
     } else {
-        cinder::Event::error("unknown command", {{"cmd", cmd}});
+        CINDER_ERROR("unknown command", {"cmd", cmd});
         return 1;
     }
 
@@ -110,15 +110,11 @@ main(int argc, char* argv[]) -> int {
         io.run();
     });
 
-    cinder::Event::debug("sending",
-        {cinder::Field{"cmd", cmd},
-            cinder::Field{"host", host},
-            cinder::Field{"port", std::to_string(port)}});
-
+    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", host}, {"port", port});
     auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
-        cinder::Event::error("request failed", {{"reason", res.error().message()}});
+        CINDER_ERROR("request failed", {"reason", res.error().message()});
         return 1;
     }
 

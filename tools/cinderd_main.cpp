@@ -100,14 +100,14 @@ main(int argc, char* argv[]) -> int {
         auto result = cinder::loadConfig(config_path);
         if (!result.has_value()) {
             cinder::initLogger("cinderd", cinder::LogLevel::Error);
-            cinder::Event::error("config error", {{"reason", result.error().message()}});
+            CINDER_ERROR("config error", {"reason", result.error().message()});
             return 1;
         }
         cfg = std::move(result.value());
     }
 
     cinder::initLogger("cinderd", cinder::logLevelFromString(log_level));
-    cinder::Event::info("starting cinderd", {{"port", std::to_string(port)}});
+    CINDER_INFO("starting cinderd", {"port", port});
 
     cinder::CacheNodeServerOptions options;
     options.node_id = node_id;
@@ -158,7 +158,7 @@ main(int argc, char* argv[]) -> int {
     cinder::CacheNodeServer server(std::move(options));
     auto result = server.start();
     if (!result.has_value()) {
-        cinder::Event::error("failed to start server");
+        CINDER_ERROR("failed to start server");
         return 1;
     }
 
@@ -173,10 +173,10 @@ main(int argc, char* argv[]) -> int {
     }
 #endif
 
-    cinder::Event::info("listening",
-        {{"port", std::to_string(port)},
-            {"replica_factor", std::to_string(replica_factor)},
-            {"consistency", consistency}});
+    CINDER_INFO("listening",
+        {"port", port},
+        {"replica_factor", replica_factor},
+        {"consistency", consistency});
     server.run();
 
 #ifdef CINDER_ENABLE_GRPC
@@ -185,6 +185,6 @@ main(int argc, char* argv[]) -> int {
     }
 #endif
 
-    cinder::Event::info("stopped");
+    CINDER_INFO("stopped");
     return 0;
 }

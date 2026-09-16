@@ -25,7 +25,7 @@ ShardManager::ShardManager(CacheStore& store, ConsistentHashRing& ring, Transpor
 auto
 ShardManager::rebalance() -> bool {
     Span span("shard.rebalance");
-    Event::info("rebalance started");
+    CINDER_INFO("rebalance started");
 
     // Collect pending migrations; do not send here — a synchronous transport
     // would invoke the remove callback re-entrantly and deadlock on the store
@@ -96,9 +96,10 @@ ShardManager::rebalance() -> bool {
         migrateKey(p.key, p.entry, p.primary);
     }
 
-    Event::info("rebalance completed",
-        {{"copies", std::to_string(copies.size())},
-            {"migrations", std::to_string(migrates.size())}});
+    CINDER_INFO("rebalance completed",
+        {"copies", copies.size()},
+        {"migrations", migrates.size()},
+        {"deferred", deferred_count});
     if (metrics_) {
         metrics_->clusterMetrics().rebalance_copies.fetch_add(
             copies.size(), std::memory_order_relaxed);
@@ -128,21 +129,30 @@ ShardManager::migrateKey(const std::string& key, const VersionedEntry& entry, co
     Span span("shard.migrate");
     auto info = table_.get(owner);
     if (info.has_value() && info->state != NodeState::Alive) {
-        Event::debug("skip migrate",
-            {{"key", key},
-                {"owner", owner},
-                {"state", std::to_string(static_cast<int>(info->state))}});
+        CINDER_DEBUG("skip migrate",
+            {"key", key},
+            {"owner", owner},
+            {"state", static_cast<int>(info->state)});
         return;
     }
 
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [this, key, owner](Result<void> r) {
         if (r.has_value()) {
-            Event::debug("migrated key", {{"key", key}, {"to", owner}});
+            CINDER_DEBUG("migrated key", {"key", key}, {"to", owner});
             store_.remove(key);
         } else {
-            Event::warn(
-                "migrate failed", {{"key", key}, {"to", owner}, {"reason", r.error().message()}});
+            CINDER_WARN(
+                "migrate failed", {"key", key}, {"to", owner}, {"reason", r.error().message()});
+            // Keep the local copy as a failover copy; notify the owner so it
+            // can schedule a delayed re-rebalance once the peer recovers.
+            if (metrics_) {
+                metrics_->clusterMetrics().rebalance_migration_failures.fetch_add(
+                    1, std::memory_order_relaxed);
+            }
+            if (on_migration_failed_) {
+                on_migration_failed_();
+            }
         }
     });
 }
@@ -153,17 +163,18 @@ ShardManager::pushReplica(
     Span span("shard.push");
     auto info = table_.get(owner);
     if (info.has_value() && info->state != NodeState::Alive) {
-        Event::debug("skip replica",
-            {{"key", key},
-                {"owner", owner},
-                {"state", std::to_string(static_cast<int>(info->state))}});
+        CINDER_DEBUG("skip replica",
+            {"key", key},
+            {"owner", owner},
+            {"state", static_cast<int>(info->state)});
         return;
     }
+
     auto req = makeReplicateRequest(key, entry);
     transport_.sendAsync(owner, req, [key, owner](Result<void> r) {
         if (!r.has_value()) {
-            Event::warn(
-                "push failed", {{"key", key}, {"to", owner}, {"reason", r.error().message()}});
+            CINDER_WARN(
+                "push failed", {"key", key}, {"to", owner}, {"reason", r.error().message()});
         }
     });
 }

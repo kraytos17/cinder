@@ -165,6 +165,13 @@ MetricsCollector::formatPrometheus() const -> std::string {
     appendCounter(os, "cluster_refuted_self_rumors_total", cluster_.refuted_self_rumors.load());
     appendCounter(os, "cluster_rebalance_copies_total", cluster_.rebalance_copies.load());
     appendCounter(os, "cluster_rebalance_migrations_total", cluster_.rebalance_migrations.load());
+    appendCounter(os,
+        "cluster_rebalance_migration_failures_total",
+        cluster_.rebalance_migration_failures.load());
+
+    appendCounter(os,
+        "cluster_rebalance_migration_retries_total",
+        cluster_.rebalance_migration_retries.load());
     // Connection metrics
     appendCounter(os, "connections_opened_total", conn_.connections_opened.load());
     appendCounter(os, "connections_closed_total", conn_.connections_closed.load());

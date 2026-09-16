@@ -104,7 +104,7 @@ template <typename T> class SlabAllocator {
                 static_cast<std::byte*>(::operator new(slab_bytes, std::align_val_t{alignof(T)}));
 
             slabs_.push_back(raw);
-            Event::debug("growing pool", {{"total_slabs", std::to_string(slabs_.size())}});
+            CINDER_DEBUG("growing pool", {"total_slabs", slabs_.size()});
             for (size_t i = n; i > 0; --i) {
                 auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
                 block->next = free_head_.load(std::memory_order_relaxed);

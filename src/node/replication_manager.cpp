@@ -64,7 +64,7 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
 
     auto local_res = local_.putVersioned(key, std::move(entry));
     if (!local_res.has_value()) {
-        Event::warn("local write failed", {{"key", key}, {"reason", local_res.error().message()}});
+        CINDER_WARN("local write failed", {"key", key}, {"reason", local_res.error().message()});
         on_done(local_res);
         return;
     }
@@ -81,14 +81,13 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     req.span_id = span_id;
 
     if (mode == ConsistencyMode::Async) {
-        Event::debug("async write fan-out",
-            {{"key", key}, {"replicas", std::to_string(replica_nodes.size())}});
+        CINDER_DEBUG("async write fan-out", {"key", key}, {"replicas", replica_nodes.size()});
         // Local commit counts; fan-out best-effort, hint on failure.
         for (const auto& node : replica_nodes) {
             transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
                 if (!r.has_value()) {
                     Span fail_span("replication.write.async.fail", req.span_id);
-                    Event::warn("replica unreachable", {{"node", node}, {"key", req.key}});
+                    CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
                     if (metrics_) {
                         metrics_->replicationMetrics().replica_unreachable.fetch_add(
                             1, std::memory_order_relaxed);
@@ -105,10 +104,10 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     }
 
     // Quorum: W = R/2 + 1 acknowledgements including the local write.
-    Event::debug("quorum write fan-out",
-        {{"key", key},
-            {"replicas", std::to_string(replica_nodes.size())},
-            {"W", std::to_string(replica_nodes.size() / 2 + 1)}});
+    CINDER_DEBUG("quorum write fan-out",
+        {"key", key},
+        {"replicas", replica_nodes.size()},
+        {"W", replica_nodes.size() / 2 + 1});
 
     size_t total = replica_nodes.size() + 1;
     size_t w = total / 2 + 1;
@@ -120,7 +119,7 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
     for (const auto& node : replica_nodes) {
         transport_.sendAsync(node, req, [this, state, w, node, req](Result<void> r) {
             if (!r.has_value()) {
-                Event::warn("replica unreachable", {{"node", node}, {"key", req.key}});
+                CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
                 if (metrics_) {
                     metrics_->replicationMetrics().replica_unreachable.fetch_add(
                         1, std::memory_order_relaxed);
@@ -150,8 +149,7 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
 
             if (succeed) {
                 Span ok_span("replication.write.quorum.ok", req.span_id);
-                Event::debug("quorum write succeeded",
-                    {{"key", req.key}, {"acks", std::to_string(state->acks)}});
+                CINDER_DEBUG("quorum write succeeded", {"key", req.key}, {"acks", state->acks});
                 if (metrics_) {
                     metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
                         1, std::memory_order_relaxed);
@@ -159,10 +157,8 @@ ReplicationManager::writeAsync(const std::string& key, std::string value,
                 (*state->done)(ok());
             } else if (fail) {
                 Span fail_span("replication.write.quorum.fail", req.span_id);
-                Event::warn("quorum write failed",
-                    {{"key", req.key},
-                        {"acks", std::to_string(state->acks)},
-                        {"needed", std::to_string(w)}});
+                CINDER_WARN(
+                    "quorum write failed", {"key", req.key}, {"acks", state->acks}, {"needed", w});
                 if (metrics_) {
                     metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
                         1, std::memory_order_relaxed);
@@ -193,7 +189,7 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     // Local read — always attempted first.
     auto local_entry = local_.getVersioned(key);
     if (!local_entry.has_value()) {
-        Event::debug("local read miss", {{"key", key}});
+        CINDER_DEBUG("local read miss", {"key", key});
     }
     if (replica_nodes.empty() || R <= 1) {
         // No replicas or trivial quorum: return whatever the local store has.
@@ -211,8 +207,7 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
     // Propagate structured trace context from the originating request.
     req.trace_id = trace_id;
     req.span_id = span_id;
-    Event::debug(
-        "quorum read fan-out", {{"key", key}, {"replicas", std::to_string(replica_nodes.size())}});
+    CINDER_DEBUG("quorum read fan-out", {"key", key}, {"replicas", replica_nodes.size()});
     if (metrics_) {
         metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
     }
@@ -291,9 +286,9 @@ ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>&
                 // Self-heal local store: if local was behind a replica, update it.
                 auto heal = local_.putVersioned(key, *result);
                 if (!heal.has_value()) {
-                    Event::debug("local self-heal skipped",
-                        {{"key", key},
-                            {"reason", std::to_string(static_cast<int>(heal.error().code()))}});
+                    CINDER_DEBUG("local self-heal skipped",
+                        {"key", key},
+                        {"reason", static_cast<int>(heal.error().code())});
                 }
                 if (metrics_) {
                     metrics_->replicationMetrics().read_repairs.fetch_add(
@@ -317,7 +312,7 @@ ReplicationManager::hintCount() const -> size_t {
 
 void
 ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
-    Event::debug("hint enqueued", {{"target", target}, {"key", req.key}});
+    CINDER_DEBUG("hint enqueued", {"target", target}, {"key", req.key});
     hints_.push({target, req, clock_.now() + K_HINT_TTL});
     if (metrics_) {
         metrics_->replicationMetrics().hints_enqueued.fetch_add(1, std::memory_order_relaxed);
@@ -328,10 +323,8 @@ void
 ReplicationManager::sendRepairFanOut(
     const std::string& key, const std::vector<NodeId>& targets, const VersionedEntry& winner) {
     Span span("replication.repair.fanout");
-    Event::info("repair fan-out",
-        {{"key", key},
-            {"version", std::to_string(winner.version())},
-            {"targets", std::to_string(targets.size())}});
+    CINDER_INFO(
+        "repair fan-out", {"key", key}, {"version", winner.version()}, {"targets", targets.size()});
 
     net::Request repair;
     repair.opcode = net::Opcode::Replicate;
@@ -365,7 +358,7 @@ ReplicationManager::replayHints(ReplayCallback on_done) {
     auto state = std::make_shared<ReplayState>();
     state->done =
         std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
-        Event::info("replay completed", {{"replayed", std::to_string(n)}});
+        CINDER_INFO("replay completed", {"replayed", n});
         if (metrics_ && n > 0) {
             metrics_->replicationMetrics().hints_replayed.fetch_add(n, std::memory_order_relaxed);
         }

@@ -136,9 +136,16 @@ are returned when not enough alive nodes exist.
 
 1. Membership change — every `onChange` callback (alive/dead/suspect) calls
    `rebuildRing()`, which updates ring membership and then calls
-   `shard_.rebalance()`.
+   `shard_.rebalance()` via a 200 ms debounced timer (`scheduleRebalanceDebounced`).
+   Rapid flaps collapse into a single scan over the latest ring view.
 2. Quarantine retry — once `quarantine_interval` elapses, a timer retries
    `rebalance()` for keys deferred earlier due to quarantine.
+3. Migration-failure retry — each failed async `migrateKey()` send keeps the
+   local copy and fires `onMigrationFailed`, which schedules a single 2 s
+   delayed re-rebalance through the same debounce gate
+   (`scheduleMigrationRetry`). A burst of failures coalesces into one retry,
+   giving a briefly-overwhelmed new owner (TCP accept queue, TLS handshake
+   backlog) time to recover.
 
 **Two-phase design** avoids re-entrant deadlocks with synchronous transports:
 
@@ -160,7 +167,9 @@ are returned when not enough alive nodes exist.
 **Key migrates** (this node is not in the desired set):
 1. `migrateKey()` sends a `Replicate` request to `desired[0]`. On success, the
    local copy is removed. On failure, the key stays local as a failover copy,
-   retried on the next rebalance.
+   `cluster_rebalance_migration_failures_total` is incremented, and the
+   migration-failed callback schedules a 2 s retry (counted in
+   `cluster_rebalance_migration_retries_total`).
 2. `pushReplica()` sends copies to `desired[1..N]`, skipping quarantined
    targets.
 

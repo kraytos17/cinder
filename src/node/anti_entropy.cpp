@@ -254,7 +254,7 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
     const char* end = p + data.size();
     uint32_t count = 0;
     if (!readU32(p, end, count)) {
-        Event::warn("malformed entries blob", {{"reason", "no count"}});
+        CINDER_WARN("malformed entries blob", {"reason", "no count"});
         return 0;
     }
 
@@ -271,22 +271,22 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
         if (!readU32(p, end, key_len) || !readBytes(p, end, key_len, key)
             || !readU64(p, end, version) || !readU64(p, end, writer_hash)
             || static_cast<size_t>(end - p) < 1) {
-            Event::warn("truncated entry", {{"index", std::to_string(i)}});
+            CINDER_WARN("truncated entry", {"index", i});
             break;
         }
 
         has_ttl = static_cast<uint8_t>(*p);
         ++p;
         if (has_ttl != 0 && has_ttl != 1) {
-            Event::warn("bad ttl flag", {{"index", std::to_string(i)}});
+            CINDER_WARN("bad ttl flag", {"index", i});
             break;
         }
         if (has_ttl == 1 && !readU64(p, end, expires_ms)) {
-            Event::warn("truncated expiry", {{"index", std::to_string(i)}});
+            CINDER_WARN("truncated expiry", {"index", i});
             break;
         }
         if (!readU32(p, end, val_len) || !readBytes(p, end, val_len, value)) {
-            Event::warn("truncated value", {{"index", std::to_string(i)}});
+            CINDER_WARN("truncated value", {"index", i});
             break;
         }
 
@@ -354,7 +354,7 @@ AntiEntropyManager::onDigestRequest(
     Span span("anti_entropy.digest");
     auto remote = decodeDigest(req.value, num_buckets_);
     if (!remote.has_value()) {
-        Event::warn("bad digest", {{"from", from}});
+        CINDER_WARN("bad digest", {"from", from});
         respond(net::Response{.status = Errc::InvalidArgument, .value = std::nullopt});
         return;
     }
@@ -371,8 +371,7 @@ AntiEntropyManager::onDigestRequest(
     // set for phase 2) followed by our entries for those buckets.
     std::string payload = encodeDigest(local);
     payload += collectEntries(divergent);
-    Event::debug("digest received",
-        {{"from", from}, {"divergent_buckets", std::to_string(divergent.size())}});
+    CINDER_DEBUG("digest received", {"from", from}, {"divergent_buckets", divergent.size()});
     if (metrics_) {
         metrics_->replicationMetrics().anti_entropy_rounds.fetch_add(1, std::memory_order_relaxed);
     }
@@ -384,7 +383,7 @@ AntiEntropyManager::onSyncRequest(
     const NodeId& from, const net::Request& req, std::function<void(net::Response)> respond) {
     Span span("anti_entropy.sync");
     size_t n = applyEntries(req.value);
-    Event::debug("sync received", {{"from", from}, {"entries", std::to_string(n)}});
+    CINDER_DEBUG("sync received", {"from", from}, {"entries", n});
     if (metrics_ && n > 0) {
         metrics_->replicationMetrics().anti_entropy_keys_repaired.fetch_add(
             n, std::memory_order_relaxed);
@@ -397,7 +396,7 @@ AntiEntropyManager::runRound(int replica_factor) {
     Span span("anti_entropy.round");
     auto partner = pickPartner(replica_factor);
     if (!partner.has_value()) {
-        Event::debug("no partner available, skipping round");
+        CINDER_DEBUG(("no partner available, skipping round"));
         return;
     }
 
@@ -406,12 +405,12 @@ AntiEntropyManager::runRound(int replica_factor) {
     req.opcode = net::Opcode::AntiEntropyDigest;
     req.value = encodeDigest(local);
 
-    Event::debug("starting round", {{"partner", *partner}});
+    CINDER_DEBUG("starting round", {"partner", *partner});
     transport_.sendRequestAsync(*partner,
         req,
         [this, local = std::move(local), partner = *partner](Result<net::Response> r) mutable {
         if (!r.has_value() || r->status != Errc::OK || !r->value.has_value()) {
-            Event::debug("digest round failed", {{"partner", partner}});
+            CINDER_DEBUG("digest round failed", {"partner", partner});
             return;
         }
 
@@ -420,13 +419,13 @@ AntiEntropyManager::runRound(int replica_factor) {
         const std::string& payload = *r->value;
         size_t digest_len = sizeof(uint32_t) + static_cast<size_t>(num_buckets_) * sizeof(uint64_t);
         if (payload.size() < digest_len) {
-            Event::warn("short digest response", {{"from", partner}});
+            CINDER_WARN("short digest response", {"from", partner});
             return;
         }
 
         auto remote = decodeDigest(std::string_view(payload.data(), digest_len), num_buckets_);
         if (!remote.has_value()) {
-            Event::warn("bad digest response", {{"from", partner}});
+            CINDER_WARN("bad digest response", {"from", partner});
             return;
         }
 
@@ -441,8 +440,7 @@ AntiEntropyManager::runRound(int replica_factor) {
             }
         }
 
-        Event::info(
-            "round completed", {{"partner", partner}, {"repaired", std::to_string(repaired)}});
+        CINDER_INFO("round completed", {"partner", partner}, {"repaired", repaired});
         // Phase 2: both sides derive the same divergent set from the two
         // digests; push our entries for those buckets back to the partner.
         std::vector<uint32_t> divergent;
@@ -460,7 +458,7 @@ AntiEntropyManager::runRound(int replica_factor) {
         sync.value = collectEntries(divergent);
         transport_.sendRequestAsync(partner, sync, [partner](Result<net::Response> sr) {
             if (!sr.has_value() || sr->status != Errc::OK) {
-                Event::debug("sync phase failed", {{"partner", partner}});
+                CINDER_DEBUG("sync phase failed", {"partner", partner});
             }
         });
     });

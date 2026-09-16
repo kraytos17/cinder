@@ -404,9 +404,8 @@ template <typename Derived, typename Node> class EvictionStoreBase : public Cach
         Derived& self = d();
         auto entries_before = self.index_.size();
         while (current_bytes_ > capacity_bytes_ && !self.list_.empty()) {
-            Event::trace("evicting to fit",
-                {{"bytes", std::to_string(current_bytes_)},
-                    {"capacity", std::to_string(capacity_bytes_)}});
+            CINDER_TRACE(
+                "evicting to fit", {"bytes", current_bytes_}, {"capacity", capacity_bytes_});
             self.evictOne();
         }
         if (metrics_) {

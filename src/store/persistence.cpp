@@ -31,7 +31,7 @@ PersistenceManager::recover() -> Result<void> {
     }
 
     std::filesystem::create_directories(opts_.data_dir);
-    Event::debug("data directory ready", {{"path", opts_.data_dir}});
+    CINDER_DEBUG("data directory ready", {"path", opts_.data_dir});
     loading_ = true;
 
     // Load snapshot if present
@@ -73,8 +73,7 @@ PersistenceManager::recover() -> Result<void> {
             [[maybe_unused]] auto res = store_.putVersioned(entry.key, std::move(ve));
         }
 
-        Event::info(
-            "recovered entries from snapshot", {{"count", std::to_string(data.entries.size())}});
+        CINDER_INFO("recovered entries from snapshot", {"count", data.entries.size()});
     }
 
     // Replay WAL if present
@@ -124,7 +123,7 @@ PersistenceManager::drainQueueLocked() {
 
     for (auto& entry : batch) {
         if (auto result = wal_->append(entry); !result.has_value()) {
-            Event::error("WAL append failed", {{"reason", result.error().message()}});
+            CINDER_ERROR("WAL append failed", {"reason", result.error().message()});
             break;
         }
         ++wal_entry_count_;
@@ -154,7 +153,7 @@ PersistenceManager::compact() -> Result<void> {
     //   2. snapshot the store (captures every entry applied before step 2)
     //   3. final drain, then swap writers; anything enqueued between steps
     //      lands in the fresh WAL (duplicate application is idempotent).
-    Event::info("compaction started");
+    CINDER_INFO("compaction started");
     std::scoped_lock lock(mutex_);
     if (wal_) {
         drainQueueLocked();
@@ -177,7 +176,7 @@ PersistenceManager::compact() -> Result<void> {
     std::filesystem::remove(wal_path, ec);
     wal_ = std::make_unique<WalWriter>(wal_path.string());
     wal_entry_count_ = 0;
-    Event::info("compaction complete", {{"entries", std::to_string(entry_count)}});
+    CINDER_INFO("compaction complete", {"entries", entry_count});
     return ok();
 }
 
@@ -195,7 +194,7 @@ PersistenceManager::shutdown() {
 
     auto snap_result = createSnapshot();
     if (!snap_result.has_value()) {
-        Event::error("shutdown snapshot failed", {{"reason", snap_result.error().message()}});
+        CINDER_ERROR("shutdown snapshot failed", {"reason", snap_result.error().message()});
     }
 }
 
@@ -232,7 +231,7 @@ PersistenceManager::createSnapshot() -> Result<void> {
     SnapshotWriter writer(snap_path.string());
     auto write_result = writer.write(next_version, all_entries);
     if (write_result.has_value()) {
-        Event::debug("snapshot written", {{"entries", std::to_string(all_entries.size())}});
+        CINDER_DEBUG("snapshot written", {"entries", all_entries.size()});
     }
     return write_result;
 }
@@ -260,7 +259,7 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
             // recover()).
             const uint64_t now_ms = nowSystemMs(clock_);
             if (entry->expires_at_ms <= now_ms) {
-                Event::trace("skipped expired WAL entry", {{"key", entry->key}});
+                CINDER_TRACE("skipped expired WAL entry", {"key", entry->key});
                 continue; // skip expired
             }
 
@@ -278,7 +277,7 @@ PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<v
         ++replayed;
     }
     if (replayed > 0) {
-        Event::info("replayed WAL entries", {{"count", std::to_string(replayed)}});
+        CINDER_INFO("replayed WAL entries", {"count", replayed});
     }
     return ok();
 }

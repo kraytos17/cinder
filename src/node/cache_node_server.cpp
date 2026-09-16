@@ -83,6 +83,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       evict_timer_(io_),
       quarantine_timer_(io_),
       rebalance_timer_(io_),
+      migration_retry_timer_(io_),
       compact_timer_(io_),
       config_reload_timer_(io_),
       anti_entropy_timer_(io_),
@@ -137,6 +138,9 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
 
     syncEffectiveConfig();
     table_.onChange([this] { rebuildRing(); });
+    // Async migration failures keep the local key copy; retry the rebalance
+    // after a short delay so a briefly-unreachable new owner can recover.
+    shard_.setOnMigrationFailed([this] { scheduleMigrationRetry(); });
     if (persistence_.enabled()) {
         store_->setPersistence(&persistence_);
     }
@@ -162,7 +166,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         if (persistence_.enabled()) {
             auto result = persistence_.compact();
             if (!result.has_value()) {
-                Event::error("admin compact failed", {{"reason", result.error().message()}});
+                CINDER_ERROR("admin compact failed", {"reason", result.error().message()});
             }
         }
     },
@@ -184,10 +188,10 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         server_.setListenFd(options.listen_fd);
     }
 
-    Event::info("eviction policy", {{"policy", options.eviction_policy}});
-    Event::info("anti-entropy",
-        {{"interval_ms", std::to_string(options.anti_entropy_interval.count())},
-            {"buckets", std::to_string(options.anti_entropy_buckets)}});
+    CINDER_INFO("eviction policy", {"policy", options.eviction_policy});
+    CINDER_INFO("anti-entropy",
+        {"interval_ms", options.anti_entropy_interval.count()},
+        {"buckets", options.anti_entropy_buckets});
 }
 
 auto
@@ -201,14 +205,14 @@ CacheNodeServer::run() {
     if (persistence_.enabled()) {
         auto res = persistence_.recover();
         if (!res.has_value()) {
-            Event::error("persistence recovery failed", {{"reason", res.error().message()}});
+            CINDER_ERROR("persistence recovery failed", {"reason", res.error().message()});
             return;
         }
-        Event::info("recovered entries from disk", {{"count", std::to_string(store_->size())}});
+        CINDER_INFO("recovered entries from disk", {"count", store_->size()});
     }
 
     signals_.async_wait([this](std::error_code, int) {
-        Event::info("shutting down...");
+        CINDER_INFO("shutting down...");
         shutdown();
     });
 
@@ -232,9 +236,9 @@ CacheNodeServer::run() {
         workers = hw == 0 ? 1 : std::min(4U, hw);
     }
 
-    Event::info("node started", {{"io_threads", std::to_string(workers)}});
+    CINDER_INFO("node started", {"io_threads", workers});
     if (metrics_port_ > 0) {
-        Event::info("metrics endpoint", {{"port", std::to_string(metrics_port_)}});
+        CINDER_INFO("metrics endpoint", {"port", metrics_port_});
     }
     if (workers <= 1) {
         io_.run();
@@ -265,6 +269,7 @@ CacheNodeServer::shutdown() {
     evict_timer_.cancel();
     quarantine_timer_.cancel();
     rebalance_timer_.cancel();
+    migration_retry_timer_.cancel();
     compact_timer_.cancel();
     config_reload_timer_.cancel();
     anti_entropy_timer_.cancel();
@@ -300,7 +305,7 @@ CacheNodeServer::scheduleReplay() {
         if (repl_.hintCount() > 0) {
             repl_.replayHints([](size_t replayed) {
                 if (replayed > 0) {
-                    Event::info("replayed hinted writes", {{"count", std::to_string(replayed)}});
+                    CINDER_INFO("replayed hinted writes", {"count", replayed});
                 }
             });
         }
@@ -349,6 +354,8 @@ CacheNodeServer::scheduleEvict() {
 
 void
 CacheNodeServer::rebuildRing() {
+    size_t alive_count = 0;
+    size_t removed_count = 0;
     for (const auto& info : table_.snapshot()) {
         if (info.id == node_id_) {
             continue;
@@ -357,10 +364,13 @@ CacheNodeServer::rebuildRing() {
         transport_.addAddr(info.id, info.host, info.port);
         if (info.state == NodeState::Alive) {
             ring_.addNode(info.id);
+            ++alive_count;
         } else {
             ring_.removeNode(info.id);
+            ++removed_count;
         }
     }
+    CINDER_INFO("ring rebuilt", {"alive", alive_count}, {"removed", removed_count});
     // Push keys this node no longer owns to their new ring owners. The scan
     // + migration burst is debounced (see scheduleRebalanceDebounced): rapid
     // membership flaps collapse into a single run over the latest ring.
@@ -371,9 +381,11 @@ void
 CacheNodeServer::scheduleRebalanceDebounced() {
     // Coalesce bursts: a pending run already covers the latest ring view.
     if (rebalance_pending_) {
+        CINDER_DEBUG("rebalance debounce coalesced");
         return;
     }
 
+    CINDER_DEBUG("rebalance debounce scheduled", {"delay_ms", 200});
     rebalance_pending_ = true;
     rebalance_timer_.expires_after(milliseconds(200));
     rebalance_timer_.async_wait([this](std::error_code ec) {
@@ -409,6 +421,32 @@ CacheNodeServer::scheduleRebalance() {
 }
 
 void
+CacheNodeServer::scheduleMigrationRetry() {
+    // A debounced rebalance is already queued and covers the latest ring view.
+    if (migration_retry_pending_ || rebalance_pending_) {
+        CINDER_DEBUG("migration retry coalesced",
+            {"retry_pending", migration_retry_pending_},
+            {"rebalance_pending", rebalance_pending_});
+        return;
+    }
+
+    CINDER_INFO("migration retry scheduled", {"delay_ms", 2'000});
+    migration_retry_pending_ = true;
+    metrics_.clusterMetrics().rebalance_migration_retries.fetch_add(1, std::memory_order_relaxed);
+    migration_retry_timer_.expires_after(milliseconds(2'000));
+    migration_retry_timer_.async_wait([this](std::error_code ec) {
+        migration_retry_pending_ = false;
+        if (ec) {
+            return;
+        }
+        CINDER_INFO("migration retry fired");
+        // Re-run through the debounce gate so rapid membership changes that
+        // arrived while waiting collapse into a single scan.
+        scheduleRebalanceDebounced();
+    });
+}
+
+void
 CacheNodeServer::scheduleCompact() {
     compact_timer_.expires_after(seconds(persistence_.snapshotInterval()));
     compact_timer_.async_wait([this](std::error_code ec) {
@@ -416,7 +454,7 @@ CacheNodeServer::scheduleCompact() {
             return;
         }
         if (auto result = persistence_.compact(); !result.has_value()) {
-            Event::error("compact failed", {{"reason", result.error().message()}});
+            CINDER_ERROR("compact failed", {"reason", result.error().message()});
         }
         scheduleCompact();
     });
@@ -464,7 +502,7 @@ CacheNodeServer::applyConfig() {
 
     auto new_config = loadConfig(config_path_);
     if (!new_config.has_value()) {
-        Event::error("config reload failed", {{"reason", new_config.error().message()}});
+        CINDER_ERROR("config reload failed", {"reason", new_config.error().message()});
         return;
     }
 
@@ -491,7 +529,7 @@ CacheNodeServer::applyConfig() {
         }
     }
     if (!identity_str.empty()) {
-        Event::debug("config reload ignores identity fields", {{"fields", identity_str}});
+        CINDER_DEBUG("config reload ignores identity fields", {"fields", identity_str});
     }
     if (hot.empty()) {
         current_config_ = *new_config;
@@ -499,14 +537,14 @@ CacheNodeServer::applyConfig() {
         return;
     }
 
-    Event::info("config changed", {{"fields", changed_str}});
+    CINDER_INFO("config changed", {"fields", changed_str});
     current_config_ = *new_config;
     syncEffectiveConfig();
     for (const auto& field : hot) {
         if (field == "log_level") {
             setLogLevel(logLevelFromString(new_config->log_level));
         } else if (field == "ping_interval_ms") {
-            Event::warn("config field requires restart", {{"field", field}});
+            CINDER_WARN("config field requires restart", {"field", field});
         } else if (field == "suspect_timeout_ms") {
             detector_.setSuspectTimeout(milliseconds(new_config->suspect_timeout_ms));
         } else if (field == "gossip_interval_ms") {
@@ -524,9 +562,9 @@ CacheNodeServer::applyConfig() {
                 scheduleAntiEntropy();
             }
         } else if (field == "anti_entropy_buckets") {
-            Event::warn("config field requires restart", {{"field", field}});
+            CINDER_WARN("config field requires restart", {"field", field});
         } else {
-            Event::warn("config field requires restart", {{"field", field}});
+            CINDER_WARN("config field requires restart", {"field", field});
         }
     }
 }

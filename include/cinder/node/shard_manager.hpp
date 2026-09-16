@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <functional>
 #include <string>
 
 #include "cinder/cluster/clock.hpp"
@@ -46,9 +47,19 @@ class ShardManager {
     // Pushes keys this node no longer owns to their new ring owners. Returns
     // true when at least one key was deferred because an owner is still inside
     // the quarantine window (so the caller can retry after it clears).
+    // Transport-level migration failures are NOT reflected in the return
+    // value: sends are async, so failures surface after rebalance() returns.
+    // Instead, a failed migrateKey keeps the local copy and invokes the
+    // on-migration-failed callback (if set) so the owner can schedule a
+    // delayed re-rebalance.
     auto rebalance() -> bool;
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
+
+    // Invoked (on the transport callback thread) each time an async migration
+    // send fails. The callback must be cheap and non-blocking; it is used to
+    // schedule a debounced retry, not to retry inline.
+    void setOnMigrationFailed(std::function<void()> cb) { on_migration_failed_ = std::move(cb); }
 
   private:
 
@@ -65,5 +76,6 @@ class ShardManager {
     int replica_factor_;
     milliseconds quarantine_interval_;
     MetricsCollector* metrics_ = nullptr;
+    std::function<void()> on_migration_failed_;
 };
 } // namespace cinder

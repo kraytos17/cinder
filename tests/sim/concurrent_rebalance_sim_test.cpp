@@ -136,5 +136,50 @@ TEST(ConcurrentRebalanceSimTest, RebalanceIdempotency) {
     EXPECT_EQ(deferred1, deferred2);
     EXPECT_EQ(deferred2, deferred3);
 }
+
+TEST(ConcurrentRebalanceSimTest, MigrationFailureFiresCallbackAndKeepsLocalCopy) {
+    SimClock clock;
+    SimBus bus(clock, 7);
+    constexpr size_t CAPACITY = 1'048'576;
+
+    TestNode node1(clock, bus, "node1", CAPACITY, 1);
+    TestNode node2(clock, bus, "node2", CAPACITY, 1);
+
+    node1.ring.addNode("node1");
+    node1.ring.addNode("node2");
+    node1.table.seed({});
+
+    // node2 is Alive in membership but unreachable on the transport: every
+    // migrate send fails synchronously in the sim bus.
+    NodeInfo rumor;
+    rumor.id = "node2";
+    rumor.host = "127.0.0.1";
+    rumor.port = 17'901;
+    rumor.state = NodeState::Alive;
+    rumor.incarnation = 1;
+    node1.table.applyRumor("node2", rumor);
+    bus.setNodeDown("node2");
+
+    for (int i = 0; i < 20; ++i) {
+        (void)node1.store.put("mk" + std::to_string(i), "v" + std::to_string(i)); // NOLINT
+    }
+
+    int failures = 0;
+    node1.shard.setOnMigrationFailed([&] { ++failures; });
+    node1.shard.rebalance();
+
+    // At least one key must hash to node2 and fail to migrate — each failure
+    // fires the callback exactly once, and the local copy is retained.
+    EXPECT_GT(failures, 0);
+    size_t retained = 0;
+    for (int i = 0; i < 20; ++i) {
+        auto key = "mk" + std::to_string(i);
+        if (node1.ring.getNode(key) == "node2") {
+            EXPECT_TRUE(node1.store.get(key).has_value()) << key << " dropped despite failed send";
+            ++retained;
+        }
+    }
+    EXPECT_GT(retained, 0);
+}
 } // namespace
 } // namespace cinder

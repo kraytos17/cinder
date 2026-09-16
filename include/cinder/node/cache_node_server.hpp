@@ -176,6 +176,10 @@ class CacheNodeServer {
     // collapse into a single run over the latest ring view.
     void scheduleRebalanceDebounced();
     void scheduleRebalance();
+    // Delayed retry after async migration transport failures (e.g. a joining
+    // node whose TCP accept queue is briefly overwhelmed). Coalesced with the
+    // debounce gate so a burst of failures triggers a single re-run.
+    void scheduleMigrationRetry();
     void scheduleConfigReload();
     void applyConfig();
     void syncEffectiveConfig();
@@ -204,6 +208,8 @@ class CacheNodeServer {
     steady_timer quarantine_timer_;
     steady_timer rebalance_timer_;
     bool rebalance_pending_ = false;
+    steady_timer migration_retry_timer_;
+    bool migration_retry_pending_ = false;
     steady_timer compact_timer_;
     steady_timer config_reload_timer_;
     steady_timer anti_entropy_timer_;

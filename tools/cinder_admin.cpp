@@ -80,7 +80,7 @@ main(int argc, char* argv[]) -> int {
     } else if (cmd == "shutdown") {
         req.opcode = cinder::net::Opcode::AdminShutdown;
     } else {
-        cinder::Event::error("unknown command", {{"cmd", cmd}});
+        CINDER_ERROR("unknown command", {"cmd", cmd});
         std::println(stderr, "unknown command: {}", cmd);
         std::println(
             stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown");
@@ -103,15 +103,11 @@ main(int argc, char* argv[]) -> int {
         io.run();
     });
 
-    cinder::Event::debug("sending",
-        {cinder::Field{"cmd", cmd},
-            cinder::Field{"host", host},
-            cinder::Field{"port", std::to_string(port)}});
-
+    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", host}, {"port", port});
     auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
-        cinder::Event::error("request failed", {{"reason", res.error().message()}});
+        CINDER_ERROR("request failed", {"reason", res.error().message()});
         std::println(stderr, "error: {}", res.error().message());
         return 1;
     }

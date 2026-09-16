@@ -28,7 +28,7 @@ MembershipTable::setSelfAddress(const std::string& host, uint16_t port) {
 void
 MembershipTable::seed(const std::vector<ClusterConfig::NodeConfig>& peers) {
     std::scoped_lock lock(mutex_);
-    Event::info("membership seeded", {{"peers", std::to_string(peers.size())}});
+    CINDER_INFO("membership seeded", {"peers", peers.size()});
     for (const auto& peer : peers) {
         if (peer.id == self_) {
             continue;
@@ -64,10 +64,10 @@ MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
         } else {
             NodeInfo& local = it->second;
             if (rumor.incarnation < local.incarnation) {
-                Event::trace("stale rumor ignored",
-                    {{"id", rumor.id},
-                        {"rumor_inc", std::to_string(rumor.incarnation)},
-                        {"local_inc", std::to_string(local.incarnation)}});
+                CINDER_TRACE("stale rumor ignored",
+                    {"id", rumor.id},
+                    {"rumor_inc", rumor.incarnation},
+                    {"local_inc", local.incarnation});
                 return; // stale rumor — ignore
             }
             if (rumor.incarnation == local.incarnation && rumor.state == local.state) {
@@ -112,7 +112,7 @@ MembershipTable::markSuspect(const NodeId& id) {
         changed = true;
     }
     if (changed) {
-        Event::info("node suspect", {{"id", id}});
+        CINDER_INFO("node suspect", {"id", id});
         fireCallbacks();
     }
 }
@@ -131,7 +131,7 @@ MembershipTable::markDead(const NodeId& id) {
         changed = true;
     }
     if (changed) {
-        Event::info("node dead", {{"id", id}});
+        CINDER_INFO("node dead", {"id", id});
         fireCallbacks();
     }
 }
@@ -153,7 +153,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         }
         // A node recovering from Dead/Suspect starts a fresh quarantine window.
         if (info.state != NodeState::Alive) {
-            Event::info("node recovered from suspect", {{"id", id}});
+            CINDER_INFO("node recovered from suspect", {"id", id});
             info.joined_at = steady_clock::now();
         }
 
@@ -162,7 +162,7 @@ MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
         changed = true;
     }
     if (changed) {
-        Event::info("node alive", {{"id", id}, {"incarnation", std::to_string(incarnation)}});
+        CINDER_INFO("node alive", {"id", id}, {"incarnation", incarnation});
         fireCallbacks();
     }
 }
@@ -280,10 +280,10 @@ MembershipTable::refuteSelfRumor(const NodeInfo& rumor) {
 
     NodeInfo& self = it->second;
     uint64_t new_incarnation = std::max(self.incarnation, rumor.incarnation) + 1;
-    Event::warn("refuting self-rumor",
-        {{"id", rumor.id},
-            {"rumor_inc", std::to_string(rumor.incarnation)},
-            {"new_inc", std::to_string(new_incarnation)}});
+    CINDER_WARN("refuting self-rumor",
+        {"id", rumor.id},
+        {"rumor_inc", rumor.incarnation},
+        {"new_inc", new_incarnation});
     bool changed = false;
     if (self.incarnation <= rumor.incarnation) {
         self.incarnation = new_incarnation;

@@ -65,11 +65,8 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
     std::vector<NodeId> visited;
     int hops = 0;
     for (int attempt = 0; attempt <= max_retries_; ++attempt) {
-        Event::trace("route",
-            {{"key", key},
-                {"primary", node},
-                {"attempt", std::to_string(attempt)},
-                {"max", std::to_string(max_retries_)}});
+        CINDER_TRACE(
+            "route", {"key", key}, {"primary", node}, {"attempt", attempt}, {"max", max_retries_});
 
         res = pool_.send(node, req);
         if (res.has_value() && res.value().status == Errc::NotReady) {
@@ -84,7 +81,7 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
                          && std::find(visited.begin(), visited.end(), target->id) == visited.end();
 
             if (fresh && hops < K_MAX_REDIRECT_HOPS) {
-                Event::debug("redirect", {{"key", key}, {"from", node}, {"to", target->id}});
+                CINDER_DEBUG("redirect", {"key", key}, {"from", node}, {"to", target->id});
                 if (target->hasAddress()) {
                     pool_.addAddr(target->id, target->host, target->port);
                 }
@@ -165,11 +162,11 @@ CacheClient::multiGet(const std::vector<std::string>& keys)
         Result<std::vector<net::Response>> res =
             err<std::vector<net::Response>>(Error(Errc::NotReady, "no attempts made"));
         for (int attempt = 0; attempt <= max_retries_; ++attempt) {
-            Event::trace("batch",
-                {{"node", node},
-                    {"keys", std::to_string(keys.size())},
-                    {"attempt", std::to_string(attempt)},
-                    {"max", std::to_string(max_retries_)}});
+            CINDER_TRACE("batch",
+                {"node", node},
+                {"keys", keys.size()},
+                {"attempt", attempt},
+                {"max", max_retries_});
 
             res = pool_.sendBatch(node, reqs);
             if (!retryable(res) || attempt == max_retries_) {

@@ -104,14 +104,14 @@ TcpServer::start() -> Result<void> {
 
     auto ep = acceptor_.local_endpoint(ec);
     if (!ec) {
-        Event::info("listening on port", {{"port", std::to_string(ep.port())}});
+        CINDER_INFO("listening on port", {"port", ep.port()});
     }
 
     asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
     if (metrics_acceptor_) {
         auto mep = metrics_acceptor_->local_endpoint(ec);
         if (!ec) {
-            Event::info("metrics HTTP listening on port", {{"port", std::to_string(mep.port())}});
+            CINDER_INFO("metrics HTTP listening on port", {"port", mep.port()});
         }
         asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
     }
@@ -129,7 +129,7 @@ TcpServer::shutdown() {
             metrics_acceptor_->close(ec);
         }
         auto count = connections_.size();
-        Event::info("shutdown draining connections", {{"count", std::to_string(count)}});
+        CINDER_INFO("shutdown draining connections", {"count", count});
         for (auto& conn : connections_) {
             if (conn) {
                 conn->drain();
@@ -156,7 +156,7 @@ TcpServer::doAccept() {
             if (active_connections_.load(std::memory_order_relaxed) >= K_MAX_CONNECTIONS) {
                 std::error_code close_ec;
                 socket.close(close_ec);
-                Event::warn("rejecting connection", {{"max", std::to_string(K_MAX_CONNECTIONS)}});
+                CINDER_WARN("rejecting connection", {"max", K_MAX_CONNECTIONS});
             } else {
                 active_connections_.fetch_add(1, std::memory_order_relaxed);
                 std::shared_ptr<std::atomic<size_t>> counter(&active_connections_,
@@ -194,7 +194,7 @@ TcpServer::doAccept() {
                 conn->start();
             }
         } else if (ec == asio::error::no_descriptors) {
-            Event::warn("accept EMFILE, retrying in 100ms");
+            CINDER_WARN(("accept EMFILE, retrying in 100ms"));
             emfile_timer_.expires_after(std::chrono::milliseconds(100));
             std::weak_ptr<std::atomic<size_t>> weak;
             emfile_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code timer_ec) {
@@ -204,7 +204,7 @@ TcpServer::doAccept() {
             }));
             return;
         } else if (ec != asio::error::operation_aborted) {
-            Event::warn("accept error", {{"err", ec.message()}});
+            CINDER_WARN("accept error", {"err", ec.message()});
         }
         if (!stopping_ && acceptor_.is_open()) {
             doAccept();
@@ -218,7 +218,7 @@ TcpServer::doAcceptMetrics() {
         asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
         if (ec) {
             if (ec != asio::error::operation_aborted && !stopping_) {
-                Event::warn("metrics accept error", {{"err", ec.message()}});
+                CINDER_WARN("metrics accept error", {"err", ec.message()});
                 doAcceptMetrics();
             }
             return;

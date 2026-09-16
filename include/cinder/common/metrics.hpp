@@ -171,6 +171,8 @@ struct ClusterMetrics {
     std::atomic<uint64_t> refuted_self_rumors{0};
     std::atomic<uint64_t> rebalance_copies{0};
     std::atomic<uint64_t> rebalance_migrations{0};
+    std::atomic<uint64_t> rebalance_migration_failures{0};
+    std::atomic<uint64_t> rebalance_migration_retries{0};
 };
 
 // Connection metrics.

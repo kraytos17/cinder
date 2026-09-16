@@ -82,7 +82,7 @@ TcpConnection::startOnStrand() {
         ssl_stream_->async_handshake(asio::ssl::stream_base::server,
             asio::bind_executor(strand_, [this, self = shared_from_this()](std::error_code ec) {
             if (ec) {
-                Event::warn("TLS handshake failed", {{"err", ec.message()}});
+                CINDER_WARN("TLS handshake failed", {"err", ec.message()});
                 if (metrics_) {
                     metrics_->connectionMetrics().connections_closed.fetch_add(
                         1, std::memory_order_relaxed);
@@ -98,10 +98,10 @@ TcpConnection::startOnStrand() {
     std::error_code ec;
     auto ep = socket_.remote_endpoint(ec);
     if (!ec) {
-        Event::info("connection opened",
-            {{"peer", std::format("{}:{}", ep.address().to_string(), ep.port())}});
+        CINDER_INFO("connection opened",
+            {"peer", std::format("{}:{}", ep.address().to_string(), ep.port())});
     } else {
-        Event::info("connection opened", {{"peer", "<unknown>"}});
+        CINDER_INFO("connection opened", {"peer", "<unknown>"});
     }
     resetIdleTimer();
     maybeRead();
@@ -181,12 +181,12 @@ TcpConnection::closeConnection(const char* reason, std::error_code ec) {
                      || std::string_view(reason) == "server shutdown";
     if (transient) {
         if (ec) {
-            Event::debug("closing connection", {{"reason", reason}, {"err", ec.message()}});
+            CINDER_DEBUG("closing connection", {"reason", reason}, {"err", ec.message()});
         } else {
-            Event::debug("closing connection", {{"reason", reason}});
+            CINDER_DEBUG("closing connection", {"reason", reason});
         }
     } else {
-        Event::warn("closing connection", {{"reason", reason}});
+        CINDER_WARN("closing connection", {"reason", reason});
     }
 
     idle_timer_.cancel();
@@ -234,9 +234,9 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
 
     resetIdleTimer();
     if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
-        Event::warn("bad protocol header",
-            {{"magic", std::format("{:#x}", std::to_integer<int>(read_buf_[0]))},
-                {"version", std::format("{:#x}", std::to_integer<int>(read_buf_[1]))}});
+        CINDER_WARN("bad protocol header",
+            {"magic", std::format("{:#x}", std::to_integer<int>(read_buf_[0]))},
+            {"version", std::format("{:#x}", std::to_integer<int>(read_buf_[1]))});
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -248,7 +248,7 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     std::memcpy(&net_len, &read_buf_[3], sizeof(net_len));
     payload_len_ = std::byteswap(net_len);
     if (payload_len_ > K_MAX_MESSAGE_SIZE || payload_len_ + K_FRAME_HEADER_SIZE > K_BUFFER_SIZE) {
-        Event::warn("oversized payload", {{"len", std::to_string(payload_len_)}});
+        CINDER_WARN("oversized payload", {"len", payload_len_});
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -286,7 +286,7 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     resetIdleTimer();
     auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
-        Event::debug("decode failed");
+        CINDER_DEBUG("decode failed");
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -369,8 +369,7 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
     request_start_ = std::chrono::steady_clock::now();
 
     Span span(getOperationName(req.opcode), req.span_id);
-    Event::debug("request received",
-        {{"opcode", std::to_string(static_cast<int>(req.opcode))}, {"key", req.key}});
+    CINDER_DEBUG("request received", {"opcode", static_cast<int>(req.opcode)}, {"key", req.key});
 
     if (metrics_) {
         switch (req.opcode) {
@@ -443,9 +442,8 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
     // auth since they go through the normal ring-ownership path.
     if (is_internal && !shared_secret_.empty()) {
         if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
-            Event::warn("auth failed",
-                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
-                    {"node", std::string(node_id_)}});
+            CINDER_WARN(
+                "auth failed", {"opcode", static_cast<int>(req.opcode)}, {"node", node_id_});
             if (metrics_) {
                 metrics_->connectionMetrics().connections_closed.fetch_add(
                     1, std::memory_order_relaxed);
@@ -465,7 +463,7 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
     if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
         auto owner = ring_.getNode(req.key);
         if (owner != node_id_) {
-            Event::debug("redirect", {{"key", req.key}, {"to", owner}});
+            CINDER_DEBUG("redirect", {"key", req.key}, {"to", owner});
             if (metrics_) {
                 metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
             }
@@ -601,10 +599,10 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
                 res.status = result.has_value() ? Errc::OK : result.error().code();
             }
 
-            Event::trace("opcode completed",
-                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
-                    {"key", req.key},
-                    {"status", std::to_string(static_cast<int>(res.status))}});
+            CINDER_TRACE("opcode completed",
+                {"opcode", static_cast<int>(req.opcode)},
+                {"key", req.key},
+                {"status", static_cast<int>(res.status)});
             break;
         }
         case Opcode::Del: {
@@ -612,10 +610,10 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
             store_.remove(req.key);
             ring_.decrementLoad(node_id_);
             res.status = Errc::OK;
-            Event::trace("opcode completed",
-                {{"opcode", std::to_string(static_cast<int>(req.opcode))},
-                    {"key", req.key},
-                    {"status", std::to_string(static_cast<int>(res.status))}});
+            CINDER_TRACE("opcode completed",
+                {"opcode", static_cast<int>(req.opcode)},
+                {"key", req.key},
+                {"status", static_cast<int>(res.status)});
             break;
         }
         case Opcode::Ping: {
@@ -735,10 +733,10 @@ TcpConnection::sendResponse(const Response& res) {
     // Encode into the scratch buffer, then hand ownership to the write queue.
     auto result = encodeInto(res, encode_buf_);
     if (!result.has_value()) {
-        Event::warn("encode failed",
-            {{"opcode",
+        CINDER_WARN("encode failed",
+            {"opcode",
                 pending_opcode_.has_value() ? std::to_string(std::to_underlying(*pending_opcode_))
-                                            : "-1"}});
+                                            : "-1"});
         if (metrics_) {
             metrics_->connectionMetrics().write_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -780,9 +778,9 @@ TcpConnection::doWrite() {
         if (ec) {
             if (ec == asio::error::broken_pipe || ec == asio::error::connection_reset
                 || ec == asio::error::operation_aborted || ec == asio::error::bad_descriptor) {
-                Event::debug("write failed", {{"err", ec.message()}});
+                CINDER_DEBUG("write failed", {"err", ec.message()});
             } else {
-                Event::warn("write failed", {{"err", ec.message()}});
+                CINDER_WARN("write failed", {"err", ec.message()});
             }
 
             if (metrics_) {

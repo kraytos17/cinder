@@ -203,7 +203,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
-        Event::debug("connected to node", {{"node", conn.addr.host}});
+        CINDER_DEBUG("connected to node", {"node", conn.addr.host});
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -218,9 +218,9 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     if (ec) {
         closeConn(conn);
         if (timed_out) {
-            Event::warn("RPC timed out", {{"node", conn.addr.host}});
+            CINDER_WARN("RPC timed out", {"node", conn.addr.host});
         } else {
-            Event::warn("send failed", {{"node", conn.addr.host}, {"phase", "write"}});
+            CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
         }
         co_return err<net::Response>(rpcError(timed_out, "write", ec));
     }
@@ -303,18 +303,21 @@ TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback 
     auto& conn = getOrCreateConn(to);
     asio::co_spawn(conn.strand,
         sendCoroutine(conn, std::move(encoded.value())),
-        [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
+        [cb = std::move(on_done), to](std::exception_ptr ep, Result<net::Response> result) mutable {
         if (ep) {
+            CINDER_WARN("send failed", {"to", to}, {"reason", "coroutine failed"});
             cb(err(Error(Errc::NotReady, "coroutine failed")));
             return;
         }
         if (!result.has_value()) {
+            CINDER_WARN("send failed", {"to", to}, {"reason", result.error().message()});
             cb(err(result.error()));
             return;
         }
         if (result.value().status != Errc::OK) {
             std::string msg = "replica rejected write: ";
             msg += toString(result.value().status);
+            CINDER_WARN("send failed", {"to", to}, {"reason", msg});
             cb(err(Error(result.value().status, msg)));
             return;
         }

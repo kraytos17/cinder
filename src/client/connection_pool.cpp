@@ -153,7 +153,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         });
     }
     if (!conn.connected) {
-        Event::debug("reconnecting node", {{"node", conn.addr.host}});
+        CINDER_DEBUG("reconnecting node", {"node", conn.addr.host});
         tcp::resolver resolver(ex);
         auto endpoints = co_await resolver.async_resolve(
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
@@ -192,7 +192,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         }
 #endif
         conn.connected = true;
-        Event::debug("connected to node", {{"node", conn.addr.host}});
+        CINDER_DEBUG("connected to node", {"node", conn.addr.host});
     }
 
 #ifdef CINDER_ENABLE_TLS
@@ -206,7 +206,7 @@ ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
 #endif
     if (ec) {
         closeConn(conn);
-        Event::warn("send failed", {{"node", conn.addr.host}, {"phase", "write"}});
+        CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
         co_return err<net::Response>(poolError(timed_out, "write", ec));
     }
 
@@ -332,7 +332,7 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
     }
 
 #ifdef CINDER_ENABLE_TLS
-    auto writeAll = [&]() -> asio::awaitable<void> {
+    auto write_all = [&]() -> asio::awaitable<void> {
         for (auto& data : all_data) {
             if (conn.stream) {
                 co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));
@@ -344,7 +344,7 @@ ConnectionPool::sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::
             }
         }
     };
-    co_await writeAll();
+    co_await write_all();
 #else
     for (auto& data : all_data) {
         co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));

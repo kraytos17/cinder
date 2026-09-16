@@ -25,9 +25,8 @@ FailureDetector::start() {
         rebuildPeersLocked();
     }
 
-    Event::info("failure_detector started",
-        {{"suspect_timeout_ms",
-            std::to_string(std::chrono::duration_cast<milliseconds>(suspect_timeout_).count())}});
+    CINDER_INFO("failure_detector started",
+        {"suspect_timeout_ms", std::chrono::duration_cast<milliseconds>(suspect_timeout_).count()});
     // Late joiners discovered via gossip/failure-detection must be added
     // dynamically after start(); each arrival fires this callback.
     table_.onChange([this] {
@@ -96,12 +95,12 @@ FailureDetector::tick() {
                 break;
             }
         } else {
-            Event::debug("no peers to probe");
+            CINDER_DEBUG("no peers to probe");
         }
     }
 
     for (const auto& peer : timed_out) {
-        Event::info("suspect marked", {{"peer", peer}, {"reason", "timeout"}});
+        CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "timeout"});
         table_.markSuspect(peer);
         if (metrics_) {
             metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
@@ -117,7 +116,7 @@ FailureDetector::tick() {
         return;
     }
 
-    Event::debug("ping sent", {{"peer", probe_target}});
+    CINDER_DEBUG("ping sent", {"peer", probe_target});
     net::Request ping;
     ping.opcode = net::Opcode::Ping;
     transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
@@ -155,7 +154,7 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
         return;
     }
     if (acked) {
-        Event::debug("ping received", {{"peer", peer}});
+        CINDER_DEBUG("ping received", {"peer", peer});
         auto info = table_.get(peer);
         table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
         if (metrics_) {
@@ -169,14 +168,14 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     // crosses the threshold; a lone transient failure is tolerated without
     // flapping the ring (escalation promotes to Dead later).
     if (failures < K_SUSPECT_THRESHOLD) {
-        Event::debug("probe failed (tolerated)",
-            {{"peer", peer},
-                {"streak", std::to_string(failures)},
-                {"threshold", std::to_string(K_SUSPECT_THRESHOLD)}});
+        CINDER_DEBUG("probe failed (tolerated)",
+            {"peer", peer},
+            {"streak", failures},
+            {"threshold", K_SUSPECT_THRESHOLD});
         return;
     }
 
-    Event::info("suspect marked", {{"peer", peer}, {"reason", "unreachable"}});
+    CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "unreachable"});
     table_.markSuspect(peer);
     if (metrics_) {
         metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
@@ -198,7 +197,7 @@ FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
         }
     }
     for (const auto& peer : to_dead) {
-        Event::info("suspect→dead", {{"peer", peer}});
+        CINDER_INFO("suspect→dead", {"peer", peer});
         suspect_since_.erase(peer);
         consecutive_failures_.erase(peer);
     }
