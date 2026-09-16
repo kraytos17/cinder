@@ -5,12 +5,15 @@
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
+#include <mutex>
+#include <netinet/in.h>
 #include <span>
 #include <string>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <unordered_map>
 #include <utility>
 
 #include "cinder/net/protocol.hpp"
@@ -53,6 +56,59 @@ pickEphemeralPort() -> uint16_t {
     return ep.port();
 }
 
+// Sockets held for imminently-spawning daemons, keyed by port. pickHeldPort
+// binds+holds; the spawner for that port consumes the fd via takeHeldFd and
+// passes it as --listen-fd. Mutex-guarded. Entries live until consumed: a
+// test that picks without spawning leaks one bound socket until process
+// exit — bounded and harmless, and every call site spawns what it picks.
+// Per-TU instances (header statics): pick and spawn for any given daemon
+// always happen in the same translation unit, so no sharing is needed.
+namespace held_detail {
+inline std::mutex mutex;
+inline std::unordered_map<uint16_t, int> fds;
+} // namespace held_detail
+
+[[maybe_unused]] static auto
+pickHeldPort() -> uint16_t {
+    // Raw POSIX socket on purpose: asio sets CLOEXEC, which would close the
+    // fd across exec before the daemon can adopt it.
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return 0;
+    }
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    socklen_t len = sizeof(addr);
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
+        || ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
+        ::close(fd);
+        return 0;
+    }
+
+    uint16_t port = ntohs(addr.sin_port);
+    std::scoped_lock lock(held_detail::mutex);
+    held_detail::fds.insert_or_assign(port, fd);
+    return port;
+}
+
+// Take the held socket for a picked port (unregisters it). Returns -1 when
+// the port was not picked — the spawner then binds normally.
+[[maybe_unused]] static auto
+takeHeldFd(uint16_t port) -> int {
+    std::scoped_lock lock(held_detail::mutex);
+    auto it = held_detail::fds.find(port);
+    if (it == held_detail::fds.end()) {
+        return -1;
+    }
+
+    int fd = it->second;
+    held_detail::fds.erase(it);
+    return fd;
+}
+
 [[maybe_unused]] static auto
 readResponse(tcp::socket& socket) -> Result<Response> {
     std::array<std::byte, 65'536> buf{};
@@ -78,22 +134,6 @@ readResponse(tcp::socket& socket) -> Result<Response> {
         std::span<const std::byte>(buf.data(), K_FRAME_HEADER_SIZE + payload_len));
 }
 
-[[maybe_unused]] static auto
-waitForPort(int port, int max_retries = 50) -> bool {
-    io_context io;
-    for (int i = 0; i < max_retries; i++) {
-        tcp::socket sock(io);
-        error_code ec;
-        sock.connect(tcp::endpoint(address_v4::loopback(), port), ec);
-        if (!ec) {
-            sock.close();
-            return true;
-        }
-        std::this_thread::sleep_for(milliseconds(50));
-    }
-    return false;
-}
-
 struct NodeProc {
     pid_t pid = -1;
     int port = 0;
@@ -109,6 +149,11 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
     auto quarantine_str = std::to_string(quarantine_interval_ms);
     auto suspect_str = std::to_string(suspect_timeout_ms);
     auto ping_str = std::to_string(ping_interval_ms);
+    // Adopt the held socket when this port was picked via pickHeldPort, so
+    // the daemon never binds a port another process could have stolen.
+    // Looked up before fork: the child only execs, never touches the map.
+    int held_fd = takeHeldFd(static_cast<uint16_t>(port));
+    auto fd_str = std::to_string(held_fd);
     pid_t pid = fork();
     if (pid == -1) {
         ADD_FAILURE() << "fork failed";
@@ -134,8 +179,14 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
             suspect_str.c_str(),
             "--ping-interval",
             ping_str.c_str(),
+            "--listen-fd",
+            fd_str.c_str(),
             nullptr);
         _exit(1);
+    }
+    if (held_fd >= 0) {
+        // The child has its own copy, which survives exec into the daemon.
+        ::close(held_fd);
     }
     return {pid, port, id};
 }
@@ -263,7 +314,7 @@ waitForNode(int port, const std::string& id, int max_retries = 50) -> bool {
         Request req{.opcode = Opcode::AdminInfo, .key = {}, .value = {}};
         auto res = rawRequest(port, req);
         if (res.has_value() && res.value().status == Errc::OK && res.value().value.has_value()
-            && res.value().value->contains("\"node_id\":\"" + id + "\"")
+            && res.value().value->contains(R"("node_id":")" + id + "\"")
             && res.value().value->contains("\"port\":" + std::to_string(port))) {
             return true;
         }

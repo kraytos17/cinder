@@ -9,7 +9,7 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
 
@@ -70,7 +70,7 @@ runCli(uint16_t port, const std::vector<std::string>& args) -> std::pair<std::st
 }
 
 TEST(CliTest, Ping) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -80,7 +80,7 @@ TEST(CliTest, Ping) {
 }
 
 TEST(CliTest, SetGet) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -97,7 +97,7 @@ TEST(CliTest, SetGet) {
 }
 
 TEST(CliTest, GetNotFound) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -113,7 +113,7 @@ TEST(CliTest, ConnectRefused) {
 }
 
 TEST(CliTest, Del) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));

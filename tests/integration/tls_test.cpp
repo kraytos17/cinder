@@ -122,28 +122,14 @@ waitForTlsNode(int port, context& ssl_ctx, int max_retries = 50) -> bool {
     return false;
 }
 
-[[maybe_unused]] static auto
-waitForPort(int port, int max_retries = 50) -> bool {
-    io_context io;
-    for (int i = 0; i < max_retries; i++) {
-        tcp::socket sock(io);
-        error_code ec;
-        sock.connect(tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
-        if (!ec) {
-            sock.close();
-            return true;
-        }
-        std::this_thread::sleep_for(milliseconds(50));
-    }
-    return false;
-}
-
 auto
 spawnTlsDaemon(int port) -> pid_t {
     auto port_str = std::to_string(port);
     auto cert = fixturePath("server.pem");
     auto key = fixturePath("server-key.pem");
     auto ca = fixturePath("ca.pem");
+    int held_fd = cinder::net::test::takeHeldFd(static_cast<uint16_t>(port));
+    auto fd_str = std::to_string(held_fd);
     pid_t pid = fork();
     if (pid == 0) {
         // NOLINTNEXTLINE
@@ -158,8 +144,13 @@ spawnTlsDaemon(int port) -> pid_t {
             key.c_str(),
             "--tls-ca",
             ca.c_str(),
+            "--listen-fd",
+            fd_str.c_str(),
             nullptr);
         _exit(1);
+    }
+    if (held_fd >= 0) {
+        ::close(held_fd);
     }
     return pid;
 }
@@ -197,7 +188,7 @@ class TlsIntegrationTest : public ::testing::Test {
 };
 
 TEST_F(TlsIntegrationTest, SetGetOverTls) {
-    const uint16_t port = cinder::net::test::pickEphemeralPort();
+    const uint16_t port = cinder::net::test::pickHeldPort();
     ASSERT_NE(port, 0);
     pid_t dpid = spawnTlsDaemon(port);
     ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
@@ -221,7 +212,7 @@ TEST_F(TlsIntegrationTest, SetGetOverTls) {
 }
 
 TEST_F(TlsIntegrationTest, PingOverTls) {
-    const uint16_t port = cinder::net::test::pickEphemeralPort();
+    const uint16_t port = cinder::net::test::pickHeldPort();
     ASSERT_NE(port, 0);
     pid_t dpid = spawnTlsDaemon(port);
     ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
@@ -236,7 +227,7 @@ TEST_F(TlsIntegrationTest, PingOverTls) {
 
 TEST_F(TlsIntegrationTest, PlaintextRejected) {
     // Server with TLS enabled should reject plaintext connections
-    const uint16_t port = cinder::net::test::pickEphemeralPort();
+    const uint16_t port = cinder::net::test::pickHeldPort();
     ASSERT_NE(port, 0);
     pid_t dpid = spawnTlsDaemon(port);
     ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));

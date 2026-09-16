@@ -3,11 +3,10 @@
 #include <vector>
 
 #include "cinder/hashing/consistent_hash_ring.hpp"
-#include "cinder/net/protocol.hpp"
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
@@ -45,13 +44,13 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     // Suspect timeout raised to 30s so the failure detector tolerates ASan
     // startup delays without false-suspecting peers and disrupting the ring.
     // Only 20 keys to keep migration time reasonable under ASan overhead.
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
-    const uint16_t port3 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
+    const uint16_t port3 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
-    auto portOf = [&](const std::string& id) -> int {
+    auto port_of = [&](const std::string& id) -> int {
         if (id == "node1") {
             return port1;
         }
@@ -81,7 +80,7 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     for (int i = 0; i < 20; i++) {
         keys.push_back("key" + std::to_string(i));
     }
-    seedKeys2Node(keys, portOf);
+    seedKeys2Node(keys, port_of);
 
     // Node3 joins: its gossip view (including itself) reaches node1/node2, which
     // adopt it, rebuild the ring, and migrate keys that now hash to node3.
@@ -105,13 +104,13 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
 }
 
 TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
-    const uint16_t port3 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
+    const uint16_t port3 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
-    auto portOf = [&](const std::string& id) -> int {
+    auto port_of = [&](const std::string& id) -> int {
         if (id == "node1") {
             return port1;
         }
@@ -141,7 +140,7 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
     for (int i = 0; i < 20; i++) {
         keys.push_back("key" + std::to_string(i));
     }
-    seedKeys2Node(keys, portOf);
+    seedKeys2Node(keys, port_of);
 
     NodeProcGuard node3{spawnNode(port3,
         "node3",
@@ -158,7 +157,7 @@ TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
     for (const auto& k : keys) {
         auto owner = ring.getNode(k);
         if (owner == "node1" || owner == "node2") {
-            EXPECT_TRUE(waitForValue(portOf(owner), k, "v-" + k, 200))
+            EXPECT_TRUE(waitForValue(port_of(owner), k, "v-" + k, 200))
                 << k << " dropped from its owner";
         }
     }

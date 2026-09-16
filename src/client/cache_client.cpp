@@ -1,5 +1,7 @@
 #include "cinder/client/cache_client.hpp"
 
+#include <algorithm>
+
 #include "cinder/common/tracing.hpp"
 
 using std::chrono::milliseconds;
@@ -57,6 +59,11 @@ auto
 CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response> {
     Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
     auto node = preferredNode(key);
+    // Nodes already visited this call: ring views can disagree mid-rebalance
+    // (A redirects to B while B still redirects to A). Revisiting ends the
+    // chain instead of burning the budget on a ping-pong.
+    std::vector<NodeId> visited;
+    int hops = 0;
     for (int attempt = 0; attempt <= max_retries_; ++attempt) {
         Event::trace("route",
             {{"key", key},
@@ -66,20 +73,27 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
 
         res = pool_.send(node, req);
         if (res.has_value() && res.value().status == Errc::NotReady) {
-            // Ownership redirect — learn the true owner and follow the chain
-            // immediately (no backoff: staleness, not congestion). Each hop
-            // consumes an attempt, so a redirect loop still terminates. When
-            // the server attached an address, register it first so nodes
-            // outside the client config are reachable.
+            // Ownership redirect — learn the true owner and follow immediately
+            // (no backoff: staleness, not congestion). Follows don't consume
+            // the transport attempt budget (a redirect on the final attempt
+            // must still be followed); hops + the visited set bound the chain
+            // instead. When the server attached an address, register it first
+            // so nodes outside the client config are reachable.
             auto target = parseRedirectTarget(res.value().value.value_or(""));
-            if (target.has_value() && target->id != node) {
+            bool fresh = target.has_value() && target->id != node
+                         && std::find(visited.begin(), visited.end(), target->id) == visited.end();
+
+            if (fresh && hops < K_MAX_REDIRECT_HOPS) {
                 Event::debug("redirect", {{"key", key}, {"from", node}, {"to", target->id}});
                 if (target->hasAddress()) {
                     pool_.addAddr(target->id, target->host, target->port);
                 }
 
                 learnOwner(key, target->id);
+                visited.push_back(node);
                 node = target->id;
+                ++hops;
+                --attempt; // the follow-up send reuses this attempt's budget
                 continue;
             }
         }

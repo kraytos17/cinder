@@ -82,10 +82,15 @@ class TcpTransport final : public Transport {
     auto getOrCreateConn(const NodeId& id) -> NodeConn&;
 
     // Coroutine running on a NodeConn's strand: check connected, reconnect if
-    // needed, write request, read response, decode. On any error marks the
-    // connection as disconnected so the next RPC reconnects.
+    // needed, write request, read response, decode. On any error closes the
+    // connection so the next RPC reconnects on a clean socket.
     auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         -> asio::awaitable<Result<net::Response>>;
+
+    // Mark unusable and release the socket. A failed exchange can leave stale
+    // bytes or a half-dead connection behind; reusing it corrupts the next
+    // response, so every error path goes through here.
+    static void closeConn(NodeConn& conn);
 
     io_context& io_;
     std::string node_id_;

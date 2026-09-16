@@ -71,6 +71,9 @@ struct CacheNodeServerOptions {
     // Anti-entropy: background repair between replica partners (0 = disabled).
     milliseconds anti_entropy_interval{30'000};
     uint32_t anti_entropy_buckets = 256;
+    // Pre-bound listen socket fd (-1 = bind
+    // port_ normally). Consumed by TcpServer at start().
+    int listen_fd = -1;
     // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
     uint16_t metrics_port = 0;
     // Path to YAML config file (empty = no hot-reload).
@@ -169,6 +172,7 @@ class CacheNodeServer {
     void scheduleRebalance();
     void scheduleConfigReload();
     void applyConfig();
+    void syncEffectiveConfig();
 
     MetricsCollector metrics_;
     milliseconds ping_interval_{1'000};
@@ -181,6 +185,9 @@ class CacheNodeServer {
     milliseconds anti_entropy_interval_{30'000};
     io_context io_;
     NodeId node_id_;
+    uint16_t port_ = 0;
+    size_t capacity_ = 0;
+    std::vector<ClusterConfig::NodeConfig> peers_;
     std::string config_path_;
     AntiEntropyManager anti_entropy_;
     signal_set signals_;

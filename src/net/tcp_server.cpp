@@ -26,7 +26,9 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
 #endif
     )
     : strand_(asio::make_strand(io)),
-      acceptor_(io, tcp::endpoint(tcp::v4(), port)),
+      acceptor_(io),
+      port_(port),
+      metrics_port_(metrics_port),
       store_(store),
       ring_(ring),
       clock_(clock),
@@ -43,13 +45,7 @@ TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
       shared_secret_(std::move(shared_secret)),
       emfile_timer_(io),
       config_getter_(std::move(config_getter)) {
-    std::error_code ec;
-    acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
-    if (metrics_port > 0 && metrics_) {
-        metrics_acceptor_ =
-            std::make_unique<tcp::acceptor>(io, tcp::endpoint(tcp::v4(), metrics_port));
-        metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
-    }
+    // Binds happen in start() so failures return errors instead of throwing.
 }
 
 TcpServer::~TcpServer() {
@@ -63,6 +59,49 @@ TcpServer::~TcpServer() {
 auto
 TcpServer::start() -> Result<void> {
     std::error_code ec;
+    if (listen_fd_ >= 0) {
+        acceptor_.assign(tcp::v4(), listen_fd_, ec);
+        listen_fd_ = -1;
+        if (!ec) {
+            acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+        }
+        if (ec) {
+            return err(Error(Errc::InternalError, "adopt listen socket failed: " + ec.message()));
+        }
+    } else {
+        acceptor_.open(tcp::v4(), ec);
+        if (!ec) {
+            acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
+        }
+        if (!ec) {
+            acceptor_.bind(tcp::endpoint(tcp::v4(), port_), ec);
+        }
+        if (!ec) {
+            acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+        }
+        if (ec) {
+            return err(Error(Errc::InternalError,
+                "bind port " + std::to_string(port_) + " failed: " + ec.message()));
+        }
+    }
+    if (metrics_port_ > 0 && metrics_) {
+        metrics_acceptor_ = std::make_unique<tcp::acceptor>(acceptor_.get_executor());
+        metrics_acceptor_->open(tcp::v4(), ec);
+        if (!ec) {
+            metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
+        }
+        if (!ec) {
+            metrics_acceptor_->bind(tcp::endpoint(tcp::v4(), metrics_port_), ec);
+        }
+        if (!ec) {
+            metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
+        }
+        if (ec) {
+            return err(Error(Errc::InternalError,
+                "bind metrics port " + std::to_string(metrics_port_) + " failed: " + ec.message()));
+        }
+    }
+
     auto ep = acceptor_.local_endpoint(ec);
     if (!ec) {
         Event::info("listening on port", {{"port", std::to_string(ep.port())}});

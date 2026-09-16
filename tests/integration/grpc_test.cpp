@@ -21,8 +21,11 @@ namespace {
 
 auto
 spawnPorts() -> std::pair<int, int> {
-    uint16_t tcp_port = cinder::net::test::pickEphemeralPort();
-    uint16_t grpc_port = cinder::net::test::pickEphemeralPort();
+    // TCP port is held for the daemon (no-steal guarantee); the grpc gateway
+    // port binds itself in a millisecond window (accepted residual risk —
+    // grpc has no fd-passing support).
+    int tcp_port = cinder::net::test::pickHeldPort();
+    int grpc_port = cinder::net::test::pickEphemeralPort();
     EXPECT_NE(tcp_port, 0);
     EXPECT_NE(grpc_port, 0);
     return {tcp_port, grpc_port};
@@ -38,6 +41,8 @@ auto
 spawnNodeWithGrpc(int tcp_port, int grpc_port, const std::string& id) -> NodeProc {
     auto tcp_str = std::to_string(tcp_port);
     auto grpc_str = std::to_string(grpc_port);
+    int held_fd = cinder::net::test::takeHeldFd(static_cast<uint16_t>(tcp_port));
+    auto fd_str = std::to_string(held_fd);
     pid_t pid = fork();
     if (pid == -1) {
         ADD_FAILURE() << "fork failed";
@@ -53,8 +58,13 @@ spawnNodeWithGrpc(int tcp_port, int grpc_port, const std::string& id) -> NodePro
             id.c_str(),
             "--grpc-port",
             grpc_str.c_str(),
+            "--listen-fd",
+            fd_str.c_str(),
             nullptr);
         _exit(1);
+    }
+    if (held_fd >= 0) {
+        ::close(held_fd);
     }
     return {pid, tcp_port, id};
 }

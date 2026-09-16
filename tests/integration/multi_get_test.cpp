@@ -6,7 +6,7 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
 
@@ -14,7 +14,7 @@ namespace cinder {
 namespace {
 
 TEST(MultiGetTest, BatchRetrievesExistingKeys) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";
@@ -39,7 +39,7 @@ TEST(MultiGetTest, BatchRetrievesExistingKeys) {
 }
 
 TEST(MultiGetTest, MissingKeysAbsent) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";

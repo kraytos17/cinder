@@ -13,7 +13,7 @@ using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::getKey;
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::rawRequest;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
@@ -35,8 +35,8 @@ ownersOf(const std::string& key) -> std::pair<std::string, std::string> {
 }
 
 TEST(ReplicaFailoverTest, FanoutReachesReplica) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -58,8 +58,8 @@ TEST(ReplicaFailoverTest, FanoutReachesReplica) {
 }
 
 TEST(ReplicaFailoverTest, SurvivesPrimaryFailure) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -88,8 +88,8 @@ TEST(ReplicaFailoverTest, SurvivesPrimaryFailure) {
 }
 
 TEST(ReplicaFailoverTest, QuorumFailsClosedWhenReplicaDown) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -104,8 +104,8 @@ TEST(ReplicaFailoverTest, QuorumFailsClosedWhenReplicaDown) {
 }
 
 TEST(ReplicaFailoverTest, HintedHandoffReplaysWhenReplicaReturns) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -127,9 +127,9 @@ TEST(ReplicaFailoverTest, HintedHandoffReplaysWhenReplicaReturns) {
 }
 
 TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
-    const uint16_t port3 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
+    const uint16_t port3 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
@@ -184,8 +184,8 @@ TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
 }
 
 TEST(ReplicaFailoverTest, TTLReplicationOverWire) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{

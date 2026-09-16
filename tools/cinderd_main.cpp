@@ -23,6 +23,7 @@ main(int argc, char* argv[]) -> int {
     app.add_option("-C,--config", config_path, "Path to YAML config file");
 
     uint16_t port = 7'000;
+    int listen_fd = -1;
     size_t capacity = 67'108'864;
     std::string node_id = "node1";
     std::string peers;
@@ -54,6 +55,9 @@ main(int argc, char* argv[]) -> int {
 #endif
 
     app.add_option("-p,--port", port, "Port to listen on");
+    app.add_option(
+        "--listen-fd", listen_fd, "Pre-bound listen socket fd (test harness socket passing)");
+
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
     app.add_option("-n,--node-id", node_id, "This node's ID");
     app.add_option("--peers", peers, "Peer nodes (comma-separated id@host:port)");
@@ -108,6 +112,7 @@ main(int argc, char* argv[]) -> int {
     cinder::CacheNodeServerOptions options;
     options.node_id = node_id;
     options.port = port;
+    options.listen_fd = listen_fd;
     options.capacity = capacity;
     options.replica_factor = replica_factor;
     options.mode =

@@ -89,10 +89,15 @@ class ConnectionPool {
     auto getOrCreateConn(const NodeId& node_id) -> NodeConn&;
 
     // Coroutine running on a NodeConn's strand: check connected, reconnect if
-    // needed, write request(s), read response(s), decode. On any error marks
-    // the connection as disconnected so the next RPC reconnects.
+    // needed, write request(s), read response(s), decode. On any error closes
+    // the connection so the next RPC reconnects on a clean socket.
     auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         -> asio::awaitable<Result<net::Response>>;
+
+    // Mark unusable and release the socket. A failed exchange can leave stale
+    // bytes or a half-dead connection behind; reusing it corrupts the next
+    // response, so every error path goes through here.
+    static void closeConn(NodeConn& conn);
 
     // Batch coroutine: write all requests, read all responses.
     auto sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::byte>> all_data)

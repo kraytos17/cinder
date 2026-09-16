@@ -13,7 +13,7 @@ using std::chrono::milliseconds;
 
 using cinder::net::test::getKey;
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
@@ -69,9 +69,9 @@ collectRedirected(const std::vector<std::string>& keys, int new_owner_port, Port
 }
 
 TEST(ClientRedirectTest, MultiGetFollowsRedirectsAfterJoin) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
-    const uint16_t port3 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
+    const uint16_t port3 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);

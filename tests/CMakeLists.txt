@@ -103,6 +103,7 @@ if(CINDER_ENABLE_FUZZER)
     cinder_add_fuzz(wal_fuzz fuzz/wal_fuzz.cpp)
     cinder_add_fuzz(anti_entropy_fuzz fuzz/anti_entropy_fuzz.cpp)
     cinder_add_fuzz(http_parse_fuzz fuzz/http_parse_fuzz.cpp)
+    cinder_add_fuzz(redirect_parse_fuzz fuzz/redirect_parse_fuzz.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -130,4 +131,5 @@ if(CINDER_ENABLE_COVERAGE)
     cinder_add_fuzz_coverage(wal_cov fuzz/wal_fuzz.cpp)
     cinder_add_fuzz_coverage(anti_entropy_cov fuzz/anti_entropy_fuzz.cpp)
     cinder_add_fuzz_coverage(http_parse_cov fuzz/http_parse_fuzz.cpp)
+    cinder_add_fuzz_coverage(redirect_parse_cov fuzz/redirect_parse_fuzz.cpp)
 endif()

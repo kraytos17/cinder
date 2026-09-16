@@ -522,6 +522,36 @@ def generate_http_corpus():
 
 
 # ---------------------------------------------------------------------------
+# Redirect hint seed generation
+# ---------------------------------------------------------------------------
+
+def generate_redirect_corpus():
+    d = os.path.join(CORPUS_DIR, "redirect_parse")
+
+    seeds = {
+        "valid_legacy": b"moved to node2",
+        "valid_full": b"moved to node3@127.0.0.1:17992",
+        "no_prefix": b"hello",
+        "empty": b"",
+        "prefix_only": b"moved to",
+        "prefix_space_only": b"moved to ",
+        "bad_port": b"moved to n@h:notaport",
+        "port_overflow": b"moved to n@127.0.0.1:99999",
+        "port_zero": b"moved to n@127.0.0.1:0",
+        "port_max": b"moved to n@127.0.0.1:65535",
+        "missing_host": b"moved to n@:1234",
+        "double_at": b"moved to a@b@h:1",
+        "ipv6_host": b"moved to n@::1:8080",
+        "no_colon_addr": b"moved to n@nodomain",
+        "trailing_garbage": b"moved to n@h:12extra",
+        "unicode_id": "moved to caf\u00e9@h:1".encode(),
+    }
+
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} redirect seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
 # Protocol dictionary (for libFuzzer -dict flag)
 # ---------------------------------------------------------------------------
 
@@ -634,6 +664,7 @@ def main():
     generate_wal_corpus()
     generate_anti_entropy_corpus()
     generate_http_corpus()
+    generate_redirect_corpus()
     generate_protocol_dict()
     print("Done.")
 

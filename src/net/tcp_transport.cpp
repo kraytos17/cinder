@@ -97,6 +97,21 @@ TcpTransport::setRpcTimeout(std::chrono::milliseconds timeout) {
     rpc_timeout_ = timeout;
 }
 
+void
+TcpTransport::closeConn(NodeConn& conn) {
+    conn.connected = false;
+    std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+    if (conn.stream) {
+        conn.stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+        conn.stream->lowest_layer().close(ec);
+        conn.stream.reset();
+    }
+#endif
+    conn.socket.shutdown(tcp::socket::shutdown_both, ec);
+    conn.socket.close(ec);
+}
+
 auto
 TcpTransport::getOrCreateConn(const NodeId& id) -> NodeConn& {
     std::scoped_lock lock(mu_);
@@ -154,7 +169,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
         auto endpoints = co_await resolver.async_resolve(
             conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
         if (ec) {
-            conn.connected = false;
+            closeConn(conn);
             co_return err<net::Response>(rpcError(timed_out, "resolve", ec));
         }
 #ifdef CINDER_ENABLE_TLS
@@ -163,27 +178,27 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
             co_await async_connect(
                 conn.stream->lowest_layer(), endpoints, asio::redirect_error(ec));
             if (ec) {
-                conn.connected = false;
+                closeConn(conn);
                 co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
 
             co_await conn.stream->async_handshake(
                 asio::ssl::stream_base::client, asio::redirect_error(ec));
             if (ec) {
-                conn.connected = false;
+                closeConn(conn);
                 co_return err<net::Response>(rpcError(timed_out, "tls handshake", ec));
             }
         } else {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
-                conn.connected = false;
+                closeConn(conn);
                 co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
         }
 #else
         co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
         if (ec) {
-            conn.connected = false;
+            closeConn(conn);
             co_return err<net::Response>(rpcError(timed_out, "connect", ec));
         }
 #endif
@@ -201,7 +216,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
 #endif
     if (ec) {
-        conn.connected = false;
+        closeConn(conn);
         if (timed_out) {
             Event::warn("RPC timed out", {{"node", conn.addr.host}});
         } else {
@@ -221,11 +236,11 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
 #endif
     if (ec) {
-        conn.connected = false;
+        closeConn(conn);
         co_return err<net::Response>(rpcError(timed_out, "read header", ec));
     }
     if (header[0] != std::byte{net::K_MAGIC}) {
-        conn.connected = false;
+        closeConn(conn);
         co_return err<net::Response>(Error(Errc::InvalidArgument, "bad magic in response"));
     }
 
@@ -233,7 +248,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     std::memcpy(&payload_len, &header[3], sizeof(payload_len));
     payload_len = std::byteswap(payload_len);
     if (payload_len > net::K_MAX_MESSAGE_SIZE) {
-        conn.connected = false;
+        closeConn(conn);
         co_return err<net::Response>(Error(Errc::InvalidArgument, "response payload too large"));
     }
 
@@ -256,7 +271,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
             asio::redirect_error(ec));
 #endif
         if (ec) {
-            conn.connected = false;
+            closeConn(conn);
             co_return err<net::Response>(rpcError(timed_out, "read payload", ec));
         }
     }

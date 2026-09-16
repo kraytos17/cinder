@@ -6,7 +6,7 @@ preset := "debug"
 jobs := `nproc`
 args := ""
 
-fuzz_targets := "protocol_decode gossip_parse store_put snapshot wal anti_entropy http_parse"
+fuzz_targets := "protocol_decode gossip_parse store_put snapshot wal anti_entropy http_parse redirect_parse"
 fuzz_opts_protocol_decode := "-max_len=8192 -dict=tests/fuzz/corpus/protocol_decode/protocol.dict"
 fuzz_opts_gossip_parse := "-max_len=1024 -dict=tests/fuzz/corpus/gossip_parse/gossip.dict"
 fuzz_opts_wal := "-max_len=4096 -rss_limit_mb=512"
@@ -14,6 +14,7 @@ fuzz_opts_snapshot := "-max_len=4096"
 fuzz_opts_anti_entropy := "-max_len=8192"
 fuzz_opts_store_put := "-max_len=1024"
 fuzz_opts_http_parse := "-max_len=2048"
+fuzz_opts_redirect_parse := "-max_len=256"
 fuzz_opts_default := "-timeout=5"
 
 # Show all available recipes
@@ -163,6 +164,7 @@ _fuzz-run duration label: fuzz-build
             anti_entropy)     opts="{{ fuzz_opts_anti_entropy }}" ;;
             store_put)        opts="{{ fuzz_opts_store_put }}" ;;
             http_parse)       opts="{{ fuzz_opts_http_parse }}" ;;
+            redirect_parse)   opts="{{ fuzz_opts_redirect_parse }}" ;;
             *)                opts="" ;;
         esac
         build/fuzz/tests/"${t}"_fuzz \

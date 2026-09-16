@@ -70,6 +70,10 @@ class TcpServer {
     // redirect hints. Supplied by CacheNodeServer from the membership table.
     void setAddrResolver(TcpConnection::AddrResolver r) { addr_resolver_ = std::move(r); }
 
+    // Pre-bound listen socket. When set, start()
+    // adopts the fd instead of binding port_ itself.
+    void setListenFd(int fd) { listen_fd_ = fd; }
+
     // Hard cap on concurrent client connections. Beyond this the acceptor
     // rejects new sockets instead of buffering unbounded file descriptors.
     static constexpr size_t K_MAX_CONNECTIONS = 10'000;
@@ -82,6 +86,8 @@ class TcpServer {
     asio::strand<io_context::executor_type> strand_;
     bool stopping_ = false;
     tcp::acceptor acceptor_;
+    uint16_t port_ = 0;
+    uint16_t metrics_port_ = 0;
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     Clock& clock_;
@@ -97,6 +103,7 @@ class TcpServer {
 #endif
     AdminCallbacks admin_callbacks_;
     TcpConnection::AddrResolver addr_resolver_;
+    int listen_fd_ = -1;
     std::vector<std::shared_ptr<TcpConnection>> connections_;
     std::unique_ptr<tcp::acceptor> metrics_acceptor_;
     std::string shared_secret_;

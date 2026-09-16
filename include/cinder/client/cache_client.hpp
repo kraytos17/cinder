@@ -93,6 +93,8 @@ class CacheClient {
 
     // Bound on learned ownership overrides (see learnOwner).
     static constexpr size_t K_MAX_LEARNED_OWNERS = 4'096;
+    // Bound on redirect hops followed within one call (see sendToOwner).
+    static constexpr int K_MAX_REDIRECT_HOPS = 4;
 
     auto routePrimary(std::string_view key) const -> NodeId;
     auto sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response>;

@@ -21,16 +21,17 @@ using asio::ip::tcp;
 using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::readResponse;
 using cinder::net::test::spawnNode;
+using cinder::net::test::takeHeldFd;
 using cinder::net::test::waitForNode;
 
 namespace cinder::net {
 namespace {
 
 TEST(ClusterSmokeTest, SetGetDelPing) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
@@ -100,7 +101,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
 }
 
 TEST(ClusterSmokeTest, TTLExpiry) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
@@ -168,10 +169,13 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 TEST(ClusterSmokeTest, CapacityEviction) {
     // This test requires --capacity which spawnNode doesn't support, so we
     // fork/exec manually.
-    uint16_t port = pickEphemeralPort();
+    uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     auto port_str = std::to_string(port);
     auto cap_str = std::to_string(300);
+    int held_fd = takeHeldFd(port);
+    ASSERT_NE(held_fd, -1);
+    auto fd_str = std::to_string(held_fd);
     pid_t pid = fork();
     ASSERT_NE(pid, -1) << "fork failed";
     if (pid == 0) {
@@ -182,9 +186,12 @@ TEST(ClusterSmokeTest, CapacityEviction) {
             port_str.c_str(),
             "--capacity",
             cap_str.c_str(),
+            "--listen-fd",
+            fd_str.c_str(),
             nullptr);
         _exit(1);
     }
+    ::close(held_fd);
 
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
 
@@ -270,7 +277,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 }
 
 TEST(ClusterSmokeTest, LargeValue) {
-    const uint16_t port = pickEphemeralPort();
+    const uint16_t port = pickHeldPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";

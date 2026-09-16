@@ -7,7 +7,7 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
+using cinder::net::test::pickHeldPort;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
@@ -19,13 +19,13 @@ namespace {
 // RF=2, three real nodes: every key must end up on BOTH members of its 3-node
 // replica set after node3 joins — replicas rebalance just like primaries.
 TEST(RebalanceRf2Test, KeysReachNewReplicaSetOnJoin) {
-    const uint16_t port1 = pickEphemeralPort();
-    const uint16_t port2 = pickEphemeralPort();
-    const uint16_t port3 = pickEphemeralPort();
+    const uint16_t port1 = pickHeldPort();
+    const uint16_t port2 = pickHeldPort();
+    const uint16_t port3 = pickHeldPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
-    auto rf2Port = [&](const std::string& id) -> int {
+    auto rf2_port = [&](const std::string& id) -> int {
         if (id == "node1") {
             return port1;
         }
@@ -59,7 +59,7 @@ TEST(RebalanceRf2Test, KeysReachNewReplicaSetOnJoin) {
     two.addNode("node2");
     for (const auto& k : keys) {
         auto owner = two.getNode(k);
-        auto res = setKey(rf2Port(owner), k, "v-" + k);
+        auto res = setKey(rf2_port(owner), k, "v-" + k);
         ASSERT_TRUE(res.has_value());
         EXPECT_EQ(res.value().status, Errc::OK) << k << " write failed";
     }
@@ -80,8 +80,8 @@ TEST(RebalanceRf2Test, KeysReachNewReplicaSetOnJoin) {
         auto desired = three.getNodes(k, 2);
         ASSERT_EQ(desired.size(), 2);
         for (const auto& member : desired) {
-            EXPECT_TRUE(waitForValue(rf2Port(member), k, "v-" + k, 100))
-                << k << " missing on " << member << " (port " << rf2Port(member) << ")";
+            EXPECT_TRUE(waitForValue(rf2_port(member), k, "v-" + k, 100))
+                << k << " missing on " << member << " (port " << rf2_port(member) << ")";
         }
     }
 }

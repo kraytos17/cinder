@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <csignal>
+#include <string_view>
 
 #include "cinder/common/config.hpp"
 #include "cinder/common/tracing.hpp"
@@ -19,7 +20,25 @@ makeStore(const CacheNodeServerOptions& opts, Clock* clock) -> std::unique_ptr<C
     }
     return std::make_unique<LruStore>(opts.capacity, clock);
 }
+
+auto
+isIdentityField(std::string_view field) -> bool {
+    // Identity fields can never hot-apply and normally differ only because
+    // CLI flags shadow the file — keep them out of the change report.
+    return field == "node_id" || field == "port" || field == "peers" || field == "replica_factor"
+           || field == "consistency";
+}
 } // namespace
+
+void
+CacheNodeServer::syncEffectiveConfig() {
+    current_config_.node_id = node_id_;
+    current_config_.port = port_;
+    current_config_.capacity = capacity_;
+    current_config_.peers = peers_;
+    current_config_.replica_factor = replica_factor_;
+    current_config_.consistency = (mode_ == ConsistencyMode::Quorum) ? "quorum" : "async";
+}
 
 #ifdef CINDER_ENABLE_TLS
 namespace {
@@ -50,6 +69,9 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
 #endif
       anti_entropy_interval_(options.anti_entropy_interval),
       node_id_(options.node_id),
+      port_(options.port),
+      capacity_(options.capacity),
+      peers_(options.peers),
       config_path_(options.config_path),
       anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
           options.anti_entropy_buckets, &metrics_),
@@ -112,12 +134,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     transport_.setConfig(config);
     transport_.setRpcTimeout(options.rpc_timeout);
 
-    current_config_.node_id = options.node_id;
-    current_config_.port = options.port;
-    current_config_.capacity = options.capacity;
-    current_config_.peers = options.peers;
-    current_config_.replica_factor = options.replica_factor;
-    current_config_.consistency = (mode_ == ConsistencyMode::Quorum) ? "quorum" : "async";
+    syncEffectiveConfig();
     table_.onChange([this] { rebuildRing(); });
     if (persistence_.enabled()) {
         store_->setPersistence(&persistence_);
@@ -162,6 +179,9 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
         }
         return std::make_pair(info->host, info->port);
     });
+    if (options.listen_fd >= 0) {
+        server_.setListenFd(options.listen_fd);
+    }
 
     Event::info("eviction policy", {{"policy", options.eviction_policy}});
     Event::info("anti-entropy",
@@ -431,16 +451,35 @@ CacheNodeServer::applyConfig() {
     }
 
     std::string changed_str;
-    for (size_t i = 0; i < changed.size(); ++i) {
-        if (i > 0) {
-            changed_str += ", ";
+    std::string identity_str;
+    std::vector<std::string> hot;
+    for (const auto& field : changed) {
+        if (isIdentityField(field)) {
+            if (!identity_str.empty()) {
+                identity_str += ", ";
+            }
+            identity_str += field;
+        } else {
+            if (!changed_str.empty()) {
+                changed_str += ", ";
+            }
+            changed_str += field;
+            hot.push_back(field);
         }
-        changed_str += changed[i];
+    }
+    if (!identity_str.empty()) {
+        Event::debug("config reload ignores identity fields", {{"fields", identity_str}});
+    }
+    if (hot.empty()) {
+        current_config_ = *new_config;
+        syncEffectiveConfig();
+        return;
     }
 
     Event::info("config changed", {{"fields", changed_str}});
     current_config_ = *new_config;
-    for (const auto& field : changed) {
+    syncEffectiveConfig();
+    for (const auto& field : hot) {
         if (field == "log_level") {
             setLogLevel(logLevelFromString(new_config->log_level));
         } else if (field == "ping_interval_ms") {
