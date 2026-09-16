@@ -47,7 +47,7 @@ test-cli: (test-suite "cli")
 
 [group('test')]
 test-integration: build kill-stale
-    ctest --preset {{ preset }} -L integration --output-on-failure -- {{ args }}
+    ctest --preset {{ preset }} -L integration --output-on-failure -j{{ jobs }} -- {{ args }}
 
 [group('test')]
 test-all: build kill-stale

@@ -59,7 +59,6 @@ if(CINDER_ENABLE_GRPC)
 endif()
 gtest_discover_tests(cinder_integration_tests
     PROPERTIES LABELS "integration"
-    RUN_SERIAL TRUE
     DISCOVERY_TIMEOUT 60
 )
 
