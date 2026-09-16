@@ -64,22 +64,22 @@ SnapshotReader::readAll() -> Result<SnapshotData> {
 
     auto magic = readU32(in_);
     if (!magic.has_value() || magic.value() != K_SNAPSHOT_MAGIC) {
-        return err<SnapshotData>(Error(Errc::InternalError, "invalid snapshot magic"));
+        return err<SnapshotData>(Error(Errc::CorruptData, "invalid snapshot magic"));
     }
 
     auto format_ver = readU32(in_);
     if (!format_ver.has_value() || format_ver.value() != K_SNAPSHOT_FORMAT_VERSION) {
-        return err<SnapshotData>(Error(Errc::InternalError, "unsupported snapshot format version"));
+        return err<SnapshotData>(Error(Errc::CorruptData, "unsupported snapshot format version"));
     }
 
     auto next_ver = readU64(in_);
     if (!next_ver.has_value()) {
-        return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot header"));
+        return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot header"));
     }
 
     auto entry_count = readU32(in_);
     if (!entry_count.has_value()) {
-        return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot entry count"));
+        return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot entry count"));
     }
 
     // Validate entry_count against remaining file bytes. Each entry requires
@@ -102,48 +102,47 @@ SnapshotReader::readAll() -> Result<SnapshotData> {
     for (uint32_t i = 0; i < entry_count.value(); ++i) {
         auto key_len = readU32(in_);
         if (!key_len.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot key"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key"));
         }
 
         auto key = readString(in_, key_len.value());
         if (!key.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot key data"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key data"));
         }
 
         auto val_len = readU32(in_);
         if (!val_len.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot value"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value"));
         }
 
         auto value = readString(in_, val_len.value());
         if (!value.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot value data"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value data"));
         }
 
         auto version = readU64(in_);
         if (!version.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot version"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot version"));
         }
 
         auto writer_hash = readU64(in_);
         if (!writer_hash.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot writer_hash"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot writer_hash"));
         }
 
         auto expires_ms = readU64(in_);
         if (!expires_ms.has_value()) {
-            return err<SnapshotData>(
-                Error(Errc::InternalError, "truncated snapshot expires_at_ms"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot expires_at_ms"));
         }
 
         auto has_ttl = readU8(in_);
         if (!has_ttl.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot has_ttl"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
         }
 
         auto freq = readU64(in_);
         if (!freq.has_value()) {
-            return err<SnapshotData>(Error(Errc::InternalError, "truncated snapshot freq"));
+            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot freq"));
         }
 
         data.entries.push_back(SnapshotEntry{

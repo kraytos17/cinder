@@ -7,18 +7,26 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include "cinder/v1/cache.grpc.pb.h"
+#include "integration/test_helpers.hpp"
 
+using cinder::net::test::NodeProc;
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::spawnNode;
-using cinder::net::test::waitForPort;
+using cinder::net::test::waitForNode;
 using std::chrono::milliseconds;
 
 namespace {
 
-constexpr int K_GRPC_PORT1 = 17'980;
-constexpr int K_TCP_PORT1 = 17'981;
+auto
+spawnPorts() -> std::pair<int, int> {
+    int tcp_port = cinder::net::test::pickEphemeralPort();
+    int grpc_port = cinder::net::test::pickEphemeralPort();
+    EXPECT_NE(tcp_port, 0);
+    EXPECT_NE(grpc_port, 0);
+    return {tcp_port, grpc_port};
+}
 
 auto
 makeChannel(int port) -> std::shared_ptr<grpc::Channel> {
@@ -69,11 +77,12 @@ waitForGrpcPort(int port, int max_retries = 50) {
 }
 
 TEST(GrpcGatewayTest, SetAndGet) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     // Set
     {
         grpc::ClientContext ctx;
@@ -100,11 +109,12 @@ TEST(GrpcGatewayTest, SetAndGet) {
 }
 
 TEST(GrpcGatewayTest, GetNotFound) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     grpc::ClientContext ctx;
     cinder::v1::GetRequest req;
     cinder::v1::GetResponse resp;
@@ -115,11 +125,12 @@ TEST(GrpcGatewayTest, GetNotFound) {
 }
 
 TEST(GrpcGatewayTest, Delete) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     // Set then delete
     {
         grpc::ClientContext ctx;
@@ -150,11 +161,12 @@ TEST(GrpcGatewayTest, Delete) {
 }
 
 TEST(GrpcGatewayTest, Ping) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     grpc::ClientContext ctx;
     cinder::v1::PingRequest req;
     cinder::v1::PingResponse resp;
@@ -164,11 +176,12 @@ TEST(GrpcGatewayTest, Ping) {
 }
 
 TEST(GrpcGatewayTest, Info) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     grpc::ClientContext ctx;
     cinder::v1::InfoRequest req;
     cinder::v1::InfoResponse resp;
@@ -180,11 +193,12 @@ TEST(GrpcGatewayTest, Info) {
 }
 
 TEST(GrpcGatewayTest, ClusterInfo) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     grpc::ClientContext ctx;
     cinder::v1::ClusterInfoRequest req;
     cinder::v1::ClusterInfoResponse resp;
@@ -195,11 +209,12 @@ TEST(GrpcGatewayTest, ClusterInfo) {
 }
 
 TEST(GrpcGatewayTest, RingInfo) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     grpc::ClientContext ctx;
     cinder::v1::RingInfoRequest req;
     cinder::v1::RingInfoResponse resp;
@@ -210,11 +225,12 @@ TEST(GrpcGatewayTest, RingInfo) {
 }
 
 TEST(GrpcGatewayTest, MultiGet) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     // Set two keys
     {
         grpc::ClientContext ctx;
@@ -251,11 +267,12 @@ TEST(GrpcGatewayTest, MultiGet) {
 }
 
 TEST(GrpcGatewayTest, MultiSet) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     // MultiSet
     {
         grpc::ClientContext ctx;
@@ -294,11 +311,12 @@ TEST(GrpcGatewayTest, MultiSet) {
 }
 
 TEST(GrpcGatewayTest, SetWithTtl) {
-    NodeProcGuard node{spawnNodeWithGrpc(K_TCP_PORT1, K_GRPC_PORT1, "grpc-node1")};
-    ASSERT_TRUE(waitForPort(K_TCP_PORT1));
-    ASSERT_TRUE(waitForGrpcPort(K_GRPC_PORT1));
+    auto [tcp_port, grpc_port] = spawnPorts();
+    NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+    ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+    ASSERT_TRUE(waitForGrpcPort(grpc_port));
 
-    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(K_GRPC_PORT1));
+    auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
     // Set with 1s TTL
     {
         grpc::ClientContext ctx;

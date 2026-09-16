@@ -2,8 +2,8 @@
 
 #include <asio.hpp>
 #include <chrono>
-#include <cstring>
 #include <csignal>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <span>
 #include <string>
@@ -15,25 +15,42 @@
 
 #include "cinder/net/protocol.hpp"
 
-using std::chrono::milliseconds;
-using std::chrono::seconds;
-using std::chrono::steady_clock;
 using asio::buffer;
 using asio::error_code;
 using asio::io_context;
-using asio::ip::address_v4;
 using asio::read;
 using asio::write;
+using asio::ip::address_v4;
 using asio::ip::tcp;
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
 
 namespace cinder::net::test {
 
-inline constexpr int K_PORT_NODE1 = 17'910;
-inline constexpr int K_PORT_NODE2 = 17'911;
-inline constexpr int K_PORT_NODE3 = 17'912;
-inline constexpr int K_PORT_RB_NODE1 = 17'930;
-inline constexpr int K_PORT_RB_NODE2 = 17'931;
-inline constexpr int K_PORT_RB_NODE3 = 17'932;
+// Pick a currently-free loopback port: bind :0, read back the assignment,
+// close. Best-effort — another process could bind it first, so callers must
+// verify identity after spawn (waitForNode), never assume the port.
+[[maybe_unused]] static auto
+pickEphemeralPort() -> int {
+    io_context io;
+    tcp::acceptor acc(io);
+    error_code ec;
+    acc.open(tcp::v4(), ec);
+    if (ec) {
+        return 0;
+    }
+    acc.set_option(tcp::acceptor::reuse_address(true), ec);
+    acc.bind(tcp::endpoint(address_v4::loopback(), 0), ec);
+    if (ec) {
+        return 0;
+    }
+    auto ep = acc.local_endpoint(ec);
+    if (ec) {
+        return 0;
+    }
+    return static_cast<int>(ep.port());
+}
 
 [[maybe_unused]] static auto
 readResponse(tcp::socket& socket) -> Result<Response> {
@@ -51,8 +68,7 @@ readResponse(tcp::socket& socket) -> Result<Response> {
         return err<Response>(Error(Errc::InvalidArgument, "response too large"));
     }
     if (payload_len > 0) {
-        (void)read(socket,
-            buffer(buf.data() + K_FRAME_HEADER_SIZE, payload_len), ec);
+        (void)read(socket, buffer(buf.data() + K_FRAME_HEADER_SIZE, payload_len), ec);
         if (ec) {
             return err<Response>(Error(Errc::InternalError, "read payload failed"));
         }
@@ -85,8 +101,8 @@ struct NodeProc {
 
 [[maybe_unused]] static auto
 spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum = false,
-    int replica_factor = 1, int quarantine_interval_ms = 10'000,
-    int suspect_timeout_ms = 3'000, int ping_interval_ms = 1'000) -> NodeProc {
+    int replica_factor = 1, int quarantine_interval_ms = 10'000, int suspect_timeout_ms = 3'000,
+    int ping_interval_ms = 1'000) -> NodeProc {
     auto port_str = std::to_string(port);
     auto factor_str = std::to_string(replica_factor);
     auto quarantine_str = std::to_string(quarantine_interval_ms);
@@ -154,6 +170,7 @@ class NodeProcGuard {
 
     NodeProcGuard(const NodeProcGuard&) = delete;
     auto operator=(const NodeProcGuard&) -> NodeProcGuard& = delete;
+
     NodeProcGuard(NodeProcGuard&& other) noexcept
         : node_(std::move(other.node_)) {
         other.node_ = {};
@@ -167,6 +184,7 @@ class NodeProcGuard {
         }
         return *this;
     }
+
     ~NodeProcGuard() { stopNode(node_); }
 
     [[nodiscard]] auto proc() const -> const NodeProc& { return node_; }
@@ -226,6 +244,26 @@ waitForValue(int port, const std::string& key, const std::string& expected, int 
         auto res = getKey(port, key);
         if (res.has_value() && res.value().status == Errc::OK && res.value().value.has_value()
             && *res.value().value == expected) {
+            return true;
+        }
+        std::this_thread::sleep_for(milliseconds(100));
+    }
+    return false;
+}
+
+// Wait until the daemon answering on `port` identifies as node `id` bound to
+// `port` (AdminInfo). Unlike a bare connect check, this rejects stale daemons
+// left behind by earlier runs and cross-talk from other tests' daemons — the
+// failure mode fixed ports made likely. Required companion to
+// pickEphemeralPort.
+[[maybe_unused]] static auto
+waitForNode(int port, const std::string& id, int max_retries = 50) -> bool {
+    for (int i = 0; i < max_retries; i++) {
+        Request req{.opcode = Opcode::AdminInfo, .key = {}, .value = {}};
+        auto res = rawRequest(port, req);
+        if (res.has_value() && res.value().status == Errc::OK && res.value().value.has_value()
+            && res.value().value->contains("\"node_id\":\"" + id + "\"")
+            && res.value().value->contains("\"port\":" + std::to_string(port))) {
             return true;
         }
         std::this_thread::sleep_for(milliseconds(100));

@@ -147,6 +147,9 @@ TcpServer::doAccept() {
                     admin_callbacks_.compact_trigger,
                     admin_callbacks_.config_reload_trigger,
                     admin_callbacks_.shutdown_trigger);
+                if (addr_resolver_) {
+                    conn->setAddrResolver(addr_resolver_);
+                }
 
                 connections_.push_back(conn);
                 conn->start();

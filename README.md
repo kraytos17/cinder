@@ -48,7 +48,7 @@ rebalance in [`docs/rebalance.md`](docs/rebalance.md).
 
 - **Eviction stores** — LRU and LFU with O(1) hits, intrusive TTL wheel, slab allocator
 - **Binary wire protocol (v5)** — length-prefixed TCP frames, 16 opcodes, 64 MiB max
-- **Cluster-aware routing** — hash-ring ownership with `moved to <node>` redirects
+- **Cluster-aware routing** — hash-ring ownership with `moved to <node>@<host>:<port>` redirects
 - **Replication** — async or quorum (`W = R/2+1`), versioned LWW, failover reads, read repair
 - **Membership** — SWIM failure detection, incarnation-guarded gossip, graceful leave
 - **Rebalance & repair** — two-phase migration with quarantine, periodic anti-entropy

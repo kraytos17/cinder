@@ -23,7 +23,7 @@ ring routing, one redirect retry, and pipelined per-owner `multiGet`.
 client ──TCP frame (v5)──▶ TcpServer ──▶ CacheNodeServer ──▶ CacheStore
          ▲                      │                │ ring: who owns this key?
          │                      │                ├─ owned → local store (+ replicate)
-         └── redirect/error ────┘                └─ not owned → `moved to <node>` redirect
+         └── redirect/error ────┘                └─ not owned → `moved to <node>@<host>:<port>` redirect
 ```
 
 Frames are length-prefixed with a compile-time-validated 7-byte header

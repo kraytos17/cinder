@@ -9,8 +9,9 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
+using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::spawnNode;
-using cinder::net::test::waitForPort;
+using cinder::net::test::waitForNode;
 
 namespace {
 
@@ -68,38 +69,39 @@ runCli(uint16_t port, const std::vector<std::string>& args) -> std::pair<std::st
     return {out, err};
 }
 
-constexpr int K_CLI_PORT1 = 17'900;
-constexpr int K_CLI_PORT2 = 17'901;
-constexpr int K_CLI_PORT3 = 17'902;
-constexpr int K_CLI_PORT5 = 17'903;
-
 TEST(CliTest, Ping) {
-    NodeProcGuard node{spawnNode(K_CLI_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_CLI_PORT1));
-    auto [out, err] = runCli(K_CLI_PORT1, {"ping"});
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
+    auto [out, err] = runCli(port, {"ping"});
     EXPECT_EQ(out, "pong\n");
     EXPECT_TRUE(err.empty());
 }
 
 TEST(CliTest, SetGet) {
-    NodeProcGuard node{spawnNode(K_CLI_PORT2, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_CLI_PORT2));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
     {
-        auto [out, err] = runCli(K_CLI_PORT2, {"set", "greeting", "hello"});
+        auto [out, err] = runCli(port, {"set", "greeting", "hello"});
         EXPECT_EQ(out, "OK\n");
         EXPECT_TRUE(err.empty());
     }
     {
-        auto [out, err] = runCli(K_CLI_PORT2, {"get", "greeting"});
+        auto [out, err] = runCli(port, {"get", "greeting"});
         EXPECT_EQ(out, "hello\n");
         EXPECT_TRUE(err.empty());
     }
 }
 
 TEST(CliTest, GetNotFound) {
-    NodeProcGuard node{spawnNode(K_CLI_PORT3, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_CLI_PORT3));
-    auto [out, err] = runCli(K_CLI_PORT3, {"get", "nope"});
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
+    auto [out, err] = runCli(port, {"get", "nope"});
     EXPECT_TRUE(out.contains("not found"));
     EXPECT_TRUE(err.empty());
 }
@@ -111,14 +113,16 @@ TEST(CliTest, ConnectRefused) {
 }
 
 TEST(CliTest, Del) {
-    NodeProcGuard node{spawnNode(K_CLI_PORT5, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_CLI_PORT5));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
     {
-        auto [out, err] = runCli(K_CLI_PORT5, {"set", "temp", "x"});
+        auto [out, err] = runCli(port, {"set", "temp", "x"});
         EXPECT_EQ(out, "OK\n");
     }
     {
-        auto [out, err] = runCli(K_CLI_PORT5, {"del", "temp"});
+        auto [out, err] = runCli(port, {"del", "temp"});
         EXPECT_EQ(out, "OK\n");
     }
 }

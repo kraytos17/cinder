@@ -42,6 +42,7 @@ cinder_add_test(cinder_integration_tests
     integration/rebalance_rf2_test.cpp
     integration/read_repair_test.cpp
     integration/multi_get_test.cpp
+    integration/redirect_test.cpp
     integration/tls_test.cpp
     integration/admin_test.cpp
 )

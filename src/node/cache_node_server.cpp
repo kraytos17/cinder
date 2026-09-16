@@ -111,6 +111,13 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
 
     transport_.setConfig(config);
     transport_.setRpcTimeout(options.rpc_timeout);
+
+    current_config_.node_id = options.node_id;
+    current_config_.port = options.port;
+    current_config_.capacity = options.capacity;
+    current_config_.peers = options.peers;
+    current_config_.replica_factor = options.replica_factor;
+    current_config_.consistency = (mode_ == ConsistencyMode::Quorum) ? "quorum" : "async";
     table_.onChange([this] { rebuildRing(); });
     if (persistence_.enabled()) {
         store_->setPersistence(&persistence_);
@@ -143,6 +150,17 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     },
         .config_reload_trigger = [this]() { applyConfig(); },
         .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
+    });
+
+    // Redirect hints carry the owner's address (learned via gossip) so clients
+    // that were never configured with the owner can still follow them.
+    server_.setAddrResolver(
+        [this](const NodeId& id) -> std::optional<std::pair<std::string, uint16_t>> {
+        auto info = table_.get(id);
+        if (!info.has_value() || info->host.empty() || info->port == 0) {
+            return std::nullopt;
+        }
+        return std::make_pair(info->host, info->port);
     });
 
     Event::info("eviction policy", {{"policy", options.eviction_policy}});

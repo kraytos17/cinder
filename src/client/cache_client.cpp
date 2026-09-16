@@ -30,10 +30,34 @@ CacheClient::routePrimary(std::string_view key) const -> NodeId {
 }
 
 auto
+CacheClient::preferredNode(const std::string& key) const -> NodeId {
+    std::scoped_lock lock(learned_mu_);
+    if (auto it = learned_.find(key); it != learned_.end()) {
+        return it->second;
+    }
+    return ring_.getNode(key);
+}
+
+void
+CacheClient::learnOwner(const std::string& key, const NodeId& node) {
+    std::scoped_lock lock(learned_mu_);
+    if (learned_.size() >= K_MAX_LEARNED_OWNERS) {
+        learned_.clear();
+    }
+    learned_.insert_or_assign(key, node);
+}
+
+void
+CacheClient::forgetOwner(const std::string& key) {
+    std::scoped_lock lock(learned_mu_);
+    learned_.erase(key);
+}
+
+auto
 CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response> {
     Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
+    auto node = preferredNode(key);
     for (int attempt = 0; attempt <= max_retries_; ++attempt) {
-        auto node = routePrimary(key);
         Event::trace("route",
             {{"key", key},
                 {"primary", node},
@@ -42,12 +66,28 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
 
         res = pool_.send(node, req);
         if (res.has_value() && res.value().status == Errc::NotReady) {
-            // The node redirected us to the ring owner — follow once, then give up.
-            auto target = parseRedirect(res.value().value.value_or(""));
-            if (target.has_value() && *target != node) {
-                Event::debug("redirect", {{"key", key}, {"from", node}, {"to", *target}});
-                res = pool_.send(*target, req);
+            // Ownership redirect — learn the true owner and follow the chain
+            // immediately (no backoff: staleness, not congestion). Each hop
+            // consumes an attempt, so a redirect loop still terminates. When
+            // the server attached an address, register it first so nodes
+            // outside the client config are reachable.
+            auto target = parseRedirectTarget(res.value().value.value_or(""));
+            if (target.has_value() && target->id != node) {
+                Event::debug("redirect", {{"key", key}, {"from", node}, {"to", target->id}});
+                if (target->hasAddress()) {
+                    pool_.addAddr(target->id, target->host, target->port);
+                }
+
+                learnOwner(key, target->id);
+                node = target->id;
+                continue;
             }
+        }
+        if (!res.has_value()) {
+            // Transport failure — a learned owner may be stale (node gone or
+            // unknown); forget it so the next attempt re-resolves via the ring.
+            forgetOwner(key);
+            node = preferredNode(key);
         }
         if (!retryable(res) || attempt == max_retries_) {
             return res;
@@ -127,10 +167,25 @@ CacheClient::multiGet(const std::vector<std::string>& keys)
         if (!res.has_value()) {
             continue; // node unreachable — those keys are simply missing
         }
+
+        std::vector<std::string> redirected;
         for (size_t i = 0; i < node_keys.size() && i < res.value().size(); i++) {
             auto& resp = res.value()[i];
             if (resp.status == Errc::OK && resp.value.has_value()) {
                 result.emplace(node_keys[i], *resp.value);
+            } else if (resp.status == Errc::NotReady
+                       && parseRedirectTarget(resp.value.value_or("")).has_value()) {
+                // Stale ring view — the key moved. Re-issue through the
+                // redirect-following single-key path (which learns the owner).
+                redirected.push_back(node_keys[i]);
+            }
+        }
+        for (const auto& k : redirected) {
+            net::Request single{.opcode = net::Opcode::Get, .key = k, .value = {}};
+            auto one = sendToOwner(k, single);
+            if (one.has_value() && one.value().status == Errc::OK
+                && one.value().value.has_value()) {
+                result.emplace(k, *one.value().value);
             }
         }
     }

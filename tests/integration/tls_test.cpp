@@ -15,6 +15,7 @@
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
+#include "integration/test_helpers.hpp"
 
 using asio::buffer;
 using asio::error_code;
@@ -29,9 +30,6 @@ using std::chrono::seconds;
 using std::chrono::steady_clock;
 
 namespace {
-
-constexpr int K_TLS_PORT = 17'970;
-constexpr int K_TLS_PORT2 = 17'971;
 
 // Path to test certificates (relative to build dir)
 std::string
@@ -105,6 +103,23 @@ rawTlsRequest(int port, const cinder::net::Request& req, context& ssl_ctx)
     auto resp = readResponse(socket);
     socket.lowest_layer().close(ec);
     return resp;
+}
+
+[[maybe_unused]] static auto
+waitForTlsNode(int port, context& ssl_ctx, int max_retries = 50) -> bool {
+    // Identity check over TLS: the answering daemon must report the expected
+    // bound port, rejecting stale daemons from earlier runs.
+    for (int i = 0; i < max_retries; i++) {
+        cinder::net::Request req{.opcode = cinder::net::Opcode::AdminInfo};
+        auto res = rawTlsRequest(port, req, ssl_ctx);
+        if (res.has_value() && res.value().status == cinder::Errc::OK
+            && res.value().value.has_value()
+            && res.value().value->contains("\"port\":" + std::to_string(port))) {
+            return true;
+        }
+        std::this_thread::sleep_for(milliseconds(100));
+    }
+    return false;
 }
 
 [[maybe_unused]] static auto
@@ -182,19 +197,21 @@ class TlsIntegrationTest : public ::testing::Test {
 };
 
 TEST_F(TlsIntegrationTest, SetGetOverTls) {
-    pid_t dpid = spawnTlsDaemon(K_TLS_PORT);
-    ASSERT_TRUE(waitForPort(K_TLS_PORT));
+    const int port = cinder::net::test::pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    pid_t dpid = spawnTlsDaemon(port);
+    ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
 
     cinder::net::Request set_req{
         .opcode = cinder::net::Opcode::Set, .key = "tls-key", .value = "tls-value"};
 
-    auto set_res = rawTlsRequest(K_TLS_PORT, set_req, *ssl_ctx_);
+    auto set_res = rawTlsRequest(port, set_req, *ssl_ctx_);
     ASSERT_TRUE(set_res.has_value()) << set_res.error().message();
     EXPECT_EQ(set_res.value().status, cinder::Errc::OK);
 
     cinder::net::Request get_req{.opcode = cinder::net::Opcode::Get, .key = "tls-key"};
 
-    auto get_res = rawTlsRequest(K_TLS_PORT, get_req, *ssl_ctx_);
+    auto get_res = rawTlsRequest(port, get_req, *ssl_ctx_);
     ASSERT_TRUE(get_res.has_value()) << get_res.error().message();
     EXPECT_EQ(get_res.value().status, cinder::Errc::OK);
     ASSERT_TRUE(get_res.value().value.has_value());
@@ -204,11 +221,13 @@ TEST_F(TlsIntegrationTest, SetGetOverTls) {
 }
 
 TEST_F(TlsIntegrationTest, PingOverTls) {
-    pid_t dpid = spawnTlsDaemon(K_TLS_PORT2);
-    ASSERT_TRUE(waitForPort(K_TLS_PORT2));
+    const int port = cinder::net::test::pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    pid_t dpid = spawnTlsDaemon(port);
+    ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
 
     cinder::net::Request ping_req{.opcode = cinder::net::Opcode::Ping};
-    auto res = rawTlsRequest(K_TLS_PORT2, ping_req, *ssl_ctx_);
+    auto res = rawTlsRequest(port, ping_req, *ssl_ctx_);
     ASSERT_TRUE(res.has_value()) << res.error().message();
     EXPECT_EQ(res.value().status, cinder::Errc::OK);
 
@@ -217,13 +236,15 @@ TEST_F(TlsIntegrationTest, PingOverTls) {
 
 TEST_F(TlsIntegrationTest, PlaintextRejected) {
     // Server with TLS enabled should reject plaintext connections
-    pid_t dpid = spawnTlsDaemon(17'972);
-    ASSERT_TRUE(waitForPort(17'972));
+    const int port = cinder::net::test::pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    pid_t dpid = spawnTlsDaemon(port);
+    ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(asio::ip::address_v4::loopback(), 17'972), ec);
+    socket.connect(tcp::endpoint(asio::ip::address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << ec.message();
 
     // Send a raw (unencrypted) frame — the server expects a TLS ClientHello

@@ -56,6 +56,11 @@ class ConnectionPool {
 
     void shutdown();
 
+    // Register (or refresh) a node's address at runtime — learned from server
+    // redirects for nodes the client was never configured with. Mirrors
+    // TcpTransport::addAddr on the server side.
+    void addAddr(const NodeId& id, const std::string& host, uint16_t port);
+
   private:
 
 #ifdef CINDER_ENABLE_TLS

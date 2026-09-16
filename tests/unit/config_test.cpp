@@ -267,17 +267,15 @@ logging:
     ASSERT_TRUE(result.has_value());
 
     auto json = formatConfigJson(*result);
-    // String values are double-quoted because escapeJsonString wraps in quotes
-    // and the format templates also include quotes.
-    EXPECT_TRUE(json.contains(R"("node_id":""fmt-node"")"));
+    EXPECT_TRUE(json.contains(R"("node_id":"fmt-node")"));
     EXPECT_TRUE(json.contains("\"port\":9090"));
     EXPECT_TRUE(json.contains("\"capacity\":128"));
     EXPECT_TRUE(json.contains("\"replica_factor\":2"));
-    EXPECT_TRUE(json.contains(R"("consistency":""quorum"")"));
+    EXPECT_TRUE(json.contains(R"("consistency":"quorum")"));
     EXPECT_TRUE(json.contains("\"ping_interval_ms\":500"));
-    EXPECT_TRUE(json.contains(R"("log_level":""debug"")"));
-    EXPECT_TRUE(json.contains(R"("id":""n2"")"));
-    EXPECT_TRUE(json.contains(R"("host":""10.0.0.2"")"));
+    EXPECT_TRUE(json.contains(R"("log_level":"debug")"));
+    EXPECT_TRUE(json.contains(R"("id":"n2")"));
+    EXPECT_TRUE(json.contains(R"("host":"10.0.0.2")"));
 
     (void)std::remove(path);
 }

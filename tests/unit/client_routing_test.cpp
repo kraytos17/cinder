@@ -42,9 +42,39 @@ TEST(CacheClientTest, RoutePrimaryDistributes) {
 TEST(CacheClientTest, ParseRedirect) {
     EXPECT_EQ(parseRedirect("moved to node2"), std::optional<NodeId>("node2"));
     EXPECT_EQ(parseRedirect("moved to  node2 "), std::optional<NodeId>(" node2 "));
+    EXPECT_EQ(parseRedirect("moved to node3@127.0.0.1:17992"), std::optional<NodeId>("node3"));
     EXPECT_FALSE(parseRedirect("OK").has_value());
     EXPECT_FALSE(parseRedirect("").has_value());
     EXPECT_FALSE(parseRedirect("moved to").has_value());
+}
+
+TEST(CacheClientTest, ParseRedirectTarget) {
+    auto legacy = parseRedirectTarget("moved to node2");
+    ASSERT_TRUE(legacy.has_value());
+    EXPECT_EQ(legacy->id, "node2");
+    EXPECT_FALSE(legacy->hasAddress());
+
+    auto full = parseRedirectTarget("moved to node3@127.0.0.1:17992");
+    ASSERT_TRUE(full.has_value());
+    EXPECT_EQ(full->id, "node3");
+    EXPECT_TRUE(full->hasAddress());
+    EXPECT_EQ(full->host, "127.0.0.1");
+    EXPECT_EQ(full->port, 17'992);
+
+    // Unparsable address degrades to id-only; non-redirects stay nullopt.
+    auto bad_port = parseRedirectTarget("moved to node3@127.0.0.1:notaport");
+    ASSERT_TRUE(bad_port.has_value());
+    EXPECT_EQ(bad_port->id, "node3");
+    EXPECT_FALSE(bad_port->hasAddress());
+
+    auto no_colon = parseRedirectTarget("moved to node3@nodomain");
+    ASSERT_TRUE(no_colon.has_value());
+    EXPECT_EQ(no_colon->id, "node3");
+    EXPECT_FALSE(no_colon->hasAddress());
+
+    EXPECT_FALSE(parseRedirectTarget("OK").has_value());
+    EXPECT_FALSE(parseRedirectTarget("").has_value());
+    EXPECT_FALSE(parseRedirectTarget("moved to").has_value());
 }
 
 TEST(RetryBackoffTest, ExponentialSchedule) {

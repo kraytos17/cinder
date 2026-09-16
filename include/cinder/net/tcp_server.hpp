@@ -66,6 +66,10 @@ class TcpServer {
 
     void setAdminCallbacks(AdminCallbacks cb) { admin_callbacks_ = std::move(cb); }
 
+    // Owner address resolver forwarded to every accepted connection for
+    // redirect hints. Supplied by CacheNodeServer from the membership table.
+    void setAddrResolver(TcpConnection::AddrResolver r) { addr_resolver_ = std::move(r); }
+
     // Hard cap on concurrent client connections. Beyond this the acceptor
     // rejects new sockets instead of buffering unbounded file descriptors.
     static constexpr size_t K_MAX_CONNECTIONS = 10'000;
@@ -92,6 +96,7 @@ class TcpServer {
     asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
     AdminCallbacks admin_callbacks_;
+    TcpConnection::AddrResolver addr_resolver_;
     std::vector<std::shared_ptr<TcpConnection>> connections_;
     std::unique_ptr<tcp::acceptor> metrics_acceptor_;
     std::string shared_secret_;

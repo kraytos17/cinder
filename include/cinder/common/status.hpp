@@ -22,6 +22,7 @@ enum class Errc : uint8_t {
     Timeout,
     NotReady,
     PermissionDenied,
+    CorruptData,
 };
 
 class Error {
@@ -117,6 +118,8 @@ toString(Errc code) -> std::string_view {
             return "(not ready)";
         case Errc::PermissionDenied:
             return "(permission denied)";
+        case Errc::CorruptData:
+            return "(corrupt data)";
     }
     return "(unknown)";
 }

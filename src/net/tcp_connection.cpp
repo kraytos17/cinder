@@ -351,6 +351,18 @@ getOperationName(Opcode op) -> std::string_view {
     }
 }
 
+auto
+TcpConnection::redirectValue(const NodeId& owner) -> std::string {
+    std::string value = "moved to " + owner;
+    if (addr_resolver_) {
+        if (auto addr = addr_resolver_(owner);
+            addr.has_value() && addr->second != 0 && !addr->first.empty()) {
+            value += "@" + addr->first + ":" + std::to_string(addr->second);
+        }
+    }
+    return value;
+}
+
 void
 TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
     pending_opcode_ = req.opcode;
@@ -458,7 +470,7 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
                 metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
             }
 
-            sendResponse({.status = Errc::NotReady, .value = "moved to " + owner});
+            sendResponse({.status = Errc::NotReady, .value = redirectValue(owner)});
             maybeRead();
             return;
         }
@@ -515,7 +527,7 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
                 res.value = std::move(val);
             } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
                 sendResponse(
-                    {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});
+                    {.status = Errc::NotReady, .value = redirectValue(ring_.getNode(req.key))});
                 maybeRead();
                 return;
             } else {
@@ -535,7 +547,7 @@ TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
                 }
             } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
                 sendResponse(
-                    {.status = Errc::NotReady, .value = "moved to " + ring_.getNode(req.key)});
+                    {.status = Errc::NotReady, .value = redirectValue(ring_.getNode(req.key))});
                 maybeRead();
                 return;
             } else {

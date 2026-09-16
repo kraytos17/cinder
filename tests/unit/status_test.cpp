@@ -60,6 +60,8 @@ TEST(ResultTest, ErrcToString) {
     EXPECT_EQ(cinder::toString(Errc::NotFound), "(not found)");
     EXPECT_EQ(cinder::toString(Errc::CapacityExceeded), "(capacity exceeded)");
     EXPECT_EQ(cinder::toString(Errc::NotReady), "(not ready)");
+    EXPECT_EQ(cinder::toString(Errc::PermissionDenied), "(permission denied)");
+    EXPECT_EQ(cinder::toString(Errc::CorruptData), "(corrupt data)");
 }
 } // namespace
 } // namespace cinder

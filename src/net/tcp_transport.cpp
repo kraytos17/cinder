@@ -226,7 +226,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     }
     if (header[0] != std::byte{net::K_MAGIC}) {
         conn.connected = false;
-        co_return err<net::Response>(Error(Errc::InternalError, "bad magic in response"));
+        co_return err<net::Response>(Error(Errc::InvalidArgument, "bad magic in response"));
     }
 
     uint32_t payload_len = 0;
@@ -234,7 +234,7 @@ TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
     payload_len = std::byteswap(payload_len);
     if (payload_len > net::K_MAX_MESSAGE_SIZE) {
         conn.connected = false;
-        co_return err<net::Response>(Error(Errc::InternalError, "response payload too large"));
+        co_return err<net::Response>(Error(Errc::InvalidArgument, "response payload too large"));
     }
 
     std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);

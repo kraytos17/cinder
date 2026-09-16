@@ -137,11 +137,14 @@ server echoes the client's trace context back and propagates it to replicas.
 | 5 | `NotSupported` | Unsupported operation |
 | 6 | `InternalError` | Server internal error |
 | 7 | `Timeout` | Operation timed out |
-| 8 | `NotReady` | Node not ready; body may carry `"moved to <node>"` |
+| 8 | `NotReady` | Node not ready; body may carry `"moved to <node-id>[@<host>:<port>]"` |
 | 9 | `PermissionDenied` | Auth failed — missing or invalid `auth_token` on an internal opcode |
+| 10 | `CorruptData` | Persisted data failed validation — bad snapshot magic/version or truncated snapshot entry |
 
 `NotReady` covers two distinct cases: ownership redirects (value field carries
-`"moved to <node-id>"`) and failed quorum writes.
+`"moved to <node-id>"`, with `@<host>:<port>` appended when the server knows a
+reachable address for the owner so unconfigured clients can follow it) and
+failed quorum writes.
 
 ## Decode Safety
 

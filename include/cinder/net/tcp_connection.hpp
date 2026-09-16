@@ -5,10 +5,12 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <memory>
 #include <optional>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #ifdef CINDER_ENABLE_TLS
@@ -87,6 +89,14 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
 
     void setMetrics(MetricsCollector* m) { metrics_ = m; }
 
+    // Resolves an owner node id to a reachable (host, port) for redirect
+    // hints, sourced from the membership table. Supplied by TcpServer after
+    // construction; empty means legacy id-only redirects.
+    using AddrResolver =
+        std::function<std::optional<std::pair<std::string, uint16_t>>(const NodeId&)>;
+
+    void setAddrResolver(AddrResolver r) { addr_resolver_ = std::move(r); }
+
     // Admin opcode handlers, supplied by TcpServer after construction.
     struct AdminCallbacks {
         std::function<std::string()> info_getter;
@@ -139,6 +149,11 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     void handleRequest(const Request& req, std::string_view auth_token);
     void sendResponse(const Response& res);
 
+    // Ownership redirect value: "moved to <id>", with "@<host>:<port>"
+    // appended when the resolver knows a reachable address so clients that
+    // were never configured with the owner can still follow it.
+    auto redirectValue(const NodeId& owner) -> std::string;
+
     void doWrite();
     void onWrite(std::error_code ec, size_t bytes);
     void maybeRead();
@@ -186,6 +201,8 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     MetricsCollector* metrics_ = nullptr;
     // Admin opcode callbacks, populated by TcpServer after construction.
     std::unique_ptr<AdminCallbacks> admin_;
+    // Owner address resolver, populated by TcpServer after construction.
+    AddrResolver addr_resolver_;
 
     std::array<std::byte, K_BUFFER_SIZE> read_buf_{};
 };

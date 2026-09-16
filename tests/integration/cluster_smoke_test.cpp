@@ -21,26 +21,24 @@ using asio::ip::tcp;
 using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::NodeProcGuard;
+using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::readResponse;
 using cinder::net::test::spawnNode;
-using cinder::net::test::waitForPort;
+using cinder::net::test::waitForNode;
 
 namespace cinder::net {
 namespace {
 
-constexpr int K_SMOKE_PORT1 = 17'890;
-constexpr int K_SMOKE_PORT2 = 17'891;
-constexpr int K_SMOKE_PORT3 = 17'892;
-constexpr int K_SMOKE_PORT4 = 17'893;
-
 TEST(ClusterSmokeTest, SetGetDelPing) {
-    NodeProcGuard node{spawnNode(K_SMOKE_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_SMOKE_PORT1)) << "server did not start in time";
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT1), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     // SET
@@ -102,13 +100,15 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
 }
 
 TEST(ClusterSmokeTest, TTLExpiry) {
-    NodeProcGuard node{spawnNode(K_SMOKE_PORT2, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_SMOKE_PORT2)) << "server did not start in time";
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT2), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     // SET with 200ms TTL
@@ -168,7 +168,8 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 TEST(ClusterSmokeTest, CapacityEviction) {
     // This test requires --capacity which spawnNode doesn't support, so we
     // fork/exec manually.
-    int port = K_SMOKE_PORT3;
+    int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
     auto port_str = std::to_string(port);
     auto cap_str = std::to_string(300);
     pid_t pid = fork();
@@ -185,7 +186,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
         _exit(1);
     }
 
-    ASSERT_TRUE(waitForPort(port)) << "server did not start in time";
+    ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
@@ -269,13 +270,15 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 }
 
 TEST(ClusterSmokeTest, LargeValue) {
-    NodeProcGuard node{spawnNode(K_SMOKE_PORT4, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_SMOKE_PORT4)) << "server did not start in time";
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
 
     io_context io;
     tcp::socket socket(io);
     error_code ec;
-    socket.connect(tcp::endpoint(address_v4::loopback(), K_SMOKE_PORT4), ec);
+    socket.connect(tcp::endpoint(address_v4::loopback(), port), ec);
     ASSERT_FALSE(ec) << "connect failed";
 
     std::string big_val(50'000, 'Z');

@@ -9,11 +9,13 @@
 namespace cinder {
 namespace {
 
+// Escapes a string for JSON embedding. Returns the escaped CONTENT without
+// surrounding quotes — every call site already supplies those via
+// R"("key":")" ... "\"" framing.
 auto
 escapeJsonString(std::string_view s) -> std::string {
     std::string out;
-    out.reserve(s.size() + 2);
-    out += '"';
+    out.reserve(s.size());
     for (char c : s) {
         switch (c) {
             case '"':
@@ -36,7 +38,6 @@ escapeJsonString(std::string_view s) -> std::string {
                 break;
         }
     }
-    out += '"';
     return out;
 }
 } // namespace

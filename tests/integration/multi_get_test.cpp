@@ -6,18 +6,21 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
+using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::spawnNode;
-using cinder::net::test::waitForPort;
+using cinder::net::test::waitForNode;
 
 namespace cinder {
 namespace {
 
 TEST(MultiGetTest, BatchRetrievesExistingKeys) {
-    NodeProcGuard node{spawnNode(17'940, "node1", "")};
-    ASSERT_TRUE(waitForPort(17'940)) << "node did not start";
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";
 
     ClusterConfig config;
-    config.nodes.push_back({"node1", "127.0.0.1", 17'940});
+    config.nodes.push_back({"node1", "127.0.0.1", port});
     CacheClient client(config);
 
     std::vector<std::string> keys;
@@ -36,11 +39,13 @@ TEST(MultiGetTest, BatchRetrievesExistingKeys) {
 }
 
 TEST(MultiGetTest, MissingKeysAbsent) {
-    NodeProcGuard node{spawnNode(17'941, "node1", "")};
-    ASSERT_TRUE(waitForPort(17'941)) << "node did not start";
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";
 
     ClusterConfig config;
-    config.nodes.push_back({"node1", "127.0.0.1", 17'941});
+    config.nodes.push_back({"node1", "127.0.0.1", port});
     CacheClient client(config);
 
     auto found = client.multiGet({"missing1", "missing2"});

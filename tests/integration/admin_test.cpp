@@ -4,35 +4,40 @@
 #include "integration/test_helpers.hpp"
 
 using cinder::net::test::NodeProcGuard;
+using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::rawRequest;
 using cinder::net::test::spawnNode;
-using cinder::net::test::waitForPort;
+using cinder::net::test::waitForNode;
 
 namespace {
 
-constexpr int K_ADMIN_PORT1 = 17'940;
-constexpr int K_ADMIN_PORT2 = 17'941;
-
 TEST(AdminTest, InfoReturnsJson) {
-    NodeProcGuard node{spawnNode(K_ADMIN_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_ADMIN_PORT1));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{.opcode = cinder::net::Opcode::AdminInfo, .key = {}, .value = {}};
-    auto res = rawRequest(K_ADMIN_PORT1, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
     ASSERT_TRUE(res->value.has_value());
     EXPECT_TRUE(res->value->contains("node_id"));
     EXPECT_TRUE(res->value->contains("port"));
     EXPECT_TRUE(res->value->contains("capacity_bytes"));
+    // Identity values must reflect the running daemon, not file defaults.
+    EXPECT_TRUE(res->value->contains("\"node_id\":\"node1\""));
+    EXPECT_TRUE(res->value->contains("\"port\":" + std::to_string(port)));
 }
 
 TEST(AdminTest, ClusterReturnsNodeList) {
-    NodeProcGuard node{spawnNode(K_ADMIN_PORT2, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_ADMIN_PORT2));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{.opcode = cinder::net::Opcode::AdminCluster, .key = {}, .value = {}};
-    auto res = rawRequest(K_ADMIN_PORT2, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
     ASSERT_TRUE(res->value.has_value());
@@ -41,11 +46,13 @@ TEST(AdminTest, ClusterReturnsNodeList) {
 }
 
 TEST(AdminTest, RingReturnsJson) {
-    NodeProcGuard node{spawnNode(K_ADMIN_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_ADMIN_PORT1));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{.opcode = cinder::net::Opcode::AdminRing, .key = {}, .value = {}};
-    auto res = rawRequest(K_ADMIN_PORT1, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
     ASSERT_TRUE(res->value.has_value());
@@ -54,33 +61,38 @@ TEST(AdminTest, RingReturnsJson) {
 }
 
 TEST(AdminTest, CompactReturnsOk) {
-    NodeProcGuard node{spawnNode(K_ADMIN_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_ADMIN_PORT1));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{.opcode = cinder::net::Opcode::AdminCompact, .key = {}, .value = {}};
-    auto res = rawRequest(K_ADMIN_PORT1, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
 }
 
 TEST(AdminTest, ConfigReloadReturnsOk) {
-    NodeProcGuard node{spawnNode(K_ADMIN_PORT1, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_ADMIN_PORT1));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{
         .opcode = cinder::net::Opcode::AdminConfigReload, .key = {}, .value = {}};
-    auto res = rawRequest(K_ADMIN_PORT1, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
 }
 
 TEST(AdminTest, ShutdownReturnsOk) {
-    constexpr int K_PORT = 17'942;
-    NodeProcGuard node{spawnNode(K_PORT, "node1", "")};
-    ASSERT_TRUE(waitForPort(K_PORT));
+    const int port = pickEphemeralPort();
+    ASSERT_NE(port, 0);
+    NodeProcGuard node{spawnNode(port, "node1", "")};
+    ASSERT_TRUE(waitForNode(port, "node1"));
 
     cinder::net::Request req{.opcode = cinder::net::Opcode::AdminShutdown, .key = {}, .value = {}};
-    auto res = rawRequest(K_PORT, req);
+    auto res = rawRequest(port, req);
     ASSERT_TRUE(res.has_value());
     EXPECT_EQ(res->status, cinder::Errc::OK);
 }

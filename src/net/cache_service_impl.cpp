@@ -29,12 +29,16 @@ toProtoStatus(Errc code) -> cinder::v1::StatusCode {
             return cinder::v1::STATUS_CODE_TTL_EXPIRED;
         case Errc::NotSupported:
             return cinder::v1::STATUS_CODE_NOT_SUPPORTED;
-        case Errc::Internal:
+        case Errc::InternalError:
             return cinder::v1::STATUS_CODE_INTERNAL_ERROR;
         case Errc::Timeout:
             return cinder::v1::STATUS_CODE_TIMEOUT;
         case Errc::NotReady:
             return cinder::v1::STATUS_CODE_NOT_READY;
+        case Errc::PermissionDenied:
+            return cinder::v1::STATUS_CODE_PERMISSION_DENIED;
+        case Errc::CorruptData:
+            return cinder::v1::STATUS_CODE_CORRUPT_DATA;
     }
     return cinder::v1::STATUS_CODE_INTERNAL_ERROR;
 }
