@@ -68,10 +68,9 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       ssl_ctx_(initSslContext(options)),
 #endif
       anti_entropy_interval_(options.anti_entropy_interval),
-      node_id_(options.node_id),
-      port_(options.port),
       capacity_(options.capacity),
       peers_(options.peers),
+      node_id_(options.node_id),
       config_path_(options.config_path),
       anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
           options.anti_entropy_buckets, &metrics_),
@@ -83,6 +82,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       probe_timer_(io_),
       evict_timer_(io_),
       quarantine_timer_(io_),
+      rebalance_timer_(io_),
       compact_timer_(io_),
       config_reload_timer_(io_),
       anti_entropy_timer_(io_),
@@ -116,6 +116,7 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       repl_(*store_, options.node_id, clock_, transport_),
       io_threads_(options.io_threads),
       replica_factor_(options.replica_factor),
+      port_(options.port),
       metrics_port_(options.metrics_port),
       mode_(options.mode) {
     signals_.add(SIGINT);
@@ -263,6 +264,7 @@ CacheNodeServer::shutdown() {
     probe_timer_.cancel();
     evict_timer_.cancel();
     quarantine_timer_.cancel();
+    rebalance_timer_.cancel();
     compact_timer_.cancel();
     config_reload_timer_.cancel();
     anti_entropy_timer_.cancel();
@@ -359,12 +361,32 @@ CacheNodeServer::rebuildRing() {
             ring_.removeNode(info.id);
         }
     }
-    // Push keys this node no longer owns to their new ring owners. If some were
-    // deferred because their owner is still quarantined, retry once the window
-    // has elapsed.
-    if (shard_.rebalance()) {
-        scheduleRebalance();
+    // Push keys this node no longer owns to their new ring owners. The scan
+    // + migration burst is debounced (see scheduleRebalanceDebounced): rapid
+    // membership flaps collapse into a single run over the latest ring.
+    scheduleRebalanceDebounced();
+}
+
+void
+CacheNodeServer::scheduleRebalanceDebounced() {
+    // Coalesce bursts: a pending run already covers the latest ring view.
+    if (rebalance_pending_) {
+        return;
     }
+
+    rebalance_pending_ = true;
+    rebalance_timer_.expires_after(milliseconds(200));
+    rebalance_timer_.async_wait([this](std::error_code ec) {
+        rebalance_pending_ = false;
+        if (ec) {
+            return;
+        }
+        // If some migrations were deferred because their owner is still
+        // quarantined, retry once the window has elapsed.
+        if (shard_.rebalance()) {
+            scheduleRebalance();
+        }
+    });
 }
 
 void
@@ -372,6 +394,7 @@ CacheNodeServer::scheduleRebalance() {
     if (quarantine_interval_.count() <= 0) {
         return;
     }
+
     quarantine_timer_.expires_after(quarantine_interval_);
     quarantine_timer_.async_wait([this](std::error_code ec) {
         if (ec) {

@@ -169,6 +169,12 @@ class CacheNodeServer {
     void scheduleCompact();
     void scheduleAntiEntropy();
     void rebuildRing();
+    // Membership callbacks can fire in bursts (gossip + probe + refute for
+    // the same flap). Ring updates apply immediately (cheap, lock-free
+    // snapshot publish) but the expensive store scan + migration burst in
+    // ShardManager::rebalance is debounced and coalesced: rapid triggers
+    // collapse into a single run over the latest ring view.
+    void scheduleRebalanceDebounced();
     void scheduleRebalance();
     void scheduleConfigReload();
     void applyConfig();
@@ -183,11 +189,10 @@ class CacheNodeServer {
     std::optional<asio::ssl::context> ssl_ctx_;
 #endif
     milliseconds anti_entropy_interval_{30'000};
-    io_context io_;
-    NodeId node_id_;
-    uint16_t port_ = 0;
     size_t capacity_ = 0;
+    io_context io_;
     std::vector<ClusterConfig::NodeConfig> peers_;
+    NodeId node_id_;
     std::string config_path_;
     AntiEntropyManager anti_entropy_;
     signal_set signals_;
@@ -197,6 +202,8 @@ class CacheNodeServer {
     steady_timer probe_timer_;
     steady_timer evict_timer_;
     steady_timer quarantine_timer_;
+    steady_timer rebalance_timer_;
+    bool rebalance_pending_ = false;
     steady_timer compact_timer_;
     steady_timer config_reload_timer_;
     steady_timer anti_entropy_timer_;
@@ -211,6 +218,7 @@ class CacheNodeServer {
     ReplicationManager repl_;
     int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
     int replica_factor_ = 1;
+    uint16_t port_ = 0;
     uint16_t metrics_port_ = 0;
     ConsistencyMode mode_ = ConsistencyMode::Async;
 };

@@ -81,11 +81,21 @@ TEST(GossipPartitionSimTest, SuspectThenDead) {
     GossipCluster c;
     c.seedAll();
 
-    // node2 goes down: probe fails → suspect, then escalated to dead.
+    // node2 goes down: a single failed probe is tolerated (no flap), the
+    // second consecutive failure suspects, then escalation marks dead.
     c.bus.setNodeDown("node2");
     c.tickAll();
 
     auto info = c.nodes[0]->table.get("node2");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->state, NodeState::Alive) << "single transient failure must not suspect";
+
+    // Round-robin alternates peers, so a few rounds cover two probes to node2.
+    for (int i = 0; i < 6 && c.nodes[0]->table.get("node2")->state != NodeState::Suspect; ++i) {
+        c.tickAll();
+    }
+
+    info = c.nodes[0]->table.get("node2");
     ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Suspect);
 
@@ -101,8 +111,13 @@ TEST(GossipPartitionSimTest, IncarnationRefutation) {
     c.seedAll();
 
     // node2 marked dead locally, then "recovers" with a higher incarnation.
+    // Two consecutive failed probes suspect (single failure tolerated).
     c.bus.setNodeDown("node2");
-    c.tickAll();
+    for (int i = 0; i < 6 && c.nodes[0]->table.get("node2")->state != NodeState::Suspect; ++i) {
+        c.tickAll();
+    }
+
+    ASSERT_EQ(c.nodes[0]->table.get("node2")->state, NodeState::Suspect);
     c.clock.advance(4s);
     c.tickAll();
     ASSERT_EQ(c.nodes[0]->table.get("node2")->state, NodeState::Dead);
@@ -147,8 +162,12 @@ TEST(GossipPartitionSimTest, GossipPropagates) {
     c.seedAll();
 
     // node1 learns node2 is dead via the detector, then gossips to node3.
+    // Suspect needs two consecutive failed probes (round-robin alternates).
     c.bus.setNodeDown("node2");
-    c.tickAll();
+    for (int i = 0; i < 6 && c.nodes[0]->table.get("node2")->state != NodeState::Suspect; ++i) {
+        c.tickAll();
+    }
+
     c.clock.advance(4s);
     c.tickAll();
     ASSERT_EQ(c.nodes[0]->table.get("node2")->state, NodeState::Dead);
@@ -167,11 +186,14 @@ TEST(GossipPartitionSimTest, PartitionDegraded) {
     c.seedAll();
 
     // Two of three nodes unreachable → below majority → degraded.
+    // Each needs two consecutive failed probes; round-robin alternates, so
+    // a few rounds cover both.
     c.bus.setNodeDown("node2");
     c.bus.setNodeDown("node3");
-    c.tickAll();
-    c.clock.advance(4s);
-    c.tickAll();
+    for (int i = 0; i < 8 && !c.nodes[0]->table.isDegraded(); ++i) {
+        c.tickAll();
+    }
+
     EXPECT_TRUE(c.nodes[0]->table.isDegraded());
 
     // Both return → back to a majority → not degraded.
@@ -304,12 +326,21 @@ TEST(GossipPartitionSimTest, LateJoinerGoesDownImmediately) {
     // Bring node3 down before the first probe.
     bus.setNodeDown("node3");
 
-    // Tick: FD picks node3 (only peer), probe fails → suspect.
+    // Tick: first probe fails but is tolerated (single transient failure must
+    // not suspect); the second consecutive failure suspects.
     clock.advance(1s);
     n1->detector.tick();
     bus.deliver();
 
     auto info = n1->table.get("node3");
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->state, NodeState::Alive) << "single failure must not suspect";
+
+    clock.advance(1s);
+    n1->detector.tick();
+    bus.deliver();
+
+    info = n1->table.get("node3");
     ASSERT_TRUE(info.has_value());
     EXPECT_EQ(info->state, NodeState::Suspect);
 

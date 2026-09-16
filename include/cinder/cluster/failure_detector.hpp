@@ -16,9 +16,15 @@ using std::chrono::steady_clock;
 namespace cinder {
 
 // SWIM-style liveness probing. Periodically pings one peer (round-robin) using
-// the existing Ping opcode; a successful reply keeps it Alive, a connect-refused
-// or missing reply (within suspect_timeout) marks it Suspect, and a Suspect that
-// persists past suspect_timeout is marked Dead.
+// the existing Ping opcode; a successful reply keeps it Alive, consecutive
+// failed replies (or a reply missing for longer than suspect_timeout) mark it
+// Suspect, and a Suspect that persists past suspect_timeout is marked Dead.
+//
+// A single transient failure (e.g. a dropped Ping under load) must NOT flap
+// the ring: suspect requires K_SUSPECT_THRESHOLD consecutive failed probes.
+// Success resets the streak. A probe pending longer than suspect_timeout
+// (blackhole that never acks) suspects immediately — it already waited out
+// the full timeout.
 //
 // Thread-safety: tick() (timer handler) and onProbeResult() (transport
 // completion) may run on different io-pool threads once the server goes
@@ -46,6 +52,11 @@ class FailureDetector {
 
   private:
 
+    // Consecutive failed probes required before marking Suspect. Filters
+    // single transient glitches without materially delaying real-failure
+    // detection ((K-1) extra ping intervals).
+    static constexpr int K_SUSPECT_THRESHOLD = 2;
+
     struct ProbeState {
         bool pending = false;
         steady_clock::time_point sent_at;
@@ -67,6 +78,7 @@ class FailureDetector {
     size_t next_peer_ = 0;
     std::unordered_map<NodeId, ProbeState> probes_;
     std::unordered_map<NodeId, steady_clock::time_point> suspect_since_;
+    std::unordered_map<NodeId, int> consecutive_failures_;
     MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder

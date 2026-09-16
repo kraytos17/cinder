@@ -132,6 +132,7 @@ void
 FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     Span span("failure.on_probe_result");
     bool known_probe = false;
+    int failures = 0;
     {
         std::scoped_lock lock(state_mutex_);
         auto it = probes_.find(peer);
@@ -143,8 +144,10 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
         known_probe = true;
         if (acked) {
             suspect_since_.erase(peer);
+            consecutive_failures_.erase(peer);
         } else {
-            suspect_since_.emplace(peer, clock_.now());
+            failures = ++consecutive_failures_[peer];
+            suspect_since_.try_emplace(peer, clock_.now());
         }
     }
 
@@ -162,7 +165,17 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
         return;
     }
 
-    // Unreachable: suspect now, record when; escalation promotes to Dead later.
+    // Sustained unreachable: suspect once the consecutive-failure streak
+    // crosses the threshold; a lone transient failure is tolerated without
+    // flapping the ring (escalation promotes to Dead later).
+    if (failures < K_SUSPECT_THRESHOLD) {
+        Event::debug("probe failed (tolerated)",
+            {{"peer", peer},
+                {"streak", std::to_string(failures)},
+                {"threshold", std::to_string(K_SUSPECT_THRESHOLD)}});
+        return;
+    }
+
     Event::info("suspect marked", {{"peer", peer}, {"reason", "unreachable"}});
     table_.markSuspect(peer);
     if (metrics_) {
@@ -187,6 +200,7 @@ FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
     for (const auto& peer : to_dead) {
         Event::info("suspect→dead", {{"peer", peer}});
         suspect_since_.erase(peer);
+        consecutive_failures_.erase(peer);
     }
     return to_dead;
 }

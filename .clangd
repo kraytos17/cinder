@@ -1,7 +1,7 @@
 CompileFlags:
   Add: [-std=c++23, -Wall, -Wextra, -Wpedantic]
-  CompilationDatabase: build/debug
-  Remove: [-m*, -f*]
+  CompilationDatabase: build/debug-tls
+  Remove: [-march=native, -mavx*, -mfma*]
 
 Diagnostics:
   UnusedIncludes: Strict

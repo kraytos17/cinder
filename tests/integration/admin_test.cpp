@@ -135,7 +135,7 @@ TEST(AdminTest, ReloadPreservesEffectiveIdentity) {
             nullptr);
         _exit(1);
     }
-    
+
     ::close(held_fd);
     cinder::net::test::NodeProcGuard node{{pid, port, "cfg-node"}};
     auto check_identity = [&](const char* phase) {

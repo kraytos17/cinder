@@ -23,8 +23,8 @@ Each node is tracked by a `NodeInfo` record:
 | `joined_at` | `time_point` | Timestamp of the last transition to `Alive`; anchors the quarantine window |
 
 ```
-                   probe fails / timeout
-     Alive ──────────────────────────────► Suspect
+                    K consecutive probe failures / timeout
+      Alive ──────────────────────────────────────────► Suspect
        ▲                                      │
        │                 suspect_timeout expires
        │                                      ▼
@@ -32,7 +32,8 @@ Each node is tracked by a `NodeInfo` record:
        └──────────────────────────────────────┘
 ```
 
-- **Alive → Suspect**: the failure detector's ping probe fails or times out.
+- **Alive → Suspect**: the failure detector's ping probe fails
+  `K_SUSPECT_THRESHOLD` (2) times consecutively, or a probe times out.
   The detector records `suspect_since` and starts the escalation clock.
 - **Suspect → Dead**: `markDead()` fires once `suspect_timeout` elapses
   without recovery. Final under normal operation.
@@ -54,8 +55,9 @@ round-robin state is guarded by `state_mutex_`, since probe callbacks and
 timer ticks can fire concurrently from different io-pool threads.
 
 1. **Ping** — each tick, a random peer is selected and sent a `Ping`.
-2. **Suspect** — if the `Ping` doesn't return within `suspect_timeout`, the
-   peer is marked `Suspect` and a suspicion timer starts.
+2. **Suspect** — if `K_SUSPECT_THRESHOLD` (2) consecutive `Ping`s fail, the
+   peer is marked `Suspect` and a suspicion timer starts. A single transient
+   failure is tolerated without flapping the ring.
 3. **Dead** — if the peer is still `Suspect` after `suspect_timeout` elapses
    from the initial probe, it is marked `Dead`.
 4. **Blackhole detection** — a timed-out probe (no response within
