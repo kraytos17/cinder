@@ -2,7 +2,7 @@
 
 #include <asio.hpp>
 #include <chrono>
-#include <csignal>
+#include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <span>
@@ -29,10 +29,11 @@ using std::chrono::steady_clock;
 namespace cinder::net::test {
 
 // Pick a currently-free loopback port: bind :0, read back the assignment,
-// close. Best-effort — another process could bind it first, so callers must
-// verify identity after spawn (waitForNode), never assume the port.
+// close. Returns uint16_t so the result feeds NodeConfig braced-init
+// without narrowing. Best-effort — another process could bind it first,
+// so callers must verify identity after spawn (waitForNode).
 [[maybe_unused]] static auto
-pickEphemeralPort() -> int {
+pickEphemeralPort() -> uint16_t {
     io_context io;
     tcp::acceptor acc(io);
     error_code ec;
@@ -49,7 +50,7 @@ pickEphemeralPort() -> int {
     if (ec) {
         return 0;
     }
-    return static_cast<int>(ep.port());
+    return ep.port();
 }
 
 [[maybe_unused]] static auto

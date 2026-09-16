@@ -45,9 +45,9 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
     // Suspect timeout raised to 30s so the failure detector tolerates ASan
     // startup delays without false-suspecting peers and disrupting the ring.
     // Only 20 keys to keep migration time reasonable under ASan overhead.
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
-    const int port3 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port3 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
@@ -105,9 +105,9 @@ TEST(RebalanceOnJoinTest, KeysMigrateToJoiningNode) {
 }
 
 TEST(RebalanceOnJoinTest, KeysStayingElsewhereUntouched) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
-    const int port3 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port3 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);

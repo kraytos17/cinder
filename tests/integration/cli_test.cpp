@@ -70,7 +70,7 @@ runCli(uint16_t port, const std::vector<std::string>& args) -> std::pair<std::st
 }
 
 TEST(CliTest, Ping) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -80,7 +80,7 @@ TEST(CliTest, Ping) {
 }
 
 TEST(CliTest, SetGet) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -97,7 +97,7 @@ TEST(CliTest, SetGet) {
 }
 
 TEST(CliTest, GetNotFound) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -113,7 +113,7 @@ TEST(CliTest, ConnectRefused) {
 }
 
 TEST(CliTest, Del) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));

@@ -30,7 +30,7 @@ namespace cinder::net {
 namespace {
 
 TEST(ClusterSmokeTest, SetGetDelPing) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
@@ -100,7 +100,7 @@ TEST(ClusterSmokeTest, SetGetDelPing) {
 }
 
 TEST(ClusterSmokeTest, TTLExpiry) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";
@@ -168,7 +168,7 @@ TEST(ClusterSmokeTest, TTLExpiry) {
 TEST(ClusterSmokeTest, CapacityEviction) {
     // This test requires --capacity which spawnNode doesn't support, so we
     // fork/exec manually.
-    int port = pickEphemeralPort();
+    uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     auto port_str = std::to_string(port);
     auto cap_str = std::to_string(300);
@@ -270,7 +270,7 @@ TEST(ClusterSmokeTest, CapacityEviction) {
 }
 
 TEST(ClusterSmokeTest, LargeValue) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "server did not start in time";

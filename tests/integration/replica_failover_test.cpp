@@ -35,8 +35,8 @@ ownersOf(const std::string& key) -> std::pair<std::string, std::string> {
 }
 
 TEST(ReplicaFailoverTest, FanoutReachesReplica) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -58,8 +58,8 @@ TEST(ReplicaFailoverTest, FanoutReachesReplica) {
 }
 
 TEST(ReplicaFailoverTest, SurvivesPrimaryFailure) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -88,8 +88,8 @@ TEST(ReplicaFailoverTest, SurvivesPrimaryFailure) {
 }
 
 TEST(ReplicaFailoverTest, QuorumFailsClosedWhenReplicaDown) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -104,8 +104,8 @@ TEST(ReplicaFailoverTest, QuorumFailsClosedWhenReplicaDown) {
 }
 
 TEST(ReplicaFailoverTest, HintedHandoffReplaysWhenReplicaReturns) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{
@@ -127,9 +127,9 @@ TEST(ReplicaFailoverTest, HintedHandoffReplaysWhenReplicaReturns) {
 }
 
 TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
-    const int port3 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port3 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);
@@ -184,8 +184,8 @@ TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
 }
 
 TEST(ReplicaFailoverTest, TTLReplicationOverWire) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{

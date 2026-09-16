@@ -14,7 +14,7 @@ namespace cinder {
 namespace {
 
 TEST(MultiGetTest, BatchRetrievesExistingKeys) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";
@@ -39,7 +39,7 @@ TEST(MultiGetTest, BatchRetrievesExistingKeys) {
 }
 
 TEST(MultiGetTest, MissingKeysAbsent) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1")) << "node did not start";

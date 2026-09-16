@@ -69,9 +69,9 @@ collectRedirected(const std::vector<std::string>& keys, int new_owner_port, Port
 }
 
 TEST(ClientRedirectTest, MultiGetFollowsRedirectsAfterJoin) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
-    const int port3 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port3 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);

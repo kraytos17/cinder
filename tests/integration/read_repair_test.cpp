@@ -22,8 +22,8 @@ namespace {
 // Quorum Get on a 2-node RF=2 cluster should return the value and trigger
 // read repair when the replica is missing the key (fresh restart).
 TEST(ReadRepairIntegrationTest, QuorumReadRepairsRestartedReplica) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     NodeProcGuard node1{spawnNode(port1,

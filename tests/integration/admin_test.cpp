@@ -12,7 +12,7 @@ using cinder::net::test::waitForNode;
 namespace {
 
 TEST(AdminTest, InfoReturnsJson) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -31,7 +31,7 @@ TEST(AdminTest, InfoReturnsJson) {
 }
 
 TEST(AdminTest, ClusterReturnsNodeList) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -46,7 +46,7 @@ TEST(AdminTest, ClusterReturnsNodeList) {
 }
 
 TEST(AdminTest, RingReturnsJson) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -61,7 +61,7 @@ TEST(AdminTest, RingReturnsJson) {
 }
 
 TEST(AdminTest, CompactReturnsOk) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -73,7 +73,7 @@ TEST(AdminTest, CompactReturnsOk) {
 }
 
 TEST(AdminTest, ConfigReloadReturnsOk) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));
@@ -86,7 +86,7 @@ TEST(AdminTest, ConfigReloadReturnsOk) {
 }
 
 TEST(AdminTest, ShutdownReturnsOk) {
-    const int port = pickEphemeralPort();
+    const uint16_t port = pickEphemeralPort();
     ASSERT_NE(port, 0);
     NodeProcGuard node{spawnNode(port, "node1", "")};
     ASSERT_TRUE(waitForNode(port, "node1"));

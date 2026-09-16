@@ -19,9 +19,9 @@ namespace {
 // RF=2, three real nodes: every key must end up on BOTH members of its 3-node
 // replica set after node3 joins — replicas rebalance just like primaries.
 TEST(RebalanceRf2Test, KeysReachNewReplicaSetOnJoin) {
-    const int port1 = pickEphemeralPort();
-    const int port2 = pickEphemeralPort();
-    const int port3 = pickEphemeralPort();
+    const uint16_t port1 = pickEphemeralPort();
+    const uint16_t port2 = pickEphemeralPort();
+    const uint16_t port3 = pickEphemeralPort();
     ASSERT_NE(port1, 0);
     ASSERT_NE(port2, 0);
     ASSERT_NE(port3, 0);

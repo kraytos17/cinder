@@ -21,8 +21,8 @@ namespace {
 
 auto
 spawnPorts() -> std::pair<int, int> {
-    int tcp_port = cinder::net::test::pickEphemeralPort();
-    int grpc_port = cinder::net::test::pickEphemeralPort();
+    uint16_t tcp_port = cinder::net::test::pickEphemeralPort();
+    uint16_t grpc_port = cinder::net::test::pickEphemeralPort();
     EXPECT_NE(tcp_port, 0);
     EXPECT_NE(grpc_port, 0);
     return {tcp_port, grpc_port};
