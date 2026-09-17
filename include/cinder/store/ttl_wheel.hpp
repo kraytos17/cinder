@@ -10,6 +10,8 @@
 namespace cinder {
 
 // Base struct for intrusive TTL-wheel linkage.
+// Kept first in every store node so list/wheel pointer-chasing pulls the
+// linkage, not key/value heap data, into the line.
 struct WheelNode {
     WheelNode* wheel_prev = nullptr;
     WheelNode* wheel_next = nullptr;
@@ -18,6 +20,8 @@ struct WheelNode {
     uint16_t wheel_slot = 0;
     bool in_heap = false; // true when scheduled in the min-heap
 };
+
+static_assert(sizeof(WheelNode) == 24, "WheelNode should be 24 bytes");
 
 // Concept: Node must inherit from WheelNode and expose a `key` member.
 template <typename Node>

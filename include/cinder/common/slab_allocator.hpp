@@ -122,10 +122,10 @@ template <typename T> class SlabAllocator {
             throw std::bad_alloc();
         }
 
-        std::vector<std::byte*> slabs_;
-        std::atomic<FreeBlock*> free_head_{nullptr};
-        std::atomic<size_t> free_count_{0};
-        std::atomic<size_t> total_slots_{0};
+        alignas(64) std::atomic<FreeBlock*> free_head_{nullptr};
+        alignas(64) std::atomic<size_t> free_count_{0};
+        alignas(64) std::atomic<size_t> total_slots_{0};
+        alignas(64) std::vector<std::byte*> slabs_;
         size_t slots_per_slab_ = K_DEFAULT_SLOTS_PER_SLAB;
         mutable std::mutex mutex_; // only guards slab growth
     };

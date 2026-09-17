@@ -59,7 +59,18 @@ class FailureDetector {
 
     struct ProbeState {
         bool pending = false;
-        steady_clock::time_point sent_at;
+        steady_clock::time_point sent_at{};
+    };
+
+    // Fused per-peer state: one hash lookup per peer per tick instead of
+    // three (probes_ + suspect_since_ + consecutive_failures_). All fields
+    // for a peer live on adjacent lines so sweep + probe + escalate touch
+    // one cache line instead of three scattered map nodes.
+    struct PeerState {
+        ProbeState probe;
+        steady_clock::time_point suspect_since{};
+        bool suspected = false;
+        int consecutive_failures = 0;
     };
 
     void onProbeResult(const NodeId& peer, bool acked);
@@ -76,9 +87,7 @@ class FailureDetector {
     mutable std::mutex state_mutex_;
     std::vector<NodeId> peers_;
     size_t next_peer_ = 0;
-    std::unordered_map<NodeId, ProbeState> probes_;
-    std::unordered_map<NodeId, steady_clock::time_point> suspect_since_;
-    std::unordered_map<NodeId, int> consecutive_failures_;
+    std::unordered_map<NodeId, PeerState> peer_state_;
     MetricsCollector* metrics_ = nullptr;
 };
 } // namespace cinder

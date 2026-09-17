@@ -168,20 +168,31 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     template <typename ConstBufferSequence, typename Handler>
     void doAsyncWrite(const ConstBufferSequence& buf, Handler handler);
 
+    // ASIO trio: kept together, all strand-affine. socket_ opens the line.
     alignas(64) tcp::socket socket_;
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::stream<tcp::socket&>> ssl_stream_;
 #endif
-    size_t payload_len_ = 0;
-    uint8_t flags_ = 0; // bit 0: writing_, bit 1: reading_, bit 2: draining_
-    std::optional<Opcode> pending_opcode_;
-    std::chrono::steady_clock::time_point request_start_{};
     // Serializes this connection's handler chain. Completion handlers from
     // the io_context thread pool are dispatched through this strand, so all
     // connection state below is accessed from a single logical thread.
     asio::strand<asio::any_io_executor> strand_;
     asio::steady_timer idle_timer_;
 
+    size_t payload_len_ = 0;
+    uint8_t flags_ = 0; // bit 0: writing_, bit 1: reading_, bit 2: draining_
+    std::optional<Opcode> pending_opcode_;
+    std::chrono::steady_clock::time_point request_start_{};
+    std::deque<std::vector<std::byte>> write_queue_;
+    size_t write_queue_bytes_ = 0;
+    std::vector<std::byte> encode_buf_; // Scratch buffer, recycled across writes.
+    // 1MB read staging lives on the heap so sizeof(TcpConnection) stays
+    // cache-friendly. The object itself is allocated per-connection
+    // via shared_ptr; inlining 1MB would blow
+    // the allocator and pollute D-cache with cold buffer tails.
+    std::unique_ptr<std::array<std::byte, K_BUFFER_SIZE>> read_buf_;
+
+    // Read-mostly routing refs: set once at construction, never mutated.
     CacheStore& store_;
     const ConsistentHashRing& ring_;
     Clock& clock_;
@@ -191,19 +202,13 @@ class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     std::string_view node_id_;
     int replica_factor_;
     ConsistencyMode mode_;
-    // Shared secret for HMAC-based node authentication. Empty disables auth.
-    std::string shared_secret_;
 
-    std::deque<std::vector<std::byte>> write_queue_;
-    size_t write_queue_bytes_ = 0;
-    std::vector<std::byte> encode_buf_; // Scratch buffer, recycled across writes.
+    std::string shared_secret_;
     std::shared_ptr<std::atomic<size_t>> conn_counter_;
     MetricsCollector* metrics_ = nullptr;
     // Admin opcode callbacks, populated by TcpServer after construction.
     std::unique_ptr<AdminCallbacks> admin_;
     // Owner address resolver, populated by TcpServer after construction.
     AddrResolver addr_resolver_;
-
-    std::array<std::byte, K_BUFFER_SIZE> read_buf_{};
 };
 } // namespace cinder::net

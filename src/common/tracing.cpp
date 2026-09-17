@@ -98,9 +98,9 @@ Span::Span(std::string_view operation, uint64_t parent_span_id, std::source_loca
     // span id, which the context adopts so events correlate with it.
     if (auto sub = g_subscriber.load(std::memory_order_acquire); sub != nullptr) {
         Metadata meta{.target = operation,
-            .level = LogLevel::Trace,
             .file = loc.file_name(),
-            .line = loc.line()};
+            .line = loc.line(),
+            .level = LogLevel::Trace};
         if (sub->registerCallsite(meta) != Interest::Never) {
             sub_span_id_ = sub->newSpan(meta, trace_id_, parent_span_id);
             sub->enter(sub_span_id_);

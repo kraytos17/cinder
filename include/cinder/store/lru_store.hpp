@@ -10,6 +10,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/types.hpp"
+#include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/store/detail/eviction_store_base.hpp"
 #include "cinder/store/ttl_wheel.hpp"
 
@@ -22,6 +23,8 @@ struct LruNode : WheelNode {
     std::string key;
     VersionedEntry entry;
 };
+
+static_assert(sizeof(LruNode) == 112, "LruNode should be 112 bytes");
 
 class LruStore : public EvictionStoreBase<LruStore, LruNode> {
     friend class EvictionStoreBase<LruStore, LruNode>;
@@ -53,7 +56,7 @@ class LruStore : public EvictionStoreBase<LruStore, LruNode> {
 
     mutable std::shared_mutex mutex_;
     std::list<LruNode, SlabAllocator<LruNode>> list_;
-    std::unordered_map<std::string, ListIt> index_;
+    std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
     TtlWheel<LruNode> wheel_;
 };
 } // namespace cinder

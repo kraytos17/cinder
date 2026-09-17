@@ -27,26 +27,26 @@ TEST(EventTest, SingleField) {
 TEST(FieldValueTest, LiteralBindsAsStr) {
     // String literals must bind as Str, not Bool (pointer-to-bool is a
     // standard conversion that would otherwise win over string_view).
-    constexpr FieldValue f{"status", "error"};
-    EXPECT_EQ(f.type, FieldValue::Type::Str);
-    EXPECT_EQ(f.strView(), "error");
+    constexpr FieldValue F{"status", "error"};
+    EXPECT_EQ(F.type, FieldValue::Type::Str);
+    EXPECT_EQ(F.strView(), "error");
 }
 
 TEST(FieldValueTest, IntBindsAsInt) {
-    constexpr FieldValue f{"n", -42};
-    EXPECT_EQ(f.type, FieldValue::Type::Int);
+    constexpr FieldValue F{"n", -42};
+    EXPECT_EQ(F.type, FieldValue::Type::Int);
 }
 
 TEST(FieldValueTest, UIntBindsAsUInt) {
-    constexpr size_t n = 42;
-    constexpr FieldValue f{"n", n};
-    EXPECT_EQ(f.type, FieldValue::Type::UInt);
+    constexpr size_t N = 42;
+    constexpr FieldValue F{"n", N};
+    EXPECT_EQ(F.type, FieldValue::Type::UInt);
 }
 
 TEST(FieldValueTest, BoolBindsAsBool) {
-    constexpr FieldValue f{"b", true};
-    EXPECT_EQ(f.type, FieldValue::Type::Bool);
-    EXPECT_TRUE(f.bool_val);
+    constexpr FieldValue F{"b", true};
+    EXPECT_EQ(F.type, FieldValue::Type::Bool);
+    EXPECT_TRUE(F.bool_val);
 }
 
 TEST(FieldValueTest, StringViewBindsAsStr) {
@@ -170,7 +170,7 @@ struct RecordingSubscriber : public Subscriber {
     }
 
     void event(const EventRecord& record) noexcept override {
-        events.push_back(std::string(record.message));
+        events.emplace_back(record.message);
         std::string rendered;
         for (const auto& f : record.fields) {
             rendered += std::string(f.key) + "=";
@@ -206,7 +206,7 @@ struct RecordingSubscriber : public Subscriber {
     auto registerCalls() const -> size_t {
         size_t n = 0;
         for (const auto& e : order) {
-            n += (e.rfind("register:", 0) == 0) ? 1 : 0;
+            n += (e.starts_with("register:")) ? 1 : 0;
         }
         return n;
     }
@@ -221,6 +221,11 @@ struct SubscriberGuard {
     }
 
     ~SubscriberGuard() { setGlobalSubscriber(prev_); }
+
+    SubscriberGuard(const SubscriberGuard&) = delete;
+    auto operator=(const SubscriberGuard&) -> SubscriberGuard& = delete;
+    SubscriberGuard(SubscriberGuard&&) = delete;
+    auto operator=(SubscriberGuard&&) -> SubscriberGuard& = delete;
 
     std::shared_ptr<Subscriber> prev_;
 };
@@ -282,7 +287,7 @@ TEST(SubscriberTest, ChildSpanPropagatesParentIds) {
 
 TEST(SubscriberTest, SpdlogSubscriberAcceptsEverything) {
     SpdlogSubscriber sub;
-    Metadata meta{.target = "op", .level = LogLevel::Info, .file = "f", .line = 1};
+    Metadata meta{.target = "op", .file = "f", .line = 1, .level = LogLevel::Info};
     EXPECT_EQ(sub.registerCallsite(meta), Interest::Always);
     uint64_t id = sub.newSpan(meta, 7, 0);
     EXPECT_NE(id, 0);
@@ -299,7 +304,7 @@ TEST(LayeredTest, InterestCombinesPermissively) {
     auto always = std::make_shared<RecordingSubscriber>(Interest::Always);
     auto sometimes = std::make_shared<RecordingSubscriber>(Interest::Sometimes);
     auto never = std::make_shared<RecordingSubscriber>(Interest::Never);
-    Metadata meta{.target = "op", .level = LogLevel::Info, .file = "f", .line = 1};
+    Metadata meta{.target = "op", .file = "f", .line = 1, .level = LogLevel::Info};
 
     LayeredSubscriber all_never;
     all_never.addLayer(never);
@@ -353,8 +358,8 @@ TEST(LayeredTest, DispatchesToAllLayersWithCanonicalId) {
 TEST(LevelFilterTest, DropsBelowMinLevel) {
     auto inner = std::make_shared<RecordingSubscriber>();
     auto filter = std::make_shared<LevelFilter>(LogLevel::Warn, inner);
-    Metadata debug_meta{.target = "op", .level = LogLevel::Debug, .file = "f", .line = 1};
-    Metadata warn_meta{.target = "op", .level = LogLevel::Warn, .file = "f", .line = 1};
+    Metadata debug_meta{.target = "op", .file = "f", .line = 1, .level = LogLevel::Debug};
+    Metadata warn_meta{.target = "op", .file = "f", .line = 1, .level = LogLevel::Warn};
     EXPECT_EQ(filter->registerCallsite(debug_meta), Interest::Never);
     EXPECT_EQ(filter->registerCallsite(warn_meta), Interest::Always);
     {
@@ -372,7 +377,7 @@ TEST(LevelFilterTest, DropsBelowMinLevel) {
 TEST(LevelFilterTest, RespectsInnerNever) {
     auto inner = std::make_shared<RecordingSubscriber>(Interest::Never);
     LevelFilter filter(LogLevel::Trace, inner);
-    Metadata meta{.target = "op", .level = LogLevel::Error, .file = "f", .line = 1};
+    Metadata meta{.target = "op", .file = "f", .line = 1, .level = LogLevel::Error};
     EXPECT_EQ(filter.registerCallsite(meta), Interest::Never);
 }
 

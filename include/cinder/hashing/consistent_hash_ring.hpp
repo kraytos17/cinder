@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <shared_mutex>
+#include <mutex>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -82,12 +82,17 @@ class ConsistentHashRing {
     int vnodes_per_node_;
     double bounded_load_factor_;
 
-    // Per-node in-flight load counters. Mutable because load tracking is
-    // logically orthogonal to the ring's snapshot immutability — readers
-    // call incrementLoad/decrementLoad on a const ring reference.
-    mutable std::shared_mutex load_mu_;
-    mutable std::unordered_map<NodeId, std::atomic<uint64_t>, TransparentStringHash,
-        std::equal_to<>>
-        load_;
+    // Per-node in-flight load counters. Copy-on-write like the snapshot:
+    // readers load an immutable LoadMap and bump the cell atomically with no
+    // locks; writers (add/removeNode) serialize on loads_mu_ and publish a
+    // fresh map. Cells are shared_ptr so in-flight counts survive membership
+    // changes. Mutable because load tracking is logically orthogonal to the
+    // ring's snapshot immutability — readers call increment/decrement on a
+    // const ring reference.
+    using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
+    using LoadMap = std::unordered_map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
+
+    mutable std::atomic<std::shared_ptr<const LoadMap>> loads_;
+    mutable std::mutex loads_mu_; // writers only (add/removeNode)
 };
 } // namespace cinder

@@ -60,9 +60,9 @@ FailureDetector::tick() {
     {
         std::scoped_lock lock(state_mutex_);
         // Sweep pending probes for timeouts (covers blackholes that never ack).
-        for (auto& [peer, probe] : probes_) {
-            if (probe.pending && clock_.now() - probe.sent_at > suspect_timeout_) {
-                probe.pending = false;
+        for (auto& [peer, state] : peer_state_) {
+            if (state.probe.pending && clock_.now() - state.probe.sent_at > suspect_timeout_) {
+                state.probe.pending = false;
                 timed_out.push_back(peer);
             }
         }
@@ -77,8 +77,8 @@ FailureDetector::tick() {
                     continue;
                 }
 
-                auto it = probes_.find(peer);
-                if (it != probes_.end() && it->second.pending) {
+                auto it = peer_state_.find(peer);
+                if (it != peer_state_.end() && it->second.probe.pending) {
                     continue;
                 }
 
@@ -87,9 +87,9 @@ FailureDetector::tick() {
                     continue;
                 }
 
-                auto& probe = probes_[peer];
-                probe.pending = true;
-                probe.sent_at = clock_.now();
+                auto& state = peer_state_[peer];
+                state.probe.pending = true;
+                state.probe.sent_at = clock_.now();
                 probe_target = peer;
                 has_probe = true;
                 break;
@@ -134,19 +134,23 @@ FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
     int failures = 0;
     {
         std::scoped_lock lock(state_mutex_);
-        auto it = probes_.find(peer);
-        if (it == probes_.end()) {
+        auto it = peer_state_.find(peer);
+        if (it == peer_state_.end()) {
             return;
         }
 
-        it->second.pending = false;
+        it->second.probe.pending = false;
         known_probe = true;
         if (acked) {
-            suspect_since_.erase(peer);
-            consecutive_failures_.erase(peer);
+            it->second.suspected = false;
+            it->second.consecutive_failures = 0;
         } else {
-            failures = ++consecutive_failures_[peer];
-            suspect_since_.try_emplace(peer, clock_.now());
+            auto& state = it->second;
+            failures = ++state.consecutive_failures;
+            if (!state.suspected) {
+                state.suspected = true;
+                state.suspect_since = clock_.now();
+            }
         }
     }
 
@@ -187,19 +191,26 @@ FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
     // Caller holds state_mutex_; returns peers to mark Dead so the caller can
     // mutate MembershipTable without holding our lock.
     std::vector<NodeId> to_dead;
-    for (const auto& [peer, since] : suspect_since_) {
+    for (auto& [peer, state] : peer_state_) {
+        if (!state.suspected) {
+            continue;
+        }
+
         auto info = table_.get(peer);
         if (!info.has_value() || info->state != NodeState::Suspect) {
             continue;
         }
-        if (clock_.now() - since > suspect_timeout_) {
+        if (clock_.now() - state.suspect_since > suspect_timeout_) {
             to_dead.push_back(peer);
         }
     }
     for (const auto& peer : to_dead) {
         CINDER_INFO("suspect→dead", {"peer", peer});
-        suspect_since_.erase(peer);
-        consecutive_failures_.erase(peer);
+        auto it = peer_state_.find(peer);
+        if (it != peer_state_.end()) {
+            it->second.suspected = false;
+            it->second.consecutive_failures = 0;
+        }
     }
     return to_dead;
 }

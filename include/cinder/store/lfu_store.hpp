@@ -10,6 +10,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/types.hpp"
+#include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/store/detail/eviction_store_base.hpp"
 #include "cinder/store/ttl_wheel.hpp"
 
@@ -24,6 +25,8 @@ struct LfuNode : WheelNode {
     std::string key;
     VersionedEntry entry;
 };
+
+static_assert(sizeof(LfuNode) == 128, "LfuNode should be 128 bytes");
 
 class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
     friend class EvictionStoreBase<LfuStore, LfuNode>;
@@ -58,7 +61,7 @@ class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
 
     mutable std::shared_mutex mutex_;
     std::list<LfuNode, SlabAllocator<LfuNode>> list_;
-    std::unordered_map<std::string, ListIt> index_;
+    std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
     TtlWheel<LfuNode> wheel_;
     std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
     size_t min_freq_ = 1;

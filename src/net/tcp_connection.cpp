@@ -30,6 +30,8 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
     : socket_(std::move(socket)),
       strand_(socket_.get_executor()),
       idle_timer_(socket_.get_executor()),
+      encode_buf_(512),
+      read_buf_(std::make_unique<std::array<std::byte, K_BUFFER_SIZE>>()),
       store_(store),
       ring_(ring),
       clock_(clock),
@@ -40,7 +42,6 @@ TcpConnection::TcpConnection(tcp::socket socket, CacheStore& store, const Consis
       replica_factor_(replica_factor),
       mode_(mode),
       shared_secret_(std::move(shared_secret)),
-      encode_buf_(512),
       conn_counter_(std::move(conn_counter)) {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_ctx) {
@@ -205,7 +206,7 @@ TcpConnection::doReadHeader() {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_stream_) {
         async_read(*ssl_stream_,
-            buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
+            buffer(read_buf_->data(), K_FRAME_HEADER_SIZE),
             asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
             if (ec) {
                 return;
@@ -216,7 +217,7 @@ TcpConnection::doReadHeader() {
     }
 #endif
     async_read(socket_,
-        buffer(read_buf_.data(), K_FRAME_HEADER_SIZE),
+        buffer(read_buf_->data(), K_FRAME_HEADER_SIZE),
         asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
         if (ec) {
             return;
@@ -233,10 +234,10 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     }
 
     resetIdleTimer();
-    if (read_buf_[0] != std::byte{K_MAGIC} || read_buf_[1] != std::byte{K_VERSION}) {
+    if ((*read_buf_)[0] != std::byte{K_MAGIC} || (*read_buf_)[1] != std::byte{K_VERSION}) {
         CINDER_WARN("bad protocol header",
-            {"magic", std::format("{:#x}", std::to_integer<int>(read_buf_[0]))},
-            {"version", std::format("{:#x}", std::to_integer<int>(read_buf_[1]))});
+            {"magic", std::format("{:#x}", std::to_integer<int>((*read_buf_)[0]))},
+            {"version", std::format("{:#x}", std::to_integer<int>((*read_buf_)[1]))});
         if (metrics_) {
             metrics_->connectionMetrics().decode_failures.fetch_add(1, std::memory_order_relaxed);
         }
@@ -245,7 +246,7 @@ TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
     }
 
     uint32_t net_len = 0;
-    std::memcpy(&net_len, &read_buf_[3], sizeof(net_len));
+    std::memcpy(&net_len, &(*read_buf_)[3], sizeof(net_len));
     payload_len_ = std::byteswap(net_len);
     if (payload_len_ > K_MAX_MESSAGE_SIZE || payload_len_ + K_FRAME_HEADER_SIZE > K_BUFFER_SIZE) {
         CINDER_WARN("oversized payload", {"len", payload_len_});
@@ -264,14 +265,14 @@ TcpConnection::doReadPayload(size_t len) {
 #ifdef CINDER_ENABLE_TLS
     if (ssl_stream_) {
         async_read(*ssl_stream_,
-            buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
+            buffer(read_buf_->data() + K_FRAME_HEADER_SIZE, len),
             asio::bind_executor(strand_,
                 [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); }));
         return;
     }
 #endif
     async_read(socket_,
-        buffer(read_buf_.data() + K_FRAME_HEADER_SIZE, len),
+        buffer(read_buf_->data() + K_FRAME_HEADER_SIZE, len),
         asio::bind_executor(
             strand_, [this, self](std::error_code ec, size_t) { onPayload(ec, payload_len_); }));
 }
@@ -284,7 +285,8 @@ TcpConnection::onPayload(std::error_code ec, size_t bytes) {
     }
 
     resetIdleTimer();
-    auto result = decode(std::span<const std::byte>(read_buf_.data(), K_FRAME_HEADER_SIZE + bytes));
+    auto result =
+        decode(std::span<const std::byte>(read_buf_->data(), K_FRAME_HEADER_SIZE + bytes));
     if (!result.has_value()) {
         CINDER_DEBUG("decode failed");
         if (metrics_) {

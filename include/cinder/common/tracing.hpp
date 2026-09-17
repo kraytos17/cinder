@@ -46,21 +46,25 @@ enum class Interest : uint8_t {
 // For spans the target is the span operation; for events it is the enclosing
 // function. file/line come from std::source_location at the call site.
 struct Metadata {
-    std::string_view target;
-    LogLevel level;
-    std::string_view file;
-    uint32_t line;
+    std::string_view target{};
+    std::string_view file{};
+    uint32_t line{0};
+    LogLevel level{LogLevel::Trace};
 };
+
+static_assert(sizeof(Metadata) == 40, "Metadata should pack into 40 bytes");
 
 // Per-callsite cached interest, one static instance per CINDER_* expansion
 // site (see macros below). generation 0 means unregistered; the global
 // generation bumps on every setGlobalSubscriber/resetGlobalSubscriber call,
 // transparently invalidating all caches.
 struct Callsite {
-    Metadata metadata;
+    Metadata metadata{};
     std::atomic<uint64_t> generation{0};
     std::atomic<Interest> interest{Interest::Never};
 };
+
+static_assert(sizeof(Callsite) == 56, "Callsite should fit in one cache line");
 
 // True when the callsite should emit: consults (and caches) the installed
 // subscriber's interest, honoring generation invalidation. No subscriber →
@@ -75,6 +79,8 @@ struct TraceContext {
     uint64_t span_id = 0;
     std::string_view operation;
 };
+
+static_assert(sizeof(TraceContext) == 32, "TraceContext should be half a cache line");
 
 // Current thread's trace context (a copy; the operation view stays valid
 // while its Span is alive).
@@ -199,16 +205,20 @@ struct FieldValue {
     [[nodiscard]] constexpr auto strView() const noexcept -> std::string_view { return str; }
 };
 
+static_assert(sizeof(FieldValue) == 40, "FieldValue should pack into 40 bytes");
+
 // A single event delivered to a Subscriber: callsite metadata + message +
 // typed fields + the trace context active when the event was emitted.
 // The field views borrow from the caller's temporaries and are only valid
 // for the synchronous event() call
 struct EventRecord {
-    Metadata metadata;
-    std::string_view message;
-    std::initializer_list<FieldValue> fields;
-    TraceContext context;
+    Metadata metadata{};
+    std::string_view message{};
+    std::initializer_list<FieldValue> fields{};
+    TraceContext context{};
 };
+
+static_assert(sizeof(EventRecord) == 104, "EventRecord should be 104 bytes");
 
 // Pluggable trace backend (tokio-tracing-inspired Subscriber). Implementors
 // observe span lifecycles and events; LayeredSubscriber composes them.
@@ -390,11 +400,13 @@ shutdownLogger();
 //
 // Safe in headers for inline/template code (the static callsite merges
 // across TUs); prefer .cpp sites otherwise to avoid duplicate caches.
-#define CINDER_DETAIL_LOG(level, msg, ...)                                                         \
+#define CINDER_DETAIL_LOG(lvl, msg, ...)                                                           \
     do {                                                                                           \
-        if constexpr (::cinder::LogLevel::level >= ::cinder::K_MIN_LOG_LEVEL) {                    \
-            static ::cinder::Callsite s_callsite{                                                  \
-                ::cinder::Metadata{__func__, ::cinder::LogLevel::level, __FILE__, __LINE__}};      \
+        if constexpr (::cinder::LogLevel::lvl >= ::cinder::K_MIN_LOG_LEVEL) {                      \
+            static ::cinder::Callsite s_callsite{::cinder::Metadata{.target = __func__,            \
+                .file = __FILE__,                                                                  \
+                .line = __LINE__,                                                                  \
+                .level = ::cinder::LogLevel::lvl}};                                                \
             if (::cinder::isCallsiteEnabled(s_callsite)) {                                         \
                 ::cinder::Event::dispatchEvent(s_callsite.metadata, msg, {__VA_ARGS__});           \
             }                                                                                      \

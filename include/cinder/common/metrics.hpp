@@ -139,18 +139,19 @@ struct ShardMetrics {
     CapacityCounters cap{};
 };
 
-// Replication metrics.
+// Replication metrics. Each counter sits on its own cache line: these are
+// bumped concurrently from io threads (async_writes vs quorum_* vs hints)
 struct ReplicationMetrics {
-    std::atomic<uint64_t> async_writes{0};
-    std::atomic<uint64_t> quorum_writes_ok{0};
-    std::atomic<uint64_t> quorum_writes_failed{0};
-    std::atomic<uint64_t> quorum_reads{0};
-    std::atomic<uint64_t> read_repairs{0};
-    std::atomic<uint64_t> hints_enqueued{0};
-    std::atomic<uint64_t> hints_replayed{0};
-    std::atomic<uint64_t> replica_unreachable{0};
-    std::atomic<uint64_t> anti_entropy_rounds{0};
-    std::atomic<uint64_t> anti_entropy_keys_repaired{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> async_writes{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_writes_ok{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_writes_failed{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_reads{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> read_repairs{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> hints_enqueued{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> hints_replayed{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> replica_unreachable{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> anti_entropy_rounds{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> anti_entropy_keys_repaired{0};
 
     struct ReplicaLag {
         std::string node_id;
@@ -160,28 +161,28 @@ struct ReplicationMetrics {
     std::vector<ReplicaLag> replica_lags;
 };
 
-// Cluster metrics.
+// Cluster metrics
 struct ClusterMetrics {
-    std::atomic<uint64_t> gossip_rounds{0};
-    std::atomic<uint64_t> probe_sent{0};
-    std::atomic<uint64_t> probe_received{0};
-    std::atomic<uint64_t> suspect_marked{0};
-    std::atomic<uint64_t> dead_marked{0};
-    std::atomic<uint64_t> alive_marked{0};
-    std::atomic<uint64_t> refuted_self_rumors{0};
-    std::atomic<uint64_t> rebalance_copies{0};
-    std::atomic<uint64_t> rebalance_migrations{0};
-    std::atomic<uint64_t> rebalance_migration_failures{0};
-    std::atomic<uint64_t> rebalance_migration_retries{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> gossip_rounds{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> probe_sent{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> probe_received{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> suspect_marked{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> dead_marked{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> alive_marked{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> refuted_self_rumors{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_copies{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migrations{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_failures{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_retries{0};
 };
 
-// Connection metrics.
+// Connection metrics
 struct ConnectionMetrics {
-    std::atomic<uint64_t> connections_opened{0};
-    std::atomic<uint64_t> connections_closed{0};
-    std::atomic<uint64_t> decode_failures{0};
-    std::atomic<uint64_t> redirects{0};
-    std::atomic<uint64_t> write_failures{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> connections_opened{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> connections_closed{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> decode_failures{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> redirects{0};
+    alignas(K_CACHE_LINE) std::atomic<uint64_t> write_failures{0};
 };
 
 class MetricsCollector {

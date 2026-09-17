@@ -51,4 +51,6 @@ struct VersionedEntry {
 
     void setVersionAndTtl(Version v, bool ttl) { version_and_ttl = (v << 1U) | (ttl ? 1U : 0); }
 };
+
+static_assert(sizeof(VersionedEntry) == 56, "VersionedEntry should fit in one cache line");
 } // namespace cinder
