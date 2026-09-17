@@ -265,6 +265,7 @@ ConsistentHashRing::decrementLoad(std::string_view node) const {
     if (it != loads->end()) {
         auto prev = it->second->fetch_sub(1, std::memory_order_relaxed);
         assert(prev > 0 && "decrementLoad called without matching incrementLoad");
+        (void)prev;
     }
 }
 
