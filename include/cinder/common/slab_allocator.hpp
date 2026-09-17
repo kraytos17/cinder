@@ -122,12 +122,17 @@ template <typename T> class SlabAllocator {
             throw std::bad_alloc();
         }
 
+        // Hot line: lock-free allocate/deallocate touches only free_head_.
+        // Cold block below is grow-path / stats only (relaxed counters updated
+        // solely in grow()) and deliberately shares lines — no per-member
+        // alignas, keeping padding minimal for
+        // clang-analyzer-optin.performance.Padding.
         alignas(64) std::atomic<FreeBlock*> free_head_{nullptr};
-        alignas(64) std::atomic<size_t> free_count_{0};
-        alignas(64) std::atomic<size_t> total_slots_{0};
-        alignas(64) std::vector<std::byte*> slabs_;
         size_t slots_per_slab_ = K_DEFAULT_SLOTS_PER_SLAB;
         mutable std::mutex mutex_; // only guards slab growth
+        std::atomic<size_t> free_count_{0};
+        std::atomic<size_t> total_slots_{0};
+        std::vector<std::byte*> slabs_;
     };
 
     SlabAllocator()
