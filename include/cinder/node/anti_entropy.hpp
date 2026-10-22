@@ -4,6 +4,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
@@ -94,6 +95,12 @@ class AntiEntropyManager {
 
     // Compute which bucket a key belongs to.
     [[nodiscard]] auto bucketFor(const std::string& key) const -> uint32_t;
+    // Parse one entry from [p,end), advancing p. Returns failure reason or
+    // nullopt on success; key/entry are valid only on success.
+    auto parseSingleEntry(const char*& p, const char* end, std::string& key, VersionedEntry& entry)
+        -> std::optional<std::string_view>;
+    [[nodiscard]] auto isNewer(const std::string& key, uint64_t version, uint64_t writer_hash)
+        -> bool;
 
     CacheStore& store_;
     ConsistentHashRing& ring_;

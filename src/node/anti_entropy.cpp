@@ -249,6 +249,55 @@ AntiEntropyManager::collectEntries(const std::vector<uint32_t>& bucket_ids) cons
 }
 
 auto
+AntiEntropyManager::parseSingleEntry(const char*& p, const char* end, std::string& key,
+    VersionedEntry& entry) -> std::optional<std::string_view> {
+    uint32_t key_len = 0;
+    uint64_t version = 0;
+    uint64_t writer_hash = 0;
+    uint32_t val_len = 0;
+    std::string value;
+    if (!readU32(p, end, key_len) || !readBytes(p, end, key_len, key) || !readU64(p, end, version)
+        || !readU64(p, end, writer_hash) || static_cast<size_t>(end - p) < 1) {
+        return "truncated entry";
+    }
+
+    uint8_t has_ttl = static_cast<uint8_t>(*p);
+    ++p;
+    if (has_ttl != 0 && has_ttl != 1) {
+        return "bad ttl flag";
+    }
+
+    uint64_t expires_ms = 0;
+    if (has_ttl == 1 && !readU64(p, end, expires_ms)) {
+        return "truncated expiry";
+    }
+    if (!readU32(p, end, val_len) || !readBytes(p, end, val_len, value)) {
+        return "truncated value";
+    }
+
+    entry.setVersion(version);
+    entry.writer_node_hash = writer_hash;
+    entry.value = std::move(value);
+    if (has_ttl == 1) {
+        entry.setHasTtl(true);
+        entry.expires_at =
+            toSteadyExpiry(clock_, system_clock::time_point(milliseconds(expires_ms)));
+    }
+    return std::nullopt;
+}
+
+auto
+AntiEntropyManager::isNewer(const std::string& key, uint64_t version, uint64_t writer_hash)
+    -> bool {
+    auto existing = store_.getVersioned(key);
+    if (!existing.has_value()) {
+        return true;
+    }
+    return version > existing->version()
+           || (version == existing->version() && writer_hash > existing->writer_node_hash);
+}
+
+auto
 AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
     const char* p = data.data();
     const char* end = p + data.size();
@@ -260,58 +309,17 @@ AntiEntropyManager::applyEntries(std::string_view data) -> size_t {
 
     size_t applied = 0;
     for (uint32_t i = 0; i < count; ++i) {
-        uint32_t key_len = 0;
         std::string key;
-        uint64_t version = 0;
-        uint64_t writer_hash = 0;
-        uint8_t has_ttl = 0;
-        uint64_t expires_ms = 0;
-        uint32_t val_len = 0;
-        std::string value;
-        if (!readU32(p, end, key_len) || !readBytes(p, end, key_len, key)
-            || !readU64(p, end, version) || !readU64(p, end, writer_hash)
-            || static_cast<size_t>(end - p) < 1) {
-            CINDER_WARN("truncated entry", {"index", i});
-            break;
-        }
-
-        has_ttl = static_cast<uint8_t>(*p);
-        ++p;
-        if (has_ttl != 0 && has_ttl != 1) {
-            CINDER_WARN("bad ttl flag", {"index", i});
-            break;
-        }
-        if (has_ttl == 1 && !readU64(p, end, expires_ms)) {
-            CINDER_WARN("truncated expiry", {"index", i});
-            break;
-        }
-        if (!readU32(p, end, val_len) || !readBytes(p, end, val_len, value)) {
-            CINDER_WARN("truncated value", {"index", i});
-            break;
-        }
-
         VersionedEntry entry;
-        entry.setVersion(version);
-        entry.writer_node_hash = writer_hash;
-        entry.value = std::move(value);
-        if (has_ttl == 1) {
-            entry.setHasTtl(true);
-            entry.expires_at =
-                toSteadyExpiry(clock_, system_clock::time_point(milliseconds(expires_ms)));
+        if (auto reason = parseSingleEntry(p, end, key, entry); reason.has_value()) {
+            CINDER_WARN(reason.value(), {"index", i});
+            break;
         }
+
         // Only count as repaired if the entry is actually newer than what we
         // have. putVersioned always returns ok() (LWW accepts or discards),
         // so we must pre-check to get an accurate repair count.
-        bool is_new = false;
-        auto existing = store_.getVersioned(key);
-        if (!existing.has_value()) {
-            is_new = true;
-        } else if (version > existing->version()
-                   || (version == existing->version()
-                       && writer_hash > existing->writer_node_hash)) {
-            is_new = true;
-        }
-
+        bool is_new = isNewer(key, entry.version(), entry.writer_node_hash);
         [[maybe_unused]] auto put_result = store_.putVersioned(key, std::move(entry));
         if (is_new) {
             ++applied;
