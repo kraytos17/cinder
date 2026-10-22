@@ -142,7 +142,7 @@ TEST(ProtocolAuthTest, InvalidAuthTokenSizeRejected) {
     Request req;
     req.opcode = Opcode::Replicate;
     req.key = "k";
-    auto encoded = encode(req, std::string("short"));
+    auto encoded = encode(req, "short");
     EXPECT_FALSE(encoded.has_value());
 }
 
