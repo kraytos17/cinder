@@ -87,6 +87,83 @@ initSslContext(const CacheNodeServerOptions& opts) -> std::optional<asio::ssl::c
 } // namespace
 #endif
 
+void
+CacheNodeServer::seedCluster(const CacheNodeServerOptions& options) {
+    signals_.add(SIGINT);
+    signals_.add(SIGTERM);
+    ring_.addNode(options.node_id);
+    table_.seed(options.peers);
+    table_.setSelfAddress("127.0.0.1", options.port);
+
+    ClusterConfig config;
+    config.nodes.push_back({options.node_id, "127.0.0.1", options.port});
+    for (const auto& peer : options.peers) {
+        ring_.addNode(peer.id);
+        config.nodes.push_back(peer);
+    }
+
+    transport_.setConfig(config);
+    transport_.setRpcTimeout(options.rpc_timeout);
+
+    syncEffectiveConfig();
+    table_.onChange([this] { rebuildRing(); });
+    // Async migration failures keep the local key copy; retry the rebalance
+    // after a short delay so a briefly-unreachable new owner can recover.
+    shard_.setOnMigrationFailed([this] { scheduleMigrationRetry(); });
+    if (persistence_.enabled()) {
+        store_->setPersistence(&persistence_);
+    }
+}
+
+void
+CacheNodeServer::wireMetrics() {
+    store_->setMetrics(&metrics_);
+    repl_.setMetrics(&metrics_);
+    detector_.setMetrics(&metrics_);
+    gossip_.setMetrics(&metrics_);
+    shard_.setMetrics(&metrics_);
+    anti_entropy_.setMetrics(&metrics_);
+}
+
+void
+CacheNodeServer::installAdminCallbacks() {
+    server_.setAdminCallbacks({
+        .info_getter = [this]() -> std::string {
+        return formatNodeInfoJson(node_id_,
+            current_config_,
+            metrics_.shardMetrics().live.current_bytes.load(),
+            metrics_.shardMetrics().live.current_entries.load());
+    },
+        .cluster_getter = [this]() -> std::string { return formatClusterJson(table_.snapshot()); },
+        .ring_getter = [this]() -> std::string { return formatRingJson(node_id_); },
+        .compact_trigger =
+            [this]() {
+        if (persistence_.enabled()) {
+            auto result = persistence_.compact();
+            if (!result.has_value()) {
+                CINDER_ERROR("admin compact failed", {"reason", result.error().message()});
+            }
+        }
+    },
+        .config_reload_trigger = [this]() { applyConfig(); },
+        .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
+    });
+}
+
+void
+CacheNodeServer::installAddrResolver() {
+    // Redirect hints carry the owner's address (learned via gossip) so clients
+    // that were never configured with the owner can still follow them.
+    server_.setAddrResolver(
+        [this](const NodeId& id) -> std::optional<std::pair<std::string, uint16_t>> {
+        auto info = table_.get(id);
+        if (!info.has_value() || info->host.empty() || info->port == 0) {
+            return std::nullopt;
+        }
+        return std::make_pair(info->host, info->port);
+    });
+}
+
 CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     : ping_interval_(options.ping_interval),
       quarantine_interval_(options.quarantine_interval),
@@ -138,69 +215,10 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       port_(options.port),
       metrics_port_(options.metrics_port),
       mode_(options.mode) {
-    signals_.add(SIGINT);
-    signals_.add(SIGTERM);
-    ring_.addNode(options.node_id);
-    table_.seed(options.peers);
-    table_.setSelfAddress("127.0.0.1", options.port);
-
-    ClusterConfig config;
-    config.nodes.push_back({options.node_id, "127.0.0.1", options.port});
-    for (const auto& peer : options.peers) {
-        ring_.addNode(peer.id);
-        config.nodes.push_back(peer);
-    }
-
-    transport_.setConfig(config);
-    transport_.setRpcTimeout(options.rpc_timeout);
-
-    syncEffectiveConfig();
-    table_.onChange([this] { rebuildRing(); });
-    // Async migration failures keep the local key copy; retry the rebalance
-    // after a short delay so a briefly-unreachable new owner can recover.
-    shard_.setOnMigrationFailed([this] { scheduleMigrationRetry(); });
-    if (persistence_.enabled()) {
-        store_->setPersistence(&persistence_);
-    }
-
-    store_->setMetrics(&metrics_);
-    repl_.setMetrics(&metrics_);
-    detector_.setMetrics(&metrics_);
-    gossip_.setMetrics(&metrics_);
-    shard_.setMetrics(&metrics_);
-    anti_entropy_.setMetrics(&metrics_);
-    server_.setAdminCallbacks({
-        .info_getter = [this]() -> std::string {
-        return formatNodeInfoJson(node_id_,
-            current_config_,
-            metrics_.shardMetrics().live.current_bytes.load(),
-            metrics_.shardMetrics().live.current_entries.load());
-    },
-        .cluster_getter = [this]() -> std::string { return formatClusterJson(table_.snapshot()); },
-        .ring_getter = [this]() -> std::string { return formatRingJson(node_id_); },
-        .compact_trigger =
-            [this]() {
-        if (persistence_.enabled()) {
-            auto result = persistence_.compact();
-            if (!result.has_value()) {
-                CINDER_ERROR("admin compact failed", {"reason", result.error().message()});
-            }
-        }
-    },
-        .config_reload_trigger = [this]() { applyConfig(); },
-        .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
-    });
-
-    // Redirect hints carry the owner's address (learned via gossip) so clients
-    // that were never configured with the owner can still follow them.
-    server_.setAddrResolver(
-        [this](const NodeId& id) -> std::optional<std::pair<std::string, uint16_t>> {
-        auto info = table_.get(id);
-        if (!info.has_value() || info->host.empty() || info->port == 0) {
-            return std::nullopt;
-        }
-        return std::make_pair(info->host, info->port);
-    });
+    seedCluster(options);
+    wireMetrics();
+    installAdminCallbacks();
+    installAddrResolver();
     if (options.listen_fd >= 0) {
         server_.setListenFd(options.listen_fd);
     }

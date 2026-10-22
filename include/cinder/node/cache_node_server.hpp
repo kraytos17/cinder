@@ -224,6 +224,10 @@ class CacheNodeServer {
     void applyConfig();
     void applyHotField(std::string_view field, const Config& cfg);
     void syncEffectiveConfig();
+    void seedCluster(const CacheNodeServerOptions& options);
+    void wireMetrics();
+    void installAdminCallbacks();
+    void installAddrResolver();
 
     MetricsCollector metrics_;
     milliseconds ping_interval_{1'000};
