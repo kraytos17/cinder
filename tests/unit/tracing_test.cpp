@@ -188,7 +188,7 @@ struct RecordingSubscriber : public Subscriber {
                     rendered += f.bool_val ? "1" : "0";
                     break;
             }
-            rendered += ";";
+            rendered += ';';
         }
         rendered_fields.push_back(rendered);
         last_level = record.metadata.level;
