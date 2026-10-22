@@ -56,6 +56,39 @@ CacheClient::forgetOwner(const std::string& key) {
 }
 
 auto
+CacheClient::tryFollowRedirect(const std::string& key, const Result<net::Response>& res,
+    const NodeId& node, std::vector<NodeId>& visited, int hops) -> std::optional<NodeId> {
+    if (!res.has_value() || res.value().status != Errc::NotReady) {
+        return std::nullopt;
+    }
+    // Ownership redirect — learn the true owner and follow immediately
+    // (no backoff: staleness, not congestion). Follows don't consume
+    // the transport attempt budget (a redirect on the final attempt
+    // must still be followed); hops + the visited set bound the chain
+    // instead. When the server attached an address, register it first
+    // so nodes outside the client config are reachable.
+    auto target = parseRedirectTarget(res.value().value.value_or(""));
+    bool fresh = target.has_value() && target->id != node
+                 && std::find(visited.begin(), visited.end(), target->id) == visited.end();
+    if (!fresh || hops >= K_MAX_REDIRECT_HOPS) {
+        return std::nullopt;
+    }
+    CINDER_DEBUG("redirect", {"key", key}, {"from", node}, {"to", target->id});
+    if (target->hasAddress()) {
+        pool_.addAddr(target->id, target->host, target->port);
+    }
+    learnOwner(key, target->id);
+    visited.push_back(node);
+    return target->id;
+}
+
+auto
+CacheClient::refreshAfterFailure(const std::string& key) -> NodeId {
+    forgetOwner(key);
+    return preferredNode(key);
+}
+
+auto
 CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response> {
     Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
     auto node = preferredNode(key);
@@ -69,36 +102,16 @@ CacheClient::sendToOwner(const std::string& key, const net::Request& req) -> Res
             "route", {"key", key}, {"primary", node}, {"attempt", attempt}, {"max", max_retries_});
 
         res = pool_.send(node, req);
-        if (res.has_value() && res.value().status == Errc::NotReady) {
-            // Ownership redirect — learn the true owner and follow immediately
-            // (no backoff: staleness, not congestion). Follows don't consume
-            // the transport attempt budget (a redirect on the final attempt
-            // must still be followed); hops + the visited set bound the chain
-            // instead. When the server attached an address, register it first
-            // so nodes outside the client config are reachable.
-            auto target = parseRedirectTarget(res.value().value.value_or(""));
-            bool fresh = target.has_value() && target->id != node
-                         && std::find(visited.begin(), visited.end(), target->id) == visited.end();
-
-            if (fresh && hops < K_MAX_REDIRECT_HOPS) {
-                CINDER_DEBUG("redirect", {"key", key}, {"from", node}, {"to", target->id});
-                if (target->hasAddress()) {
-                    pool_.addAddr(target->id, target->host, target->port);
-                }
-
-                learnOwner(key, target->id);
-                visited.push_back(node);
-                node = target->id;
-                ++hops;
-                --attempt; // the follow-up send reuses this attempt's budget
-                continue;
-            }
+        if (auto next = tryFollowRedirect(key, res, node, visited, hops)) {
+            node = *next;
+            ++hops;
+            --attempt; // the follow-up send reuses this attempt's budget
+            continue;
         }
         if (!res.has_value()) {
             // Transport failure — a learned owner may be stale (node gone or
             // unknown); forget it so the next attempt re-resolves via the ring.
-            forgetOwner(key);
-            node = preferredNode(key);
+            node = refreshAfterFailure(key);
         }
         if (!retryable(res) || attempt == max_retries_) {
             return res;

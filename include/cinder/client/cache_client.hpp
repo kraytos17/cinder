@@ -98,6 +98,13 @@ class CacheClient {
 
     auto routePrimary(std::string_view key) const -> NodeId;
     auto sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response>;
+    // If res is a followable ownership redirect, register the target, learn it,
+    // record the visit, and return the next node. Nullopt = not a redirect.
+    auto tryFollowRedirect(const std::string& key, const Result<net::Response>& res,
+        const NodeId& node, std::vector<NodeId>& visited, int hops) -> std::optional<NodeId>;
+    // A learned owner may be stale after transport failure; drop it and
+    // re-resolve via the ring.
+    auto refreshAfterFailure(const std::string& key) -> NodeId;
 
     // Owner resolution with learning: a redirect-learned owner wins over the
     // static ring, which may be stale after rebalances.
