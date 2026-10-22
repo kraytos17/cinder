@@ -53,7 +53,7 @@ formatConfigJson(const Config& cfg) -> std::string {
     out += "\"peers\":[";
     for (size_t i = 0; i < cfg.peers.size(); ++i) {
         if (i > 0) {
-            out += ",";
+            out += ',';
         }
 
         out += R"({"id":")" + escapeJsonString(cfg.peers[i].id) + "\",";
@@ -83,7 +83,7 @@ formatConfigJson(const Config& cfg) -> std::string {
     out += "\"grpc_port\":" + std::to_string(cfg.grpc_port) + ",";
     out += R"("log_level":")" + escapeJsonString(cfg.log_level) + "\",";
     out += R"("config_path":")" + escapeJsonString(cfg.config_path) + "\"";
-    out += "}";
+    out += '}';
     return out;
 }
 
@@ -335,7 +335,7 @@ formatNodeInfoJson(const NodeId& node_id, const Config& config, size_t store_siz
     out += "\"peers\":[";
     for (size_t i = 0; i < config.peers.size(); ++i) {
         if (i > 0) {
-            out += ",";
+            out += ',';
         }
 
         out += R"({"id":")" + escapeJsonString(config.peers[i].id) + "\",";
@@ -351,18 +351,18 @@ formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string {
     std::string out = "[";
     for (size_t i = 0; i < nodes.size(); ++i) {
         if (i > 0) {
-            out += ",";
+            out += ',';
         }
 
-        out += "{";
+        out += '{';
         out += R"("id":")" + escapeJsonString(nodes[i].id) + "\",";
         out += R"("host":")" + escapeJsonString(nodes[i].host) + "\",";
         out += "\"port\":" + std::to_string(nodes[i].port) + ",";
         out += R"("state":")" + std::string(nodeStateToString(nodes[i].state)) + "\",";
         out += "\"incarnation\":" + std::to_string(nodes[i].incarnation);
-        out += "}";
+        out += '}';
     }
-    out += "]";
+    out += ']';
     return out;
 }
 
@@ -372,7 +372,7 @@ formatRingJson(const NodeId& self) -> std::string {
     out += R"("self":")" + escapeJsonString(self) + "\",";
     out += "\"vnodes_per_node\":150,";
     out += R"("note":"ring is an immutable snapshot with 150 vnodes per physical node")";
-    out += "}";
+    out += '}';
     return out;
 }
 } // namespace cinder
