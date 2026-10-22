@@ -55,12 +55,7 @@ template <WheelNodeLike Node> class TtlWheel {
         if (ttl_ticks <= K_SLOT_COUNT) {
             auto slot = (cursor_ + ttl_ticks) % K_SLOT_COUNT;
             node->wheel_slot = static_cast<uint16_t>(slot + 1);
-            auto* sentinel = &wheel_[slot];
-
-            node->wheel_next = sentinel;
-            node->wheel_prev = sentinel->wheel_prev;
-            sentinel->wheel_prev->wheel_next = node;
-            sentinel->wheel_prev = node;
+            linkBefore(node, &wheel_[slot]);
         } else {
             auto absolute_tick = tick_count_ + ttl_ticks;
             heap_.push_back({absolute_tick, node});
@@ -73,13 +68,7 @@ template <WheelNodeLike Node> class TtlWheel {
 
     // Remove node from wherever it is scheduled.
     void remove(Node* node) {
-        if (node->wheel_slot > 0) {
-            node->wheel_prev->wheel_next = node->wheel_next;
-            node->wheel_next->wheel_prev = node->wheel_prev;
-            node->wheel_prev = nullptr;
-            node->wheel_next = nullptr;
-            node->wheel_slot = 0;
-        }
+        unlink(node);
         // Tombstone for heap path — only if actually in the heap.
         if (node->in_heap) {
             heap_removed_.insert(node);
@@ -93,20 +82,47 @@ template <WheelNodeLike Node> class TtlWheel {
         cursor_ = (cursor_ + 1) % K_SLOT_COUNT;
         ++tick_count_;
 
+        expireSlot(on_expired);
+        expireHeap(on_expired);
+    }
+
+    [[nodiscard]] auto cursor() const -> size_t { return cursor_; }
+
+    [[nodiscard]] auto tickCount() const -> size_t { return tick_count_; }
+
+  private:
+
+    static void unlink(WheelNode* node) {
+        if (node->wheel_slot == 0) {
+            return;
+        }
+        node->wheel_prev->wheel_next = node->wheel_next;
+        node->wheel_next->wheel_prev = node->wheel_prev;
+        node->wheel_prev = nullptr;
+        node->wheel_next = nullptr;
+        node->wheel_slot = 0;
+    }
+
+    static void linkBefore(WheelNode* node, WheelNode* sentinel) {
+        node->wheel_next = sentinel;
+        node->wheel_prev = sentinel->wheel_prev;
+        sentinel->wheel_prev->wheel_next = node;
+        sentinel->wheel_prev = node;
+    }
+
+    void expireSlot(std::move_only_function<void(Node&)>& on_expired) {
         // Walk the intrusive list in the current slot.
         auto* sentinel = &wheel_[cursor_];
         auto* node = sentinel->wheel_next;
         while (node != sentinel) {
             auto* next = node->wheel_next;
-            node->wheel_prev->wheel_next = node->wheel_next;
-            node->wheel_next->wheel_prev = node->wheel_prev;
-            node->wheel_prev = nullptr;
-            node->wheel_next = nullptr;
-            node->wheel_slot = 0;
-
+            unlink(node);
             on_expired(*static_cast<Node*>(node));
             node = next;
         }
+    }
+
+    void expireHeap(std::move_only_function<void(Node&)>& on_expired) {
         // Fire heap entries whose absolute_tick has been reached.
         while (!heap_.empty() && heap_.front().absolute_tick <= tick_count_) {
             auto entry = heap_.front();
@@ -123,12 +139,6 @@ template <WheelNodeLike Node> class TtlWheel {
             on_expired(*entry.node);
         }
     }
-
-    [[nodiscard]] auto cursor() const -> size_t { return cursor_; }
-
-    [[nodiscard]] auto tickCount() const -> size_t { return tick_count_; }
-
-  private:
 
     // Sentinel-headed circular doubly-linked list per slot.
     // Each wheel_[i] is a WheelNode sentinel; real nodes link between
