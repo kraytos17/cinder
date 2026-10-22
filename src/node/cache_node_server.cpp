@@ -28,6 +28,33 @@ isIdentityField(std::string_view field) -> bool {
     return field == "node_id" || field == "port" || field == "peers" || field == "replica_factor"
            || field == "consistency";
 }
+
+struct ConfigChangeSet {
+    std::vector<std::string> hot;
+    std::string changed_str;
+    std::string identity_str;
+};
+
+auto
+partitionConfigChanges(const std::vector<std::string>& changed) -> ConfigChangeSet {
+    ConfigChangeSet out;
+    for (const auto& field : changed) {
+        if (isIdentityField(field)) {
+            if (!out.identity_str.empty()) {
+                out.identity_str += ", ";
+            }
+            out.identity_str += field;
+        } else {
+            if (!out.changed_str.empty()) {
+                out.changed_str += ", ";
+            }
+
+            out.changed_str += field;
+            out.hot.push_back(field);
+        }
+    }
+    return out;
+}
 } // namespace
 
 void
@@ -72,24 +99,22 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
       peers_(options.peers),
       node_id_(options.node_id),
       config_path_(options.config_path),
-      anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
-          options.anti_entropy_buckets, &metrics_),
       signals_(io_),
+      timers_(io_),
+      table_(options.node_id),
+      transport_(io_, options.node_id, options.shared_secret
+#ifdef CINDER_ENABLE_TLS
+          ,
+          ssl_ctx_ ? &*ssl_ctx_ : nullptr
+#endif
+          ),
+      gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
+      detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
+      repl_(*store_, options.node_id, clock_, transport_),
       shard_(*store_, ring_, transport_, table_, options.node_id, clock_, options.replica_factor,
           options.quarantine_interval),
-      replay_timer_(io_),
-      gossip_timer_(io_),
-      probe_timer_(io_),
-      evict_timer_(io_),
-      quarantine_timer_(io_),
-      rebalance_timer_(io_),
-      migration_retry_timer_(io_),
-      compact_timer_(io_),
-      config_reload_timer_(io_),
-      anti_entropy_timer_(io_),
-      gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
-      table_(options.node_id),
-      detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
+      anti_entropy_(*store_, ring_, options.node_id, clock_, transport_,
+          options.anti_entropy_buckets, &metrics_),
       persistence_(
           PersistenceManager::Options{
               .data_dir = options.data_dir,
@@ -98,12 +123,6 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
               .max_wal_entries = options.max_wal_entries,
           },
           *store_, &clock_),
-      transport_(io_, options.node_id, options.shared_secret
-#ifdef CINDER_ENABLE_TLS
-          ,
-          ssl_ctx_ ? &*ssl_ctx_ : nullptr
-#endif
-          ),
       current_config_(options.config),
       server_(io_, options.port, *store_, ring_, options.node_id, clock_, &repl_,
           options.replica_factor, options.mode, &gossip_, options.metrics_port, &metrics_,
@@ -114,7 +133,6 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
           ssl_ctx_ ? &*ssl_ctx_ : nullptr
 #endif
           ),
-      repl_(*store_, options.node_id, clock_, transport_),
       io_threads_(options.io_threads),
       replica_factor_(options.replica_factor),
       port_(options.port),
@@ -151,7 +169,6 @@ CacheNodeServer::CacheNodeServer(CacheNodeServerOptions options)
     gossip_.setMetrics(&metrics_);
     shard_.setMetrics(&metrics_);
     anti_entropy_.setMetrics(&metrics_);
-
     server_.setAdminCallbacks({
         .info_getter = [this]() -> std::string {
         return formatNodeInfoJson(node_id_,
@@ -263,16 +280,7 @@ CacheNodeServer::run() {
 
 void
 CacheNodeServer::shutdown() {
-    replay_timer_.cancel();
-    gossip_timer_.cancel();
-    probe_timer_.cancel();
-    evict_timer_.cancel();
-    quarantine_timer_.cancel();
-    rebalance_timer_.cancel();
-    migration_retry_timer_.cancel();
-    compact_timer_.cancel();
-    config_reload_timer_.cancel();
-    anti_entropy_timer_.cancel();
+    timers_.cancelAll();
     if (persistence_.enabled()) {
         persistence_.shutdown();
     }
@@ -297,8 +305,8 @@ CacheNodeServer::shutdown() {
 
 void
 CacheNodeServer::scheduleReplay() {
-    replay_timer_.expires_after(seconds(1));
-    replay_timer_.async_wait([this](std::error_code ec) {
+    timers_.replay.expires_after(seconds(1));
+    timers_.replay.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -315,8 +323,8 @@ CacheNodeServer::scheduleReplay() {
 
 void
 CacheNodeServer::scheduleGossip() {
-    gossip_timer_.expires_after(gossip_.gossipInterval());
-    gossip_timer_.async_wait([this](std::error_code ec) {
+    timers_.gossip.expires_after(gossip_.gossipInterval());
+    timers_.gossip.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -328,8 +336,8 @@ CacheNodeServer::scheduleGossip() {
 
 void
 CacheNodeServer::scheduleProbe() {
-    probe_timer_.expires_after(ping_interval_);
-    probe_timer_.async_wait([this](std::error_code ec) {
+    timers_.probe.expires_after(ping_interval_);
+    timers_.probe.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -341,8 +349,8 @@ CacheNodeServer::scheduleProbe() {
 
 void
 CacheNodeServer::scheduleEvict() {
-    evict_timer_.expires_after(seconds(1));
-    evict_timer_.async_wait([this](std::error_code ec) {
+    timers_.evict.expires_after(seconds(1));
+    timers_.evict.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -380,16 +388,16 @@ CacheNodeServer::rebuildRing() {
 void
 CacheNodeServer::scheduleRebalanceDebounced() {
     // Coalesce bursts: a pending run already covers the latest ring view.
-    if (rebalance_pending_) {
+    if (timers_.rebalance_pending) {
         CINDER_DEBUG("rebalance debounce coalesced");
         return;
     }
 
     CINDER_DEBUG("rebalance debounce scheduled", {"delay_ms", 200});
-    rebalance_pending_ = true;
-    rebalance_timer_.expires_after(milliseconds(200));
-    rebalance_timer_.async_wait([this](std::error_code ec) {
-        rebalance_pending_ = false;
+    timers_.rebalance_pending = true;
+    timers_.rebalance.expires_after(milliseconds(200));
+    timers_.rebalance.async_wait([this](std::error_code ec) {
+        timers_.rebalance_pending = false;
         if (ec) {
             return;
         }
@@ -407,8 +415,8 @@ CacheNodeServer::scheduleRebalance() {
         return;
     }
 
-    quarantine_timer_.expires_after(quarantine_interval_);
-    quarantine_timer_.async_wait([this](std::error_code ec) {
+    timers_.quarantine.expires_after(quarantine_interval_);
+    timers_.quarantine.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -423,22 +431,24 @@ CacheNodeServer::scheduleRebalance() {
 void
 CacheNodeServer::scheduleMigrationRetry() {
     // A debounced rebalance is already queued and covers the latest ring view.
-    if (migration_retry_pending_ || rebalance_pending_) {
+    if (timers_.migration_retry_pending || timers_.rebalance_pending) {
         CINDER_DEBUG("migration retry coalesced",
-            {"retry_pending", migration_retry_pending_},
-            {"rebalance_pending", rebalance_pending_});
+            {"retry_pending", timers_.migration_retry_pending},
+            {"rebalance_pending", timers_.rebalance_pending});
         return;
     }
 
     CINDER_INFO("migration retry scheduled", {"delay_ms", 2'000});
-    migration_retry_pending_ = true;
+    timers_.migration_retry_pending = true;
     metrics_.clusterMetrics().rebalance_migration_retries.fetch_add(1, std::memory_order_relaxed);
-    migration_retry_timer_.expires_after(milliseconds(2'000));
-    migration_retry_timer_.async_wait([this](std::error_code ec) {
-        migration_retry_pending_ = false;
+
+    timers_.migration_retry.expires_after(milliseconds(2'000));
+    timers_.migration_retry.async_wait([this](std::error_code ec) {
+        timers_.migration_retry_pending = false;
         if (ec) {
             return;
         }
+
         CINDER_INFO("migration retry fired");
         // Re-run through the debounce gate so rapid membership changes that
         // arrived while waiting collapse into a single scan.
@@ -448,8 +458,8 @@ CacheNodeServer::scheduleMigrationRetry() {
 
 void
 CacheNodeServer::scheduleCompact() {
-    compact_timer_.expires_after(seconds(persistence_.snapshotInterval()));
-    compact_timer_.async_wait([this](std::error_code ec) {
+    timers_.compact.expires_after(seconds(persistence_.snapshotInterval()));
+    timers_.compact.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -466,8 +476,8 @@ CacheNodeServer::scheduleAntiEntropy() {
         return;
     }
 
-    anti_entropy_timer_.expires_after(anti_entropy_interval_);
-    anti_entropy_timer_.async_wait([this](std::error_code ec) {
+    timers_.anti_entropy.expires_after(anti_entropy_interval_);
+    timers_.anti_entropy.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
@@ -483,14 +493,41 @@ CacheNodeServer::scheduleAntiEntropy() {
 
 void
 CacheNodeServer::scheduleConfigReload() {
-    config_reload_timer_.expires_after(seconds(5));
-    config_reload_timer_.async_wait([this](std::error_code ec) {
+    timers_.config_reload.expires_after(seconds(5));
+    timers_.config_reload.async_wait([this](std::error_code ec) {
         if (ec) {
             return;
         }
+
         applyConfig();
         scheduleConfigReload();
     });
+}
+
+void
+CacheNodeServer::applyHotField(std::string_view field, const Config& cfg) {
+    if (field == "log_level") {
+        setLogLevel(logLevelFromString(cfg.log_level));
+    } else if (field == "suspect_timeout_ms") {
+        detector_.setSuspectTimeout(milliseconds(cfg.suspect_timeout_ms));
+    } else if (field == "gossip_interval_ms") {
+        gossip_.setGossipInterval(milliseconds(cfg.gossip_interval_ms));
+    } else if (field == "rpc_timeout_ms") {
+        transport_.setRpcTimeout(milliseconds(cfg.rpc_timeout_ms));
+    } else if (field == "capacity") {
+        store_->setCapacity(cfg.capacity);
+    } else if (field == "quarantine_interval_ms") {
+        quarantine_interval_ = milliseconds(cfg.quarantine_interval_ms);
+    } else if (field == "anti_entropy_interval_ms") {
+        bool was_disabled = anti_entropy_interval_.count() <= 0;
+        anti_entropy_interval_ = milliseconds(cfg.anti_entropy_interval_ms);
+        if (was_disabled && anti_entropy_interval_.count() > 0) {
+            scheduleAntiEntropy();
+        }
+    } else {
+        // ping_interval_ms, anti_entropy_buckets, and unknown fields need restart.
+        CINDER_WARN("config field requires restart", {"field", field});
+    }
 }
 
 void
@@ -511,61 +548,21 @@ CacheNodeServer::applyConfig() {
         return;
     }
 
-    std::string changed_str;
-    std::string identity_str;
-    std::vector<std::string> hot;
-    for (const auto& field : changed) {
-        if (isIdentityField(field)) {
-            if (!identity_str.empty()) {
-                identity_str += ", ";
-            }
-            identity_str += field;
-        } else {
-            if (!changed_str.empty()) {
-                changed_str += ", ";
-            }
-            changed_str += field;
-            hot.push_back(field);
-        }
+    auto split = partitionConfigChanges(changed);
+    if (!split.identity_str.empty()) {
+        CINDER_DEBUG("config reload ignores identity fields", {"fields", split.identity_str});
     }
-    if (!identity_str.empty()) {
-        CINDER_DEBUG("config reload ignores identity fields", {"fields", identity_str});
-    }
-    if (hot.empty()) {
+    if (split.hot.empty()) {
         current_config_ = *new_config;
         syncEffectiveConfig();
         return;
     }
 
-    CINDER_INFO("config changed", {"fields", changed_str});
+    CINDER_INFO("config changed", {"fields", split.changed_str});
     current_config_ = *new_config;
     syncEffectiveConfig();
-    for (const auto& field : hot) {
-        if (field == "log_level") {
-            setLogLevel(logLevelFromString(new_config->log_level));
-        } else if (field == "ping_interval_ms") {
-            CINDER_WARN("config field requires restart", {"field", field});
-        } else if (field == "suspect_timeout_ms") {
-            detector_.setSuspectTimeout(milliseconds(new_config->suspect_timeout_ms));
-        } else if (field == "gossip_interval_ms") {
-            gossip_.setGossipInterval(milliseconds(new_config->gossip_interval_ms));
-        } else if (field == "rpc_timeout_ms") {
-            transport_.setRpcTimeout(milliseconds(new_config->rpc_timeout_ms));
-        } else if (field == "capacity") {
-            store_->setCapacity(new_config->capacity);
-        } else if (field == "quarantine_interval_ms") {
-            quarantine_interval_ = milliseconds(new_config->quarantine_interval_ms);
-        } else if (field == "anti_entropy_interval_ms") {
-            bool was_disabled = anti_entropy_interval_.count() <= 0;
-            anti_entropy_interval_ = milliseconds(new_config->anti_entropy_interval_ms);
-            if (was_disabled && anti_entropy_interval_.count() > 0) {
-                scheduleAntiEntropy();
-            }
-        } else if (field == "anti_entropy_buckets") {
-            CINDER_WARN("config field requires restart", {"field", field});
-        } else {
-            CINDER_WARN("config field requires restart", {"field", field});
-        }
+    for (const auto& field : split.hot) {
+        applyHotField(field, *new_config);
     }
 }
 } // namespace cinder

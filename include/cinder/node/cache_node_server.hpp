@@ -162,6 +162,46 @@ class CacheNodeServer {
 
   private:
 
+    struct NodeTimers {
+        explicit NodeTimers(io_context& io)
+            : replay(io),
+              gossip(io),
+              probe(io),
+              evict(io),
+              quarantine(io),
+              rebalance(io),
+              migration_retry(io),
+              compact(io),
+              config_reload(io),
+              anti_entropy(io) {}
+
+        steady_timer replay;
+        steady_timer gossip;
+        steady_timer probe;
+        steady_timer evict;
+        steady_timer quarantine;
+        steady_timer rebalance;
+        bool rebalance_pending = false;
+        steady_timer migration_retry;
+        bool migration_retry_pending = false;
+        steady_timer compact;
+        steady_timer config_reload;
+        steady_timer anti_entropy;
+
+        void cancelAll() {
+            replay.cancel();
+            gossip.cancel();
+            probe.cancel();
+            evict.cancel();
+            quarantine.cancel();
+            rebalance.cancel();
+            migration_retry.cancel();
+            compact.cancel();
+            config_reload.cancel();
+            anti_entropy.cancel();
+        }
+    };
+
     void scheduleReplay();
     void scheduleGossip();
     void scheduleProbe();
@@ -182,6 +222,7 @@ class CacheNodeServer {
     void scheduleMigrationRetry();
     void scheduleConfigReload();
     void applyConfig();
+    void applyHotField(std::string_view field, const Config& cfg);
     void syncEffectiveConfig();
 
     MetricsCollector metrics_;
@@ -198,30 +239,19 @@ class CacheNodeServer {
     std::vector<ClusterConfig::NodeConfig> peers_;
     NodeId node_id_;
     std::string config_path_;
-    AntiEntropyManager anti_entropy_;
     signal_set signals_;
-    ShardManager shard_;
-    steady_timer replay_timer_;
-    steady_timer gossip_timer_;
-    steady_timer probe_timer_;
-    steady_timer evict_timer_;
-    steady_timer quarantine_timer_;
-    steady_timer rebalance_timer_;
-    bool rebalance_pending_ = false;
-    steady_timer migration_retry_timer_;
-    bool migration_retry_pending_ = false;
-    steady_timer compact_timer_;
-    steady_timer config_reload_timer_;
-    steady_timer anti_entropy_timer_;
-    GossipManager gossip_;
+    NodeTimers timers_;
     ConsistentHashRing ring_;
     MembershipTable table_;
-    FailureDetector detector_;
-    PersistenceManager persistence_;
     TcpTransport transport_;
+    GossipManager gossip_;
+    FailureDetector detector_;
+    ReplicationManager repl_;
+    ShardManager shard_;
+    AntiEntropyManager anti_entropy_;
+    PersistenceManager persistence_;
     Config current_config_;
     net::TcpServer server_;
-    ReplicationManager repl_;
     int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
     int replica_factor_ = 1;
     uint16_t port_ = 0;

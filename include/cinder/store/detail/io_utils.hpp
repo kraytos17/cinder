@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace cinder::detail {
 
@@ -20,6 +23,32 @@ writeU64(std::ostream& out, uint64_t v) {
 inline void
 writeU8(std::ostream& out, uint8_t v) {
     out.write(reinterpret_cast<const char*>(&v), sizeof(v));
+}
+
+// Buffer variants for pre-sized scratch encoding (e.g. WalWriter::append).
+// Caller must ensure buf.size() >= off + sizeof(v) / len.
+inline void
+writeU8(std::vector<std::byte>& buf, size_t& off, uint8_t v) {
+    std::memcpy(&buf[off], &v, sizeof(v));
+    off += sizeof(v);
+}
+
+inline void
+writeU32(std::vector<std::byte>& buf, size_t& off, uint32_t v) {
+    std::memcpy(&buf[off], &v, sizeof(v));
+    off += sizeof(v);
+}
+
+inline void
+writeU64(std::vector<std::byte>& buf, size_t& off, uint64_t v) {
+    std::memcpy(&buf[off], &v, sizeof(v));
+    off += sizeof(v);
+}
+
+inline void
+writeBytes(std::vector<std::byte>& buf, size_t& off, const void* data, size_t len) {
+    std::memcpy(&buf[off], data, len);
+    off += len;
 }
 
 inline auto
