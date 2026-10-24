@@ -5,8 +5,7 @@
 #include <filesystem>
 #include <string>
 
-extern "C" int
-LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     // Write fuzz data as a fake snapshot file, then try to read it.
     // Must not crash — only return errors.
     // Use a thread_local counter to avoid path collisions across fuzz invocations.

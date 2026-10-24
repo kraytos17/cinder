@@ -19,44 +19,50 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
-struct LruNode : WheelNode {
-    std::string key;
-    VersionedEntry entry;
-};
+    struct LruNode : WheelNode {
+        std::string key;
+        VersionedEntry entry;
+    };
 
-static_assert(sizeof(LruNode) == 112, "LruNode should be 112 bytes");
+    static_assert(sizeof(LruNode) == 112, "LruNode should be 112 bytes");
 
-class LruStore : public EvictionStoreBase<LruStore, LruNode> {
-    friend class EvictionStoreBase<LruStore, LruNode>;
+    class LruStore : public EvictionStoreBase<LruStore, LruNode> {
+        friend class EvictionStoreBase<LruStore, LruNode>;
 
-  public:
+    public:
 
-    using ListIt = std::list<LruNode, SlabAllocator<LruNode>>::iterator;
+        using ListIt = std::list<LruNode, SlabAllocator<LruNode>>::iterator;
 
-    explicit LruStore(size_t capacity_bytes, Clock* clock = nullptr);
+        explicit LruStore(size_t capacity_bytes, Clock* clock = nullptr);
 
-  private:
+    private:
 
-    static auto nodeKey(const LruNode& n) -> const std::string& { return n.key; }
+        static auto nodeKey(const LruNode& n) -> const std::string& {
+            return n.key;
+        }
 
-    static auto nodeEntry(LruNode& n) -> VersionedEntry& { return n.entry; }
+        static auto nodeEntry(LruNode& n) -> VersionedEntry& {
+            return n.entry;
+        }
 
-    static auto nodeEntry(const LruNode& n) -> const VersionedEntry& { return n.entry; }
+        static auto nodeEntry(const LruNode& n) -> const VersionedEntry& {
+            return n.entry;
+        }
 
-    static auto nodeSize(const LruNode& n) -> size_t {
-        return n.key.size() + n.entry.value.size() + sizeof(LruNode);
-    }
+        static auto nodeSize(const LruNode& n) -> size_t {
+            return n.key.size() + n.entry.value.size() + sizeof(LruNode);
+        }
 
-    void applyExisting(ListIt it, VersionedEntry entry);
-    auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
-    void onAccess(ListIt it);
-    void onEvictExpired(ListIt it);
-    void evictOne();
-    void touch(ListIt it);
+        void applyExisting(ListIt it, VersionedEntry entry);
+        auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
+        void onAccess(ListIt it);
+        void onEvictExpired(ListIt it);
+        void evictOne();
+        void touch(ListIt it);
 
-    mutable std::shared_mutex mutex_;
-    std::list<LruNode, SlabAllocator<LruNode>> list_;
-    std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
-    TtlWheel<LruNode> wheel_;
-};
+        mutable std::shared_mutex mutex_;
+        std::list<LruNode, SlabAllocator<LruNode>> list_;
+        std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
+        TtlWheel<LruNode> wheel_;
+    };
 } // namespace cinder

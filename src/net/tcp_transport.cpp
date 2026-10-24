@@ -17,350 +17,370 @@ using asio::error_code;
 using asio::io_context;
 
 namespace {
-auto
-rpcError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Error {
-    if (timed_out) {
-        return cinder::Error(cinder::Errc::Timeout, "RPC deadline exceeded");
+    auto rpcError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Error {
+        if (timed_out) {
+            return cinder::Error(cinder::Errc::Timeout, "RPC deadline exceeded");
+        }
+        return cinder::Error(cinder::Errc::NotReady, std::string(phase) + ": " + ec.message());
     }
-    return cinder::Error(cinder::Errc::NotReady, std::string(phase) + ": " + ec.message());
-}
 } // namespace
 
 namespace cinder {
 
-TcpTransport::TcpTransport(io_context& io, std::string node_id, std::string shared_secret
+    TcpTransport::TcpTransport(
+        io_context& io,
+        std::string node_id,
+        std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
-    ,
-    asio::ssl::context* ssl_ctx
+        ,
+        asio::ssl::context* ssl_ctx
 #endif
-    )
-    : io_(io),
-      node_id_(std::move(node_id)),
-      shared_secret_(std::move(shared_secret))
+    ) :
+        io_(io),
+        node_id_(std::move(node_id)),
+        shared_secret_(std::move(shared_secret))
 #ifdef CINDER_ENABLE_TLS
-      ,
-      ssl_ctx_(ssl_ctx)
+        ,
+        ssl_ctx_(ssl_ctx)
 #endif
-{
-}
-
-TcpTransport::~TcpTransport() {
-    shutdown();
-}
-
-void
-TcpTransport::shutdown() {
-    std::scoped_lock lock(mu_);
-    if (stopping_) {
-        return;
+    {
     }
 
-    stopping_ = true;
-    for (auto& [id, conn] : conns_) {
-        if (!conn || !conn->connected) {
-            continue;
+    TcpTransport::~TcpTransport() {
+        shutdown();
+    }
+
+    void TcpTransport::shutdown() {
+        std::scoped_lock lock(mu_);
+        if (stopping_) {
+            return;
         }
 
-        std::error_code ec;
+        stopping_ = true;
+        for (auto& [id, conn] : conns_) {
+            if (!conn || !conn->connected) {
+                continue;
+            }
+
+            std::error_code ec;
 #ifdef CINDER_ENABLE_TLS
-        if (conn->stream) {
-            conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
-            conn->stream->lowest_layer().close(ec);
-        } else {
+            if (conn->stream) {
+                conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+                conn->stream->lowest_layer().close(ec);
+            } else {
+                conn->socket.shutdown(tcp::socket::shutdown_both, ec);
+                conn->socket.close(ec);
+            }
+#else
             conn->socket.shutdown(tcp::socket::shutdown_both, ec);
             conn->socket.close(ec);
+#endif
+            conn->connected = false;
         }
-#else
-        conn->socket.shutdown(tcp::socket::shutdown_both, ec);
-        conn->socket.close(ec);
-#endif
-        conn->connected = false;
     }
-}
 
-void
-TcpTransport::setConfig(const ClusterConfig& config) {
-    std::scoped_lock lock(mu_);
-    for (const auto& n : config.nodes) {
-        addrs_.insert_or_assign(n.id, n);
+    void TcpTransport::setConfig(const ClusterConfig& config) {
+        std::scoped_lock lock(mu_);
+        for (const auto& n : config.nodes) {
+            addrs_.insert_or_assign(n.id, n);
+        }
     }
-}
 
-void
-TcpTransport::addAddr(const NodeId& id, const std::string& host, uint16_t port) {
-    std::scoped_lock lock(mu_);
-    addrs_.insert_or_assign(id, ClusterConfig::NodeConfig{id, host, port});
-}
+    void TcpTransport::addAddr(const NodeId& id, const std::string& host, uint16_t port) {
+        std::scoped_lock lock(mu_);
+        addrs_.insert_or_assign(id, ClusterConfig::NodeConfig{id, host, port});
+    }
 
-void
-TcpTransport::setRpcTimeout(std::chrono::milliseconds timeout) {
-    rpc_timeout_ = timeout;
-}
+    void TcpTransport::setRpcTimeout(std::chrono::milliseconds timeout) {
+        rpc_timeout_ = timeout;
+    }
 
-void
-TcpTransport::closeConn(NodeConn& conn) {
-    conn.connected = false;
-    std::error_code ec;
+    void TcpTransport::closeConn(NodeConn& conn) {
+        conn.connected = false;
+        std::error_code ec;
 #ifdef CINDER_ENABLE_TLS
-    if (conn.stream) {
-        conn.stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
-        conn.stream->lowest_layer().close(ec);
-        conn.stream.reset();
-    }
+        if (conn.stream) {
+            conn.stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+            conn.stream->lowest_layer().close(ec);
+            conn.stream.reset();
+        }
 #endif
-    conn.socket.shutdown(tcp::socket::shutdown_both, ec);
-    conn.socket.close(ec);
-}
-
-auto
-TcpTransport::getOrCreateConn(const NodeId& id) -> NodeConn& {
-    std::scoped_lock lock(mu_);
-    auto it = conns_.find(id);
-    if (it != conns_.end() && it->second) {
-        return *it->second;
+        conn.socket.shutdown(tcp::socket::shutdown_both, ec);
+        conn.socket.close(ec);
     }
 
-    auto addr_it = addrs_.find(id);
-    auto addr = (addr_it != addrs_.end()) ? addr_it->second : ClusterConfig::NodeConfig{id, {}, 0};
-    auto conn = std::make_unique<NodeConn>(io_, addr);
-    auto& ref = *conn;
-    conns_[id] = std::move(conn);
-    return ref;
-}
+    auto TcpTransport::getOrCreateConn(const NodeId& id) -> NodeConn& {
+        std::scoped_lock lock(mu_);
+        auto it = conns_.find(id);
+        if (it != conns_.end() && it->second) {
+            return *it->second;
+        }
 
-auto
-TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
-    -> asio::awaitable<Result<net::Response>> {
-    Span span("transport.rpc");
-    std::error_code ec;
-    auto ex = co_await asio::this_coro::executor; // NOLINT(clang-analyzer-core.CallAndMessage) —
-                                                  // false positive in asio awaitable internals
+        auto addr_it = addrs_.find(id);
+        auto addr =
+            (addr_it != addrs_.end()) ? addr_it->second : ClusterConfig::NodeConfig{id, {}, 0};
+        auto conn = std::make_unique<NodeConn>(io_, addr);
+        auto& ref = *conn;
+        conns_[id] = std::move(conn);
+        return ref;
+    }
 
-    // Start deadline timer — runs on the same strand as this coroutine.
-    // When the deadline expires the timer callback cancels in-flight socket
-    // operations, causing any in-progress co_await to complete with
-    // operation_aborted.
-    bool timed_out = false;
-    asio::steady_timer timer(ex, rpc_timeout_);
+    auto TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
+        -> asio::awaitable<Result<net::Response>> {
+        Span span("transport.rpc");
+        std::error_code ec;
+        auto ex =
+            co_await asio::this_coro::executor; // NOLINT(clang-analyzer-core.CallAndMessage) —
+        // false positive in asio awaitable internals
+
+        // Start deadline timer — runs on the same strand as this coroutine.
+        // When the deadline expires the timer callback cancels in-flight socket
+        // operations, causing any in-progress co_await to complete with
+        // operation_aborted.
+        bool timed_out = false;
+        asio::steady_timer timer(ex, rpc_timeout_);
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsubobject-linkage"
 #endif
-    timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
-        if (!timer_ec) {
-            timed_out = true;
+        timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
+            if (!timer_ec) {
+                timed_out = true;
 #ifdef CINDER_ENABLE_TLS
-            if (conn.stream) {
-                conn.stream->lowest_layer().cancel();
-            } else {
-                conn.socket.cancel();
-            }
+                if (conn.stream) {
+                    conn.stream->lowest_layer().cancel();
+                } else {
+                    conn.socket.cancel();
+                }
 #else
-            conn.socket.cancel();
+                conn.socket.cancel();
 #endif
-        }
-    });
+            }
+        });
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
 
-    if (!conn.connected) {
-        tcp::resolver resolver(ex);
-        auto endpoints = co_await resolver.async_resolve(
-            conn.addr.host, std::to_string(conn.addr.port), asio::redirect_error(ec));
-        if (ec) {
-            closeConn(conn);
-            co_return err<net::Response>(rpcError(timed_out, "resolve", ec));
-        }
+        if (!conn.connected) {
+            tcp::resolver resolver(ex);
+            auto endpoints = co_await resolver.async_resolve(
+                conn.addr.host,
+                std::to_string(conn.addr.port),
+                asio::redirect_error(ec)
+            );
+            if (ec) {
+                closeConn(conn);
+                co_return err<net::Response>(rpcError(timed_out, "resolve", ec));
+            }
 #ifdef CINDER_ENABLE_TLS
-        if (ssl_ctx_) {
-            conn.stream = std::make_unique<asio::ssl::stream<tcp::socket>>(ex, *ssl_ctx_);
-            co_await async_connect(
-                conn.stream->lowest_layer(), endpoints, asio::redirect_error(ec));
-            if (ec) {
-                closeConn(conn);
-                co_return err<net::Response>(rpcError(timed_out, "connect", ec));
-            }
+            if (ssl_ctx_) {
+                conn.stream = std::make_unique<asio::ssl::stream<tcp::socket>>(ex, *ssl_ctx_);
+                co_await async_connect(
+                    conn.stream->lowest_layer(),
+                    endpoints,
+                    asio::redirect_error(ec)
+                );
+                if (ec) {
+                    closeConn(conn);
+                    co_return err<net::Response>(rpcError(timed_out, "connect", ec));
+                }
 
-            co_await conn.stream->async_handshake(
-                asio::ssl::stream_base::client, asio::redirect_error(ec));
-            if (ec) {
-                closeConn(conn);
-                co_return err<net::Response>(rpcError(timed_out, "tls handshake", ec));
+                co_await conn.stream->async_handshake(
+                    asio::ssl::stream_base::client,
+                    asio::redirect_error(ec)
+                );
+                if (ec) {
+                    closeConn(conn);
+                    co_return err<net::Response>(rpcError(timed_out, "tls handshake", ec));
+                }
+            } else {
+                co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
+                if (ec) {
+                    closeConn(conn);
+                    co_return err<net::Response>(rpcError(timed_out, "connect", ec));
+                }
             }
-        } else {
+#else
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
                 co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
-        }
-#else
-        co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
-        if (ec) {
-            closeConn(conn);
-            co_return err<net::Response>(rpcError(timed_out, "connect", ec));
-        }
 #endif
-        conn.connected = true;
-        CINDER_DEBUG("connected to node", {"node", conn.addr.host});
-    }
-
-#ifdef CINDER_ENABLE_TLS
-    if (conn.stream) {
-        co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));
-    } else {
-        co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
-    }
-#else
-    co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
-#endif
-    if (ec) {
-        closeConn(conn);
-        if (timed_out) {
-            CINDER_WARN("RPC timed out", {"node", conn.addr.host});
-        } else {
-            CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
+            conn.connected = true;
+            CINDER_DEBUG("connected to node", {"node", conn.addr.host});
         }
-        co_return err<net::Response>(rpcError(timed_out, "write", ec));
-    }
 
-    std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
-#ifdef CINDER_ENABLE_TLS
-    if (conn.stream) {
-        co_await async_read(*conn.stream, buffer(header), asio::redirect_error(ec));
-    } else {
-        co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
-    }
-#else
-    co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
-#endif
-    if (ec) {
-        closeConn(conn);
-        co_return err<net::Response>(rpcError(timed_out, "read header", ec));
-    }
-    if (header[0] != std::byte{net::K_MAGIC}) {
-        closeConn(conn);
-        co_return err<net::Response>(Error(Errc::InvalidArgument, "bad magic in response"));
-    }
-
-    uint32_t payload_len = 0;
-    std::memcpy(&payload_len, &header[3], sizeof(payload_len));
-    payload_len = std::byteswap(payload_len);
-    if (payload_len > net::K_MAX_MESSAGE_SIZE) {
-        closeConn(conn);
-        co_return err<net::Response>(Error(Errc::InvalidArgument, "response payload too large"));
-    }
-
-    std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
-    std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
-    if (payload_len > 0) {
 #ifdef CINDER_ENABLE_TLS
         if (conn.stream) {
-            co_await async_read(*conn.stream,
-                buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                asio::redirect_error(ec));
+            co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));
         } else {
-            co_await async_read(conn.socket,
-                buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                asio::redirect_error(ec));
+            co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
         }
 #else
-        co_await async_read(conn.socket,
-            buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-            asio::redirect_error(ec));
+        co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
 #endif
         if (ec) {
             closeConn(conn);
-            co_return err<net::Response>(rpcError(timed_out, "read payload", ec));
+            if (timed_out) {
+                CINDER_WARN("RPC timed out", {"node", conn.addr.host});
+            } else {
+                CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
+            }
+            co_return err<net::Response>(rpcError(timed_out, "write", ec));
         }
-    }
-    timer.cancel();
-    co_return net::decodeResponse(frame);
-}
 
-void
-TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
-    {
-        std::scoped_lock lock(mu_);
-        if (!addrs_.contains(to)) {
-            on_done(err(Error(Errc::NotFound, "unknown node")));
+        std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
+#ifdef CINDER_ENABLE_TLS
+        if (conn.stream) {
+            co_await async_read(*conn.stream, buffer(header), asio::redirect_error(ec));
+        } else {
+            co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+        }
+#else
+        co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+#endif
+        if (ec) {
+            closeConn(conn);
+            co_return err<net::Response>(rpcError(timed_out, "read header", ec));
+        }
+        if (header[0] != std::byte{net::K_MAGIC}) {
+            closeConn(conn);
+            co_return err<net::Response>(Error(Errc::InvalidArgument, "bad magic in response"));
+        }
+
+        uint32_t payload_len = 0;
+        std::memcpy(&payload_len, &header[3], sizeof(payload_len));
+        payload_len = std::byteswap(payload_len);
+        if (payload_len > net::K_MAX_MESSAGE_SIZE) {
+            closeConn(conn);
+            co_return err<net::Response>(
+                Error(Errc::InvalidArgument, "response payload too large")
+            );
+        }
+
+        std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
+        std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
+        if (payload_len > 0) {
+#ifdef CINDER_ENABLE_TLS
+            if (conn.stream) {
+                co_await async_read(
+                    *conn.stream,
+                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+                    asio::redirect_error(ec)
+                );
+            } else {
+                co_await async_read(
+                    conn.socket,
+                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+                    asio::redirect_error(ec)
+                );
+            }
+#else
+            co_await async_read(
+                conn.socket,
+                buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
+                asio::redirect_error(ec)
+            );
+#endif
+            if (ec) {
+                closeConn(conn);
+                co_return err<net::Response>(rpcError(timed_out, "read payload", ec));
+            }
+        }
+
+        timer.cancel();
+        co_return net::decodeResponse(frame);
+    }
+
+    void TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
+        {
+            std::scoped_lock lock(mu_);
+            if (!addrs_.contains(to)) {
+                on_done(err(Error(Errc::NotFound, "unknown node")));
+                return;
+            }
+        }
+
+        std::string auth_token;
+        if (!shared_secret_.empty() && !node_id_.empty()) {
+            auth_token = generateAuthToken(shared_secret_, node_id_);
+        }
+
+        auto encoded = net::encode(req, auth_token);
+        if (!encoded.has_value()) {
+            on_done(err(encoded.error()));
             return;
         }
+
+        auto& conn = getOrCreateConn(to);
+        asio::co_spawn(
+            conn.strand,
+            sendCoroutine(conn, std::move(encoded.value())),
+            [cb = std::move(on_done),
+             to](std::exception_ptr ep, Result<net::Response> result) mutable {
+            if (ep) {
+                CINDER_WARN("send failed", {"to", to}, {"reason", "coroutine failed"});
+                cb(err(Error(Errc::NotReady, "coroutine failed")));
+                return;
+            }
+            if (!result.has_value()) {
+                CINDER_WARN("send failed", {"to", to}, {"reason", result.error().message()});
+                cb(err(result.error()));
+                return;
+            }
+            if (result.value().status != Errc::OK) {
+                std::string msg = "replica rejected write: ";
+                msg += toString(result.value().status);
+                CINDER_WARN("send failed", {"to", to}, {"reason", msg});
+                cb(err(Error(result.value().status, msg)));
+                return;
+            }
+            cb(ok());
+        }
+        );
     }
 
-    std::string auth_token;
-    if (!shared_secret_.empty() && !node_id_.empty()) {
-        auth_token = generateAuthToken(shared_secret_, node_id_);
-    }
+    void TcpTransport::sendRequestAsync(
+        const NodeId& to,
+        const net::Request& req,
+        RequestCallback on_done
+    ) {
+        {
+            std::scoped_lock lock(mu_);
+            if (!addrs_.contains(to)) {
+                on_done(err<net::Response>(Error(Errc::NotFound, "unknown node")));
+                return;
+            }
+        }
 
-    auto encoded = net::encode(req, auth_token);
-    if (!encoded.has_value()) {
-        on_done(err(encoded.error()));
-        return;
-    }
+        // Generate auth token at the transport layer when shared_secret is configured.
+        std::string auth_token;
+        if (!shared_secret_.empty() && !node_id_.empty()) {
+            auth_token = generateAuthToken(shared_secret_, node_id_);
+        }
 
-    auto& conn = getOrCreateConn(to);
-    asio::co_spawn(conn.strand,
-        sendCoroutine(conn, std::move(encoded.value())),
-        [cb = std::move(on_done), to](std::exception_ptr ep, Result<net::Response> result) mutable {
-        if (ep) {
-            CINDER_WARN("send failed", {"to", to}, {"reason", "coroutine failed"});
-            cb(err(Error(Errc::NotReady, "coroutine failed")));
+        auto encoded = net::encode(req, auth_token);
+        if (!encoded.has_value()) {
+            on_done(err<net::Response>(encoded.error()));
             return;
         }
-        if (!result.has_value()) {
-            CINDER_WARN("send failed", {"to", to}, {"reason", result.error().message()});
-            cb(err(result.error()));
-            return;
-        }
-        if (result.value().status != Errc::OK) {
-            std::string msg = "replica rejected write: ";
-            msg += toString(result.value().status);
-            CINDER_WARN("send failed", {"to", to}, {"reason", msg});
-            cb(err(Error(result.value().status, msg)));
-            return;
-        }
-        cb(ok());
-    });
-}
 
-void
-TcpTransport::sendRequestAsync(const NodeId& to, const net::Request& req, RequestCallback on_done) {
-    {
-        std::scoped_lock lock(mu_);
-        if (!addrs_.contains(to)) {
-            on_done(err<net::Response>(Error(Errc::NotFound, "unknown node")));
-            return;
+        auto& conn = getOrCreateConn(to);
+        asio::co_spawn(
+            conn.strand,
+            sendCoroutine(conn, std::move(encoded.value())),
+            [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
+            if (ep) {
+                cb(err<net::Response>(Error(Errc::NotReady, "coroutine failed")));
+                return;
+            }
+            cb(std::move(result));
         }
+        );
     }
 
-    // Generate auth token at the transport layer when shared_secret is configured.
-    std::string auth_token;
-    if (!shared_secret_.empty() && !node_id_.empty()) {
-        auth_token = generateAuthToken(shared_secret_, node_id_);
+    void TcpTransport::onMessage(MessageHandler handler) {
+        handler_ = std::move(handler);
     }
-
-    auto encoded = net::encode(req, auth_token);
-    if (!encoded.has_value()) {
-        on_done(err<net::Response>(encoded.error()));
-        return;
-    }
-
-    auto& conn = getOrCreateConn(to);
-    asio::co_spawn(conn.strand,
-        sendCoroutine(conn, std::move(encoded.value())),
-        [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
-        if (ep) {
-            cb(err<net::Response>(Error(Errc::NotReady, "coroutine failed")));
-            return;
-        }
-        cb(std::move(result));
-    });
-}
-
-void
-TcpTransport::onMessage(MessageHandler handler) {
-    handler_ = std::move(handler);
-}
 } // namespace cinder

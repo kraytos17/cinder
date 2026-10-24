@@ -10,176 +10,188 @@
 #include "sim_transport.hpp"
 
 namespace cinder {
-namespace {
+    namespace {
 
-using namespace std::chrono_literals;
+        using namespace std::chrono_literals;
 
-struct TestNode {
-    NodeId id;
-    SimClock& clock;
-    SimTransport transport;
-    MembershipTable table;
-    ConsistentHashRing ring;
-    LruStore store;
-    ShardManager shard;
+        struct TestNode {
+            NodeId id;
+            SimClock& clock;
+            SimTransport transport;
+            MembershipTable table;
+            ConsistentHashRing ring;
+            LruStore store;
+            ShardManager shard;
 
-    TestNode(SimClock& c, SimBus& bus, NodeId node_id, size_t capacity, int replica_factor)
-        : id(node_id),
-          clock(c),
-          transport(bus, node_id),
-          table(node_id),
-          ring(50),
-          store(capacity, &c),
-          shard(store, ring, transport, table, node_id, c, replica_factor, 0ms) {
-        transport.onMessage([this](const NodeId&, const net::Request& req) {
-            if (req.opcode != net::Opcode::Replicate) {
-                return;
+            TestNode(
+                SimClock& c,
+                SimBus& bus,
+                NodeId node_id,
+                size_t capacity,
+                int replica_factor
+            ) :
+                id(node_id),
+                clock(c),
+                transport(bus, node_id),
+                table(node_id),
+                ring(50),
+                store(capacity, &c),
+                shard(store, ring, transport, table, node_id, c, replica_factor, 0ms) {
+                transport.onMessage([this](const NodeId&, const net::Request& req) {
+                    if (req.opcode != net::Opcode::Replicate) {
+                        return;
+                    }
+                    VersionedEntry e;
+                    e.value = req.value;
+                    e.setVersion(req.version);
+                    e.writer_node_hash = req.writer_node_hash;
+                    if (req.expires_at.has_value()) {
+                        e.setHasTtl(true);
+                        e.expires_at = toSteadyExpiry(clock, *req.expires_at);
+                    }
+                    [[maybe_unused]]
+                    auto res = store.putVersioned(req.key, std::move(e));
+                });
             }
-            VersionedEntry e;
-            e.value = req.value;
-            e.setVersion(req.version);
-            e.writer_node_hash = req.writer_node_hash;
-            if (req.expires_at.has_value()) {
-                e.setHasTtl(true);
-                e.expires_at = toSteadyExpiry(clock, *req.expires_at);
+        };
+
+        TEST(ConcurrentRebalanceSimTest, RapidJoinLeave) {
+            SimClock clock;
+            SimBus bus(clock, 42);
+            constexpr size_t CAPACITY = 1'048'576;
+
+            TestNode node1(clock, bus, "node1", CAPACITY, 1);
+            TestNode node2(clock, bus, "node2", CAPACITY, 1);
+            TestNode node3(clock, bus, "node3", CAPACITY, 1);
+
+            // Start with node1 only
+            node1.ring.addNode("node1");
+            node1.table.seed({});
+
+            // Seed 100 keys
+            for (int i = 0; i < 100; ++i) {
+                auto key = "key" + std::to_string(i);
+                (void)node1.store.put(key, "value" + std::to_string(i)); // NOLINT
             }
-            [[maybe_unused]] auto res = store.putVersioned(req.key, std::move(e));
-        });
-    }
-};
 
-TEST(ConcurrentRebalanceSimTest, RapidJoinLeave) {
-    SimClock clock;
-    SimBus bus(clock, 42);
-    constexpr size_t CAPACITY = 1'048'576;
+            EXPECT_EQ(node1.store.size(), 100U);
+            // Rapid join/leave cycle: node2 joins, node2 leaves, node3 joins, node3 leaves
+            auto add_node = [&](TestNode& node) {
+                node.ring.addNode(node.id);
+                NodeInfo rumor;
+                rumor.id = node.id;
+                rumor.host = "127.0.0.1";
+                rumor.port = 17'900;
+                rumor.state = NodeState::Alive;
+                rumor.incarnation = 1;
+                node1.table.applyRumor(node.id, rumor);
+                node1.shard.rebalance();
+            };
 
-    TestNode node1(clock, bus, "node1", CAPACITY, 1);
-    TestNode node2(clock, bus, "node2", CAPACITY, 1);
-    TestNode node3(clock, bus, "node3", CAPACITY, 1);
+            auto remove_node = [&](TestNode& node) {
+                node.ring.removeNode(node.id);
+                node1.table.markDead(node.id);
+                node1.shard.rebalance();
+            };
 
-    // Start with node1 only
-    node1.ring.addNode("node1");
-    node1.table.seed({});
+            // Rapid cycle — should not crash
+            for (int cycle = 0; cycle < 5; ++cycle) {
+                add_node(node2);
+                remove_node(node2);
+                add_node(node3);
+                remove_node(node3);
+            }
 
-    // Seed 100 keys
-    for (int i = 0; i < 100; ++i) {
-        auto key = "key" + std::to_string(i);
-        (void)node1.store.put(key, "value" + std::to_string(i)); // NOLINT
-    }
-
-    EXPECT_EQ(node1.store.size(), 100U);
-    // Rapid join/leave cycle: node2 joins, node2 leaves, node3 joins, node3 leaves
-    auto add_node = [&](TestNode& node) {
-        node.ring.addNode(node.id);
-        NodeInfo rumor;
-        rumor.id = node.id;
-        rumor.host = "127.0.0.1";
-        rumor.port = 17'900;
-        rumor.state = NodeState::Alive;
-        rumor.incarnation = 1;
-        node1.table.applyRumor(node.id, rumor);
-        node1.shard.rebalance();
-    };
-
-    auto remove_node = [&](TestNode& node) {
-        node.ring.removeNode(node.id);
-        node1.table.markDead(node.id);
-        node1.shard.rebalance();
-    };
-
-    // Rapid cycle — should not crash
-    for (int cycle = 0; cycle < 5; ++cycle) {
-        add_node(node2);
-        remove_node(node2);
-        add_node(node3);
-        remove_node(node3);
-    }
-
-    // All keys should still be accessible on node1
-    for (int i = 0; i < 100; ++i) {
-        auto key = "key" + std::to_string(i);
-        EXPECT_TRUE(node1.store.get(key).has_value()) << "key " << key << " lost after cycle";
-    }
-}
-
-TEST(ConcurrentRebalanceSimTest, RebalanceIdempotency) {
-    SimClock clock;
-    SimBus bus(clock, 99);
-    constexpr size_t CAPACITY = 1'048'576;
-
-    TestNode node1(clock, bus, "node1", CAPACITY, 1);
-    TestNode node2(clock, bus, "node2", CAPACITY, 1);
-
-    node1.ring.addNode("node1");
-    node1.table.seed({});
-
-    for (int i = 0; i < 50; ++i) {
-        (void)node1.store.put("k" + std::to_string(i), "v" + std::to_string(i)); // NOLINT
-    }
-
-    // Join node2
-    node2.ring.addNode("node2");
-    NodeInfo rumor;
-    rumor.id = "node2";
-    rumor.host = "127.0.0.1";
-    rumor.port = 17'901;
-    rumor.state = NodeState::Alive;
-    rumor.incarnation = 1;
-    node1.table.applyRumor("node2", rumor);
-
-    // Run rebalance 3 times — should be idempotent
-    auto deferred1 = node1.shard.rebalance();
-    auto deferred2 = node1.shard.rebalance();
-    auto deferred3 = node1.shard.rebalance();
-
-    // Results should be consistent (all deferred or all not)
-    EXPECT_EQ(deferred1, deferred2);
-    EXPECT_EQ(deferred2, deferred3);
-}
-
-TEST(ConcurrentRebalanceSimTest, MigrationFailureFiresCallbackAndKeepsLocalCopy) {
-    SimClock clock;
-    SimBus bus(clock, 7);
-    constexpr size_t CAPACITY = 1'048'576;
-
-    TestNode node1(clock, bus, "node1", CAPACITY, 1);
-    TestNode node2(clock, bus, "node2", CAPACITY, 1);
-
-    node1.ring.addNode("node1");
-    node1.ring.addNode("node2");
-    node1.table.seed({});
-
-    // node2 is Alive in membership but unreachable on the transport: every
-    // migrate send fails synchronously in the sim bus.
-    NodeInfo rumor;
-    rumor.id = "node2";
-    rumor.host = "127.0.0.1";
-    rumor.port = 17'901;
-    rumor.state = NodeState::Alive;
-    rumor.incarnation = 1;
-    node1.table.applyRumor("node2", rumor);
-    bus.setNodeDown("node2");
-
-    for (int i = 0; i < 20; ++i) {
-        (void)node1.store.put("mk" + std::to_string(i), "v" + std::to_string(i)); // NOLINT
-    }
-
-    int failures = 0;
-    node1.shard.setOnMigrationFailed([&] { ++failures; });
-    node1.shard.rebalance();
-
-    // At least one key must hash to node2 and fail to migrate — each failure
-    // fires the callback exactly once, and the local copy is retained.
-    EXPECT_GT(failures, 0);
-    size_t retained = 0;
-    for (int i = 0; i < 20; ++i) {
-        auto key = "mk" + std::to_string(i);
-        if (node1.ring.getNode(key) == "node2") {
-            EXPECT_TRUE(node1.store.get(key).has_value()) << key << " dropped despite failed send";
-            ++retained;
+            // All keys should still be accessible on node1
+            for (int i = 0; i < 100; ++i) {
+                auto key = "key" + std::to_string(i);
+                EXPECT_TRUE(node1.store.get(key).has_value())
+                    << "key "
+                    << key
+                    << " lost after cycle";
+            }
         }
-    }
-    EXPECT_GT(retained, 0);
-}
-} // namespace
+
+        TEST(ConcurrentRebalanceSimTest, RebalanceIdempotency) {
+            SimClock clock;
+            SimBus bus(clock, 99);
+            constexpr size_t CAPACITY = 1'048'576;
+
+            TestNode node1(clock, bus, "node1", CAPACITY, 1);
+            TestNode node2(clock, bus, "node2", CAPACITY, 1);
+
+            node1.ring.addNode("node1");
+            node1.table.seed({});
+
+            for (int i = 0; i < 50; ++i) {
+                (void)node1.store.put("k" + std::to_string(i), "v" + std::to_string(i)); // NOLINT
+            }
+
+            // Join node2
+            node2.ring.addNode("node2");
+            NodeInfo rumor;
+            rumor.id = "node2";
+            rumor.host = "127.0.0.1";
+            rumor.port = 17'901;
+            rumor.state = NodeState::Alive;
+            rumor.incarnation = 1;
+            node1.table.applyRumor("node2", rumor);
+
+            // Run rebalance 3 times — should be idempotent
+            auto deferred1 = node1.shard.rebalance();
+            auto deferred2 = node1.shard.rebalance();
+            auto deferred3 = node1.shard.rebalance();
+
+            // Results should be consistent (all deferred or all not)
+            EXPECT_EQ(deferred1, deferred2);
+            EXPECT_EQ(deferred2, deferred3);
+        }
+
+        TEST(ConcurrentRebalanceSimTest, MigrationFailureFiresCallbackAndKeepsLocalCopy) {
+            SimClock clock;
+            SimBus bus(clock, 7);
+            constexpr size_t CAPACITY = 1'048'576;
+
+            TestNode node1(clock, bus, "node1", CAPACITY, 1);
+            TestNode node2(clock, bus, "node2", CAPACITY, 1);
+
+            node1.ring.addNode("node1");
+            node1.ring.addNode("node2");
+            node1.table.seed({});
+
+            // node2 is Alive in membership but unreachable on the transport: every
+            // migrate send fails synchronously in the sim bus.
+            NodeInfo rumor;
+            rumor.id = "node2";
+            rumor.host = "127.0.0.1";
+            rumor.port = 17'901;
+            rumor.state = NodeState::Alive;
+            rumor.incarnation = 1;
+            node1.table.applyRumor("node2", rumor);
+            bus.setNodeDown("node2");
+
+            for (int i = 0; i < 20; ++i) {
+                (void)node1.store.put("mk" + std::to_string(i), "v" + std::to_string(i)); // NOLINT
+            }
+
+            int failures = 0;
+            node1.shard.setOnMigrationFailed([&] { ++failures; });
+            node1.shard.rebalance();
+
+            // At least one key must hash to node2 and fail to migrate — each failure
+            // fires the callback exactly once, and the local copy is retained.
+            EXPECT_GT(failures, 0);
+            size_t retained = 0;
+            for (int i = 0; i < 20; ++i) {
+                auto key = "mk" + std::to_string(i);
+                if (node1.ring.getNode(key) == "node2") {
+                    EXPECT_TRUE(node1.store.get(key).has_value())
+                        << key
+                        << " dropped despite failed send";
+                    ++retained;
+                }
+            }
+            EXPECT_GT(retained, 0);
+        }
+    } // namespace
 } // namespace cinder

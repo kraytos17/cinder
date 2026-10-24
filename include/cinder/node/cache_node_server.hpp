@@ -38,228 +38,228 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
-// Options for constructing a CacheNodeServer.
-struct CacheNodeServerOptions {
-    std::string node_id;
-    uint16_t port = 0;
-    size_t capacity = 0;
-    std::vector<ClusterConfig::NodeConfig> peers;
-    int replica_factor = 1;
-    ConsistencyMode mode = ConsistencyMode::Async;
-    milliseconds ping_interval{1'000};
-    milliseconds suspect_timeout{3'000};
-    milliseconds gossip_interval{1'000};
-    milliseconds quarantine_interval{10'000};
-    // Persistence
-    std::string data_dir;
-    bool persistence_enabled = false;
-    size_t snapshot_interval_s = 60;
-    size_t max_wal_entries = 10'000;
-    // Concurrency: worker threads running the io_context. 0 = auto
-    // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
-    int io_threads = 0;
-    // TLS
-    bool tls_enabled = false;
-    std::string tls_cert_file;
-    std::string tls_key_file;
-    std::string tls_ca_file;
-    // Node authentication
-    std::string shared_secret;
-    std::string eviction_policy = "lru";
-    // RPC deadline — max time for a single peer RPC before cancellation.
-    milliseconds rpc_timeout{5'000};
-    // Anti-entropy: background repair between replica partners (0 = disabled).
-    milliseconds anti_entropy_interval{30'000};
-    uint32_t anti_entropy_buckets = 256;
-    // Pre-bound listen socket fd (-1 = bind
-    // port_ normally). Consumed by TcpServer at start().
-    int listen_fd = -1;
-    // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
-    uint16_t metrics_port = 0;
-    // Path to YAML config file (empty = no hot-reload).
-    std::string config_path;
-    // Loaded config for runtime reference and hot-reload.
-    Config config;
-};
-
-// Parse a single "id@host:port" peer string into a NodeConfig. Returns false
-// on malformed input (no '@' separator, missing port, or a non-numeric or
-// out-of-range port). constexpr so it can be exercised at compile time.
-inline constexpr auto
-parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out) -> bool {
-    auto at = peer.rfind('@');
-    if (at == std::string::npos) {
-        return false;
-    }
-
-    auto colon = peer.find(':', at);
-    if (colon == std::string::npos) {
-        return false;
-    }
-    if (at == 0 || colon == at + 1) {
-        return false;
-    }
-
-    const char* begin = peer.data() + colon + 1;
-    const char* end = peer.data() + peer.size();
-    uint32_t port = 0;
-    auto [ptr, ec] = std::from_chars(begin, end, port);
-    if (ec != std::errc{} || ptr != end || port > std::numeric_limits<uint16_t>::max()) {
-        return false;
-    }
-
-    out.id = peer.substr(0, at);
-    out.host = peer.substr(at + 1, colon - at - 1);
-    out.port = static_cast<uint16_t>(port);
-    return true;
-}
-
-// Assembles a single cache node: store + ring + replication transport +
-// TCP server, plus periodic hinted-handoff replay and signal-driven shutdown.
-// This is the object a `cinderd` process hosts.
-class CacheNodeServer {
-  public:
-
-    explicit CacheNodeServer(CacheNodeServerOptions options);
-    ~CacheNodeServer() = default;
-
-    CacheNodeServer(const CacheNodeServer&) = delete;
-    auto operator=(const CacheNodeServer&) -> CacheNodeServer& = delete;
-    CacheNodeServer(CacheNodeServer&&) = delete;
-    auto operator=(CacheNodeServer&&) -> CacheNodeServer& = delete;
-
-    auto start() -> Result<void>;
-    void run();
-    void shutdown();
-
-    // Handle for external subsystems that need direct
-    // access to the cache internals without going through the binary protocol.
-    struct GatewayHandle {
-        CacheStore& store;
-        ConsistentHashRing& ring;
-        ReplicationManager& repl;
-        MembershipTable& table;
-        const MetricsCollector& metrics;
-        const Config& config;
-        NodeId node_id;
+    // Options for constructing a CacheNodeServer.
+    struct CacheNodeServerOptions {
+        std::string node_id;
+        uint16_t port = 0;
+        size_t capacity = 0;
+        std::vector<ClusterConfig::NodeConfig> peers;
         int replica_factor = 1;
         ConsistencyMode mode = ConsistencyMode::Async;
+        milliseconds ping_interval{1000};
+        milliseconds suspect_timeout{3000};
+        milliseconds gossip_interval{1000};
+        milliseconds quarantine_interval{10'000};
+        // Persistence
+        std::string data_dir;
+        bool persistence_enabled = false;
+        size_t snapshot_interval_s = 60;
+        size_t max_wal_entries = 10'000;
+        // Concurrency: worker threads running the io_context. 0 = auto
+        // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
+        int io_threads = 0;
+        // TLS
+        bool tls_enabled = false;
+        std::string tls_cert_file;
+        std::string tls_key_file;
+        std::string tls_ca_file;
+        // Node authentication
+        std::string shared_secret;
+        std::string eviction_policy = "lru";
+        // RPC deadline — max time for a single peer RPC before cancellation.
+        milliseconds rpc_timeout{5000};
+        // Anti-entropy: background repair between replica partners (0 = disabled).
+        milliseconds anti_entropy_interval{30'000};
+        uint32_t anti_entropy_buckets = 256;
+        // Pre-bound listen socket fd (-1 = bind
+        // port_ normally). Consumed by TcpServer at start().
+        int listen_fd = -1;
+        // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
+        uint16_t metrics_port = 0;
+        // Path to YAML config file (empty = no hot-reload).
+        std::string config_path;
+        // Loaded config for runtime reference and hot-reload.
+        Config config;
     };
 
-    auto gatewayHandle() -> GatewayHandle {
-        return {
-            .store = *store_,
-            .ring = ring_,
-            .repl = repl_,
-            .table = table_,
-            .metrics = metrics_,
-            .config = current_config_,
-            .node_id = node_id_,
-            .replica_factor = replica_factor_,
-            .mode = mode_,
-        };
+    // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
+    // on malformed input (no '@' separator, missing port, or a non-numeric or
+    // out-of-range port). constexpr so it can be exercised at compile time.
+    inline constexpr auto parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out)
+        -> bool {
+        auto at = peer.rfind('@');
+        if (at == std::string::npos) {
+            return false;
+        }
+
+        auto colon = peer.find(':', at);
+        if (colon == std::string::npos) {
+            return false;
+        }
+        if (at == 0 || colon == at + 1) {
+            return false;
+        }
+
+        const char* begin = peer.data() + colon + 1;
+        const char* end = peer.data() + peer.size();
+        uint32_t port = 0;
+        auto [ptr, ec] = std::from_chars(begin, end, port);
+        if (ec != std::errc{} || ptr != end || port > std::numeric_limits<uint16_t>::max()) {
+            return false;
+        }
+
+        out.id = peer.substr(0, at);
+        out.host = peer.substr(at + 1, colon - at - 1);
+        out.port = static_cast<uint16_t>(port);
+        return true;
     }
 
-  private:
+    // Assembles a single cache node: store + ring + replication transport +
+    // TCP server, plus periodic hinted-handoff replay and signal-driven shutdown.
+    // This is the object a `cinderd` process hosts.
+    class CacheNodeServer {
+    public:
 
-    struct NodeTimers {
-        explicit NodeTimers(io_context& io)
-            : replay(io),
-              gossip(io),
-              probe(io),
-              evict(io),
-              quarantine(io),
-              rebalance(io),
-              migration_retry(io),
-              compact(io),
-              config_reload(io),
-              anti_entropy(io) {}
+        explicit CacheNodeServer(CacheNodeServerOptions options);
+        ~CacheNodeServer() = default;
 
-        steady_timer replay;
-        steady_timer gossip;
-        steady_timer probe;
-        steady_timer evict;
-        steady_timer quarantine;
-        steady_timer rebalance;
-        bool rebalance_pending = false;
-        steady_timer migration_retry;
-        bool migration_retry_pending = false;
-        steady_timer compact;
-        steady_timer config_reload;
-        steady_timer anti_entropy;
+        CacheNodeServer(const CacheNodeServer&) = delete;
+        auto operator=(const CacheNodeServer&) -> CacheNodeServer& = delete;
+        CacheNodeServer(CacheNodeServer&&) = delete;
+        auto operator=(CacheNodeServer&&) -> CacheNodeServer& = delete;
 
-        void cancelAll() {
-            replay.cancel();
-            gossip.cancel();
-            probe.cancel();
-            evict.cancel();
-            quarantine.cancel();
-            rebalance.cancel();
-            migration_retry.cancel();
-            compact.cancel();
-            config_reload.cancel();
-            anti_entropy.cancel();
+        auto start() -> Result<void>;
+        void run();
+        void shutdown();
+
+        // Handle for external subsystems that need direct
+        // access to the cache internals without going through the binary protocol.
+        struct GatewayHandle {
+            CacheStore& store;
+            ConsistentHashRing& ring;
+            ReplicationManager& repl;
+            MembershipTable& table;
+            const MetricsCollector& metrics;
+            const Config& config;
+            NodeId node_id;
+            int replica_factor = 1;
+            ConsistencyMode mode = ConsistencyMode::Async;
+        };
+
+        auto gatewayHandle() -> GatewayHandle {
+            return {
+                .store = *store_,
+                .ring = ring_,
+                .repl = repl_,
+                .table = table_,
+                .metrics = metrics_,
+                .config = current_config_,
+                .node_id = node_id_,
+                .replica_factor = replica_factor_,
+                .mode = mode_,
+            };
         }
-    };
 
-    void scheduleReplay();
-    void scheduleGossip();
-    void scheduleProbe();
-    void scheduleEvict();
-    void scheduleCompact();
-    void scheduleAntiEntropy();
-    void rebuildRing();
-    // Membership callbacks can fire in bursts (gossip + probe + refute for
-    // the same flap). Ring updates apply immediately (cheap, lock-free
-    // snapshot publish) but the expensive store scan + migration burst in
-    // ShardManager::rebalance is debounced and coalesced: rapid triggers
-    // collapse into a single run over the latest ring view.
-    void scheduleRebalanceDebounced();
-    void scheduleRebalance();
-    // Delayed retry after async migration transport failures (e.g. a joining
-    // node whose TCP accept queue is briefly overwhelmed). Coalesced with the
-    // debounce gate so a burst of failures triggers a single re-run.
-    void scheduleMigrationRetry();
-    void scheduleConfigReload();
-    void applyConfig();
-    void applyHotField(std::string_view field, const Config& cfg);
-    void syncEffectiveConfig();
-    void seedCluster(const CacheNodeServerOptions& options);
-    void wireMetrics();
-    void installAdminCallbacks();
-    void installAddrResolver();
+    private:
 
-    MetricsCollector metrics_;
-    milliseconds ping_interval_{1'000};
-    milliseconds quarantine_interval_{10'000};
-    RealClock clock_;
-    std::unique_ptr<CacheStore> store_;
+        struct NodeTimers {
+            explicit NodeTimers(io_context& io) :
+                replay(io),
+                gossip(io),
+                probe(io),
+                evict(io),
+                quarantine(io),
+                rebalance(io),
+                migration_retry(io),
+                compact(io),
+                config_reload(io),
+                anti_entropy(io) {}
+
+            steady_timer replay;
+            steady_timer gossip;
+            steady_timer probe;
+            steady_timer evict;
+            steady_timer quarantine;
+            steady_timer rebalance;
+            bool rebalance_pending = false;
+            steady_timer migration_retry;
+            bool migration_retry_pending = false;
+            steady_timer compact;
+            steady_timer config_reload;
+            steady_timer anti_entropy;
+
+            void cancelAll() {
+                replay.cancel();
+                gossip.cancel();
+                probe.cancel();
+                evict.cancel();
+                quarantine.cancel();
+                rebalance.cancel();
+                migration_retry.cancel();
+                compact.cancel();
+                config_reload.cancel();
+                anti_entropy.cancel();
+            }
+        };
+
+        void scheduleReplay();
+        void scheduleGossip();
+        void scheduleProbe();
+        void scheduleEvict();
+        void scheduleCompact();
+        void scheduleAntiEntropy();
+        void rebuildRing();
+        // Membership callbacks can fire in bursts (gossip + probe + refute for
+        // the same flap). Ring updates apply immediately (cheap, lock-free
+        // snapshot publish) but the expensive store scan + migration burst in
+        // ShardManager::rebalance is debounced and coalesced: rapid triggers
+        // collapse into a single run over the latest ring view.
+        void scheduleRebalanceDebounced();
+        void scheduleRebalance();
+        // Delayed retry after async migration transport failures (e.g. a joining
+        // node whose TCP accept queue is briefly overwhelmed). Coalesced with the
+        // debounce gate so a burst of failures triggers a single re-run.
+        void scheduleMigrationRetry();
+        void scheduleConfigReload();
+        void applyConfig();
+        void applyHotField(std::string_view field, const Config& cfg);
+        void syncEffectiveConfig();
+        void seedCluster(const CacheNodeServerOptions& options);
+        void wireMetrics();
+        void installAdminCallbacks();
+        void installAddrResolver();
+
+        MetricsCollector metrics_;
+        milliseconds ping_interval_{1000};
+        milliseconds quarantine_interval_{10'000};
+        RealClock clock_;
+        std::unique_ptr<CacheStore> store_;
 #ifdef CINDER_ENABLE_TLS
-    std::optional<asio::ssl::context> ssl_ctx_;
+        std::optional<asio::ssl::context> ssl_ctx_;
 #endif
-    milliseconds anti_entropy_interval_{30'000};
-    size_t capacity_ = 0;
-    io_context io_;
-    std::vector<ClusterConfig::NodeConfig> peers_;
-    NodeId node_id_;
-    std::string config_path_;
-    signal_set signals_;
-    NodeTimers timers_;
-    ConsistentHashRing ring_;
-    MembershipTable table_;
-    TcpTransport transport_;
-    GossipManager gossip_;
-    FailureDetector detector_;
-    ReplicationManager repl_;
-    ShardManager shard_;
-    AntiEntropyManager anti_entropy_;
-    PersistenceManager persistence_;
-    Config current_config_;
-    net::TcpServer server_;
-    int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
-    int replica_factor_ = 1;
-    uint16_t port_ = 0;
-    uint16_t metrics_port_ = 0;
-    ConsistencyMode mode_ = ConsistencyMode::Async;
-};
+        milliseconds anti_entropy_interval_{30'000};
+        size_t capacity_ = 0;
+        io_context io_;
+        std::vector<ClusterConfig::NodeConfig> peers_;
+        NodeId node_id_;
+        std::string config_path_;
+        signal_set signals_;
+        NodeTimers timers_;
+        ConsistentHashRing ring_;
+        MembershipTable table_;
+        TcpTransport transport_;
+        GossipManager gossip_;
+        FailureDetector detector_;
+        ReplicationManager repl_;
+        ShardManager shard_;
+        AntiEntropyManager anti_entropy_;
+        PersistenceManager persistence_;
+        Config current_config_;
+        net::TcpServer server_;
+        int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads
+        int replica_factor_ = 1;
+        uint16_t port_ = 0;
+        uint16_t metrics_port_ = 0;
+        ConsistencyMode mode_ = ConsistencyMode::Async;
+    };
 } // namespace cinder

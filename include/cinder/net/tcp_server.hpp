@@ -23,92 +23,108 @@ using asio::io_context;
 using asio::ip::tcp;
 
 namespace cinder {
-class ReplicationManager;
-class GossipManager;
-class AntiEntropyManager;
+    class ReplicationManager;
+    class GossipManager;
+    class AntiEntropyManager;
 } // namespace cinder
 
 namespace cinder::net {
 
-struct AdminCallbacks {
-    std::function<std::string()> info_getter;
-    std::function<std::string()> cluster_getter;
-    std::function<std::string()> ring_getter;
-    std::function<void()> compact_trigger;
-    std::function<void()> config_reload_trigger;
-    std::function<void()> shutdown_trigger;
-};
+    struct AdminCallbacks {
+        std::function<std::string()> info_getter;
+        std::function<std::string()> cluster_getter;
+        std::function<std::string()> ring_getter;
+        std::function<void()> compact_trigger;
+        std::function<void()> config_reload_trigger;
+        std::function<void()> shutdown_trigger;
+    };
 
-class TcpServer {
-  public:
+    class TcpServer {
+    public:
 
-    TcpServer(io_context& io, uint16_t port, CacheStore& store, const ConsistentHashRing& ring,
-        std::string node_id, Clock& clock, ReplicationManager* repl = nullptr,
-        int replica_factor = 1, ConsistencyMode mode = ConsistencyMode::Async,
-        GossipManager* gossip = nullptr, uint16_t metrics_port = 0,
-        MetricsCollector* metrics = nullptr, std::function<std::string()> config_getter = nullptr,
-        AntiEntropyManager* anti_entropy = nullptr, std::string shared_secret = {}
+        TcpServer(
+            io_context& io,
+            uint16_t port,
+            CacheStore& store,
+            const ConsistentHashRing& ring,
+            std::string node_id,
+            Clock& clock,
+            ReplicationManager* repl = nullptr,
+            int replica_factor = 1,
+            ConsistencyMode mode = ConsistencyMode::Async,
+            GossipManager* gossip = nullptr,
+            uint16_t metrics_port = 0,
+            MetricsCollector* metrics = nullptr,
+            std::function<std::string()> config_getter = nullptr,
+            AntiEntropyManager* anti_entropy = nullptr,
+            std::string shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
-        ,
-        asio::ssl::context* ssl_ctx = nullptr
+            ,
+            asio::ssl::context* ssl_ctx = nullptr
 #endif
-    );
+        );
 
-    ~TcpServer();
+        ~TcpServer();
 
-    TcpServer(const TcpServer&) = delete;
-    auto operator=(const TcpServer&) -> TcpServer& = delete;
-    TcpServer(TcpServer&&) = delete;
-    auto operator=(TcpServer&&) -> TcpServer& = delete;
+        TcpServer(const TcpServer&) = delete;
+        auto operator=(const TcpServer&) -> TcpServer& = delete;
+        TcpServer(TcpServer&&) = delete;
+        auto operator=(TcpServer&&) -> TcpServer& = delete;
 
-    auto start() -> Result<void>;
-    void shutdown();
+        auto start() -> Result<void>;
+        void shutdown();
 
-    void setAdminCallbacks(AdminCallbacks cb) { admin_callbacks_ = std::move(cb); }
+        void setAdminCallbacks(AdminCallbacks cb) {
+            admin_callbacks_ = std::move(cb);
+        }
 
-    // Owner address resolver forwarded to every accepted connection for
-    // redirect hints. Supplied by CacheNodeServer from the membership table.
-    void setAddrResolver(TcpConnection::AddrResolver r) { addr_resolver_ = std::move(r); }
+        // Owner address resolver forwarded to every accepted connection for
+        // redirect hints. Supplied by CacheNodeServer from the membership table.
+        void setAddrResolver(TcpConnection::AddrResolver r) {
+            addr_resolver_ = std::move(r);
+        }
 
-    // Pre-bound listen socket. When set, start()
-    // adopts the fd instead of binding port_ itself.
-    void setListenFd(int fd) { listen_fd_ = fd; }
+        // Pre-bound listen socket. When set, start()
+        // adopts the fd instead of binding port_ itself.
+        void setListenFd(int fd) {
+            listen_fd_ = fd;
+        }
 
-    // Hard cap on concurrent client connections. Beyond this the acceptor
-    // rejects new sockets instead of buffering unbounded file descriptors.
-    static constexpr size_t K_MAX_CONNECTIONS = 10'000;
+        // Hard cap on concurrent client connections. Beyond this the acceptor
+        // rejects new sockets instead of buffering unbounded file descriptors.
+        static constexpr size_t K_MAX_CONNECTIONS = 10'000;
 
-  private:
+    private:
 
-    void doAccept();
-    void doAcceptMetrics();
+        void doAccept();
+        void doAcceptMetrics();
 
-    asio::strand<io_context::executor_type> strand_;
-    bool stopping_ = false;
-    tcp::acceptor acceptor_;
-    uint16_t port_ = 0;
-    uint16_t metrics_port_ = 0;
-    CacheStore& store_;
-    const ConsistentHashRing& ring_;
-    Clock& clock_;
-    std::string node_id_;
-    ReplicationManager* repl_;
-    int replica_factor_;
-    ConsistencyMode mode_;
-    GossipManager* gossip_;
-    AntiEntropyManager* anti_entropy_ = nullptr;
-    MetricsCollector* metrics_ = nullptr;
+        asio::strand<io_context::executor_type> strand_;
+        bool stopping_ = false;
+        tcp::acceptor acceptor_;
+        uint16_t port_ = 0;
+        uint16_t metrics_port_ = 0;
+        CacheStore& store_;
+        const ConsistentHashRing& ring_;
+        Clock& clock_;
+        std::string node_id_;
+        ReplicationManager* repl_;
+        int replica_factor_;
+        ConsistencyMode mode_;
+        GossipManager* gossip_;
+        AntiEntropyManager* anti_entropy_ = nullptr;
+        MetricsCollector* metrics_ = nullptr;
 #ifdef CINDER_ENABLE_TLS
-    asio::ssl::context* ssl_ctx_ = nullptr;
+        asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
-    AdminCallbacks admin_callbacks_;
-    TcpConnection::AddrResolver addr_resolver_;
-    int listen_fd_ = -1;
-    std::vector<std::shared_ptr<TcpConnection>> connections_;
-    std::unique_ptr<tcp::acceptor> metrics_acceptor_;
-    std::string shared_secret_;
-    asio::steady_timer emfile_timer_;
-    std::function<std::string()> config_getter_;
-    std::atomic<size_t> active_connections_{0};
-};
+        AdminCallbacks admin_callbacks_;
+        TcpConnection::AddrResolver addr_resolver_;
+        int listen_fd_ = -1;
+        std::vector<std::shared_ptr<TcpConnection>> connections_;
+        std::unique_ptr<tcp::acceptor> metrics_acceptor_;
+        std::string shared_secret_;
+        asio::steady_timer emfile_timer_;
+        std::function<std::string()> config_getter_;
+        std::atomic<size_t> active_connections_{0};
+    };
 } // namespace cinder::net

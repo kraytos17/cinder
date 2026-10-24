@@ -125,7 +125,7 @@ TEST(ProtocolAuthTest, RequestWithAuthAndTtl) {
     req.opcode = Opcode::Set;
     req.key = "ttl-key";
     req.value = "ttl-value";
-    req.ttl = std::chrono::milliseconds(5'000);
+    req.ttl = std::chrono::milliseconds(5000);
     std::string auth_token(32, '\xEF');
 
     auto encoded = encode(req, auth_token);
@@ -134,7 +134,7 @@ TEST(ProtocolAuthTest, RequestWithAuthAndTtl) {
     auto decoded = decode(*encoded);
     ASSERT_TRUE(decoded.has_value());
     EXPECT_TRUE(decoded->req.ttl.has_value());
-    EXPECT_EQ(decoded->req.ttl->count(), 5'000);
+    EXPECT_EQ(decoded->req.ttl->count(), 5000);
     EXPECT_EQ(decoded->auth_token, auth_token);
 }
 

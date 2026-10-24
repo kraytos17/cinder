@@ -21,98 +21,107 @@ using asio::ip::tcp;
 
 namespace cinder {
 
-class ConnectionPool {
-  public:
+    class ConnectionPool {
+    public:
 
-    ConnectionPool(const ClusterConfig& config, io_context& io, std::string node_id = {},
-        std::string shared_secret = {}
+        ConnectionPool(
+            const ClusterConfig& config,
+            io_context& io,
+            std::string node_id = {},
+            std::string shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
-        ,
-        asio::ssl::context* ssl_ctx = nullptr
+            ,
+            asio::ssl::context* ssl_ctx = nullptr
 #endif
-    );
+        );
 
-    ~ConnectionPool();
-    ConnectionPool(const ConnectionPool&) = delete;
-    auto operator=(const ConnectionPool&) -> ConnectionPool& = delete;
-    ConnectionPool(ConnectionPool&&) = delete;
-    auto operator=(ConnectionPool&&) -> ConnectionPool& = delete;
+        ~ConnectionPool();
+        ConnectionPool(const ConnectionPool&) = delete;
+        auto operator=(const ConnectionPool&) -> ConnectionPool& = delete;
+        ConnectionPool(ConnectionPool&&) = delete;
+        auto operator=(ConnectionPool&&) -> ConnectionPool& = delete;
 
-    // Synchronous send — blocks until response or error.
-    auto send(const NodeId& node_id, const net::Request& req) -> Result<net::Response>;
+        // Synchronous send — blocks until response or error.
+        auto send(const NodeId& node_id, const net::Request& req) -> Result<net::Response>;
 
-    // Pipelined send: writes all requests back-to-back on one connection, then
-    // reads all responses in order.
-    auto sendBatch(const NodeId& node_id, const std::vector<net::Request>& reqs)
-        -> Result<std::vector<net::Response>>;
+        // Pipelined send: writes all requests back-to-back on one connection, then
+        // reads all responses in order.
+        auto sendBatch(const NodeId& node_id, const std::vector<net::Request>& reqs)
+            -> Result<std::vector<net::Response>>;
 
-    // Async send — callback fires on the io_context's executor.
-    void sendAsync(const NodeId& node_id, const net::Request& req,
-        std::function<void(Result<net::Response>)> on_done);
+        // Async send — callback fires on the io_context's executor.
+        void sendAsync(
+            const NodeId& node_id,
+            const net::Request& req,
+            std::function<void(Result<net::Response>)> on_done
+        );
 
-    // Async batch send — callback fires on the io_context's executor.
-    void sendBatchAsync(const NodeId& node_id, const std::vector<net::Request>& reqs,
-        std::function<void(Result<std::vector<net::Response>>)> on_done);
+        // Async batch send — callback fires on the io_context's executor.
+        void sendBatchAsync(
+            const NodeId& node_id,
+            const std::vector<net::Request>& reqs,
+            std::function<void(Result<std::vector<net::Response>>)> on_done
+        );
 
-    void shutdown();
+        void shutdown();
 
-    // Register (or refresh) a node's address at runtime — learned from server
-    // redirects for nodes the client was never configured with. Mirrors
-    // TcpTransport::addAddr on the server side.
-    void addAddr(const NodeId& id, const std::string& host, uint16_t port);
+        // Register (or refresh) a node's address at runtime — learned from server
+        // redirects for nodes the client was never configured with. Mirrors
+        // TcpTransport::addAddr on the server side.
+        void addAddr(const NodeId& id, const std::string& host, uint16_t port);
 
-  private:
+    private:
 
 #ifdef CINDER_ENABLE_TLS
-    using stream_type = asio::ssl::stream<tcp::socket>;
+        using stream_type = asio::ssl::stream<tcp::socket>;
 #endif
 
-    // Per-node cached connection. Each NodeConn owns a strand that serialises
-    // concurrent RPCs targeting the same peer.
-    struct NodeConn {
-        asio::strand<io_context::executor_type> strand;
-        ClusterConfig::NodeConfig addr{};
+        // Per-node cached connection. Each NodeConn owns a strand that serialises
+        // concurrent RPCs targeting the same peer.
+        struct NodeConn {
+            asio::strand<io_context::executor_type> strand;
+            ClusterConfig::NodeConfig addr{};
 #ifdef CINDER_ENABLE_TLS
-        std::unique_ptr<stream_type> stream;
+            std::unique_ptr<stream_type> stream;
 #endif
-        tcp::socket socket;
-        bool connected = false;
+            tcp::socket socket;
+            bool connected = false;
 
-        NodeConn(io_context& io, const ClusterConfig::NodeConfig& a)
-            : strand(asio::make_strand(io)),
-              addr(a),
-              socket(io) {}
+            NodeConn(io_context& io, const ClusterConfig::NodeConfig& a) :
+                strand(asio::make_strand(io)),
+                addr(a),
+                socket(io) {}
+        };
+
+        // Return the cached connection for `node_id`, creating one if needed.
+        // Caller must not hold mu_ when calling this.
+        auto getOrCreateConn(const NodeId& node_id) -> NodeConn&;
+
+        // Coroutine running on a NodeConn's strand: check connected, reconnect if
+        // needed, write request(s), read response(s), decode. On any error closes
+        // the connection so the next RPC reconnects on a clean socket.
+        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
+            -> asio::awaitable<Result<net::Response>>;
+
+        // Mark unusable and release the socket. A failed exchange can leave stale
+        // bytes or a half-dead connection behind; reusing it corrupts the next
+        // response, so every error path goes through here.
+        static void closeConn(NodeConn& conn);
+
+        // Batch coroutine: write all requests, read all responses.
+        auto sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::byte>> all_data)
+            -> asio::awaitable<Result<std::vector<net::Response>>>;
+
+        io_context& io_;
+        std::string node_id_;
+        std::string shared_secret_;
+#ifdef CINDER_ENABLE_TLS
+        asio::ssl::context* ssl_ctx_ = nullptr;
+#endif
+        std::chrono::milliseconds rpc_timeout_{0};
+        mutable std::mutex mu_;
+        bool stopping_ = false;
+        std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
+        std::flat_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
     };
-
-    // Return the cached connection for `node_id`, creating one if needed.
-    // Caller must not hold mu_ when calling this.
-    auto getOrCreateConn(const NodeId& node_id) -> NodeConn&;
-
-    // Coroutine running on a NodeConn's strand: check connected, reconnect if
-    // needed, write request(s), read response(s), decode. On any error closes
-    // the connection so the next RPC reconnects on a clean socket.
-    auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
-        -> asio::awaitable<Result<net::Response>>;
-
-    // Mark unusable and release the socket. A failed exchange can leave stale
-    // bytes or a half-dead connection behind; reusing it corrupts the next
-    // response, so every error path goes through here.
-    static void closeConn(NodeConn& conn);
-
-    // Batch coroutine: write all requests, read all responses.
-    auto sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::byte>> all_data)
-        -> asio::awaitable<Result<std::vector<net::Response>>>;
-
-    io_context& io_;
-    std::string node_id_;
-    std::string shared_secret_;
-#ifdef CINDER_ENABLE_TLS
-    asio::ssl::context* ssl_ctx_ = nullptr;
-#endif
-    std::chrono::milliseconds rpc_timeout_{0};
-    mutable std::mutex mu_;
-    bool stopping_ = false;
-    std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
-    std::flat_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
-};
 } // namespace cinder

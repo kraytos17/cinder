@@ -9,402 +9,451 @@
 
 namespace cinder {
 
-using std::chrono::milliseconds;
-using std::chrono::system_clock;
+    using std::chrono::milliseconds;
+    using std::chrono::system_clock;
 
-namespace {
+    namespace {
 
-// Stable FNV-1a 64-bit hash — deterministic across compilers/platforms, used
-// purely as a per-node write tiebreaker.
-uint64_t
-fnv1a64(std::string_view s) {
-    uint64_t h = 14'695'981'039'346'656'037ULL;
-    for (char c : s) {
-        h ^= static_cast<uint8_t>(c);
-        h *= 1'099'511'628'211ULL;
-    }
-    return h;
-}
-} // namespace
+        // Stable FNV-1a 64-bit hash — deterministic across compilers/platforms, used
+        // purely as a per-node write tiebreaker.
+        uint64_t fnv1a64(std::string_view s) {
+            uint64_t h = 14'695'981'039'346'656'037ULL;
+            for (char c : s) {
+                h ^= static_cast<uint8_t>(c);
+                h *= 1'099'511'628'211ULL;
+            }
+            return h;
+        }
+    } // namespace
 
-ReplicationManager::ReplicationManager(
-    CacheStore& local, NodeId self, Clock& clock, Transport& transport)
-    : local_(local),
-      self_(std::move(self)),
-      clock_(clock),
-      transport_(transport) {}
+    ReplicationManager::ReplicationManager(
+        CacheStore& local,
+        NodeId self,
+        Clock& clock,
+        Transport& transport
+    ) :
+        local_(local),
+        self_(std::move(self)),
+        clock_(clock),
+        transport_(transport) {}
 
-void
-ReplicationManager::writeAsync(const std::string& key, std::string value,
-    std::optional<milliseconds> ttl, const std::vector<NodeId>& replica_nodes, ConsistencyMode mode,
-    WriteCallback on_done, uint64_t trace_id, uint64_t span_id) {
-    Span span("replication.write.fanout", span_id);
-    // Version comes from the store — it is the single version authority. The
-    // store's counter has advanced past any observed peer versions (Lamport
-    // bump) and is seeded from the clock, so a restarted node wins LWW.
-    Version version = local_.mintVersion();
-    uint64_t writer = fnv1a64(self_);
+    void ReplicationManager::writeAsync(
+        const std::string& key,
+        std::string value,
+        std::optional<milliseconds> ttl,
+        const std::vector<NodeId>& replica_nodes,
+        ConsistencyMode mode,
+        WriteCallback on_done,
+        uint64_t trace_id,
+        uint64_t span_id
+    ) {
+        Span span("replication.write.fanout", span_id);
+        // Version comes from the store — it is the single version authority. The
+        // store's counter has advanced past any observed peer versions (Lamport
+        // bump) and is seeded from the clock, so a restarted node wins LWW.
+        Version version = local_.mintVersion();
+        uint64_t writer = fnv1a64(self_);
 
-    VersionedEntry entry;
-    entry.value = value;
-    entry.setVersion(version);
-    entry.writer_node_hash = writer;
-    if (ttl.has_value()) {
-        entry.expires_at = clock_.now() + *ttl;
-        entry.setHasTtl(true);
-    }
+        VersionedEntry entry;
+        entry.value = value;
+        entry.setVersion(version);
+        entry.writer_node_hash = writer;
+        if (ttl.has_value()) {
+            entry.expires_at = clock_.now() + *ttl;
+            entry.setHasTtl(true);
+        }
 
-    // Capture the absolute wall-clock expiry before `entry` is moved into the
-    // store below. Carried on the wire (not a relative ttl) so every replica
-    // expires the key at the same instant regardless of delivery delay.
-    std::optional<system_clock::time_point> wire_expiry;
-    if (entry.hasTtl()) {
-        wire_expiry = toSystemExpiry(clock_, entry.expires_at);
-    }
+        // Capture the absolute wall-clock expiry before `entry` is moved into the
+        // store below. Carried on the wire (not a relative ttl) so every replica
+        // expires the key at the same instant regardless of delivery delay.
+        std::optional<system_clock::time_point> wire_expiry;
+        if (entry.hasTtl()) {
+            wire_expiry = toSystemExpiry(clock_, entry.expires_at);
+        }
 
-    auto local_res = local_.putVersioned(key, std::move(entry));
-    if (!local_res.has_value()) {
-        CINDER_WARN("local write failed", {"key", key}, {"reason", local_res.error().message()});
-        on_done(local_res);
-        return;
-    }
+        auto local_res = local_.putVersioned(key, std::move(entry));
+        if (!local_res.has_value()) {
+            CINDER_WARN(
+                "local write failed",
+                {"key", key},
+                {"reason", local_res.error().message()}
+            );
+            on_done(local_res);
+            return;
+        }
 
-    net::Request req;
-    req.opcode = net::Opcode::Replicate;
-    req.key = key;
-    req.value = std::move(value);
-    req.expires_at = wire_expiry;
-    req.version = version;
-    req.writer_node_hash = writer;
-    // Propagate structured trace context from the originating request.
-    req.trace_id = trace_id;
-    req.span_id = span_id;
+        net::Request req;
+        req.opcode = net::Opcode::Replicate;
+        req.key = key;
+        req.value = std::move(value);
+        req.expires_at = wire_expiry;
+        req.version = version;
+        req.writer_node_hash = writer;
+        // Propagate structured trace context from the originating request.
+        req.trace_id = trace_id;
+        req.span_id = span_id;
 
-    if (mode == ConsistencyMode::Async) {
-        CINDER_DEBUG("async write fan-out", {"key", key}, {"replicas", replica_nodes.size()});
-        // Local commit counts; fan-out best-effort, hint on failure.
+        if (mode == ConsistencyMode::Async) {
+            CINDER_DEBUG("async write fan-out", {"key", key}, {"replicas", replica_nodes.size()});
+            // Local commit counts; fan-out best-effort, hint on failure.
+            for (const auto& node : replica_nodes) {
+                transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
+                    if (!r.has_value()) {
+                        Span fail_span("replication.write.async.fail", req.span_id);
+                        CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
+                        if (metrics_) {
+                            metrics_->replicationMetrics().replica_unreachable.fetch_add(
+                                1,
+                                std::memory_order_relaxed
+                            );
+                        }
+                        enqueueHint(node, req);
+                    }
+                });
+            }
+            if (metrics_) {
+                metrics_->replicationMetrics().async_writes.fetch_add(1, std::memory_order_relaxed);
+            }
+            on_done(ok());
+            return;
+        }
+
+        // Quorum: W = R/2 + 1 acknowledgements including the local write.
+        CINDER_DEBUG(
+            "quorum write fan-out",
+            {"key", key},
+            {"replicas", replica_nodes.size()},
+            {"W", replica_nodes.size() / 2 + 1}
+        );
+
+        size_t total = replica_nodes.size() + 1;
+        size_t w = total / 2 + 1;
+        auto state = std::make_shared<QuorumState>();
+
+        state->done = std::make_shared<WriteCallback>(std::move(on_done));
+        state->acks = 1; // local write
+        state->pending = replica_nodes.size();
         for (const auto& node : replica_nodes) {
-            transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
+            transport_.sendAsync(node, req, [this, state, w, node, req](Result<void> r) {
                 if (!r.has_value()) {
-                    Span fail_span("replication.write.async.fail", req.span_id);
                     CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
                     if (metrics_) {
                         metrics_->replicationMetrics().replica_unreachable.fetch_add(
-                            1, std::memory_order_relaxed);
+                            1,
+                            std::memory_order_relaxed
+                        );
                     }
                     enqueueHint(node, req);
                 }
+
+                bool succeed = false;
+                bool fail = false;
+                {
+                    std::scoped_lock lock(state->mu);
+                    if (r.has_value()) {
+                        ++state->acks;
+                    }
+
+                    --state->pending;
+                    if (!state->decided) {
+                        if (state->acks >= w) {
+                            state->decided = true;
+                            succeed = true;
+                        } else if (state->pending == 0) {
+                            state->decided = true;
+                            fail = true;
+                        }
+                    }
+                }
+
+                if (succeed) {
+                    Span ok_span("replication.write.quorum.ok", req.span_id);
+                    CINDER_DEBUG("quorum write succeeded", {"key", req.key}, {"acks", state->acks});
+                    if (metrics_) {
+                        metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
+                    (*state->done)(ok());
+                } else if (fail) {
+                    Span fail_span("replication.write.quorum.fail", req.span_id);
+                    CINDER_WARN(
+                        "quorum write failed",
+                        {"key", req.key},
+                        {"acks", state->acks},
+                        {"needed", w}
+                    );
+                    if (metrics_) {
+                        metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
+                    (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
+                }
             });
         }
-        if (metrics_) {
-            metrics_->replicationMetrics().async_writes.fetch_add(1, std::memory_order_relaxed);
-        }
-        on_done(ok());
-        return;
-    }
-
-    // Quorum: W = R/2 + 1 acknowledgements including the local write.
-    CINDER_DEBUG("quorum write fan-out",
-        {"key", key},
-        {"replicas", replica_nodes.size()},
-        {"W", replica_nodes.size() / 2 + 1});
-
-    size_t total = replica_nodes.size() + 1;
-    size_t w = total / 2 + 1;
-    auto state = std::make_shared<QuorumState>();
-
-    state->done = std::make_shared<WriteCallback>(std::move(on_done));
-    state->acks = 1; // local write
-    state->pending = replica_nodes.size();
-    for (const auto& node : replica_nodes) {
-        transport_.sendAsync(node, req, [this, state, w, node, req](Result<void> r) {
-            if (!r.has_value()) {
-                CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
-                if (metrics_) {
-                    metrics_->replicationMetrics().replica_unreachable.fetch_add(
-                        1, std::memory_order_relaxed);
-                }
-                enqueueHint(node, req);
-            }
-
-            bool succeed = false;
-            bool fail = false;
-            {
-                std::scoped_lock lock(state->mu);
-                if (r.has_value()) {
-                    ++state->acks;
-                }
-
-                --state->pending;
-                if (!state->decided) {
-                    if (state->acks >= w) {
-                        state->decided = true;
-                        succeed = true;
-                    } else if (state->pending == 0) {
-                        state->decided = true;
-                        fail = true;
-                    }
-                }
-            }
-
-            if (succeed) {
-                Span ok_span("replication.write.quorum.ok", req.span_id);
-                CINDER_DEBUG("quorum write succeeded", {"key", req.key}, {"acks", state->acks});
-                if (metrics_) {
-                    metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
-                        1, std::memory_order_relaxed);
-                }
-                (*state->done)(ok());
-            } else if (fail) {
-                Span fail_span("replication.write.quorum.fail", req.span_id);
-                CINDER_WARN(
-                    "quorum write failed", {"key", req.key}, {"acks", state->acks}, {"needed", w});
-                if (metrics_) {
-                    metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
-                        1, std::memory_order_relaxed);
-                }
-                (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
-            }
-        });
-    }
-    // No replicas: W == 1, the local ack suffices.
-    bool no_replicas_ok = false;
-    {
-        std::scoped_lock lock(state->mu);
-        if (state->pending == 0 && !state->decided) {
-            state->decided = true;
-            no_replicas_ok = true;
-        }
-    }
-
-    if (no_replicas_ok) {
-        (*state->done)(ok());
-    }
-}
-
-void
-ReplicationManager::readAsync(const std::string& key, const std::vector<NodeId>& replica_nodes,
-    size_t R, ReadCallback on_done, uint64_t trace_id, uint64_t span_id) {
-    Span span("replication.read.fanout", span_id);
-    // Local read — always attempted first.
-    auto local_entry = local_.getVersioned(key);
-    if (!local_entry.has_value()) {
-        CINDER_DEBUG("local read miss", {"key", key});
-    }
-    if (replica_nodes.empty() || R <= 1) {
-        // No replicas or trivial quorum: return whatever the local store has.
-        if (local_entry.has_value()) {
-            on_done(std::move(*local_entry));
-        } else {
-            on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
-        }
-        return;
-    }
-
-    net::Request req;
-    req.opcode = net::Opcode::GetVersioned;
-    req.key = key;
-    // Propagate structured trace context from the originating request.
-    req.trace_id = trace_id;
-    req.span_id = span_id;
-    CINDER_DEBUG("quorum read fan-out", {"key", key}, {"replicas", replica_nodes.size()});
-    if (metrics_) {
-        metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
-    }
-
-    auto state = std::make_shared<ReadQuorumState>();
-    state->done = std::make_shared<ReadCallback>(std::move(on_done));
-    state->replicas = replica_nodes;
-    state->pending = replica_nodes.size();
-    if (local_entry.has_value()) {
-        state->acks = 1;
-        state->best_version = local_entry->version();
-        state->best_writer_hash = local_entry->writer_node_hash;
-        state->best_entry = std::move(*local_entry);
-    }
-    for (const auto& node : replica_nodes) {
-        transport_.sendRequestAsync(
-            node, req, [this, key, node, state, R](Result<net::Response> r) {
-            bool decided = false;
-            std::optional<VersionedEntry> result;
-            bool needs_repair = false;
-            {
-                std::scoped_lock lock(state->mu);
-                if (state->decided) {
-                    return;
-                }
-                if (r.has_value() && r->status == Errc::OK && r->version != 0) {
-                    ++state->acks;
-                    if (r->version > state->best_version
-                        || (r->version == state->best_version
-                            && r->writer_node_hash > state->best_writer_hash)) {
-                        state->needs_repair = true;
-                        state->best_version = r->version;
-                        state->best_writer_hash = r->writer_node_hash;
-
-                        VersionedEntry entry;
-                        entry.value = std::move(*r->value);
-                        entry.setVersion(r->version);
-                        entry.writer_node_hash = r->writer_node_hash;
-                        if (r->expires_at.has_value()) {
-                            entry.setHasTtl(true);
-                            entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
-                        }
-                        state->best_entry = std::move(entry);
-                    } else if (r->version != state->best_version
-                               || r->writer_node_hash != state->best_writer_hash) {
-                        state->needs_repair = true;
-                    }
-                } else if (r.has_value() && r->status == Errc::NotFound) {
-                    // Replica doesn't have the key — stale, needs repair.
-                    state->needs_repair = true;
-                }
-
-                --state->pending;
-                if (state->acks >= R) {
-                    state->decided = true;
-                    decided = true;
-                } else if (state->pending == 0) {
-                    state->decided = true;
-                    decided = true;
-                }
-
-                if (decided) {
-                    // Snapshot the outcome; the winner entry is delivered
-                    // to the caller and used for repair fan-out below.
-                    needs_repair = state->needs_repair;
-                    if (state->best_entry.has_value()) {
-                        result = std::move(state->best_entry);
-                    }
-                }
-            }
-
-            if (!decided) {
-                return;
-            }
-            if (result.has_value() && needs_repair) {
-                // Self-heal local store: if local was behind a replica, update it.
-                auto heal = local_.putVersioned(key, *result);
-                if (!heal.has_value()) {
-                    CINDER_DEBUG("local self-heal skipped",
-                        {"key", key},
-                        {"reason", static_cast<int>(heal.error().code())});
-                }
-                if (metrics_) {
-                    metrics_->replicationMetrics().read_repairs.fetch_add(
-                        1, std::memory_order_relaxed);
-                }
-                sendRepairFanOut(key, state->replicas, *result);
-            }
-            if (result.has_value()) {
-                (*state->done)(std::move(*result));
-            } else {
-                (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
-            }
-        });
-    }
-}
-
-auto
-ReplicationManager::hintCount() const -> size_t {
-    return hints_.size();
-}
-
-void
-ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
-    CINDER_DEBUG("hint enqueued", {"target", target}, {"key", req.key});
-    hints_.push({target, req, clock_.now() + K_HINT_TTL});
-    if (metrics_) {
-        metrics_->replicationMetrics().hints_enqueued.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
-void
-ReplicationManager::sendRepairFanOut(
-    const std::string& key, const std::vector<NodeId>& targets, const VersionedEntry& winner) {
-    Span span("replication.repair.fanout");
-    CINDER_INFO(
-        "repair fan-out", {"key", key}, {"version", winner.version()}, {"targets", targets.size()});
-
-    net::Request repair;
-    repair.opcode = net::Opcode::Replicate;
-    repair.key = key;
-    repair.value = winner.value;
-    repair.version = winner.version();
-    repair.writer_node_hash = winner.writer_node_hash;
-    // Propagate trace context for end-to-end correlation.
-    repair.trace_id = span.traceId();
-    repair.span_id = span.spanId();
-    if (winner.hasTtl()) {
-        repair.expires_at = toSystemExpiry(clock_, winner.expires_at);
-    }
-    for (const auto& target : targets) {
-        transport_.sendAsync(target, repair, [](Result<void>) {});
-    }
-}
-
-void
-ReplicationManager::replayHints(ReplayCallback on_done) {
-    Span span("replication.hint.replay");
-    // Single-consumer: a replay already in flight (overlapping timer ticks or
-    // concurrent pool threads) reports zero rather than double-sending hints.
-    bool expected = false;
-    if (!replaying_.compare_exchange_strong(expected, true)) {
-        on_done(0);
-        return;
-    }
-
-    auto now = clock_.now();
-    auto state = std::make_shared<ReplayState>();
-    state->done =
-        std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
-        CINDER_INFO("replay completed", {"replayed", n});
-        if (metrics_ && n > 0) {
-            metrics_->replicationMetrics().hints_replayed.fetch_add(n, std::memory_order_relaxed);
-        }
-        replaying_.store(false);
-        done(n);
-    });
-
-    bool has_hints = false;
-    hints_.replay([&](const HintQueue::Hint& hint) {
-        has_hints = true;
+        // No replicas: W == 1, the local ack suffices.
+        bool no_replicas_ok = false;
         {
             std::scoped_lock lock(state->mu);
-            ++state->pending;
+            if (state->pending == 0 && !state->decided) {
+                state->decided = true;
+                no_replicas_ok = true;
+            }
         }
 
-        transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
-            if (r.has_value()) {
-                hints_.remove(hint.target, hint.req);
-            }
+        if (no_replicas_ok) {
+            (*state->done)(ok());
+        }
+    }
 
-            bool finish = false;
-            size_t replayed = 0;
+    void ReplicationManager::readAsync(
+        const std::string& key,
+        const std::vector<NodeId>& replica_nodes,
+        size_t R,
+        ReadCallback on_done,
+        uint64_t trace_id,
+        uint64_t span_id
+    ) {
+        Span span("replication.read.fanout", span_id);
+        // Local read — always attempted first.
+        auto local_entry = local_.getVersioned(key);
+        if (!local_entry.has_value()) {
+            CINDER_DEBUG("local read miss", {"key", key});
+        }
+        if (replica_nodes.empty() || R <= 1) {
+            // No replicas or trivial quorum: return whatever the local store has.
+            if (local_entry.has_value()) {
+                on_done(std::move(*local_entry));
+            } else {
+                on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+            }
+            return;
+        }
+
+        net::Request req;
+        req.opcode = net::Opcode::GetVersioned;
+        req.key = key;
+        // Propagate structured trace context from the originating request.
+        req.trace_id = trace_id;
+        req.span_id = span_id;
+        CINDER_DEBUG("quorum read fan-out", {"key", key}, {"replicas", replica_nodes.size()});
+        if (metrics_) {
+            metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        auto state = std::make_shared<ReadQuorumState>();
+        state->done = std::make_shared<ReadCallback>(std::move(on_done));
+        state->replicas = replica_nodes;
+        state->pending = replica_nodes.size();
+        if (local_entry.has_value()) {
+            state->acks = 1;
+            state->best_version = local_entry->version();
+            state->best_writer_hash = local_entry->writer_node_hash;
+            state->best_entry = std::move(*local_entry);
+        }
+        for (const auto& node : replica_nodes) {
+            transport_
+                .sendRequestAsync(node, req, [this, key, node, state, R](Result<net::Response> r) {
+                bool decided = false;
+                std::optional<VersionedEntry> result;
+                bool needs_repair = false;
+                {
+                    std::scoped_lock lock(state->mu);
+                    if (state->decided) {
+                        return;
+                    }
+                    if (r.has_value() && r->status == Errc::OK && r->version != 0) {
+                        ++state->acks;
+                        if (r->version
+                            > state->best_version
+                            || (r->version
+                                == state->best_version
+                                && r->writer_node_hash
+                                > state->best_writer_hash)) {
+                            state->needs_repair = true;
+                            state->best_version = r->version;
+                            state->best_writer_hash = r->writer_node_hash;
+
+                            VersionedEntry entry;
+                            entry.value = std::move(*r->value);
+                            entry.setVersion(r->version);
+                            entry.writer_node_hash = r->writer_node_hash;
+                            if (r->expires_at.has_value()) {
+                                entry.setHasTtl(true);
+                                entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
+                            }
+                            state->best_entry = std::move(entry);
+                        } else if (
+                            r->version
+                            != state->best_version
+                            || r->writer_node_hash
+                            != state->best_writer_hash
+                        ) {
+                            state->needs_repair = true;
+                        }
+                    } else if (r.has_value() && r->status == Errc::NotFound) {
+                        // Replica doesn't have the key — stale, needs repair.
+                        state->needs_repair = true;
+                    }
+
+                    --state->pending;
+                    if (state->acks >= R) {
+                        state->decided = true;
+                        decided = true;
+                    } else if (state->pending == 0) {
+                        state->decided = true;
+                        decided = true;
+                    }
+
+                    if (decided) {
+                        // Snapshot the outcome; the winner entry is delivered
+                        // to the caller and used for repair fan-out below.
+                        needs_repair = state->needs_repair;
+                        if (state->best_entry.has_value()) {
+                            result = std::move(state->best_entry);
+                        }
+                    }
+                }
+
+                if (!decided) {
+                    return;
+                }
+                if (result.has_value() && needs_repair) {
+                    // Self-heal local store: if local was behind a replica, update it.
+                    auto heal = local_.putVersioned(key, *result);
+                    if (!heal.has_value()) {
+                        CINDER_DEBUG(
+                            "local self-heal skipped",
+                            {"key", key},
+                            {"reason", static_cast<int>(heal.error().code())}
+                        );
+                    }
+                    if (metrics_) {
+                        metrics_->replicationMetrics().read_repairs.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
+                    sendRepairFanOut(key, state->replicas, *result);
+                }
+                if (result.has_value()) {
+                    (*state->done)(std::move(*result));
+                } else {
+                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+                }
+            });
+        }
+    }
+
+    auto ReplicationManager::hintCount() const -> size_t {
+        return hints_.size();
+    }
+
+    void ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
+        CINDER_DEBUG("hint enqueued", {"target", target}, {"key", req.key});
+        hints_.push({target, req, clock_.now() + K_HINT_TTL});
+        if (metrics_) {
+            metrics_->replicationMetrics().hints_enqueued.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    void ReplicationManager::sendRepairFanOut(
+        const std::string& key,
+        const std::vector<NodeId>& targets,
+        const VersionedEntry& winner
+    ) {
+        Span span("replication.repair.fanout");
+        CINDER_INFO(
+            "repair fan-out",
+            {"key", key},
+            {"version", winner.version()},
+            {"targets", targets.size()}
+        );
+
+        net::Request repair;
+        repair.opcode = net::Opcode::Replicate;
+        repair.key = key;
+        repair.value = winner.value;
+        repair.version = winner.version();
+        repair.writer_node_hash = winner.writer_node_hash;
+        // Propagate trace context for end-to-end correlation.
+        repair.trace_id = span.traceId();
+        repair.span_id = span.spanId();
+        if (winner.hasTtl()) {
+            repair.expires_at = toSystemExpiry(clock_, winner.expires_at);
+        }
+        for (const auto& target : targets) {
+            transport_.sendAsync(target, repair, [](Result<void>) {});
+        }
+    }
+
+    void ReplicationManager::replayHints(ReplayCallback on_done) {
+        Span span("replication.hint.replay");
+        // Single-consumer: a replay already in flight (overlapping timer ticks or
+        // concurrent pool threads) reports zero rather than double-sending hints.
+        bool expected = false;
+        if (!replaying_.compare_exchange_strong(expected, true)) {
+            on_done(0);
+            return;
+        }
+
+        auto now = clock_.now();
+        auto state = std::make_shared<ReplayState>();
+        state->done =
+            std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
+            CINDER_INFO("replay completed", {"replayed", n});
+            if (metrics_ && n > 0) {
+                metrics_->replicationMetrics().hints_replayed.fetch_add(
+                    n,
+                    std::memory_order_relaxed
+                );
+            }
+            replaying_.store(false);
+            done(n);
+        });
+
+        bool has_hints = false;
+        hints_.replay([&](const HintQueue::Hint& hint) {
+            has_hints = true;
             {
                 std::scoped_lock lock(state->mu);
+                ++state->pending;
+            }
+
+            transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
                 if (r.has_value()) {
-                    ++state->replayed;
+                    hints_.remove(hint.target, hint.req);
                 }
 
-                --state->pending;
-                if (state->pending == 0 && !state->decided) {
-                    state->decided = true;
-                    finish = true;
-                    replayed = state->replayed;
+                bool finish = false;
+                size_t replayed = 0;
+                {
+                    std::scoped_lock lock(state->mu);
+                    if (r.has_value()) {
+                        ++state->replayed;
+                    }
+
+                    --state->pending;
+                    if (state->pending == 0 && !state->decided) {
+                        state->decided = true;
+                        finish = true;
+                        replayed = state->replayed;
+                    }
                 }
-            }
 
-            if (finish) {
-                (*state->done)(replayed);
-            }
-        });
-    }, now);
+                if (finish) {
+                    (*state->done)(replayed);
+                }
+            });
+        }, now);
 
-    // Only call on_done here if the queue was empty (no async callbacks to wait for).
-    // When hints exist, the sendAsync callbacks call on_done when all complete.
-    if (!has_hints) {
-        (*state->done)(0);
+        // Only call on_done here if the queue was empty (no async callbacks to wait for).
+        // When hints exist, the sendAsync callbacks call on_done when all complete.
+        if (!has_hints) {
+            (*state->done)(0);
+        }
     }
-}
 } // namespace cinder

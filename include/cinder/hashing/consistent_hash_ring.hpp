@@ -13,86 +13,87 @@
 
 namespace cinder {
 
-// Transparent hash for heterogeneous lookup — avoids std::string allocation
-// when callers already hold std::string_view (incrementLoad/decrementLoad).
-struct TransparentStringHash {
-    using is_transparent = void;
+    // Transparent hash for heterogeneous lookup — avoids std::string allocation
+    // when callers already hold std::string_view (incrementLoad/decrementLoad).
+    struct TransparentStringHash {
+        using is_transparent = void;
 
-    auto operator()(std::string_view s) const noexcept -> size_t {
-        return std::hash<std::string_view>{}(s);
-    }
-};
+        auto operator()(std::string_view s) const noexcept -> size_t {
+            return std::hash<std::string_view>{}(s);
+        }
+    };
 
-struct RingSnapshot {
-    std::vector<uint64_t> hashes;     // sorted, binary-searched
-    std::vector<uint16_t> node_index; // parallel: index into physical_nodes
-    std::vector<NodeId> physical_nodes;
-};
+    struct RingSnapshot {
+        std::vector<uint64_t> hashes; // sorted, binary-searched
+        std::vector<uint16_t> node_index; // parallel: index into physical_nodes
+        std::vector<NodeId> physical_nodes;
+    };
 
-// Consistent-hash ring with virtual nodes and lock-free reads.
-//
-// Concurrency contract: readers (getNode/getNodes) load an immutable
-// RingSnapshot via std::atomic<std::shared_ptr<>> and never block or tear;
-// mutators (addNode/removeNode) publish a fresh copy-on-write snapshot with a
-// CAS retry loop, so concurrent mutators merge instead of losing updates.
-// Readers may observe either the pre- or post-mutation view for keys in flight
-// during a membership change (standard ring-linearization semantics).
-//
-// Bounded-load support: when bounded_load_factor > 0, getNodeBounded() skips
-// nodes whose in-flight load exceeds ceil(avg_load * factor) and spills to
-// the next ring position. Callers manage load counters via
-// incrementLoad/decrementLoad.
-class ConsistentHashRing {
-  public:
+    // Consistent-hash ring with virtual nodes and lock-free reads.
+    //
+    // Concurrency contract: readers (getNode/getNodes) load an immutable
+    // RingSnapshot via std::atomic<std::shared_ptr<>> and never block or tear;
+    // mutators (addNode/removeNode) publish a fresh copy-on-write snapshot with a
+    // CAS retry loop, so concurrent mutators merge instead of losing updates.
+    // Readers may observe either the pre- or post-mutation view for keys in flight
+    // during a membership change (standard ring-linearization semantics).
+    //
+    // Bounded-load support: when bounded_load_factor > 0, getNodeBounded() skips
+    // nodes whose in-flight load exceeds ceil(avg_load * factor) and spills to
+    // the next ring position. Callers manage load counters via
+    // incrementLoad/decrementLoad.
+    class ConsistentHashRing {
+    public:
 
-    explicit ConsistentHashRing(int vnodes_per_node = 150, double bounded_load_factor = 0.0);
-    ~ConsistentHashRing() = default;
+        explicit ConsistentHashRing(int vnodes_per_node = 150, double bounded_load_factor = 0.0);
+        ~ConsistentHashRing() = default;
 
-    ConsistentHashRing(const ConsistentHashRing&) = delete;
-    auto operator=(const ConsistentHashRing&) -> ConsistentHashRing& = delete;
-    ConsistentHashRing(ConsistentHashRing&&) = delete;
-    auto operator=(ConsistentHashRing&&) -> ConsistentHashRing& = delete;
+        ConsistentHashRing(const ConsistentHashRing&) = delete;
+        auto operator=(const ConsistentHashRing&) -> ConsistentHashRing& = delete;
+        ConsistentHashRing(ConsistentHashRing&&) = delete;
+        auto operator=(ConsistentHashRing&&) -> ConsistentHashRing& = delete;
 
-    void addNode(const NodeId& node_id);
-    void removeNode(std::string_view node_id);
+        void addNode(const NodeId& node_id);
+        void removeNode(std::string_view node_id);
 
-    auto getNode(std::string_view key) const -> NodeId;
-    auto getNodes(std::string_view key, int replica_count) const -> std::vector<NodeId>;
+        auto getNode(std::string_view key) const -> NodeId;
+        auto getNodes(std::string_view key, int replica_count) const -> std::vector<NodeId>;
 
-    // Bounded-load variant: spills to the next ring position when the
-    // preferred node is overloaded (load > ceil(avg_load * factor)).
-    // Falls back to getNode() when bounded_load_factor <= 0.
-    auto getNodeBounded(std::string_view key) const -> NodeId;
+        // Bounded-load variant: spills to the next ring position when the
+        // preferred node is overloaded (load > ceil(avg_load * factor)).
+        // Falls back to getNode() when bounded_load_factor <= 0.
+        auto getNodeBounded(std::string_view key) const -> NodeId;
 
-    // Caller-managed in-flight load counters. incrementLoad must be called
-    // before dispatching a request to a node; decrementLoad on completion.
-    void incrementLoad(std::string_view node) const;
-    void decrementLoad(std::string_view node) const;
+        // Caller-managed in-flight load counters. incrementLoad must be called
+        // before dispatching a request to a node; decrementLoad on completion.
+        void incrementLoad(std::string_view node) const;
+        void decrementLoad(std::string_view node) const;
 
-    auto currentLoad(std::string_view node) const -> uint64_t;
-    auto totalLoad() const -> uint64_t;
-    auto loadFactor() const -> double;
+        auto currentLoad(std::string_view node) const -> uint64_t;
+        auto totalLoad() const -> uint64_t;
+        auto loadFactor() const -> double;
 
-  private:
+    private:
 
-    static auto hashVnode(std::string_view node_id, int vnode_index) -> uint64_t;
-    static auto hashKey(std::string_view key) -> uint64_t;
+        static auto hashVnode(std::string_view node_id, int vnode_index) -> uint64_t;
+        static auto hashKey(std::string_view key) -> uint64_t;
 
-    std::atomic<std::shared_ptr<const RingSnapshot>> snapshot_;
-    int vnodes_per_node_;
-    double bounded_load_factor_;
+        std::atomic<std::shared_ptr<const RingSnapshot>> snapshot_;
+        int vnodes_per_node_;
+        double bounded_load_factor_;
 
-    // Per-node in-flight load counters. Copy-on-write like the snapshot:
-    // readers load an immutable LoadMap and bump the cell atomically with no
-    // locks; writers (add/removeNode) serialize on loads_mu_ and publish a
-    // fresh map. Cells are shared_ptr so in-flight counts survive membership
-    // changes. Mutable because load tracking is logically orthogonal to the
-    // ring's snapshot immutability — readers call increment/decrement on a
-    // const ring reference.
-    using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
-    using LoadMap = std::unordered_map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
+        // Per-node in-flight load counters. Copy-on-write like the snapshot:
+        // readers load an immutable LoadMap and bump the cell atomically with no
+        // locks; writers (add/removeNode) serialize on loads_mu_ and publish a
+        // fresh map. Cells are shared_ptr so in-flight counts survive membership
+        // changes. Mutable because load tracking is logically orthogonal to the
+        // ring's snapshot immutability — readers call increment/decrement on a
+        // const ring reference.
+        using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
+        using LoadMap =
+            std::unordered_map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
 
-    mutable std::atomic<std::shared_ptr<const LoadMap>> loads_;
-    mutable std::mutex loads_mu_; // writers only (add/removeNode)
-};
+        mutable std::atomic<std::shared_ptr<const LoadMap>> loads_;
+        mutable std::mutex loads_mu_; // writers only (add/removeNode)
+    };
 } // namespace cinder

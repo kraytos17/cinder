@@ -1,45 +1,101 @@
 BasedOnStyle: LLVM
-AccessModifierOffset: -2
-AlignAfterOpenBracket: false
-AlignTrailingComments:
-  Kind: Always
-  OverEmptyLines: 0
-AllowShortEnumsOnASingleLine: false
-AllowShortFunctionsOnASingleLine: Inline
-AllowShortIfStatementsOnASingleLine: Never
-AllowShortLambdasOnASingleLine: Inline
-AllowShortLoopsOnASingleLine: false
-BinPackArguments: false
-BreakAfterReturnType: TopLevel
-BreakBeforeBinaryOperators: NonAssignment
-BreakTemplateDeclarations: MultiLine
-ColumnLimit: 100
-ConstructorInitializerIndentWidth: 4
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
 ContinuationIndentWidth: 4
+ConstructorInitializerIndentWidth: 4
+AccessModifierOffset: -4
+IndentCaseLabels: true            # match arms are indented
+LambdaBodyIndentation: OuterScope
+NamespaceIndentation: All
+
+ColumnLimit: 100
+
+# --- Brackets: block indent, one item per line when too long ---
+AlignAfterOpenBracket: BlockIndent
+AlignOperands: DontAlign
+BinPackArguments: false
+BinPackParameters: OnePerLine
+BinPackLongBracedList: false
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+BreakBeforeTemplateCloser: true
+Cpp11BracedListStyle: true
+
+# --- Operators: break before them, one per line ---
+BreakBeforeBinaryOperators: NonAssignment
+BreakBinaryOperations: OnePerLine
+BreakBeforeTernaryOperators: true
+
+# --- Braces: K&R style, `} else {` ---
+BreakBeforeBraces: Attach
+InsertNewlineAtEOF: true
+
+# --- Short constructs: rustfmt only keeps empty fns on one line ---
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AllowShortLambdasOnASingleLine: Inline
+
+# --- Signatures ---
+BreakAfterReturnType: Automatic   # return type stays on the same line
+PenaltyReturnTypeOnItsOwnLine: 1000
+BreakAfterAttributes: Always      # like #[attr] on its own line
+BreakTemplateDeclarations: MultiLine
+BreakBeforeConceptDeclarations: Always
+RequiresClausePosition: OwnLine   # like a `where` clause
+IndentRequiresClause: true
+BreakConstructorInitializers: AfterColon
+BreakInheritanceList: AfterColon
+PackConstructorInitializers: Never
+
+# --- Trailing commas, blank lines, comments ---
+EnumTrailingComma: Insert
+MaxEmptyLinesToKeep: 1
+KeepEmptyLines:
+  AtStartOfBlock: false
+  AtStartOfFile: false
+  AtEndOfFile: false
+SeparateDefinitionBlocks: Always
 EmptyLineAfterAccessModifier: Always
 EmptyLineBeforeAccessModifier: Always
+AlignTrailingComments:
+  Kind: Never
+SpacesBeforeTrailingComments: 1
+ReflowComments: Never
+BreakStringLiterals: false
+
+# --- Alignment: rustfmt never aligns columns ---
+AlignConsecutiveAssignments: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: None
+AlignConsecutiveBitFields: None
+AlignArrayOfStructures: None
+
+# --- Misc ---
+PointerAlignment: Left
+ReferenceAlignment: Left
+SpaceBeforeParens: ControlStatements
 FixNamespaceComments: true
+IntegerLiteralSeparator:
+  Binary: 0
+  Decimal: 3
+  DecimalMinDigits: 5             # 1'000 stays, 10'000 gets separators
+  Hex: 0
+Standard: Latest
+
+# --- Includes: std first, then project (like std / external / crate) ---
 IncludeBlocks: Regroup
 IncludeCategories:
   - Regex: '^<.*>'
     Priority: 1
   - Regex: '^".*"'
     Priority: 2
-IndentCaseLabels: true
-IndentWidth: 4
-IntegerLiteralSeparator:
-  Binary: 0
-  Decimal: 3
-  Hex: 0
-LambdaBodyIndentation: OuterScope
-LineEnding: LF
-MaxEmptyLinesToKeep: 1
-NamespaceIndentation: None
-PackConstructorInitializers: Never
-PointerAlignment: Left
-SeparateDefinitionBlocks: Always
-SortIncludes: CaseInsensitive
-SpaceBeforeParens: ControlStatements
-Standard: Latest
-TabWidth: 4
-UseTab: Never
+SortIncludes:
+  Enabled: true
+  IgnoreCase: true
+InsertBraces: true

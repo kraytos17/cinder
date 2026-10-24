@@ -15,14 +15,13 @@
 
 using std::chrono::milliseconds;
 
-auto
-main(int argc, char* argv[]) -> int {
+auto main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder distributed cache server"};
 
     std::string config_path;
     app.add_option("-C,--config", config_path, "Path to YAML config file");
 
-    uint16_t port = 7'000;
+    uint16_t port = 7000;
     int listen_fd = -1;
     size_t capacity = 67'108'864;
     std::string node_id = "node1";
@@ -30,9 +29,9 @@ main(int argc, char* argv[]) -> int {
     int replica_factor = 1;
 
     std::string consistency = "async";
-    int ping_interval_ms = 1'000;
-    int suspect_timeout_ms = 3'000;
-    int gossip_interval_ms = 1'000;
+    int ping_interval_ms = 1000;
+    int suspect_timeout_ms = 3000;
+    int gossip_interval_ms = 1000;
     int quarantine_interval_ms = 10'000;
     std::string log_level = "info";
     bool persistence_enabled = false;
@@ -45,7 +44,7 @@ main(int argc, char* argv[]) -> int {
     std::string tls_ca_file;
     std::string eviction_policy = "lru";
     std::string shared_secret;
-    int rpc_timeout_ms = 5'000;
+    int rpc_timeout_ms = 5000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
 
@@ -56,7 +55,10 @@ main(int argc, char* argv[]) -> int {
 
     app.add_option("-p,--port", port, "Port to listen on");
     app.add_option(
-        "--listen-fd", listen_fd, "Pre-bound listen socket fd (test harness socket passing)");
+        "--listen-fd",
+        listen_fd,
+        "Pre-bound listen socket fd (test harness socket passing)"
+    );
 
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
     app.add_option("-n,--node-id", node_id, "This node's ID");
@@ -66,16 +68,21 @@ main(int argc, char* argv[]) -> int {
     app.add_option("--ping-interval", ping_interval_ms, "Failure-detector ping interval (ms)");
     app.add_option("--suspect-timeout", suspect_timeout_ms, "Suspect timeout before Dead (ms)");
     app.add_option("--gossip-interval", gossip_interval_ms, "Gossip dissemination interval (ms)");
-    app.add_option("--quarantine-interval",
+    app.add_option(
+        "--quarantine-interval",
         quarantine_interval_ms,
-        "Re-join quarantine before receiving migrated keys (ms, 0 = off)");
+        "Re-join quarantine before receiving migrated keys (ms, 0 = off)"
+    );
 
     app.add_option("--log-level", log_level, "Log level: trace|debug|info|warn|error");
     app.add_flag("--enable-persistence", persistence_enabled, "Enable WAL + snapshot persistence");
     app.add_option("--data-dir", data_dir, "Directory for WAL and snapshot files");
     app.add_option("--snapshot-interval", snapshot_interval_s, "Snapshot interval (seconds)");
     app.add_option(
-        "--io-threads", io_threads, "Worker threads running the event loop (0 = auto: min(4, hw))");
+        "--io-threads",
+        io_threads,
+        "Worker threads running the event loop (0 = auto: min(4, hw))"
+    );
 
     app.add_flag("--tls", tls_enabled, "Enable TLS encryption");
     app.add_option("--tls-cert", tls_cert_file, "Path to TLS certificate chain (PEM)");
@@ -86,12 +93,20 @@ main(int argc, char* argv[]) -> int {
 
     app.add_option("--shared-secret", shared_secret, "Shared secret for node authentication");
     app.add_option(
-        "--rpc-timeout", rpc_timeout_ms, "Per-RPC deadline in milliseconds (0 = no timeout)");
-    app.add_option("--anti-entropy-interval",
-        anti_entropy_interval_ms,
-        "Anti-entropy repair interval in milliseconds (0 = disabled)");
+        "--rpc-timeout",
+        rpc_timeout_ms,
+        "Per-RPC deadline in milliseconds (0 = no timeout)"
+    );
     app.add_option(
-        "--anti-entropy-buckets", anti_entropy_buckets, "Anti-entropy hash bucket count");
+        "--anti-entropy-interval",
+        anti_entropy_interval_ms,
+        "Anti-entropy repair interval in milliseconds (0 = disabled)"
+    );
+    app.add_option(
+        "--anti-entropy-buckets",
+        anti_entropy_buckets,
+        "Anti-entropy hash bucket count"
+    );
 
     CLI11_PARSE(app, argc, argv);
 
@@ -173,10 +188,12 @@ main(int argc, char* argv[]) -> int {
     }
 #endif
 
-    CINDER_INFO("listening",
+    CINDER_INFO(
+        "listening",
         {"port", port},
         {"replica_factor", replica_factor},
-        {"consistency", consistency});
+        {"consistency", consistency}
+    );
     server.run();
 
 #ifdef CINDER_ENABLE_GRPC

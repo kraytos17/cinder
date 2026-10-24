@@ -15,211 +15,220 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
-GossipManager::GossipManager(Clock& clock, Transport& transport, MembershipTable& table,
-    const NodeId& self, milliseconds gossip_interval)
-    : clock_(clock),
-      transport_(transport),
-      table_(table),
-      self_(self),
-      gossip_interval_(gossip_interval) {}
+    GossipManager::GossipManager(
+        Clock& clock,
+        Transport& transport,
+        MembershipTable& table,
+        const NodeId& self,
+        milliseconds gossip_interval
+    ) :
+        clock_(clock),
+        transport_(transport),
+        table_(table),
+        self_(self),
+        gossip_interval_(gossip_interval) {}
 
-void
-GossipManager::leave() {
-    Span span("gossip.leave");
-    // Bump incarnation so the Dead rumor about self overrides any stale Alive
-    // rumor held by peers.
-    table_.markDead(self_);
+    void GossipManager::leave() {
+        Span span("gossip.leave");
+        // Bump incarnation so the Dead rumor about self overrides any stale Alive
+        // rumor held by peers.
+        table_.markDead(self_);
 
-    CINDER_INFO("broadcasting leave to all peers");
-    std::vector<NodeId> targets;
-    {
-        std::scoped_lock lk(peers_mutex_);
-        targets = peers_;
-    }
-
-    for (const auto& peer : targets) {
-        CINDER_DEBUG("sending leave to peer", {"peer", peer});
-        sendView(peer);
-    }
-}
-
-void
-GossipManager::start() {
-    {
-        std::scoped_lock lk(peers_mutex_);
-        rebuildPeersLocked();
-    }
-
-    CINDER_INFO("gossip started",
-        {"interval_ms", std::chrono::duration_cast<milliseconds>(gossip_interval_).count()});
-    // Late joiners discovered via gossip/failure-detection must be added
-    // dynamically after start(); each arrival fires this callback.
-    table_.onChange([this] {
-        std::scoped_lock lk(peers_mutex_);
-        rebuildPeersLocked();
-    });
-}
-
-void
-GossipManager::tick() {
-    Span span("gossip.tick");
-    NodeId target;
-    {
-        std::scoped_lock lk(peers_mutex_);
-        if (peers_.empty()) {
-            CINDER_DEBUG("no peers to gossip to");
-            return;
+        CINDER_INFO("broadcasting leave to all peers");
+        std::vector<NodeId> targets;
+        {
+            std::scoped_lock lk(peers_mutex_);
+            targets = peers_;
         }
 
-        static thread_local std::mt19937 rng(
-            static_cast<uint32_t>(clock_.now().time_since_epoch().count()));
-        std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
-        target = peers_[dist(rng)];
-    }
-
-    CINDER_DEBUG("gossip round target", {"target", target});
-    sendView(target);
-    if (metrics_) {
-        metrics_->clusterMetrics().gossip_rounds.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
-void
-GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
-    Span span("gossip.handle");
-    auto rumors = decodeView(req.value);
-    CINDER_DEBUG("state disseminated", {"from", from}, {"entries", rumors.size()});
-    for (const auto& rumor : rumors) {
-        table_.applyRumor(from, rumor);
-    }
-}
-
-void
-GossipManager::rebuildPeersLocked() {
-    peers_.clear();
-    for (const auto& info : table_.snapshot()) {
-        if (info.id != self_) {
-            peers_.push_back(info.id);
+        for (const auto& peer : targets) {
+            CINDER_DEBUG("sending leave to peer", {"peer", peer});
+            sendView(peer);
         }
     }
-    std::sort(peers_.begin(), peers_.end());
-}
 
-void
-GossipManager::sendView(const NodeId& to) {
-    net::Request req;
-    req.opcode = net::Opcode::Gossip;
-    req.value = encodeView(table_.snapshot());
-    transport_.sendAsync(to, req, [](Result<void> /*r*/) {});
-}
-
-auto
-GossipManager::encodeView(const std::vector<NodeInfo>& view) -> std::string {
-    std::string out;
-    for (const auto& info : view) {
-        if (!out.empty()) {
-            out.push_back(';');
+    void GossipManager::start() {
+        {
+            std::scoped_lock lk(peers_mutex_);
+            rebuildPeersLocked();
         }
 
-        out += info.id;
-        out.push_back('@');
-        out += info.host;
-        out.push_back(':');
-        out += std::to_string(info.port);
-        out.push_back(':');
-        switch (info.state) {
-            case NodeState::Alive:
-                out += "alive";
-                break;
-            case NodeState::Suspect:
-                out += "suspect";
-                break;
-            case NodeState::Dead:
-                out += "dead";
-                break;
+        CINDER_INFO(
+            "gossip started",
+            {"interval_ms", std::chrono::duration_cast<milliseconds>(gossip_interval_).count()}
+        );
+        // Late joiners discovered via gossip/failure-detection must be added
+        // dynamically after start(); each arrival fires this callback.
+        table_.onChange([this] {
+            std::scoped_lock lk(peers_mutex_);
+            rebuildPeersLocked();
+        });
+    }
+
+    void GossipManager::tick() {
+        Span span("gossip.tick");
+        NodeId target;
+        {
+            std::scoped_lock lk(peers_mutex_);
+            if (peers_.empty()) {
+                CINDER_DEBUG("no peers to gossip to");
+                return;
+            }
+
+            static thread_local std::mt19937 rng(
+                static_cast<uint32_t>(clock_.now().time_since_epoch().count())
+            );
+            std::uniform_int_distribution<size_t> dist(0, peers_.size() - 1);
+            target = peers_[dist(rng)];
         }
-        out.push_back(':');
-        out += std::to_string(info.incarnation);
-    }
-    return out;
-}
 
-namespace gossip {
-
-// Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
-// input.
-auto
-parseEntry(std::string_view entry, cinder::NodeInfo& out) -> bool {
-    auto at = entry.find('@');
-    auto colon1 = entry.find(':', at);
-    auto colon2 =
-        colon1 == std::string_view::npos ? std::string_view::npos : entry.find(':', colon1 + 1);
-    auto colon3 =
-        colon2 == std::string_view::npos ? std::string_view::npos : entry.find(':', colon2 + 1);
-    if (at == std::string_view::npos || colon1 == std::string_view::npos
-        || colon2 == std::string_view::npos || colon3 == std::string_view::npos) {
-        return false;
+        CINDER_DEBUG("gossip round target", {"target", target});
+        sendView(target);
+        if (metrics_) {
+            metrics_->clusterMetrics().gossip_rounds.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
-    out.id = std::string(entry.substr(0, at));
-    out.host = std::string(entry.substr(at + 1, colon1 - at - 1));
-    auto port_str = entry.substr(colon1 + 1, colon2 - colon1 - 1);
-    uint16_t port = 0;
-    auto [port_end, port_ec] =
-        std::from_chars(port_str.data(), port_str.data() + port_str.size(), port);
-    if (port_ec != std::errc{} || port_end != port_str.data() + port_str.size()) {
-        return false;
+    void GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
+        Span span("gossip.handle");
+        auto rumors = decodeView(req.value);
+        CINDER_DEBUG("state disseminated", {"from", from}, {"entries", rumors.size()});
+        for (const auto& rumor : rumors) {
+            table_.applyRumor(from, rumor);
+        }
     }
 
-    out.port = port;
-    auto state_str = entry.substr(colon2 + 1, colon3 - colon2 - 1);
-    if (state_str == "alive") {
-        out.state = cinder::NodeState::Alive;
-    } else if (state_str == "suspect") {
-        out.state = cinder::NodeState::Suspect;
-    } else if (state_str == "dead") {
-        out.state = cinder::NodeState::Dead;
-    } else {
-        return false;
-    }
-
-    auto inc_str = entry.substr(colon3 + 1);
-    uint64_t incarnation = 0;
-    auto [inc_end, inc_ec] =
-        std::from_chars(inc_str.data(), inc_str.data() + inc_str.size(), incarnation);
-    if (inc_ec != std::errc{} || inc_end != inc_str.data() + inc_str.size()) {
-        return false;
-    }
-    out.incarnation = incarnation;
-    return true;
-}
-} // namespace gossip
-
-auto
-GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
-    std::vector<NodeInfo> result;
-    size_t malformed = 0;
-    size_t start = 0;
-    while (start < value.size()) {
-        auto end = value.find(';', start);
-        auto entry =
-            value.substr(start, end == std::string_view::npos ? value.size() - start : end - start);
-        if (!entry.empty()) {
-            NodeInfo info;
-            if (gossip::parseEntry(entry, info)) {
-                result.push_back(std::move(info));
-            } else {
-                ++malformed;
+    void GossipManager::rebuildPeersLocked() {
+        peers_.clear();
+        for (const auto& info : table_.snapshot()) {
+            if (info.id != self_) {
+                peers_.push_back(info.id);
             }
         }
-        if (end == std::string_view::npos) {
-            break;
+        std::sort(peers_.begin(), peers_.end());
+    }
+
+    void GossipManager::sendView(const NodeId& to) {
+        net::Request req;
+        req.opcode = net::Opcode::Gossip;
+        req.value = encodeView(table_.snapshot());
+        transport_.sendAsync(to, req, [](Result<void> /*r*/) {});
+    }
+
+    auto GossipManager::encodeView(const std::vector<NodeInfo>& view) -> std::string {
+        std::string out;
+        for (const auto& info : view) {
+            if (!out.empty()) {
+                out.push_back(';');
+            }
+
+            out += info.id;
+            out.push_back('@');
+            out += info.host;
+            out.push_back(':');
+            out += std::to_string(info.port);
+            out.push_back(':');
+            switch (info.state) {
+                case NodeState::Alive:
+                    out += "alive";
+                    break;
+                case NodeState::Suspect:
+                    out += "suspect";
+                    break;
+                case NodeState::Dead:
+                    out += "dead";
+                    break;
+            }
+
+            out.push_back(':');
+            out += std::to_string(info.incarnation);
         }
-        start = end + 1;
+        return out;
     }
-    if (malformed > 0) {
-        CINDER_DEBUG("malformed entries rejected", {"count", malformed});
+
+    namespace gossip {
+
+        // Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
+        // input.
+        auto parseEntry(std::string_view entry, cinder::NodeInfo& out) -> bool {
+            auto at = entry.find('@');
+            auto colon1 = entry.find(':', at);
+            auto colon2 = colon1 == std::string_view::npos ? std::string_view::npos
+                                                           : entry.find(':', colon1 + 1);
+            auto colon3 = colon2 == std::string_view::npos ? std::string_view::npos
+                                                           : entry.find(':', colon2 + 1);
+            if (at
+                == std::string_view::npos
+                || colon1
+                == std::string_view::npos
+                || colon2
+                == std::string_view::npos
+                || colon3
+                == std::string_view::npos) {
+                return false;
+            }
+
+            out.id = std::string(entry.substr(0, at));
+            out.host = std::string(entry.substr(at + 1, colon1 - at - 1));
+            auto port_str = entry.substr(colon1 + 1, colon2 - colon1 - 1);
+            uint16_t port = 0;
+            auto [port_end, port_ec] =
+                std::from_chars(port_str.data(), port_str.data() + port_str.size(), port);
+            if (port_ec != std::errc{} || port_end != port_str.data() + port_str.size()) {
+                return false;
+            }
+
+            out.port = port;
+            auto state_str = entry.substr(colon2 + 1, colon3 - colon2 - 1);
+            if (state_str == "alive") {
+                out.state = cinder::NodeState::Alive;
+            } else if (state_str == "suspect") {
+                out.state = cinder::NodeState::Suspect;
+            } else if (state_str == "dead") {
+                out.state = cinder::NodeState::Dead;
+            } else {
+                return false;
+            }
+
+            auto inc_str = entry.substr(colon3 + 1);
+            uint64_t incarnation = 0;
+            auto [inc_end, inc_ec] =
+                std::from_chars(inc_str.data(), inc_str.data() + inc_str.size(), incarnation);
+            if (inc_ec != std::errc{} || inc_end != inc_str.data() + inc_str.size()) {
+                return false;
+            }
+
+            out.incarnation = incarnation;
+            return true;
+        }
+    } // namespace gossip
+
+    auto GossipManager::decodeView(std::string_view value) -> std::vector<NodeInfo> {
+        std::vector<NodeInfo> result;
+        size_t malformed = 0;
+        size_t start = 0;
+        while (start < value.size()) {
+            auto end = value.find(';', start);
+            auto entry = value.substr(
+                start,
+                end == std::string_view::npos ? value.size() - start : end - start
+            );
+            if (!entry.empty()) {
+                NodeInfo info;
+                if (gossip::parseEntry(entry, info)) {
+                    result.push_back(std::move(info));
+                } else {
+                    ++malformed;
+                }
+            }
+            if (end == std::string_view::npos) {
+                break;
+            }
+            start = end + 1;
+        }
+        if (malformed > 0) {
+            CINDER_DEBUG("malformed entries rejected", {"count", malformed});
+        }
+        return result;
     }
-    return result;
-}
 } // namespace cinder

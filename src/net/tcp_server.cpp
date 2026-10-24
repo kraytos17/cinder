@@ -15,248 +15,286 @@ using asio::ip::tcp;
 
 namespace cinder::net {
 
-TcpServer::TcpServer(io_context& io, uint16_t port, CacheStore& store,
-    const ConsistentHashRing& ring, std::string node_id, Clock& clock, ReplicationManager* repl,
-    int replica_factor, ConsistencyMode mode, GossipManager* gossip, uint16_t metrics_port,
-    MetricsCollector* metrics, std::function<std::string()> config_getter,
-    AntiEntropyManager* anti_entropy, std::string shared_secret
+    TcpServer::TcpServer(
+        io_context& io,
+        uint16_t port,
+        CacheStore& store,
+        const ConsistentHashRing& ring,
+        std::string node_id,
+        Clock& clock,
+        ReplicationManager* repl,
+        int replica_factor,
+        ConsistencyMode mode,
+        GossipManager* gossip,
+        uint16_t metrics_port,
+        MetricsCollector* metrics,
+        std::function<std::string()> config_getter,
+        AntiEntropyManager* anti_entropy,
+        std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
-    ,
-    asio::ssl::context* ssl_ctx
+        ,
+        asio::ssl::context* ssl_ctx
 #endif
-    )
-    : strand_(asio::make_strand(io)),
-      acceptor_(io),
-      port_(port),
-      metrics_port_(metrics_port),
-      store_(store),
-      ring_(ring),
-      clock_(clock),
-      node_id_(std::move(node_id)),
-      repl_(repl),
-      replica_factor_(replica_factor),
-      mode_(mode),
-      gossip_(gossip),
-      anti_entropy_(anti_entropy),
-      metrics_(metrics),
+    ) :
+        strand_(asio::make_strand(io)),
+        acceptor_(io),
+        port_(port),
+        metrics_port_(metrics_port),
+        store_(store),
+        ring_(ring),
+        clock_(clock),
+        node_id_(std::move(node_id)),
+        repl_(repl),
+        replica_factor_(replica_factor),
+        mode_(mode),
+        gossip_(gossip),
+        anti_entropy_(anti_entropy),
+        metrics_(metrics),
 #ifdef CINDER_ENABLE_TLS
-      ssl_ctx_(ssl_ctx),
+        ssl_ctx_(ssl_ctx),
 #endif
-      shared_secret_(std::move(shared_secret)),
-      emfile_timer_(io),
-      config_getter_(std::move(config_getter)) {
-    // Binds happen in start() so failures return errors instead of throwing.
-}
-
-TcpServer::~TcpServer() {
-    std::error_code ec;
-    acceptor_.close(ec);
-    if (metrics_acceptor_) {
-        metrics_acceptor_->close(ec);
-    }
-}
-
-auto
-TcpServer::start() -> Result<void> {
-    std::error_code ec;
-    if (listen_fd_ >= 0) {
-        acceptor_.assign(tcp::v4(), listen_fd_, ec);
-        listen_fd_ = -1;
-        if (!ec) {
-            acceptor_.listen(asio::socket_base::max_listen_connections, ec);
-        }
-        if (ec) {
-            return err(Error(Errc::InternalError, "adopt listen socket failed: " + ec.message()));
-        }
-    } else {
-        acceptor_.open(tcp::v4(), ec);
-        if (!ec) {
-            acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
-        }
-        if (!ec) {
-            acceptor_.bind(tcp::endpoint(tcp::v4(), port_), ec);
-        }
-        if (!ec) {
-            acceptor_.listen(asio::socket_base::max_listen_connections, ec);
-        }
-        if (ec) {
-            return err(Error(Errc::InternalError,
-                "bind port " + std::to_string(port_) + " failed: " + ec.message()));
-        }
-    }
-    if (metrics_port_ > 0 && metrics_) {
-        metrics_acceptor_ = std::make_unique<tcp::acceptor>(acceptor_.get_executor());
-        metrics_acceptor_->open(tcp::v4(), ec);
-        if (!ec) {
-            metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
-        }
-        if (!ec) {
-            metrics_acceptor_->bind(tcp::endpoint(tcp::v4(), metrics_port_), ec);
-        }
-        if (!ec) {
-            metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
-        }
-        if (ec) {
-            return err(Error(Errc::InternalError,
-                "bind metrics port " + std::to_string(metrics_port_) + " failed: " + ec.message()));
-        }
+        shared_secret_(std::move(shared_secret)),
+        emfile_timer_(io),
+        config_getter_(std::move(config_getter)) {
+        // Binds happen in start() so failures return errors instead of throwing.
     }
 
-    auto ep = acceptor_.local_endpoint(ec);
-    if (!ec) {
-        CINDER_INFO("listening on port", {"port", ep.port()});
-    }
-
-    asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
-    if (metrics_acceptor_) {
-        auto mep = metrics_acceptor_->local_endpoint(ec);
-        if (!ec) {
-            CINDER_INFO("metrics HTTP listening on port", {"port", mep.port()});
-        }
-        asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
-    }
-    return ok();
-}
-
-void
-TcpServer::shutdown() {
-    asio::post(asio::bind_executor(strand_, [this] {
-        Span span("server.shutdown");
-        stopping_ = true;
+    TcpServer::~TcpServer() {
         std::error_code ec;
         acceptor_.close(ec);
         if (metrics_acceptor_) {
             metrics_acceptor_->close(ec);
         }
-        auto count = connections_.size();
-        CINDER_INFO("shutdown draining connections", {"count", count});
-        for (auto& conn : connections_) {
-            if (conn) {
-                conn->drain();
+    }
+
+    auto TcpServer::start() -> Result<void> {
+        std::error_code ec;
+        if (listen_fd_ >= 0) {
+            acceptor_.assign(tcp::v4(), listen_fd_, ec);
+            listen_fd_ = -1;
+            if (!ec) {
+                acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+            }
+            if (ec) {
+                return err(
+                    Error(Errc::InternalError, "adopt listen socket failed: " + ec.message())
+                );
+            }
+        } else {
+            acceptor_.open(tcp::v4(), ec);
+            if (!ec) {
+                acceptor_.set_option(tcp::acceptor::reuse_address(true), ec);
+            }
+            if (!ec) {
+                acceptor_.bind(tcp::endpoint(tcp::v4(), port_), ec);
+            }
+            if (!ec) {
+                acceptor_.listen(asio::socket_base::max_listen_connections, ec);
+            }
+            if (ec) {
+                return err(Error(
+                    Errc::InternalError,
+                    "bind port " + std::to_string(port_) + " failed: " + ec.message()
+                ));
             }
         }
-        connections_.clear();
-    }));
-}
+        if (metrics_port_ > 0 && metrics_) {
+            metrics_acceptor_ = std::make_unique<tcp::acceptor>(acceptor_.get_executor());
+            metrics_acceptor_->open(tcp::v4(), ec);
+            if (!ec) {
+                metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
+            }
+            if (!ec) {
+                metrics_acceptor_->bind(tcp::endpoint(tcp::v4(), metrics_port_), ec);
+            }
+            if (!ec) {
+                metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
+            }
+            if (ec) {
+                return err(Error(
+                    Errc::InternalError,
+                    "bind metrics port "
+                        + std::to_string(metrics_port_)
+                        + " failed: "
+                        + ec.message()
+                ));
+            }
+        }
 
-void
-TcpServer::doAccept() {
-    acceptor_.async_accept(
-        asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
+        auto ep = acceptor_.local_endpoint(ec);
         if (!ec) {
-            if (stopping_) {
-                std::error_code close_ec;
-                socket.close(close_ec);
+            CINDER_INFO("listening on port", {"port", ep.port()});
+        }
+
+        asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
+        if (metrics_acceptor_) {
+            auto mep = metrics_acceptor_->local_endpoint(ec);
+            if (!ec) {
+                CINDER_INFO("metrics HTTP listening on port", {"port", mep.port()});
+            }
+            asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
+        }
+        return ok();
+    }
+
+    void TcpServer::shutdown() {
+        asio::post(asio::bind_executor(strand_, [this] {
+            Span span("server.shutdown");
+            stopping_ = true;
+            std::error_code ec;
+            acceptor_.close(ec);
+            if (metrics_acceptor_) {
+                metrics_acceptor_->close(ec);
+            }
+
+            auto count = connections_.size();
+            CINDER_INFO("shutdown draining connections", {"count", count});
+            for (auto& conn : connections_) {
+                if (conn) {
+                    conn->drain();
+                }
+            }
+            connections_.clear();
+        }));
+    }
+
+    void TcpServer::doAccept() {
+        acceptor_.async_accept(
+            asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
+            if (!ec) {
+                if (stopping_) {
+                    std::error_code close_ec;
+                    socket.close(close_ec);
+                    return;
+                }
+
+                std::erase_if(connections_, [](const std::shared_ptr<TcpConnection>& c) static {
+                    return !c->isAlive();
+                });
+
+                if (active_connections_.load(std::memory_order_relaxed) >= K_MAX_CONNECTIONS) {
+                    std::error_code close_ec;
+                    socket.close(close_ec);
+                    CINDER_WARN("rejecting connection", {"max", K_MAX_CONNECTIONS});
+                } else {
+                    active_connections_.fetch_add(1, std::memory_order_relaxed);
+                    std::shared_ptr<std::atomic<size_t>> counter(&active_connections_, [](auto*) {
+                    }); // TcpConnection dtor decrements; we own the counter
+
+                    auto conn = std::make_shared<TcpConnection>(
+                        std::move(socket),
+                        store_,
+                        ring_,
+                        node_id_,
+                        clock_,
+                        repl_,
+                        replica_factor_,
+                        mode_,
+                        gossip_,
+                        counter,
+                        anti_entropy_,
+                        shared_secret_
+#ifdef CINDER_ENABLE_TLS
+                        ,
+                        ssl_ctx_
+#endif
+                    );
+
+                    conn->setAdminCallbacks(
+                        admin_callbacks_.info_getter,
+                        admin_callbacks_.cluster_getter,
+                        admin_callbacks_.ring_getter,
+                        admin_callbacks_.compact_trigger,
+                        admin_callbacks_.config_reload_trigger,
+                        admin_callbacks_.shutdown_trigger
+                    );
+                    if (addr_resolver_) {
+                        conn->setAddrResolver(addr_resolver_);
+                    }
+
+                    connections_.push_back(conn);
+                    conn->start();
+                }
+            } else if (ec == asio::error::no_descriptors) {
+                CINDER_WARN(("accept EMFILE, retrying in 100ms"));
+                emfile_timer_.expires_after(std::chrono::milliseconds(100));
+                std::weak_ptr<std::atomic<size_t>> weak;
+                emfile_timer_.async_wait(
+                    asio::bind_executor(strand_, [this](std::error_code timer_ec) {
+                    if (!timer_ec && !stopping_ && acceptor_.is_open()) {
+                        doAccept();
+                    }
+                })
+                );
+                return;
+            } else if (ec != asio::error::operation_aborted) {
+                CINDER_WARN("accept error", {"err", ec.message()});
+            }
+            if (!stopping_ && acceptor_.is_open()) {
+                doAccept();
+            }
+        })
+        );
+    }
+
+    void TcpServer::doAcceptMetrics() {
+        metrics_acceptor_->async_accept(
+            asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
+            if (ec) {
+                if (ec != asio::error::operation_aborted && !stopping_) {
+                    CINDER_WARN("metrics accept error", {"err", ec.message()});
+                    doAcceptMetrics();
+                }
                 return;
             }
 
-            std::erase_if(connections_,
-                [](const std::shared_ptr<TcpConnection>& c) static { return !c->isAlive(); });
-
-            if (active_connections_.load(std::memory_order_relaxed) >= K_MAX_CONNECTIONS) {
-                std::error_code close_ec;
-                socket.close(close_ec);
-                CINDER_WARN("rejecting connection", {"max", K_MAX_CONNECTIONS});
-            } else {
-                active_connections_.fetch_add(1, std::memory_order_relaxed);
-                std::shared_ptr<std::atomic<size_t>> counter(&active_connections_,
-                    [](auto*) {}); // TcpConnection dtor decrements; we own the counter
-
-                auto conn = std::make_shared<TcpConnection>(std::move(socket),
-                    store_,
-                    ring_,
-                    node_id_,
-                    clock_,
-                    repl_,
-                    replica_factor_,
-                    mode_,
-                    gossip_,
-                    counter,
-                    anti_entropy_,
-                    shared_secret_
-#ifdef CINDER_ENABLE_TLS
-                    ,
-                    ssl_ctx_
-#endif
-                );
-
-                conn->setAdminCallbacks(admin_callbacks_.info_getter,
-                    admin_callbacks_.cluster_getter,
-                    admin_callbacks_.ring_getter,
-                    admin_callbacks_.compact_trigger,
-                    admin_callbacks_.config_reload_trigger,
-                    admin_callbacks_.shutdown_trigger);
-                if (addr_resolver_) {
-                    conn->setAddrResolver(addr_resolver_);
-                }
-
-                connections_.push_back(conn);
-                conn->start();
-            }
-        } else if (ec == asio::error::no_descriptors) {
-            CINDER_WARN(("accept EMFILE, retrying in 100ms"));
-            emfile_timer_.expires_after(std::chrono::milliseconds(100));
-            std::weak_ptr<std::atomic<size_t>> weak;
-            emfile_timer_.async_wait(asio::bind_executor(strand_, [this](std::error_code timer_ec) {
-                if (!timer_ec && !stopping_ && acceptor_.is_open()) {
-                    doAccept();
-                }
-            }));
-            return;
-        } else if (ec != asio::error::operation_aborted) {
-            CINDER_WARN("accept error", {"err", ec.message()});
-        }
-        if (!stopping_ && acceptor_.is_open()) {
-            doAccept();
-        }
-    }));
-}
-
-void
-TcpServer::doAcceptMetrics() {
-    metrics_acceptor_->async_accept(
-        asio::bind_executor(strand_, [this](std::error_code ec, tcp::socket socket) {
-        if (ec) {
-            if (ec != asio::error::operation_aborted && !stopping_) {
-                CINDER_WARN("metrics accept error", {"err", ec.message()});
-                doAcceptMetrics();
-            }
-            return;
-        }
-
-        auto buf = std::make_shared<std::array<char, 4'096>>();
-        asio::async_read(socket,
-            asio::buffer(*buf),
-            asio::transfer_at_least(1),
-            asio::bind_executor(strand_,
-                [this, self = std::make_shared<tcp::socket>(std::move(socket)), buf](
-                    std::error_code read_ec, std::size_t /*n*/) {
-            Span span("metrics.request");
-            std::string response;
-            if (!read_ec) {
-                auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));
-                if (req.has_value() && req->method == "GET" && req->path == "/metrics") {
-                    response = formatHttpResponse(metrics_->formatPrometheus());
-                } else if (req.has_value() && req->method == "GET" && req->path == "/config"
-                           && config_getter_) {
-                    response = formatHttpResponse(config_getter_());
+            auto buf = std::make_shared<std::array<char, 4096>>();
+            asio::async_read(
+                socket,
+                asio::buffer(*buf),
+                asio::transfer_at_least(1),
+                asio::bind_executor(
+                    strand_,
+                    [this,
+                     self = std::make_shared<tcp::socket>(std::move(socket)),
+                     buf](std::error_code read_ec, std::size_t /*n*/) {
+                Span span("metrics.request");
+                std::string response;
+                if (!read_ec) {
+                    auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));
+                    if (req.has_value() && req->method == "GET" && req->path == "/metrics") {
+                        response = formatHttpResponse(metrics_->formatPrometheus());
+                    } else if (
+                        req.has_value()
+                        && req->method
+                        == "GET"
+                        && req->path
+                        == "/config"
+                        && config_getter_
+                    ) {
+                        response = formatHttpResponse(config_getter_());
+                    } else {
+                        response = formatHttp404();
+                    }
                 } else {
                     response = formatHttp404();
                 }
-            } else {
-                response = formatHttp404();
-            }
 
-            asio::async_write(*self,
-                asio::buffer(response),
-                [self](std::error_code /*write_ec*/, std::size_t /*written*/) {
-                std::error_code close_ec;
-                self->close(close_ec);
-            });
-        }));
-        if (!stopping_ && metrics_acceptor_ && metrics_acceptor_->is_open()) {
-            doAcceptMetrics();
-        }
-    }));
-}
+                asio::async_write(
+                    *self,
+                    asio::buffer(response),
+                    [self](std::error_code /*write_ec*/, std::size_t /*written*/) {
+                    std::error_code close_ec;
+                    self->close(close_ec);
+                }
+                );
+            }
+                )
+            );
+            if (!stopping_ && metrics_acceptor_ && metrics_acceptor_->is_open()) {
+                doAcceptMetrics();
+            }
+        })
+        );
+    }
 } // namespace cinder::net

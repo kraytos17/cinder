@@ -5,70 +5,66 @@
 #include "cinder/store/lru_store.hpp"
 
 namespace cinder {
-namespace {
+    namespace {
 
-void
-bmLruStorePut(benchmark::State& state) {
-    LruStore store(static_cast<size_t>(state.range(0)));
-    int i = 0;
-    // NOLINTNEXTLINE
-    for (auto _ : state) {
+        void bmLruStorePut(benchmark::State& state) {
+            LruStore store(static_cast<size_t>(state.range(0)));
+            int i = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                // NOLINTNEXTLINE
+                (void)store.put(std::to_string(i++), std::string(256, 'x'));
+            }
+        }
+
         // NOLINTNEXTLINE
-        (void)store.put(std::to_string(i++), std::string(256, 'x'));
-    }
-}
+        BENCHMARK(bmLruStorePut)->Range(1 << 16, 1 << 20);
 
-// NOLINTNEXTLINE
-BENCHMARK(bmLruStorePut)->Range(1 << 16, 1 << 20);
+        void bmLruStoreGet(benchmark::State& state) {
+            LruStore store(static_cast<size_t>(state.range(0)));
+            for (int i = 0; i < 1000; i++) {
+                // NOLINTNEXTLINE
+                (void)store.put(std::to_string(i), std::string(256, 'x'));
+            }
 
-void
-bmLruStoreGet(benchmark::State& state) {
-    LruStore store(static_cast<size_t>(state.range(0)));
-    for (int i = 0; i < 1'000; i++) {
+            int i = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                store.get(std::to_string(i++ % 1000));
+            }
+        }
+
         // NOLINTNEXTLINE
-        (void)store.put(std::to_string(i), std::string(256, 'x'));
-    }
+        BENCHMARK(bmLruStoreGet)->Range(1 << 16, 1 << 20);
 
-    int i = 0;
-    // NOLINTNEXTLINE
-    for (auto _ : state) {
-        store.get(std::to_string(i++ % 1'000));
-    }
-}
+        void bmLfuStorePut(benchmark::State& state) {
+            LfuStore store(static_cast<size_t>(state.range(0)));
+            int i = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                // NOLINTNEXTLINE
+                (void)store.put(std::to_string(i++), std::string(256, 'x'));
+            }
+        }
 
-// NOLINTNEXTLINE
-BENCHMARK(bmLruStoreGet)->Range(1 << 16, 1 << 20);
-
-void
-bmLfuStorePut(benchmark::State& state) {
-    LfuStore store(static_cast<size_t>(state.range(0)));
-    int i = 0;
-    // NOLINTNEXTLINE
-    for (auto _ : state) {
         // NOLINTNEXTLINE
-        (void)store.put(std::to_string(i++), std::string(256, 'x'));
-    }
-}
+        BENCHMARK(bmLfuStorePut)->Range(1 << 16, 1 << 20);
 
-// NOLINTNEXTLINE
-BENCHMARK(bmLfuStorePut)->Range(1 << 16, 1 << 20);
+        void bmLfuStoreGet(benchmark::State& state) {
+            LfuStore store(static_cast<size_t>(state.range(0)));
+            for (int i = 0; i < 1000; i++) {
+                // NOLINTNEXTLINE
+                (void)store.put(std::to_string(i), std::string(256, 'x'));
+            }
 
-void
-bmLfuStoreGet(benchmark::State& state) {
-    LfuStore store(static_cast<size_t>(state.range(0)));
-    for (int i = 0; i < 1'000; i++) {
+            int i = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                store.get(std::to_string(i++ % 1000));
+            }
+        }
+
         // NOLINTNEXTLINE
-        (void)store.put(std::to_string(i), std::string(256, 'x'));
-    }
-
-    int i = 0;
-    // NOLINTNEXTLINE
-    for (auto _ : state) {
-        store.get(std::to_string(i++ % 1'000));
-    }
-}
-
-// NOLINTNEXTLINE
-BENCHMARK(bmLfuStoreGet)->Range(1 << 16, 1 << 20);
-} // namespace
+        BENCHMARK(bmLfuStoreGet)->Range(1 << 16, 1 << 20);
+    } // namespace
 } // namespace cinder

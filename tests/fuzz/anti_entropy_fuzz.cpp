@@ -8,24 +8,30 @@
 // We only need the transport to exist for the AntiEntropyManager constructor;
 // the fuzz targets call the static decode/apply functions directly.
 class FuzzTransport final : public cinder::Transport {
-  public:
+public:
 
-    void sendAsync(const cinder::NodeId& /*to*/, const cinder::net::Request& /*req*/,
-        SendCallback on_done) override {
+    void sendAsync(
+        const cinder::NodeId& /*to*/,
+        const cinder::net::Request& /*req*/,
+        SendCallback on_done
+    ) override {
         on_done(cinder::ok());
     }
 
-    void sendRequestAsync(const cinder::NodeId& /*to*/, const cinder::net::Request& /*req*/,
-        RequestCallback on_done) override {
+    void sendRequestAsync(
+        const cinder::NodeId& /*to*/,
+        const cinder::net::Request& /*req*/,
+        RequestCallback on_done
+    ) override {
         on_done(
-            cinder::err<cinder::net::Response>(cinder::Error(cinder::Errc::NotReady, "fuzz stub")));
+            cinder::err<cinder::net::Response>(cinder::Error(cinder::Errc::NotReady, "fuzz stub"))
+        );
     }
 
     void onMessage(MessageHandler /*handler*/) override {}
 };
 
-extern "C" int
-LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size < 4) {
         return 0;
     }
@@ -49,7 +55,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         case 2: {
             // Fuzz applyEntries against a real store.
-            cinder::LruStore store(1'024);
+            cinder::LruStore store(1024);
             FuzzTransport transport;
             cinder::ConsistentHashRing ring;
             cinder::RealClock clock;
@@ -60,7 +66,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         case 3: {
             // Fuzz onSyncRequest: construct a fake Request with the payload
             // as the value, then call the handler.
-            cinder::LruStore store(1'024);
+            cinder::LruStore store(1024);
             FuzzTransport transport;
             cinder::ConsistentHashRing ring;
             cinder::RealClock clock;
@@ -73,7 +79,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         }
         case 4: {
             // Fuzz onDigestRequest: construct a fake digest request.
-            cinder::LruStore store(1'024);
+            cinder::LruStore store(1024);
             FuzzTransport transport;
             cinder::ConsistentHashRing ring;
             cinder::RealClock clock;

@@ -12,93 +12,91 @@
 
 namespace cinder {
 
-struct TlsConfig {
-    bool enabled = false;
-    std::string cert_file;
-    std::string key_file;
-    std::string ca_file;
-};
+    struct TlsConfig {
+        bool enabled = false;
+        std::string cert_file;
+        std::string key_file;
+        std::string ca_file;
+    };
 
-// Node authentication. A non-empty shared secret requires an HMAC-SHA256
-// auth token on internal opcodes (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*,
-// ADMIN_*). Client opcodes are unaffected. Empty disables authentication.
-struct AuthConfig {
-    std::string shared_secret;
-};
+    // Node authentication. A non-empty shared secret requires an HMAC-SHA256
+    // auth token on internal opcodes (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*,
+    // ADMIN_*). Client opcodes are unaffected. Empty disables authentication.
+    struct AuthConfig {
+        std::string shared_secret;
+    };
 
-struct Config {
-    // Server
-    std::string node_id = "node1";
-    uint16_t port = 7'000;
-    size_t capacity = 67'108'864;
-    int replica_factor = 1;
-    std::string consistency = "async";
+    struct Config {
+        // Server
+        std::string node_id = "node1";
+        uint16_t port = 7000;
+        size_t capacity = 67'108'864;
+        int replica_factor = 1;
+        std::string consistency = "async";
 
-    // Cluster
-    std::vector<ClusterConfig::NodeConfig> peers;
+        // Cluster
+        std::vector<ClusterConfig::NodeConfig> peers;
 
-    // Failure detector / gossip
-    int ping_interval_ms = 1'000;
-    int suspect_timeout_ms = 3'000;
-    int gossip_interval_ms = 1'000;
-    int quarantine_interval_ms = 10'000;
+        // Failure detector / gossip
+        int ping_interval_ms = 1000;
+        int suspect_timeout_ms = 3000;
+        int gossip_interval_ms = 1000;
+        int quarantine_interval_ms = 10'000;
 
-    // RPC
-    int rpc_timeout_ms = 5'000;
+        // RPC
+        int rpc_timeout_ms = 5000;
 
-    // Anti-entropy (periodic background repair between replica partners)
-    int anti_entropy_interval_ms = 30'000; // 0 = disabled
-    int anti_entropy_buckets = 256;
+        // Anti-entropy (periodic background repair between replica partners)
+        int anti_entropy_interval_ms = 30'000; // 0 = disabled
+        int anti_entropy_buckets = 256;
 
-    // Persistence
-    bool persistence_enabled = false;
-    std::string data_dir;
-    int snapshot_interval_s = 60;
-    int max_wal_entries = 10'000;
+        // Persistence
+        bool persistence_enabled = false;
+        std::string data_dir;
+        int snapshot_interval_s = 60;
+        int max_wal_entries = 10'000;
 
-    // TLS
-    TlsConfig tls;
-    // Auth
-    AuthConfig auth;
-    // Logging
-    std::string log_level = "info";
-    // Config file path (empty = no file, hot-reload disabled)
-    std::string config_path;
-    // Metrics HTTP port (0 = disabled)
-    uint16_t metrics_port = 0;
-    // gRPC gateway port (0 = disabled)
-    uint16_t grpc_port = 0;
-};
+        // TLS
+        TlsConfig tls;
+        // Auth
+        AuthConfig auth;
+        // Logging
+        std::string log_level = "info";
+        // Config file path (empty = no file, hot-reload disabled)
+        std::string config_path;
+        // Metrics HTTP port (0 = disabled)
+        uint16_t metrics_port = 0;
+        // gRPC gateway port (0 = disabled)
+        uint16_t grpc_port = 0;
+    };
 
-// Load configuration from a YAML file. Missing fields use defaults.
-auto
-loadConfig(const std::string& path) -> Result<Config>;
+    // Load configuration from a YAML file. Missing fields use defaults.
+    auto loadConfig(const std::string& path) -> Result<Config>;
 
-// Parse a comma-separated peers string ("id@host:port,...") into
-// Config::peers. Returns the count of valid peers parsed.
-auto
-parsePeersString(const std::string& peers, Config& cfg) -> size_t;
+    // Parse a comma-separated peers string ("id@host:port,...") into
+    // Config::peers. Returns the count of valid peers parsed.
+    auto parsePeersString(const std::string& peers, Config& cfg) -> size_t;
 
-// Convert a log level string to LogLevel. Defaults to Info on bad input.
-auto
-logLevelFromString(std::string_view str) -> LogLevel;
+    // Convert a log level string to LogLevel. Defaults to Info on bad input.
+    auto logLevelFromString(std::string_view str) -> LogLevel;
 
-// Produce a JSON representation of the current running config.
-[[nodiscard]] auto
-formatConfigJson(const Config& cfg) -> std::string;
+    // Produce a JSON representation of the current running config.
+    [[nodiscard]]
+    auto formatConfigJson(const Config& cfg) -> std::string;
 
-// Compare old vs new config, return names of fields that changed.
-[[nodiscard]] auto
-diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::string>;
+    // Compare old vs new config, return names of fields that changed.
+    [[nodiscard]]
+    auto diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::string>;
 
-// JSON formatters for admin opcodes.
-auto
-formatNodeInfoJson(const NodeId& node_id, const Config& config, size_t store_size,
-    size_t store_entries) -> std::string;
+    // JSON formatters for admin opcodes.
+    auto formatNodeInfoJson(
+        const NodeId& node_id,
+        const Config& config,
+        size_t store_size,
+        size_t store_entries
+    ) -> std::string;
 
-auto
-formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string;
+    auto formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string;
 
-auto
-formatRingJson(const NodeId& self) -> std::string;
+    auto formatRingJson(const NodeId& self) -> std::string;
 } // namespace cinder

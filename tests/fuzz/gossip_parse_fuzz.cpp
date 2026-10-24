@@ -6,24 +6,30 @@
 
 // Stub transport for fuzzing decodeView via handleMessage.
 class FuzzTransport final : public cinder::Transport {
-  public:
+public:
 
-    void sendAsync(const cinder::NodeId& /*to*/, const cinder::net::Request& /*req*/,
-        SendCallback on_done) override {
+    void sendAsync(
+        const cinder::NodeId& /*to*/,
+        const cinder::net::Request& /*req*/,
+        SendCallback on_done
+    ) override {
         on_done(cinder::ok());
     }
 
-    void sendRequestAsync(const cinder::NodeId& /*to*/, const cinder::net::Request& /*req*/,
-        RequestCallback on_done) override {
+    void sendRequestAsync(
+        const cinder::NodeId& /*to*/,
+        const cinder::net::Request& /*req*/,
+        RequestCallback on_done
+    ) override {
         on_done(
-            cinder::err<cinder::net::Response>(cinder::Error(cinder::Errc::NotReady, "fuzz stub")));
+            cinder::err<cinder::net::Response>(cinder::Error(cinder::Errc::NotReady, "fuzz stub"))
+        );
     }
 
     void onMessage(MessageHandler /*handler*/) override {}
 };
 
-extern "C" int
-LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     std::string_view input(reinterpret_cast<const char*>(data), size);
     // Selector byte: 0 = parseEntry, 1 = handleMessage (full decodeView path)
     if (size < 1) {
@@ -42,8 +48,8 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         cinder::MembershipTable table("fuzz-self");
         FuzzTransport transport;
         cinder::RealClock clock;
-        cinder::GossipManager gm(
-            clock, transport, table, "fuzz-self", std::chrono::milliseconds(1'000));
+        cinder::GossipManager
+            gm(clock, transport, table, "fuzz-self", std::chrono::milliseconds(1000));
 
         cinder::net::Request req;
         req.opcode = cinder::net::Opcode::Gossip;

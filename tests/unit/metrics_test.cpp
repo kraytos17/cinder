@@ -103,7 +103,7 @@ TEST(MetricsTest, ReplicaLag) {
     MetricsCollector m;
     ReplicationMetrics::ReplicaLag lag;
     lag.node_id = "node-1";
-    lag.last_ack_epoch_ms = 1'000;
+    lag.last_ack_epoch_ms = 1000;
     m.replicationMetrics().replica_lags.push_back(lag);
     auto text = m.formatPrometheus();
     EXPECT_NE(text.find("cinder_replication_lag_ms{replica=\"node-1\"}"), std::string::npos);
@@ -111,7 +111,7 @@ TEST(MetricsTest, ReplicaLag) {
 
 TEST(MetricsTest, StoreGauges) {
     MetricsCollector m;
-    m.shardMetrics().live.current_bytes.store(1'024);
+    m.shardMetrics().live.current_bytes.store(1024);
     m.shardMetrics().live.current_entries.store(42);
     m.shardMetrics().cap.capacity_bytes.store(1'048'576);
     auto text = m.formatPrometheus();
@@ -141,17 +141,17 @@ TEST(MetricsTest, LatencyHistogramPercentile) {
     LatencyHistogram h;
     // 100 samples spread across two buckets (~1µs and ~10µs).
     for (int i = 0; i < 50; ++i) {
-        h.record(1'000);
+        h.record(1000);
     }
     for (int i = 0; i < 50; ++i) {
         h.record(10'000);
     }
 
     EXPECT_EQ(h.count.load(), 100);
-    EXPECT_EQ(h.total_ns.load(), 50 * 1'000 + 50 * 10'000);
-    EXPECT_GE(h.percentile(0.50), 1'000);
+    EXPECT_EQ(h.total_ns.load(), 50 * 1000 + 50 * 10'000);
+    EXPECT_GE(h.percentile(0.50), 1000);
     EXPECT_LE(h.percentile(0.50), 20'000);
-    EXPECT_GE(h.percentile(0.99), 8'192); // bucket upper bound for 10µs samples
+    EXPECT_GE(h.percentile(0.99), 8192); // bucket upper bound for 10µs samples
     EXPECT_LE(h.percentile(0.99), 20'000);
 }
 
@@ -171,20 +171,28 @@ TEST(MetricsTest, LatencyHistogramClampOversize) {
 
 TEST(MetricsTest, LatencyExport) {
     MetricsCollector m;
-    m.opcodeMetrics().recordLatency(1, 2'500); // get
-    m.opcodeMetrics().recordLatency(1, 7'500); // get
-    m.opcodeMetrics().recordLatency(2, 4'000); // set
+    m.opcodeMetrics().recordLatency(1, 2500); // get
+    m.opcodeMetrics().recordLatency(1, 7500); // get
+    m.opcodeMetrics().recordLatency(2, 4000); // set
     auto text = m.formatPrometheus();
 
     EXPECT_NE(
-        text.find("cinder_request_latency_seconds_count{opcode=\"get\"} 2"), std::string::npos);
+        text.find("cinder_request_latency_seconds_count{opcode=\"get\"} 2"),
+        std::string::npos
+    );
     EXPECT_NE(text.find("cinder_request_latency_seconds_sum{opcode=\"get\"}"), std::string::npos);
-    EXPECT_NE(text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.5\"}"),
-        std::string::npos);
-    EXPECT_NE(text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.99\"}"),
-        std::string::npos);
     EXPECT_NE(
-        text.find("cinder_request_latency_seconds_count{opcode=\"set\"} 1"), std::string::npos);
+        text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.5\"}"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        text.find("cinder_request_latency_seconds{opcode=\"get\",quantile=\"0.99\"}"),
+        std::string::npos
+    );
+    EXPECT_NE(
+        text.find("cinder_request_latency_seconds_count{opcode=\"set\"} 1"),
+        std::string::npos
+    );
     // Unused opcode (e.g. del) must not appear in the latency summary.
     EXPECT_EQ(text.find("cinder_request_latency_seconds{opcode=\"del\""), std::string::npos);
 }

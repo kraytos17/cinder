@@ -19,51 +19,57 @@ using std::chrono::steady_clock;
 
 namespace cinder {
 
-struct LfuNode : WheelNode {
-    size_t freq = 1;
-    size_t freq_index = 0; // position within freq_buckets_[freq]
-    std::string key;
-    VersionedEntry entry;
-};
+    struct LfuNode : WheelNode {
+        size_t freq = 1;
+        size_t freq_index = 0; // position within freq_buckets_[freq]
+        std::string key;
+        VersionedEntry entry;
+    };
 
-static_assert(sizeof(LfuNode) == 128, "LfuNode should be 128 bytes");
+    static_assert(sizeof(LfuNode) == 128, "LfuNode should be 128 bytes");
 
-class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
-    friend class EvictionStoreBase<LfuStore, LfuNode>;
+    class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
+        friend class EvictionStoreBase<LfuStore, LfuNode>;
 
-  public:
+    public:
 
-    using ListIt = std::list<LfuNode, SlabAllocator<LfuNode>>::iterator;
+        using ListIt = std::list<LfuNode, SlabAllocator<LfuNode>>::iterator;
 
-    explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
+        explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
-  private:
+    private:
 
-    static auto nodeKey(const LfuNode& n) -> const std::string& { return n.key; }
+        static auto nodeKey(const LfuNode& n) -> const std::string& {
+            return n.key;
+        }
 
-    static auto nodeEntry(LfuNode& n) -> VersionedEntry& { return n.entry; }
+        static auto nodeEntry(LfuNode& n) -> VersionedEntry& {
+            return n.entry;
+        }
 
-    static auto nodeEntry(const LfuNode& n) -> const VersionedEntry& { return n.entry; }
+        static auto nodeEntry(const LfuNode& n) -> const VersionedEntry& {
+            return n.entry;
+        }
 
-    static auto nodeSize(const LfuNode& n) -> size_t {
-        return n.key.size() + n.entry.value.size() + sizeof(LfuNode);
-    }
+        static auto nodeSize(const LfuNode& n) -> size_t {
+            return n.key.size() + n.entry.value.size() + sizeof(LfuNode);
+        }
 
-    void applyExisting(ListIt it, VersionedEntry entry);
-    auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
-    void onAccess(ListIt it);
-    void onEvictExpired(ListIt it);
-    void evictOne();
+        void applyExisting(ListIt it, VersionedEntry entry);
+        auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
+        void onAccess(ListIt it);
+        void onEvictExpired(ListIt it);
+        void evictOne();
 
-    void incrementFreq(ListIt it);
-    void removeFromFreqBucket(ListIt it);
-    void removeFromFreqBucket(ListIt it, size_t freq);
+        void incrementFreq(ListIt it);
+        void removeFromFreqBucket(ListIt it);
+        void removeFromFreqBucket(ListIt it, size_t freq);
 
-    mutable std::shared_mutex mutex_;
-    std::list<LfuNode, SlabAllocator<LfuNode>> list_;
-    std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
-    TtlWheel<LfuNode> wheel_;
-    std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
-    size_t min_freq_ = 1;
-};
+        mutable std::shared_mutex mutex_;
+        std::list<LfuNode, SlabAllocator<LfuNode>> list_;
+        std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
+        TtlWheel<LfuNode> wheel_;
+        std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
+        size_t min_freq_ = 1;
+    };
 } // namespace cinder

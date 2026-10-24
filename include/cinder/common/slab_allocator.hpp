@@ -13,175 +13,196 @@
 
 namespace cinder {
 
-// A standard-conforming pool allocator backed by fixed-size slabs. Each slab
-// is a contiguous block of memory divided into equal-sized slots. Freed slots
-// are recycled via a lock-free free list (CAS on free_head_). Only slab
-// growth needs the mutex — the hot path (allocate/deallocate when free list
-// is non-empty) is entirely lock-free.
-//
-// Usage:  std::list<Node, SlabAllocator<Node>> lru_list_;
-//
-// Only allocate/deallocate are hot-path; all other allocator traits are
-// constant-time.
-template <typename T> class SlabAllocator {
-  public:
+    // A standard-conforming pool allocator backed by fixed-size slabs. Each slab
+    // is a contiguous block of memory divided into equal-sized slots. Freed slots
+    // are recycled via a lock-free free list (CAS on free_head_). Only slab
+    // growth needs the mutex — the hot path (allocate/deallocate when free list
+    // is non-empty) is entirely lock-free.
+    //
+    // Usage:  std::list<Node, SlabAllocator<Node>> lru_list_;
+    //
+    // Only allocate/deallocate are hot-path; all other allocator traits are
+    // constant-time.
+    template <typename T> class SlabAllocator {
+    public:
 
-    using value_type = T;
-    using size_type = std::size_t;
-    using difference_type = std::ptrdiff_t;
+        using value_type = T;
+        using size_type = std::size_t;
+        using difference_type = std::ptrdiff_t;
 
-    // Shared state across rebound allocators.  Holds the free list and all
-    // allocated slabs so memory is released in bulk when the last allocator
-    // copy goes away.
-    struct Pool {
-        static constexpr size_t K_DEFAULT_SLOTS_PER_SLAB = 256;
+        // Shared state across rebound allocators.  Holds the free list and all
+        // allocated slabs so memory is released in bulk when the last allocator
+        // copy goes away.
+        struct Pool {
+            static constexpr size_t K_DEFAULT_SLOTS_PER_SLAB = 256;
 
-        Pool() = default;
+            Pool() = default;
 
-        explicit Pool(size_t slots_per_slab)
-            : slots_per_slab_(slots_per_slab) {}
+            explicit Pool(size_t slots_per_slab) :
+                slots_per_slab_(slots_per_slab) {}
 
-        Pool(const Pool&) = delete;
-        auto operator=(const Pool&) -> Pool& = delete;
-        Pool(Pool&&) = delete;
-        auto operator=(Pool&&) -> Pool& = delete;
+            Pool(const Pool&) = delete;
+            auto operator=(const Pool&) -> Pool& = delete;
+            Pool(Pool&&) = delete;
+            auto operator=(Pool&&) -> Pool& = delete;
 
-        ~Pool() {
-            for (auto* slab : slabs_) {
-                ::operator delete(slab, std::align_val_t{alignof(T)});
-            }
-        }
-
-        auto allocate() -> T* {
-            FreeBlock* head = free_head_.load(std::memory_order_acquire);
-            while (head) {
-                if (free_head_.compare_exchange_weak(
-                        head, head->next, std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    return std::start_lifetime_as<T>(head);
+            ~Pool() {
+                for (auto* slab : slabs_) {
+                    ::operator delete(slab, std::align_val_t{alignof(T)});
                 }
             }
-            return grow();
-        }
 
-        void deallocate(T* ptr) noexcept {
-            auto* block = std::start_lifetime_as<FreeBlock>(ptr);
-            FreeBlock* head = free_head_.load(std::memory_order_acquire);
-            do {
-                block->next = head;
-            } while (!free_head_.compare_exchange_weak(
-                head, block, std::memory_order_acq_rel, std::memory_order_acquire));
-        }
+            auto allocate() -> T* {
+                FreeBlock* head = free_head_.load(std::memory_order_acquire);
+                while (head) {
+                    if (free_head_.compare_exchange_weak(
+                            head,
+                            head->next,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire
+                        )) {
+                        return std::start_lifetime_as<T>(head);
+                    }
+                }
+                return grow();
+            }
 
-        [[nodiscard]] auto allocatedCount() const -> size_t {
-            return total_slots_.load(std::memory_order_relaxed);
-        }
+            void deallocate(T* ptr) noexcept {
+                auto* block = std::start_lifetime_as<FreeBlock>(ptr);
+                FreeBlock* head = free_head_.load(std::memory_order_acquire);
+                do {
+                    block->next = head;
+                } while (!free_head_.compare_exchange_weak(
+                    head,
+                    block,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire
+                ));
+            }
 
-        [[nodiscard]] auto freeCount() const -> size_t {
-            return free_count_.load(std::memory_order_relaxed);
-        }
+            [[nodiscard]]
+            auto allocatedCount() const -> size_t {
+                return total_slots_.load(std::memory_order_relaxed);
+            }
 
-      private:
+            [[nodiscard]]
+            auto freeCount() const -> size_t {
+                return free_count_.load(std::memory_order_relaxed);
+            }
 
-        struct FreeBlock {
-            FreeBlock* next = nullptr;
+        private:
+
+            struct FreeBlock {
+                FreeBlock* next = nullptr;
+            };
+
+            auto grow() -> T* {
+                std::scoped_lock lock(mutex_);
+                // Double-check after acquiring the lock (another thread may have grown).
+                FreeBlock* head = free_head_.load(std::memory_order_acquire);
+                if (head) {
+                    if (free_head_.compare_exchange_strong(
+                            head,
+                            head->next,
+                            std::memory_order_acq_rel,
+                            std::memory_order_acquire
+                        )) {
+                        return std::start_lifetime_as<T>(head);
+                    }
+                }
+
+                constexpr size_t K_MAX_SLOTS = 256;
+                size_t n = std::min(slots_per_slab_, K_MAX_SLOTS);
+                size_t slab_bytes = n * sizeof(T);
+                auto* raw = static_cast<std::byte*>(
+                    ::operator new(slab_bytes, std::align_val_t{alignof(T)})
+                );
+
+                slabs_.push_back(raw);
+                CINDER_DEBUG("growing pool", {"total_slabs", slabs_.size()});
+                for (size_t i = n; i > 0; --i) {
+                    auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
+                    block->next = free_head_.load(std::memory_order_relaxed);
+                    free_head_.store(block, std::memory_order_release);
+                }
+
+                free_count_.fetch_add(n, std::memory_order_relaxed);
+                total_slots_.fetch_add(n, std::memory_order_relaxed);
+                head = free_head_.load(std::memory_order_acquire);
+                if (head) {
+                    free_head_.store(head->next, std::memory_order_release);
+                    free_count_.fetch_sub(1, std::memory_order_relaxed);
+                    return std::start_lifetime_as<T>(head);
+                }
+                throw std::bad_alloc();
+            }
+
+            // Hot line: lock-free allocate/deallocate touches only free_head_.
+            // Cold block below is grow-path / stats only (relaxed counters updated
+            // solely in grow()) and deliberately shares lines — no per-member
+            // alignas, keeping padding minimal for
+            // clang-analyzer-optin.performance.Padding.
+            alignas(64) std::atomic<FreeBlock*> free_head_{nullptr};
+            size_t slots_per_slab_ = K_DEFAULT_SLOTS_PER_SLAB;
+            mutable std::mutex mutex_; // only guards slab growth
+            std::atomic<size_t> free_count_{0};
+            std::atomic<size_t> total_slots_{0};
+            std::vector<std::byte*> slabs_;
         };
 
-        auto grow() -> T* {
-            std::scoped_lock lock(mutex_);
-            // Double-check after acquiring the lock (another thread may have grown).
-            FreeBlock* head = free_head_.load(std::memory_order_acquire);
-            if (head) {
-                if (free_head_.compare_exchange_strong(
-                        head, head->next, std::memory_order_acq_rel, std::memory_order_acquire)) {
-                    return std::start_lifetime_as<T>(head);
-                }
-            }
+        SlabAllocator() :
+            pool_(std::make_shared<Pool>()) {}
 
-            constexpr size_t K_MAX_SLOTS = 256;
-            size_t n = std::min(slots_per_slab_, K_MAX_SLOTS);
-            size_t slab_bytes = n * sizeof(T);
-            auto* raw =
-                static_cast<std::byte*>(::operator new(slab_bytes, std::align_val_t{alignof(T)}));
+        template <typename U>
+        explicit SlabAllocator(const SlabAllocator<U>& other) noexcept :
+            pool_(other.getPool()) {}
 
-            slabs_.push_back(raw);
-            CINDER_DEBUG("growing pool", {"total_slabs", slabs_.size()});
-            for (size_t i = n; i > 0; --i) {
-                auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
-                block->next = free_head_.load(std::memory_order_relaxed);
-                free_head_.store(block, std::memory_order_release);
-            }
+        SlabAllocator(const SlabAllocator&) = default;
+        auto operator=(const SlabAllocator&) -> SlabAllocator& = default;
+        SlabAllocator(SlabAllocator&&) noexcept = default;
+        auto operator=(SlabAllocator&&) noexcept -> SlabAllocator& = default;
 
-            free_count_.fetch_add(n, std::memory_order_relaxed);
-            total_slots_.fetch_add(n, std::memory_order_relaxed);
-            head = free_head_.load(std::memory_order_acquire);
-            if (head) {
-                free_head_.store(head->next, std::memory_order_release);
-                free_count_.fetch_sub(1, std::memory_order_relaxed);
-                return std::start_lifetime_as<T>(head);
+        ~SlabAllocator() = default;
+
+        [[nodiscard]]
+        auto allocate(size_t n) -> T* {
+            if (n != 1) {
+                // Fall back to the global allocator for multi-element allocations
+                // (std::list only ever allocates one node at a time).
+                return static_cast<T*>(::operator new(n * sizeof(T)));
             }
-            throw std::bad_alloc();
+            return pool_->allocate();
         }
 
-        // Hot line: lock-free allocate/deallocate touches only free_head_.
-        // Cold block below is grow-path / stats only (relaxed counters updated
-        // solely in grow()) and deliberately shares lines — no per-member
-        // alignas, keeping padding minimal for
-        // clang-analyzer-optin.performance.Padding.
-        alignas(64) std::atomic<FreeBlock*> free_head_{nullptr};
-        size_t slots_per_slab_ = K_DEFAULT_SLOTS_PER_SLAB;
-        mutable std::mutex mutex_; // only guards slab growth
-        std::atomic<size_t> free_count_{0};
-        std::atomic<size_t> total_slots_{0};
-        std::vector<std::byte*> slabs_;
+        void deallocate(T* ptr, size_t n) noexcept {
+            if (n != 1) {
+                ::operator delete(ptr);
+                return;
+            }
+            pool_->deallocate(ptr);
+        }
+
+        template <typename U>
+        [[nodiscard]]
+        auto operator==(const SlabAllocator<U>& other) const noexcept -> bool {
+            return pool_ == other.getPool();
+        }
+
+        template <typename U>
+        [[nodiscard]]
+        auto operator!=(const SlabAllocator<U>& other) const noexcept -> bool {
+            return !(*this == other);
+        }
+
+        [[nodiscard]]
+        auto getPool() const -> std::shared_ptr<Pool> {
+            return pool_;
+        }
+
+    private:
+
+        template <typename U> friend class SlabAllocator;
+
+        std::shared_ptr<Pool> pool_;
     };
-
-    SlabAllocator()
-        : pool_(std::make_shared<Pool>()) {}
-
-    template <typename U>
-    explicit SlabAllocator(const SlabAllocator<U>& other) noexcept
-        : pool_(other.getPool()) {}
-
-    SlabAllocator(const SlabAllocator&) = default;
-    auto operator=(const SlabAllocator&) -> SlabAllocator& = default;
-    SlabAllocator(SlabAllocator&&) noexcept = default;
-    auto operator=(SlabAllocator&&) noexcept -> SlabAllocator& = default;
-
-    ~SlabAllocator() = default;
-
-    [[nodiscard]] auto allocate(size_t n) -> T* {
-        if (n != 1) {
-            // Fall back to the global allocator for multi-element allocations
-            // (std::list only ever allocates one node at a time).
-            return static_cast<T*>(::operator new(n * sizeof(T)));
-        }
-        return pool_->allocate();
-    }
-
-    void deallocate(T* ptr, size_t n) noexcept {
-        if (n != 1) {
-            ::operator delete(ptr);
-            return;
-        }
-        pool_->deallocate(ptr);
-    }
-
-    template <typename U>
-    [[nodiscard]] auto operator==(const SlabAllocator<U>& other) const noexcept -> bool {
-        return pool_ == other.getPool();
-    }
-
-    template <typename U>
-    [[nodiscard]] auto operator!=(const SlabAllocator<U>& other) const noexcept -> bool {
-        return !(*this == other);
-    }
-
-    [[nodiscard]] auto getPool() const -> std::shared_ptr<Pool> { return pool_; }
-
-  private:
-
-    template <typename U> friend class SlabAllocator;
-
-    std::shared_ptr<Pool> pool_;
-};
 } // namespace cinder

@@ -9,8 +9,7 @@ using std::chrono::milliseconds;
 // Helper: extract a TTL from trailing payload bytes. If >= 4 bytes remain
 // after `offset`, interpret them as a uint32 and return a TTL (0 = no TTL,
 // non-zero = that many ms). Otherwise returns 0 (no TTL).
-static auto
-extractTtl(std::string_view payload, size_t offset) -> std::optional<milliseconds> {
+static auto extractTtl(std::string_view payload, size_t offset) -> std::optional<milliseconds> {
     if (payload.size() >= offset + 4) {
         uint32_t raw = 0;
         std::memcpy(&raw, payload.data() + offset, sizeof(raw));
@@ -21,8 +20,7 @@ extractTtl(std::string_view payload, size_t offset) -> std::optional<millisecond
     return std::nullopt;
 }
 
-extern "C" int
-LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size < 2) {
         return 0;
     }
@@ -34,7 +32,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     bool use_lfu = (sel & 0x01U) != 0;
     auto op = static_cast<uint8_t>((sel >> 1U) & 0x07U);
     if (use_lfu) {
-        cinder::LfuStore store(4'096);
+        cinder::LfuStore store(4096);
         switch (op) {
             case 0: {
                 // put: split payload into key/value at first byte, optional TTL
@@ -118,7 +116,7 @@ LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
                 break;
         }
     } else {
-        cinder::LruStore store(4'096);
+        cinder::LruStore store(4096);
         switch (op) {
             case 0: {
                 if (payload.size() < 1) {

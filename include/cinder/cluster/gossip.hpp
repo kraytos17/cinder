@@ -14,59 +14,70 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
-// SWIM-style membership dissemination. Periodically sends this node's view
-// (encoded as a ;-delimited string in a Gossip request) to a random peer;
-// applies incoming gossip views to the local MembershipTable via
-// incarnation-guarded applyRumor.
-//
-// Wire format (text, v1): "id@host:port:state:incarnation;id@host:port:..."
-// state ∈ {alive, suspect, dead}.
-class GossipManager {
-  public:
+    // SWIM-style membership dissemination. Periodically sends this node's view
+    // (encoded as a ;-delimited string in a Gossip request) to a random peer;
+    // applies incoming gossip views to the local MembershipTable via
+    // incarnation-guarded applyRumor.
+    //
+    // Wire format (text, v1): "id@host:port:state:incarnation;id@host:port:..."
+    // state ∈ {alive, suspect, dead}.
+    class GossipManager {
+    public:
 
-    GossipManager(Clock& clock, Transport& transport, MembershipTable& table, const NodeId& self,
-        milliseconds gossip_interval);
-    ~GossipManager() = default;
+        GossipManager(
+            Clock& clock,
+            Transport& transport,
+            MembershipTable& table,
+            const NodeId& self,
+            milliseconds gossip_interval
+        );
+        ~GossipManager() = default;
 
-    GossipManager(const GossipManager&) = delete;
-    auto operator=(const GossipManager&) -> GossipManager& = delete;
-    GossipManager(GossipManager&&) = delete;
-    auto operator=(GossipManager&&) -> GossipManager& = delete;
+        GossipManager(const GossipManager&) = delete;
+        auto operator=(const GossipManager&) -> GossipManager& = delete;
+        GossipManager(GossipManager&&) = delete;
+        auto operator=(GossipManager&&) -> GossipManager& = delete;
 
-    void start();
-    void tick(); // send this node's view to a random peer; exposed for the sim harness
-    void handleMessage(const NodeId& from, const net::Request& req);
+        void start();
+        void tick(); // send this node's view to a random peer; exposed for the sim harness
+        void handleMessage(const NodeId& from, const net::Request& req);
 
-    // Broadcast self as Dead to every peer so they don't suspect during teardown.
-    void leave();
+        // Broadcast self as Dead to every peer so they don't suspect during teardown.
+        void leave();
 
-    void setMetrics(MetricsCollector* m) { metrics_ = m; }
+        void setMetrics(MetricsCollector* m) {
+            metrics_ = m;
+        }
 
-    void setGossipInterval(milliseconds interval) { gossip_interval_ = interval; }
+        void setGossipInterval(milliseconds interval) {
+            gossip_interval_ = interval;
+        }
 
-    [[nodiscard]] auto gossipInterval() const -> milliseconds { return gossip_interval_; }
+        [[nodiscard]]
+        auto gossipInterval() const -> milliseconds {
+            return gossip_interval_;
+        }
 
-  private:
+    private:
 
-    void sendView(const NodeId& to);
-    void rebuildPeersLocked(); // populates peers_ from table snapshot
-    static auto encodeView(const std::vector<NodeInfo>& view) -> std::string;
-    static auto decodeView(std::string_view value) -> std::vector<NodeInfo>;
+        void sendView(const NodeId& to);
+        void rebuildPeersLocked(); // populates peers_ from table snapshot
+        static auto encodeView(const std::vector<NodeInfo>& view) -> std::string;
+        static auto decodeView(std::string_view value) -> std::vector<NodeInfo>;
 
-    Clock& clock_;
-    Transport& transport_;
-    MembershipTable& table_;
-    NodeId self_;
-    milliseconds gossip_interval_;
-    mutable std::mutex peers_mutex_; // guards peers_ only
-    std::vector<NodeId> peers_;
-    MetricsCollector* metrics_ = nullptr;
-};
+        Clock& clock_;
+        Transport& transport_;
+        MembershipTable& table_;
+        NodeId self_;
+        milliseconds gossip_interval_;
+        mutable std::mutex peers_mutex_; // guards peers_ only
+        std::vector<NodeId> peers_;
+        MetricsCollector* metrics_ = nullptr;
+    };
 } // namespace cinder
 
 namespace cinder::gossip {
-// Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
-// input. Used by GossipManager::decodeView() and fuzz harnesses.
-auto
-parseEntry(std::string_view entry, NodeInfo& out) -> bool;
+    // Parse one "id@host:port:state:incarnation" entry. Returns false on malformed
+    // input. Used by GossipManager::decodeView() and fuzz harnesses.
+    auto parseEntry(std::string_view entry, NodeInfo& out) -> bool;
 } // namespace cinder::gossip

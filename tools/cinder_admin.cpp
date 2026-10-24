@@ -16,12 +16,11 @@
 using asio::io_context;
 using std::chrono::milliseconds;
 
-auto
-main(int argc, char* argv[]) -> int {
+auto main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder admin CLI"};
 
     std::string host = "127.0.0.1";
-    uint16_t port = 7'000;
+    uint16_t port = 7000;
     bool verbose = false;
     bool tls_enabled = false;
     std::string tls_cert_file;
@@ -40,9 +39,11 @@ main(int argc, char* argv[]) -> int {
     app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
 
     CLI11_PARSE(app, argc, argv);
-    cinder::initLogger("cinder-admin",
+    cinder::initLogger(
+        "cinder-admin",
         verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
-        cinder::LogSink::Stderr);
+        cinder::LogSink::Stderr
+    );
 
     cinder::ClusterConfig config;
     config.nodes.push_back({"server", host, port});
@@ -83,12 +84,15 @@ main(int argc, char* argv[]) -> int {
         CINDER_ERROR("unknown command", {"cmd", cmd});
         std::println(stderr, "unknown command: {}", cmd);
         std::println(
-            stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown");
+            stderr,
+            "available commands: info, cluster, ring, compact, config-reload, shutdown"
+        );
         return 1;
     }
 
     io_context io;
-    cinder::ConnectionPool pool(config,
+    cinder::ConnectionPool pool(
+        config,
         io,
         {},
         {}

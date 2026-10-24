@@ -8,210 +8,215 @@
 
 namespace cinder {
 
-using std::chrono::milliseconds;
+    using std::chrono::milliseconds;
 
-FailureDetector::FailureDetector(Clock& clock, Transport& transport, MembershipTable& table,
-    NodeId self, milliseconds suspect_timeout)
-    : clock_(clock),
-      transport_(transport),
-      table_(table),
-      self_(std::move(self)),
-      suspect_timeout_(suspect_timeout) {}
+    FailureDetector::FailureDetector(
+        Clock& clock,
+        Transport& transport,
+        MembershipTable& table,
+        NodeId self,
+        milliseconds suspect_timeout
+    ) :
+        clock_(clock),
+        transport_(transport),
+        table_(table),
+        self_(std::move(self)),
+        suspect_timeout_(suspect_timeout) {}
 
-void
-FailureDetector::start() {
-    {
-        std::scoped_lock lock(state_mutex_);
-        rebuildPeersLocked();
-    }
-
-    CINDER_INFO("failure_detector started",
-        {"suspect_timeout_ms", std::chrono::duration_cast<milliseconds>(suspect_timeout_).count()});
-    // Late joiners discovered via gossip/failure-detection must be added
-    // dynamically after start(); each arrival fires this callback.
-    table_.onChange([this] {
-        std::scoped_lock lock(state_mutex_);
-        rebuildPeersLocked();
-    });
-}
-
-void
-FailureDetector::rebuildPeersLocked() {
-    peers_.clear();
-    for (const auto& info : table_.snapshot()) {
-        if (info.id != self_) {
-            peers_.push_back(info.id);
+    void FailureDetector::start() {
+        {
+            std::scoped_lock lock(state_mutex_);
+            rebuildPeersLocked();
         }
-    }
-    std::sort(peers_.begin(), peers_.end());
-}
 
-void
-FailureDetector::tick() {
-    Span span("failure.probe");
-    // Work items deferred outside state_mutex_: membership mutations and the
-    // ping send. sendAsync may complete synchronously (sim transport), and its
-    // callback re-enters onProbeResult which takes state_mutex_ — so neither
-    // may run while we hold it.
-    std::vector<NodeId> timed_out;
-    std::vector<NodeId> dead;
-    NodeId probe_target;
-    bool has_probe = false;
-    {
-        std::scoped_lock lock(state_mutex_);
-        // Sweep pending probes for timeouts (covers blackholes that never ack).
-        for (auto& [peer, state] : peer_state_) {
-            if (state.probe.pending && clock_.now() - state.probe.sent_at > suspect_timeout_) {
-                state.probe.pending = false;
-                timed_out.push_back(peer);
+        CINDER_INFO(
+            "failure_detector started",
+            {"suspect_timeout_ms",
+             std::chrono::duration_cast<milliseconds>(suspect_timeout_).count()}
+        );
+        // Late joiners discovered via gossip/failure-detection must be added
+        // dynamically after start(); each arrival fires this callback.
+        table_.onChange([this] {
+            std::scoped_lock lock(state_mutex_);
+            rebuildPeersLocked();
+        });
+    }
+
+    void FailureDetector::rebuildPeersLocked() {
+        peers_.clear();
+        for (const auto& info : table_.snapshot()) {
+            if (info.id != self_) {
+                peers_.push_back(info.id);
+            }
+        }
+        std::sort(peers_.begin(), peers_.end());
+    }
+
+    void FailureDetector::tick() {
+        Span span("failure.probe");
+        // Work items deferred outside state_mutex_: membership mutations and the
+        // ping send. sendAsync may complete synchronously (sim transport), and its
+        // callback re-enters onProbeResult which takes state_mutex_ — so neither
+        // may run while we hold it.
+        std::vector<NodeId> timed_out;
+        std::vector<NodeId> dead;
+        NodeId probe_target;
+        bool has_probe = false;
+        {
+            std::scoped_lock lock(state_mutex_);
+            // Sweep pending probes for timeouts (covers blackholes that never ack).
+            for (auto& [peer, state] : peer_state_) {
+                if (state.probe.pending && clock_.now() - state.probe.sent_at > suspect_timeout_) {
+                    state.probe.pending = false;
+                    timed_out.push_back(peer);
+                }
+            }
+
+            dead = escalateSuspectsLocked();
+            // Round-robin to the next peer that isn't self, pending, or dead.
+            if (!peers_.empty()) {
+                for (size_t attempt = 0; attempt < peers_.size(); ++attempt) {
+                    const NodeId& peer = peers_[next_peer_ % peers_.size()];
+                    next_peer_ = (next_peer_ + 1) % peers_.size();
+                    if (peer == self_) {
+                        continue;
+                    }
+
+                    auto it = peer_state_.find(peer);
+                    if (it != peer_state_.end() && it->second.probe.pending) {
+                        continue;
+                    }
+
+                    auto info = table_.get(peer);
+                    if (info.has_value() && info->state == NodeState::Dead) {
+                        continue;
+                    }
+
+                    auto& state = peer_state_[peer];
+                    state.probe.pending = true;
+                    state.probe.sent_at = clock_.now();
+                    probe_target = peer;
+                    has_probe = true;
+                    break;
+                }
+            } else {
+                CINDER_DEBUG("no peers to probe");
             }
         }
 
-        dead = escalateSuspectsLocked();
-        // Round-robin to the next peer that isn't self, pending, or dead.
-        if (!peers_.empty()) {
-            for (size_t attempt = 0; attempt < peers_.size(); ++attempt) {
-                const NodeId& peer = peers_[next_peer_ % peers_.size()];
-                next_peer_ = (next_peer_ + 1) % peers_.size();
-                if (peer == self_) {
-                    continue;
-                }
-
-                auto it = peer_state_.find(peer);
-                if (it != peer_state_.end() && it->second.probe.pending) {
-                    continue;
-                }
-
-                auto info = table_.get(peer);
-                if (info.has_value() && info->state == NodeState::Dead) {
-                    continue;
-                }
-
-                auto& state = peer_state_[peer];
-                state.probe.pending = true;
-                state.probe.sent_at = clock_.now();
-                probe_target = peer;
-                has_probe = true;
-                break;
+        for (const auto& peer : timed_out) {
+            CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "timeout"});
+            table_.markSuspect(peer);
+            if (metrics_) {
+                metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
             }
-        } else {
-            CINDER_DEBUG("no peers to probe");
+        }
+        for (const auto& peer : dead) {
+            table_.markDead(peer);
+            if (metrics_) {
+                metrics_->clusterMetrics().dead_marked.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (!has_probe) {
+            return;
+        }
+
+        CINDER_DEBUG("ping sent", {"peer", probe_target});
+        net::Request ping;
+        ping.opcode = net::Opcode::Ping;
+        transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
+            onProbeResult(probe_target, r.has_value());
+        });
+        if (metrics_) {
+            metrics_->clusterMetrics().probe_sent.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
-    for (const auto& peer : timed_out) {
-        CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "timeout"});
+    void FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
+        Span span("failure.on_probe_result");
+        bool known_probe = false;
+        int failures = 0;
+        {
+            std::scoped_lock lock(state_mutex_);
+            auto it = peer_state_.find(peer);
+            if (it == peer_state_.end()) {
+                return;
+            }
+
+            it->second.probe.pending = false;
+            known_probe = true;
+            if (acked) {
+                it->second.suspected = false;
+                it->second.consecutive_failures = 0;
+            } else {
+                auto& state = it->second;
+                failures = ++state.consecutive_failures;
+                if (!state.suspected) {
+                    state.suspected = true;
+                    state.suspect_since = clock_.now();
+                }
+            }
+        }
+
+        if (!known_probe) {
+            return;
+        }
+        if (acked) {
+            CINDER_DEBUG("ping received", {"peer", peer});
+            auto info = table_.get(peer);
+            table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
+            if (metrics_) {
+                metrics_->clusterMetrics().probe_received.fetch_add(1, std::memory_order_relaxed);
+                metrics_->clusterMetrics().alive_marked.fetch_add(1, std::memory_order_relaxed);
+            }
+            return;
+        }
+
+        // Sustained unreachable: suspect once the consecutive-failure streak
+        // crosses the threshold; a lone transient failure is tolerated without
+        // flapping the ring (escalation promotes to Dead later).
+        if (failures < K_SUSPECT_THRESHOLD) {
+            CINDER_DEBUG(
+                "probe failed (tolerated)",
+                {"peer", peer},
+                {"streak", failures},
+                {"threshold", K_SUSPECT_THRESHOLD}
+            );
+            return;
+        }
+
+        CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "unreachable"});
         table_.markSuspect(peer);
         if (metrics_) {
             metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
         }
     }
-    for (const auto& peer : dead) {
-        table_.markDead(peer);
-        if (metrics_) {
-            metrics_->clusterMetrics().dead_marked.fetch_add(1, std::memory_order_relaxed);
-        }
-    }
-    if (!has_probe) {
-        return;
-    }
 
-    CINDER_DEBUG("ping sent", {"peer", probe_target});
-    net::Request ping;
-    ping.opcode = net::Opcode::Ping;
-    transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
-        onProbeResult(probe_target, r.has_value());
-    });
-    if (metrics_) {
-        metrics_->clusterMetrics().probe_sent.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
-void
-FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
-    Span span("failure.on_probe_result");
-    bool known_probe = false;
-    int failures = 0;
-    {
-        std::scoped_lock lock(state_mutex_);
-        auto it = peer_state_.find(peer);
-        if (it == peer_state_.end()) {
-            return;
-        }
-
-        it->second.probe.pending = false;
-        known_probe = true;
-        if (acked) {
-            it->second.suspected = false;
-            it->second.consecutive_failures = 0;
-        } else {
-            auto& state = it->second;
-            failures = ++state.consecutive_failures;
+    auto FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
+        // Caller holds state_mutex_; returns peers to mark Dead so the caller can
+        // mutate MembershipTable without holding our lock.
+        std::vector<NodeId> to_dead;
+        for (auto& [peer, state] : peer_state_) {
             if (!state.suspected) {
-                state.suspected = true;
-                state.suspect_since = clock_.now();
+                continue;
+            }
+
+            auto info = table_.get(peer);
+            if (!info.has_value() || info->state != NodeState::Suspect) {
+                continue;
+            }
+            if (clock_.now() - state.suspect_since > suspect_timeout_) {
+                to_dead.push_back(peer);
             }
         }
-    }
-
-    if (!known_probe) {
-        return;
-    }
-    if (acked) {
-        CINDER_DEBUG("ping received", {"peer", peer});
-        auto info = table_.get(peer);
-        table_.markAlive(peer, info.has_value() ? info->incarnation : 0);
-        if (metrics_) {
-            metrics_->clusterMetrics().probe_received.fetch_add(1, std::memory_order_relaxed);
-            metrics_->clusterMetrics().alive_marked.fetch_add(1, std::memory_order_relaxed);
+        for (const auto& peer : to_dead) {
+            CINDER_INFO("suspect→dead", {"peer", peer});
+            auto it = peer_state_.find(peer);
+            if (it != peer_state_.end()) {
+                it->second.suspected = false;
+                it->second.consecutive_failures = 0;
+            }
         }
-        return;
+        return to_dead;
     }
-
-    // Sustained unreachable: suspect once the consecutive-failure streak
-    // crosses the threshold; a lone transient failure is tolerated without
-    // flapping the ring (escalation promotes to Dead later).
-    if (failures < K_SUSPECT_THRESHOLD) {
-        CINDER_DEBUG("probe failed (tolerated)",
-            {"peer", peer},
-            {"streak", failures},
-            {"threshold", K_SUSPECT_THRESHOLD});
-        return;
-    }
-
-    CINDER_INFO("suspect marked", {"peer", peer}, {"reason", "unreachable"});
-    table_.markSuspect(peer);
-    if (metrics_) {
-        metrics_->clusterMetrics().suspect_marked.fetch_add(1, std::memory_order_relaxed);
-    }
-}
-
-auto
-FailureDetector::escalateSuspectsLocked() -> std::vector<NodeId> {
-    // Caller holds state_mutex_; returns peers to mark Dead so the caller can
-    // mutate MembershipTable without holding our lock.
-    std::vector<NodeId> to_dead;
-    for (auto& [peer, state] : peer_state_) {
-        if (!state.suspected) {
-            continue;
-        }
-
-        auto info = table_.get(peer);
-        if (!info.has_value() || info->state != NodeState::Suspect) {
-            continue;
-        }
-        if (clock_.now() - state.suspect_since > suspect_timeout_) {
-            to_dead.push_back(peer);
-        }
-    }
-    for (const auto& peer : to_dead) {
-        CINDER_INFO("suspect→dead", {"peer", peer});
-        auto it = peer_state_.find(peer);
-        if (it != peer_state_.end()) {
-            it->second.suspected = false;
-            it->second.consecutive_failures = 0;
-        }
-    }
-    return to_dead;
-}
 } // namespace cinder
