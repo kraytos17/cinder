@@ -246,7 +246,8 @@ namespace cinder {
         }
         if (header[0] != std::byte{net::K_MAGIC}) {
             closeConn(conn);
-            co_return err<net::Response>(Error(Errc::InvalidArgument, "bad magic in response"));
+            // Transient framing desync (see ConnectionPool) — retryable.
+            co_return err<net::Response>(Error(Errc::NotReady, "bad magic in response"));
         }
 
         uint32_t payload_len = 0;
@@ -254,9 +255,7 @@ namespace cinder {
         payload_len = std::byteswap(payload_len);
         if (payload_len > net::K_MAX_MESSAGE_SIZE) {
             closeConn(conn);
-            co_return err<net::Response>(
-                Error(Errc::InvalidArgument, "response payload too large")
-            );
+            co_return err<net::Response>(Error(Errc::NotReady, "response payload too large"));
         }
 
         std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);

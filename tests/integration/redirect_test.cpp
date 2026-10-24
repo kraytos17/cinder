@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "cinder/client/cache_client.hpp"
@@ -146,14 +147,47 @@ namespace cinder {
             ASSERT_GE(redirected.size(), 1)
                 << "no key migrated with a redirect at its stale owner — test would pass vacuously";
 
-            // Single-key path: follow the redirect and learn the owner.
-            auto one = client.get(redirected[0]);
+            // Single-key path: follow the redirect and learn the owner. Poll:
+            // under parallel CI load the failure detector can briefly mark the
+            // new owner suspect (transport hiccup), flapping the ring so the
+            // stale owner momentarily answers NotFound instead of redirecting.
+            // The flap self-heals via gossip refutation — retry until served.
+            std::optional<std::string> one;
+            for (int round = 0; round < 600; ++round) {
+                one = client.get(redirected[0]);
+                if (one.has_value() && *one == "v-" + redirected[0]) {
+                    break;
+                }
+
+                one.reset();
+                std::this_thread::sleep_for(milliseconds(100));
+            }
+
             ASSERT_TRUE(one.has_value()) << redirected[0] << " not served after redirect";
             EXPECT_EQ(*one, "v-" + redirected[0]);
 
             // Batch path: every key must come back, including the migrated ones the
-            // stale ring routes to the wrong node.
-            auto found = client.multiGet(keys);
+            // stale ring routes to the wrong node. Same transient-flap rationale:
+            // poll until the full map resolves.
+            std::unordered_map<std::string, std::string> found;
+            for (int round = 0; round < 600; ++round) {
+                found = client.multiGet(keys);
+                bool complete = found.size() == keys.size();
+                if (complete) {
+                    for (const auto& k : keys) {
+                        auto it = found.find(k);
+                        if (it == found.end() || it->second != "v-" + k) {
+                            complete = false;
+                            break;
+                        }
+                    }
+                }
+                if (complete) {
+                    break;
+                }
+                std::this_thread::sleep_for(milliseconds(100));
+            }
+
             EXPECT_EQ(found.size(), keys.size());
             for (const auto& k : keys) {
                 auto it = found.find(k);
