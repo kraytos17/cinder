@@ -126,7 +126,7 @@ namespace cinder {
             // minimal — legitimate cache behavior, and putVersioned correctly
             // reports ok). Growth never evicts, so the post-condition below is
             // timing-independent.
-            store.setCapacity(1 << 20);
+            store.setCapacity(1U << 20U);
 
             // Post-conditions: the store must still be functional, not wedged or
             // corrupted. A race that corrupted the list/index would typically surface
@@ -151,7 +151,7 @@ namespace cinder {
         // the property most likely to regress if the snapshot/lock discipline is
         // refactored, so assert it directly rather than only via stress.
         template <typename Store> void forEachVisitorMayMutate(const char* label) {
-            Store store(1 << 20);
+            Store store(1U << 20U);
             for (int i = 0; i < 64; ++i) {
                 ASSERT_TRUE(store.put("k" + std::to_string(i), "v").has_value()) << label;
             }
@@ -184,7 +184,7 @@ namespace cinder {
         // leave the entry in a torn state, and the highest version must win. Uses one
         // key so every thread contends on the same index/list node.
         template <typename Store> void concurrentVersionedWritesSingleKey(const char* label) {
-            Store store(1 << 20);
+            Store store(1U << 20U);
             constexpr int K_THREADS = 4;
             constexpr int K_ITERS = 1000;
 
