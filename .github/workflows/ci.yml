@@ -365,21 +365,14 @@ jobs:
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Restore FetchContent (GCC)
-        id: fc-restore-gcc
+      - name: Restore FetchContent
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
           key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
-
-      - name: Restore FetchContent (Clang)
-        id: fc-restore-clang
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-clang-
+          restore-keys: |
+            fetchcontent-clang-
+            fetchcontent-gcc-
 
       - name: Configure (clang-tidy runs inline)
         run: just preset=ci configure
@@ -396,13 +389,10 @@ jobs:
       - name: cppcheck
         run: cmake --build build/ci-gcc --target cppcheck
 
-      - name: Save FetchContent
-        if: always() && (steps.fc-restore-gcc.outputs.cache-hit != 'true' || steps.fc-restore-clang.outputs.cache-hit != 'true')
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
+      # No Save step here: the restore above borrows the gcc-/clang- family
+      # caches written by the build jobs, and nothing restores a
+      # fetchcontent-lint-* key, so saving would upload ~2.2 GB that no job
+      # ever reads back.
 
   codeql:
     needs: [build-image]
@@ -411,10 +401,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - label: Release
-            category: release
-          - label: TLS + gRPC
-            category: tls-grpc
+          - preset: release
+            label: Release
+          - preset: tls-grpc
+            label: TLS + gRPC
     runs-on: ubuntu-26.04
     container:
       image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
@@ -434,7 +424,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-codeql-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: fetchcontent-gcc-
 
       - name: Initialize CodeQL
@@ -442,26 +432,16 @@ jobs:
         with:
           languages: cpp
 
-      - name: Configure (Release)
-        if: matrix.category == 'release'
-        run: cmake --preset release
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
 
-      - name: Configure (TLS + gRPC)
-        if: matrix.category == 'tls-grpc'
-        run: cmake --preset tls-grpc
-
-      - name: Build (Release)
-        if: matrix.category == 'release'
-        run: cmake --build --preset release -j$(nproc)
-
-      - name: Build (TLS + gRPC)
-        if: matrix.category == 'tls-grpc'
-        run: cmake --build --preset tls-grpc -j$(nproc)
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
-          category: "/variant:${{ matrix.category }}"
+          category: "/variant:${{ matrix.preset }}"
 
       - name: Save FetchContent
         if: always() && steps.fc-restore.outputs.cache-hit != 'true'
@@ -469,7 +449,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-codeql-${{ matrix.category }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-codeql-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
 
   ci-success:
     name: CI Success

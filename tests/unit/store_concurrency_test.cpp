@@ -119,7 +119,6 @@ namespace cinder {
             stop = true;
             maintenance.clear();
             resizer.join();
-
             // Grow before the liveness checks: the churn above ends at 8192
             // bytes with a store that may hold more live data, so a fresh put
             // can be immediately evicted again (LFU evicts the min-frequency

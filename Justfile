@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
-presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-clang release release-clang sanitized asan asan-clang msan tsan ubsan ci ci-gcc fast fuzz fuzz-coverage"`
+presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-gcc tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
 preset := "debug"
 # Parallel build jobs. Each unity TU for the template-heavy test/core targets
 # peaks around 700 MB of compiler RSS, so on a 16 GB machine 8 concurrent
@@ -56,35 +56,33 @@ test-integration: build kill-stale
 
 [group('test')]
 test-all: build kill-stale
-    #!/usr/bin/env bash
-    set -euo pipefail
-    for bin in cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests; do
-        echo ""
-        echo "==> $bin..."
-        echo "────────────────────────────────────────"
-        build/{{ preset }}/tests/"$bin" --gtest_also_run_disabled_tests {{ args }} \
-            || { echo ""; echo "FAILED: $bin ({{ preset }})"; exit 1; }
-        echo "PASSED: $bin"
-    done
-    echo ""
-    echo "════════════════════════════════════════"
-    echo "All test suites passed ({{ preset }})."
+    @just _run-bins "cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests" {{ preset }}
+    @echo ""
+    @echo "════════════════════════════════════════"
+    @echo "All test suites passed ({{ preset }})."
 
 [group('test')]
 grpc-test: build kill-stale
+    @just _run-bins "cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_integration_tests" debug-grpc
+    @echo ""
+    @echo "════════════════════════════════════════"
+    @echo "gRPC test suites passed."
+
+# Shared loop for running test binaries by name. Keeps test-all/grpc-test
+# bin lists in one shape; when tests/CMakeLists.txt gains a target, add it
+# to the caller lists above.
+[private]
+_run-bins bins dir:
     #!/usr/bin/env bash
     set -euo pipefail
-    for bin in cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_integration_tests; do
+    for bin in {{ bins }}; do
         echo ""
-        echo "==> $bin (debug-grpc)..."
+        echo "==> $bin..."
         echo "────────────────────────────────────────"
-        build/debug-grpc/tests/"$bin" --gtest_also_run_disabled_tests {{ args }} \
-            || { echo ""; echo "FAILED: $bin (debug-grpc)"; exit 1; }
+        build/{{ dir }}/tests/"$bin" --gtest_also_run_disabled_tests {{ args }} \
+            || { echo ""; echo "FAILED: $bin ({{ dir }})"; exit 1; }
         echo "PASSED: $bin"
     done
-    echo ""
-    echo "════════════════════════════════════════"
-    echo "gRPC test suites passed."
 
 [group('sanitizers')]
 asan-test:
@@ -93,6 +91,10 @@ asan-test:
 [group('sanitizers')]
 tsan-test:
     @just preset=tsan test
+
+[group('sanitizers')]
+tsan-clang-test:
+    @just preset=tsan-clang test
 
 [group('sanitizers')]
 ubsan-test:
@@ -119,10 +121,12 @@ kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
 
 [group('presets')]
-debug-tls: (build)
+debug-tls:
+    just preset=debug-tls build
 
 [group('presets')]
-fast: (build)
+fast:
+    just preset=fast build
 
 [group('presets')]
 ci:
