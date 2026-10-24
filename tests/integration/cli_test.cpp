@@ -126,4 +126,56 @@ namespace {
             EXPECT_EQ(out, "OK\n");
         }
     }
+
+    TEST(CliTest, Mget) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        {
+            auto [out, err] = runCli(port, {"set", "a", "1"});
+            EXPECT_EQ(out, "OK\n");
+        }
+        {
+            auto [out, err] = runCli(port, {"set", "b", "2"});
+            EXPECT_EQ(out, "OK\n");
+        }
+        {
+            auto [out, err] = runCli(port, {"mget", "a", "b", "missing"});
+            EXPECT_TRUE(out.contains("a: 1\n"));
+            EXPECT_TRUE(out.contains("b: 2\n"));
+            EXPECT_TRUE(out.contains("missing"));
+            EXPECT_TRUE(err.empty());
+        }
+    }
+
+    TEST(CliTest, Info) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        auto [out, err] = runCli(port, {"info"});
+        EXPECT_TRUE(out.contains("\"node_id\":\"node1\""));
+        EXPECT_TRUE(err.empty());
+    }
+
+    TEST(CliTest, Cluster) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        auto [out, err] = runCli(port, {"cluster"});
+        EXPECT_TRUE(out.contains("node1"));
+        EXPECT_TRUE(err.empty());
+    }
+
+    TEST(CliTest, Ring) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        auto [out, err] = runCli(port, {"ring"});
+        EXPECT_TRUE(out.contains("vnodes_per_node"));
+        EXPECT_TRUE(err.empty());
+    }
 } // namespace

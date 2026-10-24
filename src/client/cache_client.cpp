@@ -234,4 +234,114 @@ namespace cinder {
         }
         return result;
     }
+
+    auto CacheClient::getVersioned(const std::string& key) -> std::optional<VersionedValue> {
+        Span span("client.get_versioned");
+        net::Request req{.opcode = net::Opcode::GetVersioned, .key = key, .value = {}};
+        auto res = sendToOwner(key, req);
+        if (!res.has_value()) {
+            return std::nullopt;
+        }
+
+        net::Response r = std::move(res.value());
+        if (r.status != Errc::OK || !r.value.has_value()) {
+            return std::nullopt;
+        }
+
+        VersionedValue out;
+        out.value = std::move(*r.value);
+        out.version = r.version;
+        out.writer_node_hash = r.writer_node_hash;
+        out.expires_at = r.expires_at;
+        return out;
+    }
+
+    auto CacheClient::ttl(const std::string& key) -> std::optional<milliseconds> {
+        auto got = getVersioned(key);
+        if (!got.has_value() || !got->expires_at.has_value()) {
+            return std::nullopt;
+        }
+
+        auto remaining = *got->expires_at - std::chrono::system_clock::now();
+        if (remaining <= std::chrono::system_clock::duration::zero()) {
+            return milliseconds{0};
+        }
+        return std::chrono::duration_cast<milliseconds>(remaining);
+    }
+
+    auto CacheClient::multiSet(
+        const std::vector<std::pair<std::string, std::string>>& kvs,
+        std::optional<milliseconds> ttl
+    ) -> size_t {
+        Span span("client.multi_set");
+        // Group keys by their ring owner, then pipeline all Sets per node —
+        // the same shape as multiGet, but with Set requests.
+        std::unordered_map<NodeId, std::vector<std::pair<std::string, std::string>>> by_owner;
+        for (const auto& kv : kvs) {
+            by_owner[routePrimary(kv.first)].push_back(kv);
+        }
+
+        size_t stored = 0;
+        for (const auto& [node, node_kvs] : by_owner) {
+            std::vector<net::Request> reqs;
+            reqs.reserve(node_kvs.size());
+            for (const auto& [key, value] : node_kvs) {
+                reqs.push_back(
+                    {.opcode = net::Opcode::Set, .key = key, .value = value, .ttl = ttl}
+                );
+            }
+
+            Result<std::vector<net::Response>> res =
+                err<std::vector<net::Response>>(Error(Errc::NotReady, "no attempts made"));
+            for (int attempt = 0; attempt <= max_retries_; ++attempt) {
+                CINDER_TRACE(
+                    "batch",
+                    {"node", node},
+                    {"keys", kvs.size()},
+                    {"attempt", attempt},
+                    {"max", max_retries_}
+                );
+
+                res = pool_.sendBatch(node, reqs);
+                if (!retryable(res) || attempt == max_retries_) {
+                    break;
+                }
+                std::this_thread::sleep_for(
+                    milliseconds(jitterBackoff(retryBackoff(attempt, base_backoff_ms_)))
+                );
+            }
+            if (!res.has_value()) {
+                continue; // node unreachable — those keys are simply not stored
+            }
+
+            std::vector<std::pair<std::string, std::string>> redirected;
+            for (size_t i = 0; i < node_kvs.size() && i < res.value().size(); i++) {
+                if (res.value()[i].status == Errc::OK) {
+                    ++stored;
+                } else if (
+                    res.value()[i].status
+                    == Errc::NotReady
+                    && parseRedirectTarget(res.value()[i].value.value_or("")).has_value()
+                ) {
+                    // Stale ring view — the key moved. Re-issue through the
+                    // redirect-following single-key path (which learns the owner).
+                    redirected.push_back(node_kvs[i]);
+                }
+            }
+            for (const auto& [k, v] : redirected) {
+                net::Request single{
+                    .opcode = net::Opcode::Set,
+                    .key = k,
+                    .value = v,
+                    .ttl = ttl,
+                };
+
+                auto one = sendToOwner(k, single);
+                if (one.has_value() && one.value().status == Errc::OK) {
+                    ++stored;
+                }
+            }
+        }
+        return stored;
+    }
 } // namespace cinder

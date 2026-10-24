@@ -11,6 +11,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "cinder/client/connection_pool.hpp"
@@ -91,6 +92,31 @@ namespace cinder {
         // through redirects like single-key operations.
         auto multiGet(const std::vector<std::string>& keys)
             -> std::unordered_map<std::string, std::string>;
+
+        // Single-key read with LWW metadata. Version, writer hash and absolute
+        // expiry come from the wire GetVersioned response (expires_at absent =
+        // no TTL). Used internally by read-repair; exposed for inspection.
+        struct VersionedValue {
+            std::string value;
+            Version version = 0;
+            uint64_t writer_node_hash = 0;
+            std::optional<std::chrono::system_clock::time_point> expires_at;
+        };
+
+        auto getVersioned(const std::string& key) -> std::optional<VersionedValue>;
+
+        // Remaining TTL, or nullopt when the key is missing or has no TTL.
+        // An expired-but-present key reports zero.
+        auto ttl(const std::string& key) -> std::optional<milliseconds>;
+
+        // Store many keys, grouped by owner like multiGet (no new opcode —
+        // batch Sets ride the same pipeline as batch Gets). Returns the number
+        // of keys the cluster acknowledged. Stale-owner keys are followed
+        // through redirects like single-key operations.
+        auto multiSet(
+            const std::vector<std::pair<std::string, std::string>>& kvs,
+            std::optional<milliseconds> ttl = std::nullopt
+        ) -> size_t;
 
     private:
 
