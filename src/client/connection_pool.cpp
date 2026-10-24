@@ -277,7 +277,18 @@ namespace cinder {
         }
 
         timer.cancel();
-        co_return net::decodeResponse(frame);
+        // A decode failure here means the bytes on the wire did not match the
+        // frame we just read — same reused-socket desync class as the framing
+        // checks above, so close and report it as transient. decodeResponse
+        // itself keeps returning InvalidArgument (it is a pure function and
+        // callers of it directly are validating their own input); the wire
+        // path re-maps it.
+        auto decoded = net::decodeResponse(frame);
+        if (!decoded.has_value()) {
+            closeConn(conn);
+            co_return err<net::Response>(Error(Errc::NotReady, decoded.error().message()));
+        }
+        co_return decoded;
     }
 
     auto ConnectionPool::sendBatchCoroutine(
@@ -449,7 +460,17 @@ namespace cinder {
                     );
                 }
             }
-            responses.push_back(net::decodeResponse(frame).value());
+            // Same reused-socket desync rationale as the single-RPC path: a
+            // decode failure here is transient, and .value() would otherwise
+            // throw std::bad_expected_access into the co_spawn handler.
+            auto decoded = net::decodeResponse(frame);
+            if (!decoded.has_value()) {
+                closeConn(conn);
+                co_return err<std::vector<net::Response>>(
+                    Error(Errc::NotReady, decoded.error().message())
+                );
+            }
+            responses.push_back(std::move(decoded.value()));
         }
 
         timer.cancel();
@@ -468,7 +489,11 @@ namespace cinder {
                 return;
             }
             if (!node_addrs_.contains(node_id)) {
-                on_done(err<net::Response>(Error(Errc::NotFound, "unknown node")));
+                // Not a permanent client error: we may simply not know this
+                // node's address yet (mid-join, or a redirect we have not
+                // followed). Transient so the caller retries — a follow-up
+                // redirect or refreshAfterFailure re-resolves via the ring.
+                on_done(err<net::Response>(Error(Errc::NotReady, "unknown node")));
                 return;
             }
         }
@@ -517,7 +542,7 @@ namespace cinder {
                 return;
             }
             if (!node_addrs_.contains(node_id)) {
-                on_done(err<std::vector<net::Response>>(Error(Errc::NotFound, "unknown node")));
+                on_done(err<std::vector<net::Response>>(Error(Errc::NotReady, "unknown node")));
                 return;
             }
         }

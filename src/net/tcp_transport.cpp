@@ -289,14 +289,20 @@ namespace cinder {
         }
 
         timer.cancel();
-        co_return net::decodeResponse(frame);
+        // Wire desync on a reused connection — transient (see ConnectionPool).
+        auto decoded = net::decodeResponse(frame);
+        if (!decoded.has_value()) {
+            closeConn(conn);
+            co_return err<net::Response>(Error(Errc::NotReady, decoded.error().message()));
+        }
+        co_return decoded;
     }
 
     void TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
         {
             std::scoped_lock lock(mu_);
             if (!addrs_.contains(to)) {
-                on_done(err(Error(Errc::NotFound, "unknown node")));
+                on_done(err(Error(Errc::NotReady, "unknown node")));
                 return;
             }
         }
@@ -348,7 +354,7 @@ namespace cinder {
         {
             std::scoped_lock lock(mu_);
             if (!addrs_.contains(to)) {
-                on_done(err<net::Response>(Error(Errc::NotFound, "unknown node")));
+                on_done(err<net::Response>(Error(Errc::NotReady, "unknown node")));
                 return;
             }
         }

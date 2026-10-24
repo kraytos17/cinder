@@ -165,5 +165,51 @@ namespace cinder {
             auto res = ok<std::vector<net::Response>>(std::move(batch));
             EXPECT_FALSE(retryable(res));
         }
+
+        // Exhaustive classification of every Errc against retryable(). The
+        // predicate is a two-value allow-list (Timeout, NotReady), so the real
+        // risk is an *under*-retried code: a transient condition mapped to a
+        // "permanent" value fails the request outright with no second attempt.
+        // That is exactly the bug class behind the redirect-test flake, where a
+        // reused-socket framing desync surfaced as InvalidArgument.
+        //
+        // This table is the contract: every Errc member appears exactly once,
+        // and each entry documents why it is classified that way. Adding a new
+        // Errc member without adding a row here should be caught in review.
+        TEST(RetryableTest, ErrcClassificationTable) {
+            struct Case {
+                Errc code;
+                bool retryable_expected;
+                const char* why;
+            };
+
+            const Case cases[] = {
+                // Transient: worth another attempt.
+                {Errc::Timeout, true, "deadline expired -- peer may still be alive"},
+                {Errc::NotReady, true, "node unavailable/moved/unknown -- re-resolve and retry"},
+
+                // Permanent: retrying the same request against the same target
+                // cannot change the outcome (a redirect/del/refresh path handles
+                // recovery instead, where applicable).
+                {Errc::OK, false, "success -- nothing to retry"},
+                {Errc::NotFound, false, "key genuinely absent"},
+                {Errc::CapacityExceeded, false, "value exceeds store capacity"},
+                {Errc::InvalidArgument, false, "request itself is malformed"},
+                {Errc::TtlExpired, false, "entry expired"},
+                {Errc::NotSupported, false, "opcode/feature unsupported by this peer"},
+                {Errc::InternalError, false, "local fault (disk/fs) -- not wire-transient"},
+                {Errc::PermissionDenied, false, "auth rejected -- retry cannot fix credentials"},
+                {Errc::CorruptData, false, "durable state corrupt -- needs operator action"},
+            };
+
+            for (const auto& c : cases) {
+                auto res = err<net::Response>(Error(c.code));
+                EXPECT_EQ(retryable(res), c.retryable_expected)
+                    << "Errc::"
+                    << static_cast<int>(c.code)
+                    << " -- "
+                    << c.why;
+            }
+        }
     } // namespace
 } // namespace cinder
