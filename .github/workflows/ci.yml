@@ -20,6 +20,7 @@ permissions:
 
 env:
   SCCACHE_GHA_ENABLED: "true"
+  SCCACHE_GHA_RW_MODE: ${{ case(github.ref == 'refs/heads/main', 'READ_WRITE', 'READ_ONLY') }}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -112,7 +113,7 @@ jobs:
         run: cmake --preset ${{ matrix.preset }} -DCINDER_BUILD_BENCHMARKS=ON
 
       - name: Report cache size
-        run: du -sh "${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}"
+        run: du -sh .cache/fetchcontent-${{ matrix.family }}
 
   build-test:
     needs: [build-image]

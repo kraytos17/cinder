@@ -41,6 +41,9 @@ Checks: [
 
   # --- clang-analyzer ---
   '-clang-analyzer-optin.cplusplus.VirtualCall',# false positive in ASIO resolver destruction
+  '-clang-analyzer-core.NullDereference',       # FP on asio coroutine frames: resume_context_ is set by the
+                                                # runtime before every resume (unmodelable statically), so any
+                                                # co_await on a channel reports a deref inside awaitable.hpp
 
   # --- misc ---
   '-misc-const-correctness',                    # false-positive prone

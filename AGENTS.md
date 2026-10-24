@@ -145,7 +145,10 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   (a new `CMakeLists.txt` hash reuses previous deps); parallel jobs sharing one
   save key raced (`Unable to reserve cache`), hence the single writer.
   `SCCACHE_GHA_ENABLED=true` is set workflow-wide — without it the installed
-  sccache writes to ephemeral disk and every job compiles cold. Markdown/docs-only
+  sccache writes to ephemeral disk and every job compiles cold. Writes are
+  main-only (`SCCACHE_GHA_RW_MODE` is `READ_WRITE` on main, `READ_ONLY`
+  elsewhere): PR-branch sccache entries are unreadable by other branches, so
+  PR writes would be pure quota churn. Markdown/docs-only
   changes skip CI (`paths-ignore`).
 
 ## Gotchas for agents

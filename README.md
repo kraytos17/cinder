@@ -247,7 +247,8 @@ check: `CI Success`.
   consumers restore read-only with a family-prefix fallback, so a new
   `CMakeLists.txt` hash reuses the previous deps instead of cold-starting.
   sccache's GHA backend is enabled (`SCCACHE_GHA_ENABLED`), entries are
-  content-hashed so all jobs share one key space.
+  content-hashed so all jobs share one key space; writes are main-only
+  (PRs read-only) so PR-branch entries can't churn the quota.
 
 ## Dependencies
 
