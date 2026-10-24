@@ -122,14 +122,20 @@ namespace cinder {
         }
 
         void expireSlot(std::move_only_function<void(Node&)>& on_expired) {
-            // Walk the intrusive list in the current slot.
+            // Walk the intrusive list in the current slot. The callback may
+            // re-insert the node it was handed (EvictionStoreBase::evictExpired
+            // re-schedules an entry that fired early due to wheel wrap or
+            // sub-second drift), which rewrites that node's links and can move
+            // it to another slot. A pre-captured `next` would then be stale --
+            // null, once the node had been unlinked and re-linked -- so the walk
+            // re-reads the head from the sentinel each iteration. Every visited
+            // node is unlinked first, so it cannot be revisited within this pass
+            // and the loop terminates.
             auto* sentinel = &wheel_[cursor_];
-            auto* node = sentinel->wheel_next;
-            while (node != sentinel) {
-                auto* next = node->wheel_next;
+            while (sentinel->wheel_next != sentinel) {
+                auto* node = sentinel->wheel_next;
                 unlink(node);
                 on_expired(*static_cast<Node*>(node));
-                node = next;
             }
         }
 

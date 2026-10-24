@@ -9,31 +9,51 @@ function(cinder_add_test name)
     source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tests FILES ${ARGN})
 endfunction()
 
-cinder_add_test(cinder_unit_tests
+# ---------------------------------------------------------------------------
+# Unit tests are split by area rather than built as one monolith. The single
+# 22-TU target meant any edit to a core header rebuilt all 357 tests, and
+# sanitizer runs (which recompile everything they run) paid that cost for a
+# one-file change. Every target keeps the `unit` label, so `just test-unit`
+# and CI's `ctest -L unit` are unaffected.
+# ---------------------------------------------------------------------------
+cinder_add_test(cinder_unit_store_tests
     unit/lru_store_test.cpp
     unit/lfu_store_test.cpp
     unit/ttl_wheel_test.cpp
-    unit/consistent_hash_ring_test.cpp
-    unit/protocol_framing_test.cpp
-    unit/tracing_test.cpp
-    unit/status_test.cpp
-    unit/client_routing_test.cpp
     unit/versioned_store_test.cpp
-    unit/cache_node_server_test.cpp
-    unit/membership_test.cpp
-    unit/config_test.cpp
     unit/persistence_test.cpp
-    unit/tcp_server_stress_test.cpp
-    unit/rpc_timeout_test.cpp
-    unit/anti_entropy_test.cpp
-    unit/gossip_test.cpp
-    unit/error_provenance_test.cpp
     unit/lfu_concurrent_test.cpp
-    unit/metrics_test.cpp
-    unit/auth_test.cpp
+    unit/store_concurrency_test.cpp
     sim/sim_clock.cpp
 )
-gtest_discover_tests(cinder_unit_tests PROPERTIES LABELS "unit")
+gtest_discover_tests(cinder_unit_store_tests PROPERTIES LABELS "unit")
+
+cinder_add_test(cinder_unit_ring_tests
+    unit/consistent_hash_ring_test.cpp
+    unit/membership_test.cpp
+    unit/gossip_test.cpp
+    unit/anti_entropy_test.cpp
+)
+gtest_discover_tests(cinder_unit_ring_tests PROPERTIES LABELS "unit")
+
+cinder_add_test(cinder_unit_net_tests
+    unit/protocol_framing_test.cpp
+    unit/tcp_server_stress_test.cpp
+    unit/rpc_timeout_test.cpp
+    unit/client_routing_test.cpp
+)
+gtest_discover_tests(cinder_unit_net_tests PROPERTIES LABELS "unit")
+
+cinder_add_test(cinder_unit_node_tests
+    unit/cache_node_server_test.cpp
+    unit/metrics_test.cpp
+    unit/tracing_test.cpp
+    unit/status_test.cpp
+    unit/config_test.cpp
+    unit/auth_test.cpp
+    unit/error_provenance_test.cpp
+)
+gtest_discover_tests(cinder_unit_node_tests PROPERTIES LABELS "unit")
 
 cinder_add_test(cinder_integration_tests
     integration/cluster_smoke_test.cpp

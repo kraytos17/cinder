@@ -17,7 +17,8 @@
       "description": "Debug build with Ninja (GCC)",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
       }
     },
     {
@@ -60,7 +61,8 @@
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON"
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
@@ -71,7 +73,8 @@
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON"
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
@@ -201,7 +204,8 @@
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_UNITY_BUILD": "ON"
+        "CINDER_UNITY_BUILD": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
       }
     },
     {
@@ -212,7 +216,8 @@
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_UNITY_BUILD": "ON"
+        "CINDER_UNITY_BUILD": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
@@ -223,7 +228,8 @@
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CINDER_KEEP_FRAME_POINTER": "ON"
+        "CINDER_KEEP_FRAME_POINTER": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {

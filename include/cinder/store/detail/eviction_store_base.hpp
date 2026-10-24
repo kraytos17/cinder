@@ -350,13 +350,17 @@ namespace cinder {
         }
 
         void setCapacity(size_t new_capacity) final {
+            Derived& self = d();
+            // capacity_bytes_ is read by evictIfNeeded() under the store mutex, so
+            // the write must hold it too — otherwise a concurrent put() races the
+            // resize. The current_bytes_ comparison below is likewise only
+            // meaningful inside the lock (it is mutated by every put/remove).
+            std::scoped_lock lock(self.mutex_);
             capacity_bytes_ = new_capacity;
             if (metrics_) {
                 metrics_->shardMetrics().cap.capacity_bytes.store(new_capacity);
             }
             if (new_capacity < current_bytes_) {
-                Derived& self = d();
-                std::scoped_lock lock(self.mutex_);
                 evictIfNeeded();
             }
         }

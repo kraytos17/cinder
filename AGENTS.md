@@ -53,6 +53,15 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   **not** perf-representative) or `just build` (`debug`: per-file, best for
   indexing/incremental work). Direct CMake equivalent:
   `cmake --preset fast && cmake --build --preset fast`.
+* Build parallelism: `just jobs=N <recipe>` (default `nproc`). Unity TUs for the
+  test/core targets peak ~700 MB compiler RSS each, so on a 16 GB / 8-core box
+  the default 8 jobs is near the ceiling; drop to `jobs=4` if the OOM killer
+  or heavy swapping appears. `CINDER_UNITY_BATCH_SIZE` (default 8, matching
+  CMake's own default) is the other memory knob — raise it only on a
+  big-memory machine, since batch size dominates peak compiler RSS.
+* Benchmarks are **OFF by default** (`CINDER_BUILD_BENCHMARKS`); only
+  `release`, `release-clang`, `release-unity` and `profile` enable them.
+  `just bench` re-configures with them ON, so it works from any preset.
 * What to use when:
   `debug` dev · `fast` quick loop · `debug-tls[-clang]` TLS ·
   `debug-grpc` gRPC gateway (fetches gRPC+protobuf+abseil) ·
@@ -71,11 +80,16 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
 
 ## Tests (ctest -L labels are source of truth)
 
-* `just test-unit` → `-L unit` (21 files under `tests/unit`),
+* `just test-unit` → `-L unit` (22 files under `tests/unit`, compiled as four
+  binaries split by area: `cinder_unit_{store,ring,net,node}_tests`, so an edit
+  to one area no longer rebuilds all unit tests),
   `just test-sim` → `-L sim` (8 files), `just test-cli` → `-L cli`,
   `just test-integration` (12 files, kills stale `cinderd` first) → 24 tests,
-  `just test-all` runs all four binaries with `--gtest_also_run_disabled_tests`,
+  `just test-all` runs every binary with `--gtest_also_run_disabled_tests`,
   `just grpc-test` for `debug-grpc` builds.
+  Integration tests `fork`+`execl` real `cinderd` processes via `spawnNode`
+  (up to 3 per test), but an idle daemon is only ~2 MB RSS, so parallel
+  integration runs are bounded by fd/cpu contention, not memory.
 * Fuzz: `just fuzz-test` (10s per target: protocol_decode gossip_parse wal
   snapshot anti_entropy store_put http_parse redirect_parse),
   `just fuzz-long` (5min), coverage/minimize/report recipes; corpus under
@@ -135,8 +149,9 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
 ## Verification checklist (every change)
 
 1. `cmake --build --preset fast -j$(nproc)` clean.
-2. `ctest --preset fast -L unit -j1` (336) + `-L sim -j1` (36); run affected
-   `-L integration` isolated `-j1` (full suite = 24).
+2. `ctest --preset fast -L unit -j1` (343 across the four unit binaries)
+   + `-L sim -j1` (36); run affected `-L integration` isolated `-j1`
+   (full suite = 24).
 3. `cmake --build --preset fast --target check-format`, `cppcheck`, `lint` —
    all exit 0; for tidy-sensitive changes also build `ci` preset.
 4. Sanitizers for the affected area (`asan`, `tsan`, `ubsan` recipes).

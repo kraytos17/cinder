@@ -29,7 +29,7 @@ endif()
 # Options
 # ---------------------------------------------------------------------------
 option(CINDER_BUILD_TESTS           "Build unit/integration tests"           ON)
-option(CINDER_BUILD_BENCHMARKS      "Build throughput/latency benchmarks"    ON)
+option(CINDER_BUILD_BENCHMARKS      "Build throughput/latency benchmarks"    OFF)
 option(CINDER_ENABLE_TLS            "Build with Asio SSL / OpenSSL support"  OFF)
 option(CINDER_ENABLE_CRYPTO         "Build with OpenSSL crypto (HMAC-SHA256 for node auth)" OFF)
 option(CINDER_ENABLE_ASAN           "Build with AddressSanitizer"            OFF)
@@ -240,9 +240,12 @@ endif()
 
 if(CINDER_UNITY_BUILD)
     set(CMAKE_UNITY_BUILD ON)
-    set(CMAKE_UNITY_BUILD_BATCH_SIZE 16 CACHE STRING
-        "Number of TUs merged per unity batch")
-    message(STATUS "Cinder: unity builds enabled (cinder targets only)")
+    set(CINDER_UNITY_BATCH_SIZE 8 CACHE STRING
+        "Number of TUs merged per unity batch (lower = less peak RSS)")
+    set(CMAKE_UNITY_BUILD_BATCH_SIZE ${CINDER_UNITY_BATCH_SIZE} CACHE STRING
+        "Number of TUs merged per unity batch" FORCE)
+    message(STATUS
+        "Cinder: unity builds enabled (batch size ${CINDER_UNITY_BATCH_SIZE})")
 endif()
 
 # ---------------------------------------------------------------------------

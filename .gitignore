@@ -66,11 +66,12 @@ vcpkg_installed/
 # debug information files
 *.dwo
 
+# planning / review docs (local working notes, not tracked)
+plan/
+
 # test output & cache
 Testing/
 .cache/
-cinder_plan.md
-distributed_caching_cpp_improvement_plan.md
 tests/fuzz/corpus
 .codebase-memory/
 tests/fuzz/coverage

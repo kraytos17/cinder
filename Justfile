@@ -3,6 +3,10 @@ set quiet := true
 
 presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-clang release release-clang sanitized asan asan-clang msan tsan ubsan ci ci-gcc fast fuzz fuzz-coverage"`
 preset := "debug"
+# Parallel build jobs. Each unity TU for the template-heavy test/core targets
+# peaks around 700 MB of compiler RSS, so on a 16 GB machine 8 concurrent
+# jobs is near the ceiling once the page cache and linkers are counted.
+# Override per-invocation with `just jobs=N <recipe>` (e.g. `just jobs=4 build`).
 jobs := `nproc`
 args := ""
 
@@ -54,7 +58,7 @@ test-integration: build kill-stale
 test-all: build kill-stale
     #!/usr/bin/env bash
     set -euo pipefail
-    for bin in cinder_unit_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests; do
+    for bin in cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests; do
         echo ""
         echo "==> $bin..."
         echo "────────────────────────────────────────"
@@ -70,7 +74,7 @@ test-all: build kill-stale
 grpc-test: build kill-stale
     #!/usr/bin/env bash
     set -euo pipefail
-    for bin in cinder_unit_tests cinder_integration_tests; do
+    for bin in cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_integration_tests; do
         echo ""
         echo "==> $bin (debug-grpc)..."
         echo "────────────────────────────────────────"
@@ -263,8 +267,14 @@ proto-generate:
 proto-breaking:
     buf breaking --against '.git#branch=main'
 
+# Benchmarks are OFF by default, so this recipe turns them on for the
+# configured preset regardless of which preset is selected. Requires the
+# preset to be configured already (see `just preset=<name> configure`).
 [group('misc')]
-bench: build
+[doc('Run the throughput benchmark (enables benchmarks for the preset)')]
+bench:
+    cmake -S . -B build/{{ preset }} -DCINDER_BUILD_BENCHMARKS=ON
+    cmake --build --preset {{ preset }} -j{{ jobs }}
     ./build/{{ preset }}/bin/cinder_throughput_bench {{ args }}
 
 [group('misc')]
