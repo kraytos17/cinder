@@ -120,6 +120,15 @@ namespace cinder {
             maintenance.clear();
             resizer.join();
 
+            // Grow before the liveness checks: the churn above ends at 8192
+            // bytes with a store that may hold more live data, so a fresh put
+            // can be immediately evicted again (LFU evicts the min-frequency
+            // entry, which can be the just-written key when it is uniquely
+            // minimal — legitimate cache behavior, and putVersioned correctly
+            // reports ok). Growth never evicts, so the post-condition below is
+            // timing-independent.
+            store.setCapacity(1 << 20);
+
             // Post-conditions: the store must still be functional, not wedged or
             // corrupted. A race that corrupted the list/index would typically surface
             // as a crash or a bogus size under TSan; this asserts liveness too.
