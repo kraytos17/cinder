@@ -78,7 +78,7 @@ if(CINDER_ENABLE_GRPC)
     target_link_libraries(cinder_integration_tests PRIVATE cinder_proto grpc++)
 endif()
 gtest_discover_tests(cinder_integration_tests
-    PROPERTIES LABELS "integration"
+    PROPERTIES LABELS "integration" TIMEOUT "300"
     DISCOVERY_TIMEOUT 60
 )
 

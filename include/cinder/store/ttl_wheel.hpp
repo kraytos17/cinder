@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <string_view>
 #include <unordered_set>

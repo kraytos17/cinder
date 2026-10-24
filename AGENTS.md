@@ -89,7 +89,9 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   `just grpc-test` for `debug-grpc` builds.
   Integration tests `fork`+`execl` real `cinderd` processes via `spawnNode`
   (up to 3 per test), but an idle daemon is only ~2 MB RSS, so parallel
-  integration runs are bounded by fd/cpu contention, not memory.
+  integration runs are bounded by fd/cpu contention, not memory. Every
+  integration test has a 300s ctest `TIMEOUT`, so a hung test fails fast
+  instead of burning the CI job.
 * Fuzz: `just fuzz-test` (10s per target: protocol_decode gossip_parse wal
   snapshot anti_entropy store_put http_parse redirect_parse),
   `just fuzz-long` (5min), coverage/minimize/report recipes; corpus under
