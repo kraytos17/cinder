@@ -217,8 +217,16 @@ namespace cinder::net {
                 }
             } else if (ec == asio::error::no_descriptors) {
                 CINDER_WARN(("accept EMFILE, retrying in 100ms"));
+                // Prune dead connections now: sockets already closed by
+                // closeConnection free their fds, but the shared_ptrs in
+                // connections_ keep the objects (and the counter) alive until
+                // the next successful accept sweeps them. Reap here so the
+                // retry has a chance and the counter reflects reality.
+                std::erase_if(connections_, [](const std::shared_ptr<TcpConnection>& c) static {
+                    return !c->isAlive();
+                });
+
                 emfile_timer_.expires_after(std::chrono::milliseconds(100));
-                std::weak_ptr<std::atomic<size_t>> weak;
                 emfile_timer_.async_wait(
                     asio::bind_executor(strand_, [this](std::error_code timer_ec) {
                     if (!timer_ec && !stopping_ && acceptor_.is_open()) {

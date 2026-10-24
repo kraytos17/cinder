@@ -34,6 +34,11 @@ namespace cinder {
     }
 
     void LfuStore::evictOne() {
+        // min_freq_ may lag if buckets drained without advancing it; resync
+        // before evicting so we always make progress when the list is
+        // non-empty. Without this, evictIfNeeded's while loop spins forever
+        // holding the mutex when min_freq_ points at a missing bucket.
+        advanceMinFreq();
         auto bucket_it = freq_buckets_.find(min_freq_);
         if (bucket_it == freq_buckets_.end() || bucket_it->second.empty()) {
             return;
@@ -52,7 +57,7 @@ namespace cinder {
         vec.pop_back();
         if (vec.empty()) {
             freq_buckets_.erase(bucket_it);
-            min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
+            advanceMinFreq();
         }
 
         current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
@@ -69,8 +74,8 @@ namespace cinder {
         removeFromFreqBucket(it, old_freq);
         it->freq_index = freq_buckets_[new_freq].size();
         freq_buckets_[new_freq].push_back(it);
-        if (old_freq == min_freq_ && freq_buckets_[old_freq].empty()) {
-            ++min_freq_;
+        if (old_freq == min_freq_ && !freq_buckets_.contains(old_freq)) {
+            advanceMinFreq();
         }
     }
 
@@ -96,8 +101,20 @@ namespace cinder {
         if (vec.empty()) {
             freq_buckets_.erase(bucket_it);
             if (freq == min_freq_) {
-                min_freq_ = freq_buckets_.empty() ? 1 : freq_buckets_.begin()->first;
+                advanceMinFreq();
             }
+        }
+    }
+
+    void LfuStore::advanceMinFreq() {
+        // Frequencies only increase, so the minimum is non-decreasing; probe
+        // upward past gaps left by drained buckets. freq_buckets_ is an
+        // unordered_map, so begin()->first is arbitrary and must NOT be used.
+        while (!freq_buckets_.empty() && !freq_buckets_.contains(min_freq_)) {
+            ++min_freq_;
+        }
+        if (freq_buckets_.empty()) {
+            min_freq_ = 1;
         }
     }
 } // namespace cinder

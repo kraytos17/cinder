@@ -188,13 +188,16 @@ namespace cinder::net {
             return;
         }
 
-        // Broken pipe / connection reset / operation aborted are transient — peers
-        // closing or node shutdown. Normal lifecycle closes (drained, idle timeout,
-        // server shutdown) are expected too. Log those at debug, real failures at warn.
+        // Broken pipe / connection reset / EOF / operation aborted are
+        // transient — peers closing or node shutdown. Normal lifecycle closes
+        // (drained, idle timeout, server shutdown) are expected too. Log those
+        // at debug, real failures at warn.
         bool transient = ec
             == asio::error::broken_pipe
             || ec
             == asio::error::connection_reset
+            || ec
+            == asio::error::eof
             || ec
             == asio::error::operation_aborted
             || std::string_view(reason)
@@ -232,6 +235,7 @@ namespace cinder::net {
                 buffer(read_buf_->data(), K_FRAME_HEADER_SIZE),
                 asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
                 if (ec) {
+                    closeConnection("peer closed", ec);
                     return;
                 }
                 onHeader(ec, K_FRAME_HEADER_SIZE);
@@ -245,6 +249,7 @@ namespace cinder::net {
             buffer(read_buf_->data(), K_FRAME_HEADER_SIZE),
             asio::bind_executor(strand_, [this, self](std::error_code ec, size_t) {
             if (ec) {
+                closeConnection("peer closed", ec);
                 return;
             }
             onHeader(ec, K_FRAME_HEADER_SIZE);
@@ -255,6 +260,7 @@ namespace cinder::net {
     void TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
         Span span("tcp.onHeader");
         if (ec) {
+            closeConnection("peer closed", ec);
             return;
         }
 
@@ -324,6 +330,7 @@ namespace cinder::net {
     void TcpConnection::onPayload(std::error_code ec, size_t bytes) {
         setReading(false);
         if (ec) {
+            closeConnection("peer closed", ec);
             return;
         }
 

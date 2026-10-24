@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <functional>
@@ -122,20 +123,24 @@ namespace cinder {
         }
 
         void expireSlot(std::move_only_function<void(Node&)>& on_expired) {
-            // Walk the intrusive list in the current slot. The callback may
-            // re-insert the node it was handed (EvictionStoreBase::evictExpired
-            // re-schedules an entry that fired early due to wheel wrap or
-            // sub-second drift), which rewrites that node's links and can move
-            // it to another slot. A pre-captured `next` would then be stale --
-            // null, once the node had been unlinked and re-linked -- so the walk
-            // re-reads the head from the sentinel each iteration. Every visited
-            // node is unlinked first, so it cannot be revisited within this pass
-            // and the loop terminates.
+            // Drain the current slot into a local batch first, then invoke the
+            // callback per node. The callback may re-insert the node it was
+            // handed (EvictionStoreBase::evictExpired re-schedules an entry
+            // that fired early due to wheel wrap or sub-second drift),
+            // including back into this same slot. Processing a live intrusive
+            // walk would then either revisit it forever (if re-reading the
+            // head) or chase a stale `next` (if pre-captured before the
+            // callback rewrote the links). Draining first makes re-inserts
+            // land in the wheel for a future tick and guarantees termination.
             auto* sentinel = &wheel_[cursor_];
+            std::vector<Node*> batch;
             while (sentinel->wheel_next != sentinel) {
                 auto* node = sentinel->wheel_next;
                 unlink(node);
-                on_expired(*static_cast<Node*>(node));
+                batch.push_back(static_cast<Node*>(node));
+            }
+            for (auto* node : batch) {
+                on_expired(*node);
             }
         }
 

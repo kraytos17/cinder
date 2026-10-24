@@ -101,6 +101,14 @@ namespace cinder {
                 self.applyExisting(node, std::move(entry));
                 current_bytes_ += Derived::nodeSize(*node);
                 evictIfNeeded();
+                // evictIfNeeded may have evicted this very node (LFU evicts the
+                // min-frequency entry, which can be the just-written one when
+                // it is uniquely minimal). `node` would then dangle — re-lookup
+                // and skip the wheel/WAL update if it is gone.
+                if (self.index_.find(key) == self.index_.end()) {
+                    return ok();
+                }
+
                 updateWheel(node);
                 writeWal(key);
                 if (metrics_) {
@@ -126,6 +134,13 @@ namespace cinder {
             auto new_it = self.insertNew(key, std::move(entry));
             current_bytes_ += entry_size;
             evictIfNeeded();
+            // Same self-eviction hazard as above: the new node starts at freq 1
+            // (the minimum), so under capacity pressure evictIfNeeded can take
+            // it right back. Re-lookup before touching the iterator.
+            if (self.index_.find(key) == self.index_.end()) {
+                return ok();
+            }
+
             updateWheel(new_it);
             writeWal(key);
             if (metrics_) {

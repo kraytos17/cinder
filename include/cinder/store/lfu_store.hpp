@@ -64,6 +64,7 @@ namespace cinder {
         void incrementFreq(ListIt it);
         void removeFromFreqBucket(ListIt it);
         void removeFromFreqBucket(ListIt it, size_t freq);
+        void advanceMinFreq();
 
         mutable std::shared_mutex mutex_;
         std::list<LfuNode, SlabAllocator<LfuNode>> list_;
