@@ -90,10 +90,16 @@ namespace cinder {
         // same divergent buckets. Best-effort: transport failures only log.
         void runRound(int replica_factor);
 
-        // Protocol handlers — called by TcpConnection::handleRequest.
+        // Protocol handlers — called by TcpConnection::handleRequest, always
+        // on that connection's strand.
         // onDigestRequest: receives initiator's digest, compares, responds with
         //   divergent bucket IDs + this node's entries for those buckets.
         // onSyncRequest: receives entries for divergent buckets, applies via LWW.
+        // Contract: `respond` is always invoked synchronously, before return.
+        // TcpConnection captures raw `this` in the callback and assumes
+        // strand confinement for sendResponse/maybeRead, so any future change
+        // that defers the callback (post, async store access) must switch to
+        // shared_from_this capture and re-enter via the connection's strand.
         void onDigestRequest(
             const NodeId& from,
             const net::Request& req,

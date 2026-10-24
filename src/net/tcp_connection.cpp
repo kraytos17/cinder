@@ -1,6 +1,7 @@
 #include "cinder/net/tcp_connection.hpp"
 
 #include <asio.hpp>
+#include <cassert>
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
@@ -417,6 +418,10 @@ namespace cinder::net {
     }
 
     void TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
+        // Entire request-handling chain (including the AntiEntropyManager
+        // callbacks, which respond synchronously) runs here. All of
+        // sendResponse/maybeRead assume strand confinement.
+        assert(strand_.running_in_this_thread());
         pending_opcode_ = req.opcode;
         request_start_ = std::chrono::steady_clock::now();
 
