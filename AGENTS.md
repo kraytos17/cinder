@@ -125,11 +125,28 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   `cmake --build build/ci-gcc --target cppcheck` (see `suppressions/cppcheck.supp`).
 * Repo `lint` target = `check-format` + `cppcheck` only. There is **no cpplint**
   target or binary in this repo — do not invent one.
-* CI jobs (`.github/workflows/ci.yml`): `build-image` → `build-test` (6 presets:
-  debug, debug-tls, release, debug-clang, debug-tls-clang, release-clang; each
-  runs unit+sim+cli+integration with `-j$(nproc)`) → `feature-flags`
-  (tls-grpc*) → `sanitize` (ci-gcc) → `tsan` → `lint` → `codeql` → `ci-success`
-  gate. Markdown/docs-only changes skip CI (`paths-ignore`).
+* Pre-commit hook (catches the cheap half of the lint gate before push):
+  `just hooks-install` sets repo-local `core.hooksPath=.githooks`
+  (`just hooks-run` runs the same checks manually). The hook checks staged
+  files only: whitespace errors (`git diff --check`, `*.md` excluded so
+  hard-breaks pass), clang-format `--dry-run` on C++ blobs, YAML syntax on
+  staged workflows, and the ci.yml/ci-skip.yaml trigger-paths sync. Slow checks
+  (tidy build, cppcheck, actionlint, tests) stay in `just verify` and CI — the
+  hook is local-only by design (nothing is staged in a fresh checkout).
+  Bypass with `git commit --no-verify`; CI (toolchain image's clang-format) is
+  the source of truth on version skew.
+* CI jobs (`.github/workflows/ci.yml`): `build-image` → `fetch-deps` (×2: union
+  dep seed per family — the **sole writer** per `fetchcontent-<family>-*` key) +
+  `build-test` (7 presets: debug, debug-tls, release, debug-clang,
+  debug-tls-clang, release-clang, asan-clang; each runs unit+sim+cli+integration
+  with `-j$(nproc)`) → `feature-flags` (tls-grpc*) → `sanitize` (ci-gcc) →
+  `tsan` → `lint` → `codeql` → `ci-success` gate. Build jobs restore the
+  FetchContent cache **read-only** with a family-prefix `restore-keys` fallback
+  (a new `CMakeLists.txt` hash reuses previous deps); parallel jobs sharing one
+  save key raced (`Unable to reserve cache`), hence the single writer.
+  `SCCACHE_GHA_ENABLED=true` is set workflow-wide — without it the installed
+  sccache writes to ephemeral disk and every job compiles cold. Markdown/docs-only
+  changes skip CI (`paths-ignore`).
 
 ## Gotchas for agents
 

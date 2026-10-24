@@ -1,8 +1,15 @@
 #include "cinder/node/replication_manager.hpp"
 
+#include <asio/awaitable.hpp>
+#include <asio/co_spawn.hpp>
+#include <asio/detached.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
+#include <asio/system_executor.hpp>
+#include <asio/use_awaitable.hpp>
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <utility>
 
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/tracing.hpp"
@@ -23,6 +30,110 @@ namespace cinder {
                 h *= 1'099'511'628'211ULL;
             }
             return h;
+        }
+
+        // Reduce progress shared by the inline drain and (if needed) the async
+        // tail. Only one phase reads it at a time, handed off via co_spawn, so
+        // no lock is needed. Named here (not a local struct) to keep the tail
+        // coroutine frame free of extra no-linkage member types.
+        struct FanOutDrain {
+            bool fired = false;
+            size_t seen = 0;
+        };
+
+        template <typename Result>
+        using FanOutChannel =
+            asio::experimental::concurrent_channel<void(asio::error_code, std::size_t, Result)>;
+
+        // Generic quorum fan-out. Launches N sends, then reduces completions
+        // through a channel, so the reducer is single-consumer — no locks, and
+        // "fire exactly once" is a plain bool. The loop drains ALL N
+        // completions (not just up to the decision): late arrivals still run
+        // their side effects, exactly as the old per-callback code did, and
+        // draining guarantees no transport callback outlives the operation.
+        //
+        // Two phases. The INLINE drain runs first on the caller's thread, so
+        // fully synchronous transports complete synchronously: on_done fires
+        // before this function returns, exactly as before. If any completion
+        // is still outstanding, a detached tail coroutine drains the rest on
+        // the system thread pool. The handoff is safe: the inline drain
+        // happens-before co_spawn, and only one phase reads shared state.
+        //
+        // Contract: every launched send reports exactly once (all Transport
+        // implementations always invoke their callback). Capacity N provably
+        // fits N single-shot senders, so try_send cannot drop.
+        template <
+            typename Result,
+            typename SendAll,
+            typename OnEach,
+            typename ShouldFire,
+            typename Fire,
+            typename Fail
+        >
+        void fanOutQuorum(
+            size_t n,
+            SendAll&& send_all,
+            OnEach&& on_each,
+            ShouldFire&& should_fire,
+            Fire&& fire,
+            Fail&& fail
+        ) {
+            auto chan = std::make_shared<FanOutChannel<Result>>(asio::system_executor{}, n);
+            auto drain = std::make_shared<FanOutDrain>();
+            send_all([chan](std::size_t i, Result r) {
+                (void)chan->try_send(asio::error_code{}, i, std::move(r));
+            });
+
+            // Phase 1: inline drain on the caller thread. try_receive unlocks
+            // the channel before invoking the handler, so running user code
+            // here cannot deadlock against the channel.
+            while (drain->seen < n) {
+                bool got = chan->try_receive([&](asio::error_code, std::size_t idx, Result r) {
+                    ++drain->seen;
+                    on_each(idx, std::move(r), !drain->fired);
+                    if (!drain->fired && should_fire()) {
+                        drain->fired = true;
+                        fire();
+                    }
+                });
+                if (!got) {
+                    break;
+                }
+            }
+            if (drain->seen == n) {
+                return;
+            }
+
+            // Phase 2: detached tail for outstanding completions. Owns copies
+            // of the closures (init-capture), so nothing dangles after return.
+            asio::co_spawn(
+                asio::system_executor{},
+                [chan,
+                 drain,
+                 n,
+                 on_each = std::forward<OnEach>(on_each),
+                 should_fire = std::forward<ShouldFire>(should_fire),
+                 fire = std::forward<Fire>(fire),
+                 fail = std::forward<Fail>(fail)]() mutable -> asio::awaitable<void> {
+                try {
+                    for (; drain->seen < n; ++drain->seen) {
+                        auto [idx, res] = co_await chan->async_receive(asio::use_awaitable);
+                        on_each(idx, std::move(res), !drain->fired);
+                        if (!drain->fired && should_fire()) {
+                            drain->fired = true;
+                            fire();
+                        }
+                    }
+                } catch (...) {
+                    if (!drain->fired) {
+                        drain->fired = true;
+                        fail();
+                    }
+                }
+                co_return;
+            },
+                asio::detached
+            );
         }
     } // namespace
 
@@ -128,85 +239,87 @@ namespace cinder {
 
         size_t total = replica_nodes.size() + 1;
         size_t w = total / 2 + 1;
-        auto state = std::make_shared<QuorumState>();
-
-        state->done = std::make_shared<WriteCallback>(std::move(on_done));
-        state->acks = 1; // local write
-        state->pending = replica_nodes.size();
-        for (const auto& node : replica_nodes) {
-            transport_.sendAsync(node, req, [this, state, w, node, req](Result<void> r) {
-                if (!r.has_value()) {
-                    CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
-                    if (metrics_) {
-                        metrics_->replicationMetrics().replica_unreachable.fetch_add(
-                            1,
-                            std::memory_order_relaxed
-                        );
-                    }
-                    enqueueHint(node, req);
-                }
-
-                bool succeed = false;
-                bool fail = false;
-                {
-                    std::scoped_lock lock(state->mu);
-                    if (r.has_value()) {
-                        ++state->acks;
-                    }
-
-                    --state->pending;
-                    if (!state->decided) {
-                        if (state->acks >= w) {
-                            state->decided = true;
-                            succeed = true;
-                        } else if (state->pending == 0) {
-                            state->decided = true;
-                            fail = true;
-                        }
-                    }
-                }
-
-                if (succeed) {
-                    Span ok_span("replication.write.quorum.ok", req.span_id);
-                    CINDER_DEBUG("quorum write succeeded", {"key", req.key}, {"acks", state->acks});
-                    if (metrics_) {
-                        metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
-                            1,
-                            std::memory_order_relaxed
-                        );
-                    }
-                    (*state->done)(ok());
-                } else if (fail) {
-                    Span fail_span("replication.write.quorum.fail", req.span_id);
-                    CINDER_WARN(
-                        "quorum write failed",
-                        {"key", req.key},
-                        {"acks", state->acks},
-                        {"needed", w}
-                    );
-                    if (metrics_) {
-                        metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
-                            1,
-                            std::memory_order_relaxed
-                        );
-                    }
-                    (*state->done)(err(Error(Errc::NotReady, "quorum not reached")));
-                }
-            });
+        if (replica_nodes.empty()) {
+            // W == 1: the local ack suffices.
+            on_done(ok());
+            return;
         }
-        // No replicas: W == 1, the local ack suffices.
-        bool no_replicas_ok = false;
-        {
-            std::scoped_lock lock(state->mu);
-            if (state->pending == 0 && !state->decided) {
-                state->decided = true;
-                no_replicas_ok = true;
+
+        // Single-consumer quorum reduce: every completion (including stragglers
+        // after the decision) enqueues hints for failures, exactly as the old
+        // per-callback code did. on_done fires once, at the decision. All state
+        // below lives in the coroutine frame -- resumptions serialize through
+        // the channel, so no mutex is needed.
+        // Single-consumer quorum reduce: every completion (including stragglers
+        // after the decision) enqueues hints for failures, exactly as the old
+        // per-callback code did. on_done fires once, at the decision. State is
+        // heap-owned so the async tail (if any) cannot dangle; the inline and
+        // tail phases never read it concurrently.
+        struct WriteQuorum {
+            std::vector<NodeId> replicas;
+            net::Request req;
+            WriteCallback on_done;
+            std::string key;
+            size_t acks = 1; // local write
+            size_t pending = 0;
+            size_t w = 0;
+        };
+
+        auto st = std::make_shared<WriteQuorum>();
+        st->replicas = replica_nodes;
+        st->req = std::move(req);
+        st->on_done = std::move(on_done);
+        st->key = key;
+        st->pending = st->replicas.size();
+        st->w = w;
+        fanOutQuorum<Result<void>>(st->replicas.size(), [this, st](auto report) {
+            for (size_t i = 0; i < st->replicas.size(); ++i) {
+                transport_.sendAsync(st->replicas[i], st->req, [report, i](Result<void> r) mutable {
+                    report(i, std::move(r));
+                });
             }
-        }
-
-        if (no_replicas_ok) {
-            (*state->done)(ok());
-        }
+        }, [this, st](std::size_t i, Result<void> r, bool active) {
+            if (!r.has_value()) {
+                CINDER_WARN("replica unreachable", {"node", st->replicas[i]}, {"key", st->key});
+                if (metrics_) {
+                    metrics_->replicationMetrics().replica_unreachable.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+                enqueueHint(st->replicas[i], st->req);
+            } else if (active) {
+                ++st->acks;
+            }
+            --st->pending;
+        }, [st]() -> bool { return st->acks >= st->w || st->pending == 0; }, [this, st] {
+            if (st->acks >= st->w) {
+                Span ok_span("replication.write.quorum.ok");
+                CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});
+                if (metrics_) {
+                    metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+                st->on_done(ok());
+            } else {
+                Span fail_span("replication.write.quorum.fail");
+                CINDER_WARN(
+                    "quorum write failed",
+                    {"key", st->key},
+                    {"acks", st->acks},
+                    {"needed", st->w}
+                );
+                if (metrics_) {
+                    metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+                st->on_done(err(Error(Errc::NotReady, "quorum not reached")));
+            }
+        }, [st] { st->on_done(err(Error(Errc::NotReady, "quorum fan-out failed"))); });
     }
 
     void ReplicationManager::readAsync(
@@ -244,108 +357,113 @@ namespace cinder {
             metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
         }
 
-        auto state = std::make_shared<ReadQuorumState>();
-        state->done = std::make_shared<ReadCallback>(std::move(on_done));
-        state->replicas = replica_nodes;
-        state->pending = replica_nodes.size();
+        // Single-consumer LWW reduce: best_* is a compound maximum updated by
+        // one reader at a time, so no mutex is needed. Post-decision arrivals
+        // are ignored (as the old early-return did); the loop still drains so
+        // no transport callback outlives the operation. Heap-owned for the
+        // async tail.
+        struct ReadQuorum {
+            std::vector<NodeId> replicas;
+            net::Request req;
+            ReadCallback on_done;
+            std::string key;
+            size_t r = 0;
+            Version best_version = 0;
+            uint64_t best_writer_hash = 0;
+            std::optional<VersionedEntry> best_entry;
+            bool needs_repair = false;
+            size_t acks = 0;
+            size_t pending = 0;
+        };
+
+        auto st = std::make_shared<ReadQuorum>();
+        st->replicas = replica_nodes;
+        st->req = std::move(req);
+        st->on_done = std::move(on_done);
+        st->key = key;
+        st->r = R;
+        st->acks = local_entry.has_value() ? 1 : 0;
+        st->pending = st->replicas.size();
         if (local_entry.has_value()) {
-            state->acks = 1;
-            state->best_version = local_entry->version();
-            state->best_writer_hash = local_entry->writer_node_hash;
-            state->best_entry = std::move(*local_entry);
+            st->best_version = local_entry->version();
+            st->best_writer_hash = local_entry->writer_node_hash;
+            st->best_entry = std::move(*local_entry);
         }
-        for (const auto& node : replica_nodes) {
-            transport_
-                .sendRequestAsync(node, req, [this, key, node, state, R](Result<net::Response> r) {
-                bool decided = false;
-                std::optional<VersionedEntry> result;
-                bool needs_repair = false;
-                {
-                    std::scoped_lock lock(state->mu);
-                    if (state->decided) {
-                        return;
-                    }
-                    if (r.has_value() && r->status == Errc::OK && r->version != 0) {
-                        ++state->acks;
-                        if (r->version
-                            > state->best_version
-                            || (r->version
-                                == state->best_version
-                                && r->writer_node_hash
-                                > state->best_writer_hash)) {
-                            state->needs_repair = true;
-                            state->best_version = r->version;
-                            state->best_writer_hash = r->writer_node_hash;
 
-                            VersionedEntry entry;
-                            entry.value = std::move(*r->value);
-                            entry.setVersion(r->version);
-                            entry.writer_node_hash = r->writer_node_hash;
-                            if (r->expires_at.has_value()) {
-                                entry.setHasTtl(true);
-                                entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
-                            }
-                            state->best_entry = std::move(entry);
-                        } else if (
-                            r->version
-                            != state->best_version
-                            || r->writer_node_hash
-                            != state->best_writer_hash
-                        ) {
-                            state->needs_repair = true;
-                        }
-                    } else if (r.has_value() && r->status == Errc::NotFound) {
-                        // Replica doesn't have the key — stale, needs repair.
-                        state->needs_repair = true;
-                    }
+        fanOutQuorum<Result<net::Response>>(st->replicas.size(), [this, st](auto report) {
+            for (size_t i = 0; i < st->replicas.size(); ++i) {
+                transport_.sendRequestAsync(
+                    st->replicas[i],
+                    st->req,
+                    [report, i](Result<net::Response> r) mutable { report(i, std::move(r)); }
+                );
+            }
+        }, [this, st](std::size_t, Result<net::Response> r, bool active) {
+            if (!active) {
+                return;
+            }
+            if (r.has_value() && r->status == Errc::OK && r->version != 0) {
+                ++st->acks;
+                if (r->version
+                    > st->best_version
+                    || (r->version
+                        == st->best_version
+                        && r->writer_node_hash
+                        > st->best_writer_hash)) {
+                    st->needs_repair = true;
+                    st->best_version = r->version;
+                    st->best_writer_hash = r->writer_node_hash;
 
-                    --state->pending;
-                    if (state->acks >= R) {
-                        state->decided = true;
-                        decided = true;
-                    } else if (state->pending == 0) {
-                        state->decided = true;
-                        decided = true;
+                    VersionedEntry entry;
+                    entry.value = std::move(*r->value);
+                    entry.setVersion(r->version);
+                    entry.writer_node_hash = r->writer_node_hash;
+                    if (r->expires_at.has_value()) {
+                        entry.setHasTtl(true);
+                        entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
                     }
-
-                    if (decided) {
-                        // Snapshot the outcome; the winner entry is delivered
-                        // to the caller and used for repair fan-out below.
-                        needs_repair = state->needs_repair;
-                        if (state->best_entry.has_value()) {
-                            result = std::move(state->best_entry);
-                        }
-                    }
+                    st->best_entry = std::move(entry);
+                } else if (
+                    r->version != st->best_version || r->writer_node_hash != st->best_writer_hash
+                ) {
+                    st->needs_repair = true;
                 }
-
-                if (!decided) {
-                    return;
+            } else if (r.has_value() && r->status == Errc::NotFound) {
+                // Replica doesn't have the key — stale, needs repair.
+                st->needs_repair = true;
+            }
+            --st->pending;
+        }, [st]() -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st] {
+            std::optional<VersionedEntry> result;
+            if (st->best_entry.has_value()) {
+                result = std::move(st->best_entry);
+            }
+            if (result.has_value() && st->needs_repair) {
+                // Self-heal local store: if local was behind a replica, update it.
+                auto heal = local_.putVersioned(st->key, *result);
+                if (!heal.has_value()) {
+                    CINDER_DEBUG(
+                        "local self-heal skipped",
+                        {"key", st->key},
+                        {"reason", static_cast<int>(heal.error().code())}
+                    );
                 }
-                if (result.has_value() && needs_repair) {
-                    // Self-heal local store: if local was behind a replica, update it.
-                    auto heal = local_.putVersioned(key, *result);
-                    if (!heal.has_value()) {
-                        CINDER_DEBUG(
-                            "local self-heal skipped",
-                            {"key", key},
-                            {"reason", static_cast<int>(heal.error().code())}
-                        );
-                    }
-                    if (metrics_) {
-                        metrics_->replicationMetrics().read_repairs.fetch_add(
-                            1,
-                            std::memory_order_relaxed
-                        );
-                    }
-                    sendRepairFanOut(key, state->replicas, *result);
+                if (metrics_) {
+                    metrics_->replicationMetrics().read_repairs.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
                 }
-                if (result.has_value()) {
-                    (*state->done)(std::move(*result));
-                } else {
-                    (*state->done)(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
-                }
-            });
-        }
+                sendRepairFanOut(st->key, st->replicas, *result);
+            }
+            if (result.has_value()) {
+                st->on_done(std::move(*result));
+            } else {
+                st->on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+            }
+        }, [st] {
+            st->on_done(err<VersionedEntry>(Error(Errc::NotReady, "read fan-out failed")));
+        });
     }
 
     auto ReplicationManager::hintCount() const -> size_t {
@@ -401,9 +519,12 @@ namespace cinder {
         }
 
         auto now = clock_.now();
-        auto state = std::make_shared<ReplayState>();
-        state->done =
-            std::make_shared<ReplayCallback>([this, done = std::move(on_done)](size_t n) mutable {
+        std::vector<HintQueue::Hint> batch;
+        hints_.replay([&](const HintQueue::Hint& hint) { batch.push_back(hint); }, now);
+
+        // Wrap the user callback: report metrics, release the single-consumer
+        // guard, then deliver. Used for both the empty fast path and fan-out.
+        auto finish = [this, done = std::move(on_done)](size_t n) mutable {
             CINDER_INFO("replay completed", {"replayed", n});
             if (metrics_ && n > 0) {
                 metrics_->replicationMetrics().hints_replayed.fetch_add(
@@ -411,49 +532,43 @@ namespace cinder {
                     std::memory_order_relaxed
                 );
             }
+
             replaying_.store(false);
             done(n);
-        });
+        };
 
-        bool has_hints = false;
-        hints_.replay([&](const HintQueue::Hint& hint) {
-            has_hints = true;
-            {
-                std::scoped_lock lock(state->mu);
-                ++state->pending;
-            }
-
-            transport_.sendAsync(hint.target, hint.req, [this, hint, state](Result<void> r) {
-                if (r.has_value()) {
-                    hints_.remove(hint.target, hint.req);
-                }
-
-                bool finish = false;
-                size_t replayed = 0;
-                {
-                    std::scoped_lock lock(state->mu);
-                    if (r.has_value()) {
-                        ++state->replayed;
-                    }
-
-                    --state->pending;
-                    if (state->pending == 0 && !state->decided) {
-                        state->decided = true;
-                        finish = true;
-                        replayed = state->replayed;
-                    }
-                }
-
-                if (finish) {
-                    (*state->done)(replayed);
-                }
-            });
-        }, now);
-
-        // Only call on_done here if the queue was empty (no async callbacks to wait for).
-        // When hints exist, the sendAsync callbacks call on_done when all complete.
-        if (!has_hints) {
-            (*state->done)(0);
+        if (batch.empty()) {
+            finish(0);
+            return;
         }
+
+        struct HintReplay {
+            std::vector<HintQueue::Hint> batch;
+            ReplayCallback finish;
+            size_t pending = 0;
+            size_t replayed = 0;
+        };
+
+        auto st = std::make_shared<HintReplay>();
+        st->batch = std::move(batch);
+        st->finish = std::move(finish);
+        st->pending = st->batch.size();
+        fanOutQuorum<Result<void>>(st->batch.size(), [this, st](auto report) {
+            for (size_t i = 0; i < st->batch.size(); ++i) {
+                transport_.sendAsync(
+                    st->batch[i].target,
+                    st->batch[i].req,
+                    [report, i](Result<void> r) mutable { report(i, std::move(r)); }
+                );
+            }
+        }, [this, st](std::size_t i, Result<void> r, bool) {
+            if (r.has_value()) {
+                hints_.remove(st->batch[i].target, st->batch[i].req);
+                ++st->replayed;
+            }
+            --st->pending;
+        }, [st]() -> bool { return st->pending == 0; }, [st] { st->finish(st->replayed); }, [st] {
+            st->finish(0);
+        });
     }
 } // namespace cinder

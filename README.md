@@ -232,6 +232,7 @@ check: `CI Success`.
 | Job | What |
 |---|---|
 | Build CI image | Toolchain image build/push |
+| Fetch Deps (×2) | Seed per-family FetchContent caches, GCC + Clang (single writer per cache key) |
 | build-test (×7) | GCC/Clang debug, release, TLS, ASan+UBSan — unit/sim/cli |
 | Feature Flags (×2) | Release + TLS + gRPC, GCC and Clang |
 | Sanitizers (GCC) | ASan+UBSan (`ci-gcc`) — unit/sim/cli |
@@ -241,7 +242,12 @@ check: `CI Success`.
 
 - Same-repo PRs run the full matrix against their own image; fork PRs validate the Dockerfile only (no registry push) and skip the matrix.
 - Docs-only changes skip the matrix via `ci-skip.yaml`, which still reports `CI Success`.
-- Caches: per-family FetchContent archives + sccache; a new `CMakeLists.txt` hash cold-starts them.
+- Caches: per-family FetchContent sources seeded once by the Fetch Deps jobs
+  (sole writer per key — parallel builds used to race saving the same key);
+  consumers restore read-only with a family-prefix fallback, so a new
+  `CMakeLists.txt` hash reuses the previous deps instead of cold-starting.
+  sccache's GHA backend is enabled (`SCCACHE_GHA_ENABLED`), entries are
+  content-hashed so all jobs share one key space.
 
 ## Dependencies
 

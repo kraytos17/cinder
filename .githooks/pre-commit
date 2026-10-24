@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# Pre-commit hook: the fast, local half of the CI lint gate.
+#   0. `git diff --check` on staged files except *.md (whitespace errors;
+#      *.md excluded: trailing double-space is a legit Markdown hard break).
+#   1. clang-format --dry-run on STAGED C/C++ blobs (what `check-format` enforces).
+#   2. YAML syntax check on staged *.yml/*.yaml (catches workflow typos pre-push).
+#   3. ci.yml / ci-skip.yaml trigger-paths sync (documented invariant: the skip
+#      workflow must fire on exactly the paths the main workflow ignores).
+# Slow checks (inline clang-tidy build, cppcheck, actionlint, tests) stay in CI
+# and `just verify` — run that before pushing. Install with `just hooks-install`;
+# run manually with `just hooks-run`. This hook is local-only by design: CI runs
+# the real gates, not this script (nothing is staged in a fresh checkout).
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+fail=0
+
+# --- 0. whitespace errors (excludes markdown hard-breaks) ---
+if ! git diff --cached --check -- . ':!*.md'; then
+    fail=1
+    echo "pre-commit: fix the whitespace errors above (or: git commit --no-verify)" >&2
+fi
+
+# --- collect staged files once, classify by extension ---
+staged_cpp=()
+staged_yml=()
+check_sync=0
+while IFS= read -r -d '' f; do
+    case "$f" in
+        *.cpp | *.hpp | *.h | *.c)
+            staged_cpp+=("$f")
+            ;;
+        *.yml | *.yaml)
+            staged_yml+=("$f")
+            ;;
+    esac
+    if [[ "$f" == .github/workflows/ci.yml || "$f" == .github/workflows/ci-skip.yaml ]]; then
+        check_sync=1
+    fi
+done < <(git diff --cached --name-only -z --diff-filter=ACMR)
+
+# --- 1. clang-format on the staged blob (not the worktree) ---
+if [ "${#staged_cpp[@]}" -gt 0 ]; then
+    CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
+    if ! command -v "$CLANG_FORMAT" >/dev/null 2>&1; then
+        echo "pre-commit: $CLANG_FORMAT not found — cannot check formatting." >&2
+        echo "  Install clang-format, or bypass with: git commit --no-verify" >&2
+        exit 1
+    fi
+    echo "pre-commit: clang-format $("$CLANG_FORMAT" --version) on ${#staged_cpp[@]} staged file(s)"
+    bad=()
+    for f in "${staged_cpp[@]}"; do
+        # --assume-filename lets clang-format find .clang-format and pick the
+        # language while reading the staged blob from stdin.
+        if ! git show ":$f" | "$CLANG_FORMAT" --dry-run --Werror --style=file \
+            --assume-filename="$REPO_ROOT/$f" >/dev/null 2>&1; then
+            bad+=("$f")
+        fi
+    done
+    if [ "${#bad[@]}" -gt 0 ]; then
+        fail=1
+        echo "pre-commit: clang-format would reformat ${#bad[@]} staged file(s):" >&2
+        for f in "${bad[@]}"; do
+            # In-place reformat would also touch unstaged hunks — warn when the
+            # worktree differs from the index (partial staging).
+            if git diff --quiet -- "$f"; then
+                echo "  $f" >&2
+            else
+                echo "  $f (has unstaged changes — in-place reformat will touch those too)" >&2
+            fi
+        done
+        echo "  Fix with: clang-format -i <files>  (or: just format)" >&2
+        echo "  then re-stage and commit again. CI is the source of truth if" >&2
+        echo "  your local clang-format version disagrees with the toolchain image." >&2
+    fi
+fi
+
+# --- 2. YAML syntax on staged workflows ---
+if [ "${#staged_yml[@]}" -gt 0 ]; then
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import yaml" 2>/dev/null; then
+        for f in "${staged_yml[@]}"; do
+            if ! git show ":$f" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
+                fail=1
+                echo "pre-commit: YAML syntax error in staged file: $f" >&2
+            fi
+        done
+    elif command -v ruby >/dev/null 2>&1; then
+        for f in "${staged_yml[@]}"; do
+            if ! git show ":$f" | ruby -ryaml -e "YAML.safe_load(STDIN.read)" 2>/dev/null; then
+                fail=1
+                echo "pre-commit: YAML syntax error in staged file: $f" >&2
+            fi
+        done
+    else
+        echo "pre-commit: note: neither pyyaml nor ruby found, skipping YAML syntax check" >&2
+    fi
+fi
+
+# --- 3. trigger-paths sync between the two workflows ---
+# Set of `- 'pattern'` list items under the top-level `on:` block. `branches:`
+# entries are inline (not list items) and `jobs:` lives outside `on:`, so the
+# sed range + grep isolates exactly the trigger paths in both files.
+list_trigger_paths() {
+    sed -n '/^on:/,/^[^ ]/p' | grep -oE "^ *- '[^']*'$" | sed -E "s/^ *- '//; s/'$//" | sort -u
+}
+if [ "$check_sync" -ne 0 ]; then
+    if ! diff <(git show ":.github/workflows/ci.yml" | list_trigger_paths) \
+        <(git show ":.github/workflows/ci-skip.yaml" | list_trigger_paths) >/dev/null; then
+        fail=1
+        echo "pre-commit: ci.yml paths-ignore != ci-skip.yaml paths — keep them in sync" >&2
+    fi
+fi
+
+if [ "$fail" -ne 0 ]; then
+    echo "pre-commit: FAILED — fix the above, re-stage, and retry (or: git commit --no-verify)" >&2
+    exit 1
+fi
+echo "pre-commit: OK (fast checks only — run \`just verify\` before pushing)"

@@ -18,6 +18,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SCCACHE_GHA_ENABLED: "true"
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -80,6 +83,37 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
+  fetch-deps:
+    name: Fetch dependencies (${{ matrix.family }})
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: tls-grpc
+            family: gcc
+          - preset: tls-grpc-clang
+            family: clang
+    runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore + seed FetchContent
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-${{ matrix.family }}-
+      - name: Configure (populate FetchContent)
+        run: cmake --preset ${{ matrix.preset }} -DCINDER_BUILD_BENCHMARKS=ON
+
+      - name: Report cache size
+        run: du -sh "${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}"
+
   build-test:
     needs: [build-image]
     if: needs.build-image.outputs.image-pushed == 'true'
@@ -115,25 +149,21 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
-
-      # FetchContent cache: exactly one key per compiler family. All 9 deps
-      # override BINARY_DIR into the build dir, so .cache holds only
-      # sources+stamps and is safe to share across presets of a family.
       - name: Restore FetchContent
-        id: fc-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
           key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-${{ matrix.family }}-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
       - name: Unit tests
         run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
@@ -145,15 +175,7 @@ jobs:
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
       - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
-
-      - name: Save FetchContent
-        if: always() && steps.fc-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
 
       - name: Upload test logs
         if: failure()
@@ -189,31 +211,24 @@ jobs:
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Restore FetchContent
-        id: fc-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
           key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-${{ matrix.family }}-
 
       - name: Configure (TLS + gRPC)
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
       - name: Unit tests
         run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
 
       - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
-
-      - name: Save FetchContent
-        if: always() && steps.fc-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
 
       - name: Upload test logs
         if: failure()
@@ -239,17 +254,18 @@ jobs:
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Restore FetchContent
-        id: fc-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
           key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-gcc-
 
       - name: Configure
         run: cmake --preset ci-gcc
 
       - name: Build
-        run: cmake --build --preset ci-gcc -j$(nproc)
+        run: cmake --build --preset ci-gcc -j"$(nproc)"
 
       - name: Unit tests
         run: ctest --preset ci-gcc -L unit --output-on-failure
@@ -261,15 +277,7 @@ jobs:
         run: ctest --preset ci-gcc -L cli --output-on-failure
 
       - name: Integration tests
-        run: ctest --preset ci-gcc -L integration --output-on-failure -j$(nproc)
-
-      - name: Save FetchContent
-        if: always() && steps.fc-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+        run: ctest --preset ci-gcc -L integration --output-on-failure -j"$(nproc)"
 
       - name: Upload test logs
         if: failure()
@@ -309,17 +317,18 @@ jobs:
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Restore FetchContent
-        id: fc-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
           key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-${{ matrix.family }}-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
       - name: Unit tests
         run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
@@ -331,15 +340,7 @@ jobs:
         run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
 
       - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j$(nproc)
-
-      - name: Save FetchContent
-        if: always() && steps.fc-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
 
       - name: Upload test logs
         if: failure()
@@ -367,14 +368,24 @@ jobs:
       - name: Restore FetchContent (Clang)
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-clang
           key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-clang-
 
       - name: Restore FetchContent (GCC)
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
           key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-gcc-
+
+      - name: Check hook syntax
+        run: bash -n .githooks/pre-commit
+
+      - name: Lint workflows
+        run: actionlint
 
       - name: Configure (clang-tidy runs inline)
         run: just preset=ci configure
@@ -390,11 +401,6 @@ jobs:
 
       - name: cppcheck
         run: cmake --build build/ci-gcc --target cppcheck
-
-      # No Save step here: the restore above borrows the gcc-/clang- family
-      # caches written by the build jobs, and nothing restores a
-      # fetchcontent-lint-* key, so saving would upload ~2.2 GB that no job
-      # ever reads back.
 
   codeql:
     needs: [build-image]
@@ -422,11 +428,12 @@ jobs:
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
       - name: Restore FetchContent
-        id: fc-restore
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache
+          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
           key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            fetchcontent-gcc-
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -437,25 +444,17 @@ jobs:
         run: cmake --preset ${{ matrix.preset }}
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j$(nproc)
+        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
         with:
           category: "/variant:${{ matrix.preset }}"
 
-      - name: Save FetchContent
-        if: always() && steps.fc-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@v6
-        with:
-          path: ${{ github.workspace }}/.cache
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-
   ci-success:
     name: CI Success
     if: always()
-    needs: [build-image, build-test, feature-flags, sanitize, tsan, lint, codeql]
+    needs: [build-image, fetch-deps, build-test, feature-flags, sanitize, tsan, lint, codeql]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:

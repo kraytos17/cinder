@@ -295,6 +295,29 @@ cppcheck: build
 lint: build
     cmake --build build/{{ preset }} --target lint -j{{ jobs }}
 
+# Repo-local pre-commit hook (.githooks/pre-commit): clang-format --dry-run on
+# staged C++ files + YAML syntax on staged workflows. Catches the cheap half of
+# the CI lint gate before push; the slow half (tidy build, cppcheck, tests)
+# stays in `just verify`. Stored in core.hooksPath (absolute, per-clone local
+# config) so every checkout needs one `just hooks-install`.
+[group('lint')]
+[doc('Install the pre-commit hook (staged whitespace/format/YAML/sync checks).')]
+hooks-install:
+    git config core.hooksPath "$(git rev-parse --show-toplevel)/.githooks"
+    chmod +x .githooks/pre-commit
+    @echo "pre-commit hook installed (core.hooksPath=.githooks)"
+
+[group('lint')]
+[doc('Remove the pre-commit hook.')]
+hooks-uninstall:
+    git config --unset core.hooksPath || echo "core.hooksPath was not set"
+    @echo "pre-commit hook removed"
+
+[group('lint')]
+[doc('Run the pre-commit checks manually (same as the git hook).')]
+hooks-run:
+    ./.githooks/pre-commit
+
 [group('proto')]
 [doc('Lint the protobuf schema.')]
 proto-lint:

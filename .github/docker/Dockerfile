@@ -4,6 +4,7 @@ RUN pacman -Syu --noconfirm \
     && pacman -S --noconfirm --needed \
        gcc clang lld llvm compiler-rt \
        cmake ninja cppcheck openssl \
+       actionlint shellcheck \
        curl git \
     && pacman -Scc --noconfirm
 

@@ -3,8 +3,6 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
-#include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -87,44 +85,6 @@ namespace cinder {
 
         static constexpr size_t K_MAX_HINTS = 1024;
         static constexpr milliseconds K_HINT_TTL{30'000};
-
-        // Shared per-write quorum accounting (owned by the in-flight sendAsync
-        // callbacks; destroyed when the last one completes). Completion callbacks
-        // may run concurrently on different io-pool threads, so `mu` guards the
-        // counters and the single-shot `decided` transition; callbacks are invoked
-        // with `mu` released.
-        struct QuorumState {
-            std::mutex mu;
-            std::shared_ptr<WriteCallback> done;
-            size_t acks = 0;
-            size_t pending = 0;
-            bool decided = false;
-        };
-
-        // Shared per-read quorum accounting. `best_*` forms a compound LWW maximum
-        // updated by concurrent replica responses, so it is mutex-guarded rather
-        // than atomic. Same single-shot `decided` contract as QuorumState.
-        struct ReadQuorumState {
-            std::mutex mu;
-            std::shared_ptr<ReadCallback> done;
-            std::vector<NodeId> replicas;
-            Version best_version = 0;
-            uint64_t best_writer_hash = 0;
-            std::optional<VersionedEntry> best_entry;
-            size_t acks = 0;
-            size_t pending = 0;
-            bool decided = false;
-            bool needs_repair = false;
-        };
-
-        // Shared per-replay accounting across hint sendAsync callbacks.
-        struct ReplayState {
-            std::mutex mu;
-            std::shared_ptr<ReplayCallback> done;
-            size_t pending = 0;
-            size_t replayed = 0;
-            bool decided = false;
-        };
 
         void enqueueHint(const NodeId& target, const net::Request& req);
         void sendRepairFanOut(
