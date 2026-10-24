@@ -87,6 +87,8 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   `just test-integration` (12 files, kills stale `cinderd` first) → 24 tests,
   `just test-all` runs every binary with `--gtest_also_run_disabled_tests`,
   `just grpc-test` for `debug-grpc` builds.
+  `just verify` is the fast pre-push gate (format + cppcheck + unit + sim
+  + cli, no integration).
   Integration tests `fork`+`execl` real `cinderd` processes via `spawnNode`
   (up to 3 per test), but an idle daemon is only ~2 MB RSS, so parallel
   integration runs are bounded by fd/cpu contention, not memory. Every

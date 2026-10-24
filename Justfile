@@ -2,11 +2,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
 presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-gcc tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
+
 preset := "debug"
-# Parallel build jobs. Each unity TU for the template-heavy test/core targets
-# peaks around 700 MB of compiler RSS, so on a 16 GB machine 8 concurrent
-# jobs is near the ceiling once the page cache and linkers are counted.
-# Override per-invocation with `just jobs=N <recipe>` (e.g. `just jobs=4 build`).
 jobs := `nproc`
 args := ""
 
@@ -26,35 +23,53 @@ default:
     @just --list
 
 [group('build')]
+[doc('Configure the build dir for the current preset.')]
 configure:
     cmake --preset {{ preset }}
 
 [group('build')]
+[doc('Build the current preset.')]
 build:
     cmake --build --preset {{ preset }} -j{{ jobs }}
 
 [group('test')]
+[doc('Full suite for the current preset (unit+sim+cli+integration).')]
 test: build
     ctest --preset {{ preset }} --output-on-failure -j{{ jobs }} -- {{ args }}
 
+# Fast pre-push gate: format, static analysis, and every suite except
+# integration (integration is slow, spawns daemons, and parallel-flaky —
+# run it separately via test-integration before pushing).
+# Note: dependencies share this invocation's preset/jobs/args overrides.
 [group('test')]
+[doc('Fast pre-push gate: format, cppcheck, unit, sim, cli (no integration).')]
+verify: check-format cppcheck test-unit test-sim test-cli
+    @echo "VERIFY PASSED ({{ preset }}): format, cppcheck, unit, sim, cli"
+
+[group('test')]
+[doc('Run one label’s suite for the current preset (label = unit|sim|cli|integration).')]
 test-suite label: build
     ctest --preset {{ preset }} -L {{ label }} --output-on-failure -- {{ args }}
 
 [group('test')]
+[doc('Unit tests for the current preset.')]
 test-unit: (test-suite "unit")
 
 [group('test')]
+[doc('Sim tests for the current preset.')]
 test-sim: (test-suite "sim")
 
 [group('test')]
+[doc('CLI tests for the current preset.')]
 test-cli: (test-suite "cli")
 
 [group('test')]
+[doc('Integration tests (spawns real cinderd processes; kills stales first).')]
 test-integration: build kill-stale
     ctest --preset {{ preset }} -L integration --output-on-failure -j{{ jobs }} -- {{ args }}
 
 [group('test')]
+[doc('Run every test binary directly (also runs --gtest_also_run_disabled_tests).')]
 test-all: build kill-stale
     @just _run-bins "cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_sim_tests cinder_cli_tests cinder_integration_tests" {{ preset }}
     @echo ""
@@ -62,6 +77,7 @@ test-all: build kill-stale
     @echo "All test suites passed ({{ preset }})."
 
 [group('test')]
+[doc('Run unit + integration binaries against a gRPC-enabled build.')]
 grpc-test: build kill-stale
     @just _run-bins "cinder_unit_store_tests cinder_unit_ring_tests cinder_unit_net_tests cinder_unit_node_tests cinder_integration_tests" debug-grpc
     @echo ""
@@ -85,54 +101,67 @@ _run-bins bins dir:
     done
 
 [group('sanitizers')]
+[doc('Full suite under ASan+UBSan (GCC).')]
 asan-test:
     @just preset=asan test
 
 [group('sanitizers')]
+[doc('Full suite under TSan (GCC).')]
 tsan-test:
     @just preset=tsan test
 
 [group('sanitizers')]
+[doc('Full suite under TSan (Clang).')]
 tsan-clang-test:
     @just preset=tsan-clang test
 
 [group('sanitizers')]
+[doc('Full suite under UBSan only.')]
 ubsan-test:
     @just preset=ubsan test
 
 [group('sanitizers')]
+[doc('Full suite under ASan+UBSan (Clang).')]
 asan-clang-test:
     @just preset=asan-clang test
 
 [group('run')]
+[doc('Build and run cinderd for the current preset.')]
 run: build
     ./build/{{ preset }}/bin/cinderd {{ args }}
 
 [group('run')]
+[doc('Build and run cinder-cli for the current preset.')]
 run-cli: build
     ./build/{{ preset }}/bin/cinder-cli {{ args }}
 
 [group('run')]
+[doc('Build and run cinder-admin for the current preset.')]
 run-admin: build
     ./build/{{ preset }}/bin/cinder-admin {{ args }}
 
 [group('run')]
+[doc('Kill leftover cinderd processes from integration runs.')]
 kill-stale:
     pkill -x cinderd || echo "no stale cinderd processes"
 
 [group('presets')]
+[doc('Build with the debug-tls preset.')]
 debug-tls:
     just preset=debug-tls build
 
 [group('presets')]
+[doc('Build with the fast (unity) preset.')]
 fast:
     just preset=fast build
 
 [group('presets')]
+[doc('Run the CI workflow preset locally.')]
 ci:
     cmake --workflow --preset ci
 
 [group('presets')]
+[doc('Configure every preset (reports failures at the end, exits nonzero).')]
 configure-all:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -186,9 +215,11 @@ _fuzz-run duration label: fuzz-build
     echo "All fuzz targets passed ({{ label }})."
 
 [group('fuzz')]
+[doc('Run every fuzz target for 10s each.')]
 fuzz-test: (_fuzz-run "10" "10s")
 
 [group('fuzz')]
+[doc('Run every fuzz target for 5 minutes each.')]
 fuzz-long: (_fuzz-run "300" "5min")
 
 [private]
@@ -222,6 +253,7 @@ fuzz-coverage-report target: fuzz-coverage-build
     echo "Report: tests/fuzz/coverage/{{ target }}/html/index.html"
 
 [group('fuzz')]
+[doc('Collect coverage + minimize corpus for every fuzz target.')]
 fuzz-coverage-all: fuzz-coverage-build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -244,30 +276,37 @@ fuzz-coverage-all: fuzz-coverage-build
     echo "Coverage minimization complete."
 
 [group('lint')]
+[doc('Reformat all source files in place.')]
 format:
     cmake --build build/{{ preset }} --target format -j{{ jobs }}
 
 [group('lint')]
+[doc('Fail if any source file needs reformatting (CI lint gate uses this).')]
 check-format:
     cmake --build build/{{ preset }} --target check-format -j{{ jobs }}
 
 [group('lint')]
+[doc('Run cppcheck on the current preset.')]
 cppcheck: build
     cmake --build build/{{ preset }} --target cppcheck -j{{ jobs }}
 
 [group('lint')]
+[doc('check-format + cppcheck for the current preset.')]
 lint: build
     cmake --build build/{{ preset }} --target lint -j{{ jobs }}
 
 [group('proto')]
+[doc('Lint the protobuf schema.')]
 proto-lint:
     buf lint
 
 [group('proto')]
+[doc('Regenerate protobuf sources.')]
 proto-generate:
     buf generate
 
 [group('proto')]
+[doc('Check protobuf schema against main for breaking changes.')]
 proto-breaking:
     buf breaking --against '.git#branch=main'
 
@@ -282,18 +321,22 @@ bench:
     ./build/{{ preset }}/bin/cinder_throughput_bench {{ args }}
 
 [group('misc')]
+[doc('Install the current preset to the CMake prefix.')]
 install: build
     cmake --install build/{{ preset }}
 
 [group('misc')]
+[doc('Delete the current preset’s build dir.')]
 clean:
     rm -rf build/{{ preset }}
 
 [group('misc')]
+[doc('Delete all build dirs and the FetchContent cache.')]
 clean-all:
     rm -rf build/ .cache/
 
 [group('misc')]
+[doc('Print the effective preset, build dir, jobs, and preset list.')]
 info:
     echo "preset={{ preset }}"
     echo "build_dir=build/{{ preset }}"
