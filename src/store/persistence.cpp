@@ -155,9 +155,7 @@ namespace cinder {
             drainQueueLocked();
         }
 
-        size_t entry_count = 0;
-        store_.forEach([&](const std::string&, const VersionedEntry&) { ++entry_count; });
-
+        size_t entry_count = store_.liveEntries().size();
         auto result = createSnapshot();
         if (!result.has_value()) {
             return err(result.error());

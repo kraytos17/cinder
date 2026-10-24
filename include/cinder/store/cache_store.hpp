@@ -5,6 +5,8 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/status.hpp"
@@ -59,6 +61,14 @@ namespace cinder {
         virtual void forEach(
             std::move_only_function<void(const std::string& key, const VersionedEntry&)>
         ) const = 0;
+
+        // Snapshot accessor: point-in-time copy of all live entries (expired
+        // entries skipped), taken under the store lock and returned by value.
+        // Prefer this over forEach when the consumer needs filtering, early
+        // exit, or accumulation — a plain range-for replaces the callback.
+        // Same contract as forEach: the store may be mutated freely while
+        // iterating the returned vector.
+        virtual auto liveEntries() const -> std::vector<std::pair<std::string, VersionedEntry>> = 0;
 
         // Set the persistence manager for WAL writes. Default no-op for stores
         // that don't support persistence (e.g. simulation stores).

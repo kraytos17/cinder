@@ -329,9 +329,7 @@ namespace cinder {
             return next_version_++;
         }
 
-        void forEach(
-            std::move_only_function<void(const std::string&, const VersionedEntry&)> fn
-        ) const final {
+        auto liveEntries() const -> std::vector<std::pair<std::string, VersionedEntry>> final {
             const Derived& self = d();
             std::vector<std::pair<std::string, VersionedEntry>> items;
             {
@@ -347,8 +345,13 @@ namespace cinder {
                     items.emplace_back(Derived::nodeKey(node), Derived::nodeEntry(node));
                 }
             }
+            return items;
+        }
 
-            for (const auto& [key, entry] : items) {
+        void forEach(
+            std::move_only_function<void(const std::string&, const VersionedEntry&)> fn
+        ) const final {
+            for (const auto& [key, entry] : liveEntries()) {
                 fn(key, entry);
             }
         }

@@ -53,10 +53,10 @@ namespace cinder {
 
         size_t deferred_count = 0;
         auto now = clock_.now();
-        store_.forEach([&](const std::string& key, const VersionedEntry& entry) {
+        for (const auto& [key, entry] : store_.liveEntries()) {
             auto desired = ring_.getNodes(key, replica_factor_);
             if (desired.empty()) {
-                return;
+                continue;
             }
 
             bool staying = std::find(desired.begin(), desired.end(), self_) != desired.end();
@@ -71,7 +71,7 @@ namespace cinder {
                     }
                     copies.push_back({key, entry, owner});
                 }
-                return;
+                continue;
             }
 
             // Leaving the set: migrate to the new owners; drop locally only after
@@ -79,7 +79,7 @@ namespace cinder {
             bool primary_quarantined = table_.isQuarantined(desired[0], now, quarantine_interval_);
             if (primary_quarantined) {
                 ++deferred_count;
-                return;
+                continue;
             }
 
             migrates.push_back({key, entry, desired[0]});
@@ -90,7 +90,7 @@ namespace cinder {
                 }
                 copies.push_back({key, entry, desired[i]});
             }
-        });
+        }
 
         // Send after the snapshot has been collected and the lock released;
         // the remove callback then acquires the mutex cleanly regardless of
