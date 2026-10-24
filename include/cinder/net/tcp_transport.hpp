@@ -1,6 +1,7 @@
 #pragma once
 
 #include <asio.hpp>
+#include <atomic>
 #include <flat_map>
 #include <memory>
 #include <mutex>
@@ -108,8 +109,13 @@ namespace cinder {
         asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
         mutable std::mutex mu_;
-        std::chrono::milliseconds rpc_timeout_{5000};
-        bool stopping_ = false;
+        // Written by setRpcTimeout (config reload, any thread) and read by
+        // sendCoroutine on io strands without taking mu_: plain member would
+        // be a data race. Count-based atomic; the unit is milliseconds.
+        std::atomic<std::chrono::milliseconds::rep> rpc_timeout_ms_{5000};
+        // Set once by shutdown(); observed by in-flight coroutines. Atomic so
+        // the check needs no lock on the send path.
+        std::atomic<bool> stopping_{false};
         std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
         std::flat_map<NodeId, ClusterConfig::NodeConfig> addrs_;
         MessageHandler handler_;

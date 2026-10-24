@@ -51,12 +51,11 @@ namespace cinder {
     }
 
     void TcpTransport::shutdown() {
-        std::scoped_lock lock(mu_);
-        if (stopping_) {
+        if (stopping_.exchange(true, std::memory_order_acq_rel)) {
             return;
         }
 
-        stopping_ = true;
+        std::scoped_lock lock(mu_);
         for (auto& [id, conn] : conns_) {
             if (!conn || !conn->connected) {
                 continue;
@@ -92,7 +91,7 @@ namespace cinder {
     }
 
     void TcpTransport::setRpcTimeout(std::chrono::milliseconds timeout) {
-        rpc_timeout_ = timeout;
+        rpc_timeout_ms_.store(timeout.count(), std::memory_order_relaxed);
     }
 
     void TcpTransport::closeConn(NodeConn& conn) {
@@ -137,8 +136,16 @@ namespace cinder {
         // When the deadline expires the timer callback cancels in-flight socket
         // operations, causing any in-progress co_await to complete with
         // operation_aborted.
+        if (stopping_.load(std::memory_order_acquire)) {
+            // Transport is shutting down: fail fast with a retryable error
+            // rather than starting an exchange on a dying connection.
+            co_return err<net::Response>(Error(Errc::NotReady, "transport shutting down"));
+        }
         bool timed_out = false;
-        asio::steady_timer timer(ex, rpc_timeout_);
+        asio::steady_timer timer(
+            ex,
+            std::chrono::milliseconds(rpc_timeout_ms_.load(std::memory_order_relaxed))
+        );
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsubobject-linkage"
