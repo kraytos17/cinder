@@ -119,13 +119,15 @@ jobs:
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
+      # FetchContent cache: exactly one key per compiler family. All 9 deps
+      # override BINARY_DIR into the build dir, so .cache holds only
+      # sources+stamps and is safe to share across presets of a family.
       - name: Restore FetchContent
         id: fc-restore
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ matrix.family }}-
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -151,7 +153,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Upload test logs
         if: failure()
@@ -191,8 +193,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ matrix.family }}-
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure (TLS + gRPC)
         run: cmake --preset ${{ matrix.preset }}
@@ -212,7 +213,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Upload test logs
         if: failure()
@@ -242,8 +243,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-gcc-ci-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure
         run: cmake --preset ci-gcc
@@ -269,7 +269,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-gcc-ci-gcc-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Upload test logs
         if: failure()
@@ -313,8 +313,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-${{ matrix.family }}-
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -340,7 +339,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-${{ matrix.family }}-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Upload test logs
         if: failure()
@@ -365,14 +364,17 @@ jobs:
       - name: Install sccache
         uses: Mozilla-Actions/sccache-action@v0.0.11
 
-      - name: Restore FetchContent
+      - name: Restore FetchContent (Clang)
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-lint-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-clang-
-            fetchcontent-gcc-
+          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
+
+      - name: Restore FetchContent (GCC)
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ github.workspace }}/.cache
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Configure (clang-tidy runs inline)
         run: just preset=ci configure
@@ -424,8 +426,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-codeql-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: fetchcontent-gcc-
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
@@ -449,7 +450,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.cache
-          key: fetchcontent-codeql-${{ matrix.preset }}-${{ hashFiles('CMakeLists.txt') }}
+          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
 
   ci-success:
     name: CI Success
