@@ -576,7 +576,12 @@ namespace cinder {
         } else if (field == "rpc_timeout_ms") {
             transport_.setRpcTimeout(milliseconds(cfg.rpc_timeout_ms));
         } else if (field == "capacity") {
+            capacity_ = cfg.capacity;
             store_->setCapacity(cfg.capacity);
+            // syncEffectiveConfig() (called before this loop) restores
+            // current_config_.capacity from the stale capacity_ member, so
+            // re-assert the just-loaded value while still under config_mutex_.
+            current_config_.capacity = cfg.capacity;
         } else if (field == "quarantine_interval_ms") {
             quarantine_interval_ = milliseconds(cfg.quarantine_interval_ms);
         } else if (field == "anti_entropy_interval_ms") {
