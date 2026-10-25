@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <array>
 #include <gtest/gtest.h>
 
 #include "cinder/client/cache_client.hpp"
@@ -254,6 +256,68 @@ namespace cinder {
                     << static_cast<int>(c.code)
                     << " -- "
                     << c.why;
+            }
+
+            // Mechanical completeness, so the table cannot silently drift.
+            //
+            // Deliberately NOT an Errc enumerator sentinel: that pollutes the
+            // enum's value space and forces every exhaustive switch (toString,
+            // grpc toProtoStatus) to handle a value that is not a real status --
+            // and this project compiles with -Wall but NOT -Werror, so the
+            // resulting -Wswitch is advisory, i.e. it warns and passes. That is
+            // strictly worse than no guard.
+            //
+            // Instead this switch IS the enumerated value list and the
+            // compile-time tripwire: every real Errc appears here, so adding one
+            // without adding a case trips -Wswitch on every build (GCC and
+            // Clang). The table below is then checked against it, so a missing
+            // or duplicated row fails the test rather than passing silently.
+            const std::array<Errc, 11> kAllValues = {
+                Errc::OK,
+                Errc::NotFound,
+                Errc::CapacityExceeded,
+                Errc::InvalidArgument,
+                Errc::TtlExpired,
+                Errc::NotSupported,
+                Errc::InternalError,
+                Errc::Timeout,
+                Errc::NotReady,
+                Errc::PermissionDenied,
+                Errc::CorruptData,
+            };
+
+            for (const auto v : kAllValues) {
+                switch (v) {
+                    case Errc::OK:
+                    case Errc::NotFound:
+                    case Errc::CapacityExceeded:
+                    case Errc::InvalidArgument:
+                    case Errc::TtlExpired:
+                    case Errc::NotSupported:
+                    case Errc::InternalError:
+                    case Errc::Timeout:
+                    case Errc::NotReady:
+                    case Errc::PermissionDenied:
+                    case Errc::CorruptData:
+                        break;
+                }
+                // Exactly one classification row per value.
+                EXPECT_EQ(
+                    std::count_if(
+                        std::begin(cases),
+                        std::end(cases),
+                        [v](const Case& c) { return c.code == v; }
+                    ),
+                    1
+                )
+                    << "Errc value "
+                    << static_cast<int>(v)
+                    << " is not classified exactly once in `cases`";
+            }
+            // No row may reference a value outside the enumerated set.
+            for (const auto& c : cases) {
+                EXPECT_EQ(std::count(std::begin(kAllValues), std::end(kAllValues), c.code), 1)
+                    << "table row for an unknown Errc";
             }
         }
     } // namespace
