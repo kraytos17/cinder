@@ -112,8 +112,8 @@ namespace cinder {
             constexpr int K_GOSSIP_B = 101;
             constexpr int K_RPC_A = 5000;
             constexpr int K_RPC_B = 5001;
-            constexpr size_t K_CAP_A = 1u << 20;
-            constexpr size_t K_CAP_B = (1u << 20) + 1024;
+            constexpr size_t K_CAP_A = 1U << 20U;
+            constexpr size_t K_CAP_B = (1U << 20U) + 1024;
             write_config(K_SUSPECT_A, K_GOSSIP_A, K_RPC_A, K_CAP_A);
 
             CacheNodeServerOptions opts;
