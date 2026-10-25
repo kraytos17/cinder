@@ -50,8 +50,26 @@ namespace cinder::net {
 
     static_assert(readBe32(K_NET_BE_BYTES.data()) == 0x01020304U);
 
-    // Reads a value from the ByteReader. Returns an error if the read fails
-    // (truncated input), propagating the failure to the caller.
+    // Reads a fixed-size field that the frame header check has already proven
+    // in-bounds, so the read cannot fail. Used ONLY for the header fields whose
+    // bytes are covered by the K_FRAME_HEADER_SIZE (== 7) guard at the top of
+    // decode()/decodeResponse(); a failure here means the guard is wrong, which
+    // is a programming error, not bad input.
+    //
+    // Length-driven reads (flags, key_len, val_len, ...) are NOT provable — a
+    // well-framed payload can still carry a length that runs past its end — so
+    // those keep the checked ByteReader::read/readBytes path directly.
+    template <typename T> static auto expectRead(ByteReader& r) -> T {
+        auto v = r.read<T>();
+        if (!v) {
+            std::unreachable();
+        }
+        return *v;
+    }
+
+    // Reads a value whose availability depends on payload content (flags,
+    // lengths, key/value bodies), so it CAN fail on a well-framed but malformed
+    // payload. Returns the error for the caller to propagate.
     template <typename T> static auto mustRead(ByteReader& r) -> Result<T> {
         return r.read<T>();
     }
@@ -172,39 +190,22 @@ namespace cinder::net {
         }
 
         ByteReader r(frame);
-        {
-            auto v = mustRead<uint8_t>(r);
-            if (!v) {
-                return err<DecodedRequest>(v.error());
-            }
-        } // magic
-        {
-            auto v = mustRead<uint8_t>(r);
-            if (!v) {
-                return err<DecodedRequest>(v.error());
-            }
-        } // version
+        // Header fields below are within the 7 validated header bytes
+        (void)expectRead<uint8_t>(r); // magic
+        (void)expectRead<uint8_t>(r); // version
 
         DecodedRequest decoded;
         Request& req = decoded.req;
-        auto raw_opcode = mustRead<uint8_t>(r);
-        if (!raw_opcode) {
-            return err<DecodedRequest>(raw_opcode.error());
-        }
-        if (*raw_opcode
+        uint8_t raw_opcode = expectRead<uint8_t>(r);
+        if (raw_opcode
             < std::to_underlying(Opcode::Get)
-            || *raw_opcode
+            || raw_opcode
             > std::to_underlying(Opcode::AdminShutdown)) {
             return err<DecodedRequest>(Error(Errc::InvalidArgument, "unknown opcode"));
         }
 
-        req.opcode = static_cast<Opcode>(*raw_opcode);
-        {
-            auto v = mustRead<uint32_t>(r);
-            if (!v) {
-                return err<DecodedRequest>(v.error());
-            }
-        }
+        req.opcode = static_cast<Opcode>(raw_opcode);
+        (void)expectRead<uint32_t>(r); // payload_len
 
         auto flags = mustRead<uint8_t>(r);
         if (!flags) {
@@ -387,31 +388,10 @@ namespace cinder::net {
         }
 
         ByteReader r(frame);
-        // Skip header — already validated above.
-        {
-            auto v = mustRead<uint8_t>(r);
-            if (!v) {
-                return err<Response>(v.error());
-            }
-        } // magic
-        {
-            auto v = mustRead<uint8_t>(r);
-            if (!v) {
-                return err<Response>(v.error());
-            }
-        } // version
-        {
-            auto v = mustRead<uint8_t>(r);
-            if (!v) {
-                return err<Response>(v.error());
-            }
-        } // opcode (unused for responses)
-        {
-            auto v = mustRead<uint32_t>(r);
-            if (!v) {
-                return err<Response>(v.error());
-            }
-        } // payload_len
+        (void)expectRead<uint8_t>(r); // magic
+        (void)expectRead<uint8_t>(r); // version
+        (void)expectRead<uint8_t>(r); // opcode (unused for responses)
+        (void)expectRead<uint32_t>(r); // payload_len
 
         Response res;
         auto status = mustRead<uint8_t>(r);

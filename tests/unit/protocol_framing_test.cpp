@@ -421,6 +421,44 @@ namespace cinder::net {
             EXPECT_FALSE(result.has_value());
         }
 
+        TEST(ProtocolTest, HeaderOnlyFrameExhaustsProvableReads) {
+            // Pins the expectRead invariant: the 4 fixed header fields
+            // (magic, version, opcode, payload_len) are covered by the 7-byte
+            // header guard, so they must never fail. A frame that is exactly the
+            // header must therefore fail on the FIRST payload-dependent read
+            // (flags), not while skipping the header.
+            std::vector<std::byte> frame(K_FRAME_HEADER_SIZE);
+            frame[0] = std::byte{K_MAGIC};
+            frame[1] = std::byte{K_VERSION};
+            frame[2] = std::byte{static_cast<uint8_t>(Opcode::Set)};
+            uint32_t payload_len = 0; // no payload at all
+            std::memcpy(&frame[3], &payload_len, sizeof(payload_len));
+
+            auto result = decode(frame);
+            ASSERT_FALSE(result.has_value());
+            // The failure must come from the payload-dependent flags read, whose
+            // message is "truncated" — proving all four header reads succeeded
+            // and none of the header rejections fired.
+            EXPECT_EQ(result.error().message(), "truncated");
+        }
+
+        TEST(ProtocolTest, ResponseHeaderOnlyFrameReachesStatusRead) {
+            // Same invariant for the response decoder: a header-only frame must
+            // get past the skipped header and fail on the payload's first byte
+            // (status), proving the header skips cannot fail.
+            std::vector<std::byte> frame(K_FRAME_HEADER_SIZE);
+            frame[0] = std::byte{K_MAGIC};
+            frame[1] = std::byte{K_VERSION};
+            frame[2] = std::byte{0};
+            uint32_t payload_len = 0;
+            std::memcpy(&frame[3], &payload_len, sizeof(payload_len));
+
+            auto result = decodeResponse(frame);
+            ASSERT_FALSE(result.has_value());
+            // Fails on the status byte read, not any header-level rejection.
+            EXPECT_EQ(result.error().message(), "truncated");
+        }
+
         TEST(ProtocolTest, DecodeExpiresAtOverflow) {
             // expires_at = 0xFFFFFFFFFFFFFFFF should be rejected, not overflow.
             Request req;
