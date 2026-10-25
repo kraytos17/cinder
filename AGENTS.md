@@ -127,14 +127,24 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   target or binary in this repo — do not invent one.
 * Pre-commit hook (catches the cheap half of the lint gate before push):
   `just hooks-install` sets repo-local `core.hooksPath=.githooks`
-  (`just hooks-run` runs the same checks manually). The hook checks staged
+  (`just hooks-run` runs the same checks manually). A CMake configure
+  auto-installs it too (`CINDER_AUTO_HOOKS`, default ON; skips when
+  `core.hooksPath` is already set, so `just hooks-uninstall` is respected),
+  so a fresh clone gets it without a manual step. The hook checks staged
   files only: whitespace errors (`git diff --check`, `*.md` excluded so
   hard-breaks pass), clang-format `--dry-run` on C++ blobs, YAML syntax on
   staged workflows, and the ci.yml/ci-skip.yaml trigger-paths sync. Slow checks
-  (tidy build, cppcheck, actionlint, tests) stay in `just verify` and CI — the
-  hook is local-only by design (nothing is staged in a fresh checkout).
+  (tidy build, cppcheck, actionlint, tests) stay in `just ci`/`just verify` and
+  CI — the hook is local-only by design (nothing is staged in a fresh checkout).
   Bypass with `git commit --no-verify`; CI (toolchain image's clang-format) is
   the source of truth on version skew.
+* `just ci` = the CI "Lint (Clang + cppcheck)" job locally, in order: `cmake
+  --preset ci` + build (inline clang-tidy), `just preset=ci check-format`, then
+  `cmake --preset ci-gcc` + `cppcheck`. This is the **only** local gate that
+  surfaces `bugprone-*`/`cert-*`/`clang-analyzer-*` errors (they are
+  `WarningsAsErrors`; `readability-*` stay warnings-only), and it is
+  deliberately **not** in `just verify` because the tidy build is slow. Run it
+  before pushing anything that touches `src/` or `include/`.
 * CI jobs (`.github/workflows/ci.yml`): `build-image` → `fetch-deps` (×2: union
   dep seed per family — the **sole writer** per `fetchcontent-<family>-*` key) +
   `build-test` (7 presets: debug, debug-tls, release, debug-clang,
@@ -177,7 +187,8 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
    + `-L sim -j1` (36); run affected `-L integration` isolated `-j1`
    (full suite = 24).
 3. `cmake --build --preset fast --target check-format`, `cppcheck`, `lint` —
-   all exit 0; for tidy-sensitive changes also build `ci` preset.
+   all exit 0; for tidy-sensitive changes (`src/`, `include/`) run `just ci`
+   (full CI lint gate: inline clang-tidy + check-format + cppcheck).
 4. Sanitizers for the affected area (`asan`, `tsan`, `ubsan` recipes).
 5. `git diff --stat` + `git status` review; re-index the graph when `src/` or
   `include/` changed before making further structural claims.

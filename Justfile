@@ -156,9 +156,14 @@ fast:
     just preset=fast build
 
 [group('presets')]
-[doc('Run the CI workflow preset locally.')]
+[doc('Run the full CI lint gate locally (inline clang-tidy + check-format + cppcheck).')]
 ci:
-    cmake --workflow --preset ci
+    cmake --preset ci
+    cmake --build --preset ci -j{{ jobs }}
+    @just preset=ci check-format
+    cmake --preset ci-gcc
+    cmake --build build/ci-gcc --target cppcheck -j{{ jobs }}
+    @echo "CI LINT PASSED: ci tidy build, check-format, cppcheck"
 
 [group('presets')]
 [doc('Configure every preset (reports failures at the end, exits nonzero).')]
