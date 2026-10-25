@@ -93,8 +93,37 @@ namespace cinder {
                 socket(io) {}
         };
 
-        // Return the cached connection for `node_id`, creating one if needed.
-        // Caller must not hold mu_ when calling this.
+        // Round-robin pool of connections to ONE peer.
+        //
+        // Why more than one: the protocol is not multiplexed — a single socket
+        // carries one request/response at a time, and NodeConn's strand
+        // enforces that. With one connection per peer, every concurrent caller
+        // to that peer queues behind the one in flight, so each pays a full RTT
+        // of head-of-line blocking. Distinct connections have distinct strands,
+        // so RPCs on different entries genuinely overlap; requests sharing an
+        // entry still serialise, which is required for correctness.
+        //
+        // Small and fixed on purpose: this removes the serialisation point
+        // without introducing an unbounded fan-out to every peer (which would
+        // multiply fds and handshake cost across a large cluster). Callers are
+        // round-robin, so a modest size is enough to overlap typical
+        // concurrent-caller counts.
+        static constexpr size_t K_POOL_SIZE = 4;
+
+        struct NodePool {
+            std::vector<std::unique_ptr<NodeConn>> conns;
+            size_t next = 0; // round-robin cursor
+
+            explicit NodePool(io_context& io, const ClusterConfig::NodeConfig& addr) {
+                conns.reserve(K_POOL_SIZE);
+                for (size_t i = 0; i < K_POOL_SIZE; ++i) {
+                    conns.push_back(std::make_unique<NodeConn>(io, addr));
+                }
+            }
+        };
+
+        // Return the next connection for `node_id` (round-robin across the
+        // per-node pool), creating the pool if needed. Caller must not hold mu_.
         auto getOrCreateConn(const NodeId& node_id) -> NodeConn&;
 
         // Coroutine running on a NodeConn's strand: check connected, reconnect if
@@ -121,7 +150,7 @@ namespace cinder {
         std::chrono::milliseconds rpc_timeout_{0};
         mutable std::mutex mu_;
         bool stopping_ = false;
-        std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
+        std::unordered_map<NodeId, std::unique_ptr<NodePool>> pools_;
         std::flat_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
     };
 } // namespace cinder

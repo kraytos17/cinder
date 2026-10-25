@@ -76,51 +76,70 @@ namespace cinder {
         }
 
         stopping_ = true;
-        for (auto& [id, conn] : conns_) {
-            if (!conn || !conn->connected) {
+        for (auto& [id, pool] : pools_) {
+            if (!pool) {
                 continue;
             }
+            for (auto& conn : pool->conns) {
+                if (!conn || !conn->connected) {
+                    continue;
+                }
 
-            std::error_code ec;
+                std::error_code ec;
 #ifdef CINDER_ENABLE_TLS
-            if (conn->stream) {
-                conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
-                conn->stream->lowest_layer().close(ec);
-            } else {
+                if (conn->stream) {
+                    conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+                    conn->stream->lowest_layer().close(ec);
+                } else {
+                    conn->socket.shutdown(tcp::socket::shutdown_both, ec);
+                    conn->socket.close(ec);
+                }
+#else
                 conn->socket.shutdown(tcp::socket::shutdown_both, ec);
                 conn->socket.close(ec);
-            }
-#else
-            conn->socket.shutdown(tcp::socket::shutdown_both, ec);
-            conn->socket.close(ec);
 #endif
-            conn->connected = false;
+                conn->connected = false;
+            }
         }
 
-        conns_.clear();
+        pools_.clear();
         node_addrs_.clear();
     }
 
     void ConnectionPool::addAddr(const NodeId& id, const std::string& host, uint16_t port) {
         std::scoped_lock lock(mu_);
-        node_addrs_.insert_or_assign(id, ClusterConfig::NodeConfig{id, host, port});
+        ClusterConfig::NodeConfig cfg{id, host, port};
+        node_addrs_.insert_or_assign(id, cfg);
+        // Refresh every pooled connection's address too: a stale addr on an
+        // existing (possibly disconnected) NodeConn would make the next RPC
+        // resolve the old endpoint. Only a disconnected entry can safely be
+        // re-pointed; a live one is mid-exchange on the old peer.
+        if (auto it = pools_.find(id); it != pools_.end() && it->second) {
+            for (auto& conn : it->second->conns) {
+                if (conn && !conn->connected) {
+                    conn->addr = cfg;
+                }
+            }
+        }
     }
 
     auto ConnectionPool::getOrCreateConn(const NodeId& node_id) -> NodeConn& {
         std::scoped_lock lock(mu_);
-        auto it = conns_.find(node_id);
-        if (it != conns_.end() && it->second) {
-            return *it->second;
+        auto it = pools_.find(node_id);
+        if (it == pools_.end() || !it->second) {
+            auto addr_it = node_addrs_.find(node_id);
+            auto addr = (addr_it != node_addrs_.end()) ? addr_it->second
+                                                       : ClusterConfig::NodeConfig{node_id, {}, 0};
+            auto pool = std::make_unique<NodePool>(io_, addr);
+            it = pools_.insert_or_assign(node_id, std::move(pool)).first;
         }
 
-        auto addr_it = node_addrs_.find(node_id);
-        auto addr = (addr_it != node_addrs_.end()) ? addr_it->second
-                                                   : ClusterConfig::NodeConfig{node_id, {}, 0};
-
-        auto conn = std::make_unique<NodeConn>(io_, addr);
-        auto& ref = *conn;
-        conns_[node_id] = std::move(conn);
-        return ref;
+        auto& pool = *it->second;
+        // Round-robin so consecutive callers land on different strands and
+        // overlap; wrap with modulo so the cursor cannot run away.
+        NodeConn& chosen = *pool.conns[pool.next % pool.conns.size()];
+        pool.next = (pool.next + 1) % pool.conns.size();
+        return chosen;
     }
 
     auto ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)

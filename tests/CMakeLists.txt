@@ -42,6 +42,7 @@ cinder_add_test(cinder_unit_net_tests
     unit/tcp_server_stress_test.cpp
     unit/rpc_timeout_test.cpp
     unit/client_routing_test.cpp
+    unit/connection_pool_concurrency_test.cpp
 )
 gtest_discover_tests(cinder_unit_net_tests PROPERTIES LABELS "unit")
 
