@@ -286,7 +286,12 @@ namespace cinder {
         auto decoded = net::decodeResponse(frame);
         if (!decoded.has_value()) {
             closeConn(conn);
-            co_return err<net::Response>(Error(Errc::NotReady, decoded.error().message()));
+            // Re-map the wire desync to a retryable code while KEEPING the original
+            // error as the cause, so the InvalidArgument + source_location from
+            // decodeResponse survive for diagnosis.
+            co_return std::unexpected(
+                asRetryable(decoded.error(), "response decode failed on reused socket")
+            );
         }
         co_return decoded;
     }
@@ -466,8 +471,10 @@ namespace cinder {
             auto decoded = net::decodeResponse(frame);
             if (!decoded.has_value()) {
                 closeConn(conn);
-                co_return err<std::vector<net::Response>>(
-                    Error(Errc::NotReady, decoded.error().message())
+                // Preserve provenance (see the single-RPC path): keep the original
+                // decode error as the cause while re-mapping to a retryable code.
+                co_return std::unexpected(
+                    asRetryable(decoded.error(), "batch response decode failed")
                 );
             }
             responses.push_back(std::move(decoded.value()));

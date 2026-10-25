@@ -166,6 +166,51 @@ namespace cinder {
             EXPECT_FALSE(retryable(res));
         }
 
+        // asRetryable() is what the wire paths use to turn a decode desync into a
+        // retryable error WITHOUT losing the original. The old hand-rolled form,
+        // `Error(Errc::NotReady, e.message())`, produced a retryable error but
+        // discarded the code and source_location of the real failure — so a
+        // recurring desync could never be traced back to decodeResponse.
+        TEST(AsRetryableTest, RemapsCodeButKeepsOriginalAsCause) {
+            Error decode_failure(Errc::InvalidArgument, "bad magic");
+            Error mapped = asRetryable(decode_failure, "response decode failed");
+
+            // Caller-visible: retryable.
+            EXPECT_EQ(mapped.code(), Errc::NotReady);
+            EXPECT_EQ(mapped.message(), "response decode failed");
+
+            // Provenance: the real failure survives, code and message intact.
+            ASSERT_NE(mapped.cause(), nullptr);
+            EXPECT_EQ(mapped.cause()->code(), Errc::InvalidArgument);
+            EXPECT_EQ(mapped.cause()->message(), "bad magic");
+        }
+
+        TEST(AsRetryableTest, ResultOfAsRetryableIsRetryable) {
+            // The whole point of the remap: retryable() must say yes.
+            auto res =
+                err<net::Response>(asRetryable(Error(Errc::InvalidArgument, "truncated"), "ctx"));
+            EXPECT_TRUE(retryable(res));
+            ASSERT_FALSE(res.has_value());
+            EXPECT_EQ(res.error().code(), Errc::NotReady);
+            ASSERT_NE(res.error().cause(), nullptr);
+            EXPECT_EQ(res.error().cause()->code(), Errc::InvalidArgument);
+        }
+
+        TEST(AsRetryableTest, PreservesOriginalSourceLocation) {
+            // The old form invented a location at the remap site, erasing where
+            // the failure actually originated.
+            Error decode_failure(Errc::InvalidArgument, "bad magic");
+            const auto original_line = decode_failure.location().line();
+            Error mapped = asRetryable(decode_failure, "remapped");
+
+            ASSERT_NE(mapped.cause(), nullptr);
+            EXPECT_EQ(mapped.cause()->location().line(), original_line);
+            EXPECT_EQ(
+                mapped.cause()->location().file_name(),
+                decode_failure.location().file_name()
+            );
+        }
+
         // Exhaustive classification of every Errc against retryable(). The
         // predicate is a two-value allow-list (Timeout, NotReady), so the real
         // risk is an *under*-retried code: a transient condition mapped to a

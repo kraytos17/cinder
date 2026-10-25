@@ -110,6 +110,20 @@ namespace cinder {
 
     template <typename T> using Result = std::expected<T, Error>;
 
+    // Re-map an error to a retryable code while KEEPING the original as the
+    // cause, instead of discarding it and inventing a fresh error from its
+    // message. Used by the wire paths where a decode failure means a reused-
+    // socket desync (see ConnectionPool/TcpTransport): the caller must see
+    // NotReady so its retry predicate fires, but an operator still needs the
+    // original code + source_location for diagnosis.
+    //
+    // Prefer this over `Error(Errc::NotReady, e.message())`, which silently
+    // drops e's code, location and any cause chain.
+    [[nodiscard]]
+    inline auto asRetryable(const Error& e, std::string_view context) -> Error {
+        return e.wrap(Errc::NotReady, context);
+    }
+
     [[nodiscard]]
     inline constexpr auto toString(Errc code) -> std::string_view {
         switch (code) {
