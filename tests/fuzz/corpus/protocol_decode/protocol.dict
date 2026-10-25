@@ -1,0 +1,47 @@
+# Cinder protocol fuzz dictionary
+
+# Magic and version
+MagicVersion="\xc1\x03"
+
+# Opcodes
+OpcodeGET="\x01"
+OpcodeSET="\x02"
+OpcodeDEL="\x03"
+OpcodePING="\x04"
+OpcodeGOSSIP="\x05"
+OpcodeREPLICATE="\x06"
+OpcodeHINT="\x07"
+OpcodeGET_VERSIONED="\x08"
+OpcodeANTI_ENTROPY_DIGEST="\x09"
+OpcodeANTI_ENTROPY_SYNC="\x0a"
+OpcodeADMIN_INFO="\x0b"
+OpcodeADMIN_CLUSTER="\x0c"
+OpcodeADMIN_RING="\x0d"
+OpcodeADMIN_COMPACT="\x0e"
+OpcodeADMIN_CONFIG_RELOAD="\x0f"
+OpcodeADMIN_SHUTDOWN="\x10"
+
+# Status codes
+StatusOK="\x00"
+StatusNotFound="\x01"
+StatusCapacityExceeded="\x02"
+StatusInvalidArgument="\x03"
+StatusTtlExpired="\x04"
+StatusNotSupported="\x05"
+StatusInternalError="\x06"
+StatusTimeout="\x07"
+StatusNotReady="\x08"
+
+# Flags
+FlagTTL="\x01"
+FlagExpires="\x02"
+FlagVersionMeta="\x01"
+
+# Common strings
+KeyHello="hello"
+KeyMyKey="mykey"
+ValBar="bar"
+ValTest="test"
+Alive="alive"
+Suspect="suspect"
+Dead="dead"

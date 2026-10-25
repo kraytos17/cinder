@@ -195,6 +195,13 @@ fuzz-build:
 _fuzz-run duration label: fuzz-build
     #!/usr/bin/env bash
     set -euo pipefail
+    # Seed the corpus (and the tracked dictionaries) if this checkout has never
+    # generated them — on a fresh clone the git-ignored corpus dir is empty and
+    # libFuzzer would otherwise run with no seeds.
+    if [ ! -d tests/fuzz/corpus/protocol_decode ]; then
+        echo "Generating fuzz corpus + dictionaries..."
+        python3 tests/fuzz/generate_corpus.py
+    fi
     for t in {{ fuzz_targets }}; do
         echo "==> $t ({{ label }})..."
         echo "────────────────────────────────────────"
@@ -209,6 +216,15 @@ _fuzz-run duration label: fuzz-build
             redirect_parse)   opts="{{ fuzz_opts_redirect_parse }}" ;;
             *)                opts="" ;;
         esac
+        # Drop a -dict= flag whose file is absent: libFuzzer aborts the entire
+        # run ("ParseDictionaryFile: file does not exist or is empty") rather
+        # than skipping it, so a missing dictionary must not be fatal.
+        dict_opt=$(printf '%s' "$opts" | tr ' ' '\n' | grep -m1 '^-dict=' || true)
+        if [ -n "$dict_opt" ] && [ ! -f "${dict_opt#-dict=}" ]; then
+            echo "note: ${dict_opt#-dict=} missing — running without a dictionary"
+            opts=$(printf '%s' "$opts" | tr ' ' '\n' | grep -v '^-dict=' | tr '\n' ' ')
+        fi
+        mkdir -p tests/fuzz/corpus/"$t"
         build/fuzz/tests/"${t}"_fuzz \
             -max_total_time={{ duration }} -print_final_stats=1 \
             {{ fuzz_opts_default }} $opts \
@@ -226,6 +242,19 @@ fuzz-test: (_fuzz-run "10" "10s")
 [group('fuzz')]
 [doc('Run every fuzz target for 5 minutes each.')]
 fuzz-long: (_fuzz-run "300" "5min")
+
+# Regenerate seed corpora + the tracked libFuzzer dictionaries
+# (protocol_decode/protocol.dict, gossip_parse/gossip.dict). The .dict files
+# ARE committed even though the rest of tests/fuzz/corpus is git-ignored —
+# re-run this after changing the protocol or gossip wire format, and commit
+# the updated dicts.
+[group('fuzz')]
+[doc('Regenerate fuzz seed corpora and the tracked libFuzzer dictionaries.')]
+fuzz-dicts:
+    python3 tests/fuzz/generate_corpus.py
+    @echo ""
+    @echo "Dictionaries (tracked, commit if changed):"
+    @git status --short tests/fuzz/corpus --untracked-files=all | grep -E '\.dict$' || echo "  (unchanged)"
 
 [private]
 fuzz-coverage-build:

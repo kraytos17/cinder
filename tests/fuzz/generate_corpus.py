@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Generate seed corpus files for Cinder fuzz targets.
 
 Run from the project root:
@@ -235,6 +234,70 @@ def generate_gossip_corpus():
 
     n = write_seeds(d, seeds)
     print(f"  Generated {n} gossip seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
+# Gossip dictionary (for libFuzzer -dict flag)
+# ---------------------------------------------------------------------------
+
+def generate_gossip_dict():
+    """Write the gossip_parse fuzz dictionary.
+
+    The gossip wire format is a ';'-separated list of
+    "id@host:port:state:incarnation" entries (see gossip::parseEntry), so the
+    tokens below are the separators, the three legal state words, and the
+    field values the parser branches on. Without this file the Justfile's
+    `-dict=tests/fuzz/corpus/gossip_parse/gossip.dict` makes the fuzz run abort
+    with "ParseDictionaryFile: file does not exist or is empty".
+    """
+    d = os.path.join(CORPUS_DIR, "gossip_parse")
+    os.makedirs(d, exist_ok=True)
+    dict_path = os.path.join(d, "gossip.dict")
+
+    separators = [
+        ("At", b"@"),
+        ("Colon", b":"),
+        ("Semicolon", b";"),
+    ]
+    states = [
+        ("StateAlive", b"alive"),
+        ("StateSuspect", b"suspect"),
+        ("StateDead", b"dead"),
+    ]
+    fields = [
+        ("IdNode1", b"node1"),
+        ("IdNode2", b"node2"),
+        ("HostLoopback", b"127.0.0.1"),
+        ("HostPrivate", b"10.0.0.1"),
+        ("Port7000", b"7000"),
+        ("PortZero", b"0"),
+        ("PortMax", b"65535"),
+        ("IncarnationZero", b"0"),
+        ("IncarnationOne", b"1"),
+        ("IncarnationMax", b"18446744073709551615"),
+        # The canonical well-formed entry, as one token, so the fuzzer starts
+        # from a fully parseable frame instead of rediscovering the grammar.
+        ("FullEntry", b"n@127.0.0.1:7000:alive:1"),
+    ]
+
+    sections = [
+        ("Separators", separators),
+        ("States", states),
+        ("Field values", fields),
+    ]
+
+    lines = ["# Cinder gossip_parse fuzz dictionary\n"]
+    for title, tokens in sections:
+        lines.append(f"\n# {title}\n")
+        for name, data in tokens:
+            lines.append(f'{name}="{dict_token_value(data)}"\n')
+
+    # ASCII-only, same regression guard as generate_protocol_dict.
+    with open(dict_path, "w", encoding="ascii", newline="\n") as f:
+        f.writelines(lines)
+
+    print(f"  Generated gossip dictionary at {dict_path} "
+          f"({sum(len(tokens) for _, tokens in sections)} tokens)")
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +729,7 @@ def main():
     generate_http_corpus()
     generate_redirect_corpus()
     generate_protocol_dict()
+    generate_gossip_dict()
     print("Done.")
 
 

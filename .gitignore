@@ -72,8 +72,28 @@ plan/
 # test output & cache
 Testing/
 .cache/
-tests/fuzz/corpus
+# Fuzz corpus seeds are generated (tests/fuzz/generate_corpus.py) and not
+# tracked. The hand-authored dictionaries ARE tracked: the Justfile passes
+# -dict=.../protocol.dict and -dict=.../gossip.dict, and libFuzzer aborts the
+# whole run with "file does not exist or is empty" when one is missing — which
+# is what happened on every fresh clone.
+#
+# The four-part dance below is required by gitignore semantics: a `!` rule
+# cannot re-include a file whose PARENT DIRECTORY is excluded, so we must
+# re-include the two subdirectories first, then ignore their contents, then
+# un-ignore the *.dict files inside. Collapsing this to
+# `tests/fuzz/corpus` + `!..../x.dict` silently fails.
+tests/fuzz/corpus/*/
+tests/fuzz/corpus/*
+!tests/fuzz/corpus/gossip_parse/
+!tests/fuzz/corpus/protocol_decode/
+tests/fuzz/corpus/gossip_parse/*
+tests/fuzz/corpus/protocol_decode/*
+!tests/fuzz/corpus/gossip_parse/*.dict
+!tests/fuzz/corpus/protocol_decode/*.dict
 .codebase-memory/
 tests/fuzz/coverage
 tests/fuzz/corpus_minimal
 *.profraw
+__pycache__/
+*.py[cod]

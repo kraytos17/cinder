@@ -1,0 +1,24 @@
+# Cinder gossip_parse fuzz dictionary
+
+# Separators
+At="@"
+Colon=":"
+Semicolon=";"
+
+# States
+StateAlive="alive"
+StateSuspect="suspect"
+StateDead="dead"
+
+# Field values
+IdNode1="node1"
+IdNode2="node2"
+HostLoopback="127.0.0.1"
+HostPrivate="10.0.0.1"
+Port7000="7000"
+PortZero="0"
+PortMax="65535"
+IncarnationZero="0"
+IncarnationOne="1"
+IncarnationMax="18446744073709551615"
+FullEntry="n@127.0.0.1:7000:alive:1"
