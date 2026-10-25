@@ -33,6 +33,7 @@ cinder_add_test(cinder_unit_ring_tests
     unit/membership_test.cpp
     unit/gossip_test.cpp
     unit/anti_entropy_test.cpp
+    unit/cluster_components_test.cpp
 )
 gtest_discover_tests(cinder_unit_ring_tests PROPERTIES LABELS "unit")
 

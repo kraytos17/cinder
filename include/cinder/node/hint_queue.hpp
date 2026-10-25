@@ -25,7 +25,11 @@ namespace cinder {
     class HintQueue {
     public:
 
+        // Physical slot count. The ring distinguishes full from empty with the
+        // next==tail_ sentinel, so ONE slot is always sacrificed: at most
+        // K_MAX_HINTS entries can be pending at once, not K_CAPACITY.
         static constexpr size_t K_CAPACITY = 1024;
+        static constexpr size_t K_MAX_HINTS = K_CAPACITY - 1;
 
         struct Hint {
             NodeId target;
