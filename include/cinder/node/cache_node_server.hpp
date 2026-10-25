@@ -1,10 +1,12 @@
 #pragma once
 
 #include <asio.hpp>
+#include <atomic>
 #include <charconv>
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -144,6 +146,8 @@ namespace cinder {
             NodeId node_id;
             int replica_factor = 1;
             ConsistencyMode mode = ConsistencyMode::Async;
+            FailureDetector& failure_detector;
+            GossipManager& gossip;
         };
 
         auto gatewayHandle() -> GatewayHandle {
@@ -157,6 +161,8 @@ namespace cinder {
                 .node_id = node_id_,
                 .replica_factor = replica_factor_,
                 .mode = mode_,
+                .failure_detector = detector_,
+                .gossip = gossip_,
             };
         }
 
@@ -231,13 +237,13 @@ namespace cinder {
 
         MetricsCollector metrics_;
         milliseconds ping_interval_{1000};
-        milliseconds quarantine_interval_{10'000};
+        std::atomic<milliseconds> quarantine_interval_{milliseconds{10'000}};
         RealClock clock_;
         std::unique_ptr<CacheStore> store_;
 #ifdef CINDER_ENABLE_TLS
         std::optional<asio::ssl::context> ssl_ctx_;
 #endif
-        milliseconds anti_entropy_interval_{30'000};
+        std::atomic<milliseconds> anti_entropy_interval_{milliseconds{30'000}};
         size_t capacity_ = 0;
         io_context io_;
         std::vector<ClusterConfig::NodeConfig> peers_;
@@ -254,6 +260,7 @@ namespace cinder {
         ShardManager shard_;
         AntiEntropyManager anti_entropy_;
         PersistenceManager persistence_;
+        mutable std::mutex config_mutex_;
         Config current_config_;
         net::TcpServer server_;
         int io_threads_ = 0; // resolved from CacheNodeServerOptions::io_threads

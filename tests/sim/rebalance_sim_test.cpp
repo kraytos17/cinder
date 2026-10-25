@@ -32,7 +32,8 @@ namespace cinder {
                 SimBus& bus,
                 NodeId node_id,
                 size_t capacity,
-                int replica_factor
+                int replica_factor,
+                std::chrono::milliseconds quarantine = std::chrono::milliseconds(0)
             ) :
                 id(node_id),
                 clock(c),
@@ -40,7 +41,7 @@ namespace cinder {
                 table(node_id),
                 ring(50),
                 store(capacity, &c),
-                shard(store, ring, transport, table, node_id, c, replica_factor, 0ms) {
+                shard(store, ring, transport, table, node_id, c, replica_factor, quarantine) {
                 transport.onMessage([this](const NodeId&, const net::Request& req) {
                     if (req.opcode != net::Opcode::Replicate) {
                         return;
@@ -68,12 +69,18 @@ namespace cinder {
             std::unique_ptr<RebalanceNode> node2;
             std::unique_ptr<RebalanceNode> node3;
 
-            explicit RebalanceCluster(int rf = 1) :
+            explicit RebalanceCluster(
+                int rf = 1,
+                std::chrono::milliseconds quarantine = std::chrono::milliseconds(0)
+            ) :
                 replica_factor(rf) {
                 constexpr size_t CAPACITY = 1'048'576; // ample — no eviction of test keys
-                node1 = std::make_unique<RebalanceNode>(clock, bus, "node1", CAPACITY, rf);
-                node2 = std::make_unique<RebalanceNode>(clock, bus, "node2", CAPACITY, rf);
-                node3 = std::make_unique<RebalanceNode>(clock, bus, "node3", CAPACITY, rf);
+                node1 =
+                    std::make_unique<RebalanceNode>(clock, bus, "node1", CAPACITY, rf, quarantine);
+                node2 =
+                    std::make_unique<RebalanceNode>(clock, bus, "node2", CAPACITY, rf, quarantine);
+                node3 =
+                    std::make_unique<RebalanceNode>(clock, bus, "node3", CAPACITY, rf, quarantine);
             }
 
             // node1 only: seeded with node1 + node2 (no node3 yet).
@@ -163,6 +170,41 @@ namespace cinder {
                 if (owner == "node1") {
                     EXPECT_TRUE(c.node1->store.get(k).has_value()) << k << " wrongly dropped";
                 }
+            }
+        }
+
+        // Quarantined owners defer migration: with rf=2 over two nodes every key's
+        // replica set is {node1, node2}, so while node2 is inside the quarantine
+        // window every copy push is skipped, rebalance() reports deferred work,
+        // and nothing is sent. After the window clears, a re-rebalance pushes.
+        TEST(RebalanceSimTest, QuarantinedOwnersDeferMigration) {
+            RebalanceCluster c(2, std::chrono::seconds(60));
+            c.seedTwoNodes();
+
+            std::vector<std::string> keys;
+            for (int i = 0; i < 8; i++) {
+                keys.push_back("qk" + std::to_string(i));
+            }
+            for (const auto& k : keys) {
+                // NOLINTNEXTLINE
+                (void)c.node1->store.put(k, "v-" + k);
+            }
+
+            // Both nodes were seeded ~now, so node2 is quarantined: deferred.
+            EXPECT_TRUE(c.node1->shard.rebalance());
+            EXPECT_EQ(c.bus.pending(), 0u) << "quarantined owners must get no pushes";
+            c.bus.deliver();
+            for (const auto& k : keys) {
+                EXPECT_TRUE(c.node1->store.get(k).has_value()) << k << " dropped while deferred";
+                EXPECT_FALSE(c.node2->store.get(k).has_value()) << k << " pushed while quarantined";
+            }
+
+            // Past the window the same call migrates for real.
+            c.clock.advance(120s);
+            EXPECT_FALSE(c.node1->shard.rebalance());
+            c.bus.deliver();
+            for (const auto& k : keys) {
+                EXPECT_TRUE(c.node2->store.get(k).has_value()) << k << " not migrated after window";
             }
         }
 

@@ -44,7 +44,7 @@ namespace {
         cinder::net::Request req{
             .opcode = cinder::net::Opcode::AdminCluster,
             .key = {},
-            .value = {}
+            .value = {},
         };
         auto res = rawRequest(port, req);
         ASSERT_TRUE(res.has_value());
@@ -78,7 +78,7 @@ namespace {
         cinder::net::Request req{
             .opcode = cinder::net::Opcode::AdminCompact,
             .key = {},
-            .value = {}
+            .value = {},
         };
         auto res = rawRequest(port, req);
         ASSERT_TRUE(res.has_value());
@@ -94,7 +94,7 @@ namespace {
         cinder::net::Request req{
             .opcode = cinder::net::Opcode::AdminConfigReload,
             .key = {},
-            .value = {}
+            .value = {},
         };
         auto res = rawRequest(port, req);
         ASSERT_TRUE(res.has_value());
@@ -110,7 +110,7 @@ namespace {
         cinder::net::Request req{
             .opcode = cinder::net::Opcode::AdminShutdown,
             .key = {},
-            .value = {}
+            .value = {},
         };
         auto res = rawRequest(port, req);
         ASSERT_TRUE(res.has_value());
@@ -160,7 +160,7 @@ namespace {
             cinder::net::Request req{
                 .opcode = cinder::net::Opcode::AdminInfo,
                 .key = {},
-                .value = {}
+                .value = {},
             };
             auto res = rawRequest(port, req);
             ASSERT_TRUE(res.has_value()) << phase;
@@ -176,7 +176,7 @@ namespace {
         cinder::net::Request reload{
             .opcode = cinder::net::Opcode::AdminConfigReload,
             .key = {},
-            .value = {}
+            .value = {},
         };
         auto reload_res = rawRequest(port, reload);
         ASSERT_TRUE(reload_res.has_value());

@@ -10,7 +10,6 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-#include <vector>
 
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/common/status.hpp"
@@ -43,7 +42,7 @@ namespace {
 
     template <typename Stream>
     [[maybe_unused]]
-    static auto readResponse(Stream& socket) -> cinder::Result<cinder::net::Response> {
+    auto readResponse(Stream& socket) -> cinder::Result<cinder::net::Response> {
         std::array<std::byte, 65'536> buf{};
         error_code ec;
         (void)read(socket, buffer(buf.data(), cinder::net::K_FRAME_HEADER_SIZE), ec);
@@ -79,7 +78,7 @@ namespace {
     }
 
     [[maybe_unused]]
-    static auto rawTlsRequest(int port, const cinder::net::Request& req, context& ssl_ctx)
+    auto rawTlsRequest(int port, const cinder::net::Request& req, context& ssl_ctx)
         -> cinder::Result<cinder::net::Response> {
         io_context io;
         stream<tcp::socket> socket(io, ssl_ctx);
@@ -116,11 +115,15 @@ namespace {
     }
 
     [[maybe_unused]]
-    static auto waitForTlsNode(int port, context& ssl_ctx, int max_retries = 50) -> bool {
+    auto waitForTlsNode(int port, context& ssl_ctx, int max_retries = 50) -> bool {
         // Identity check over TLS: the answering daemon must report the expected
         // bound port, rejecting stale daemons from earlier runs.
         for (int i = 0; i < max_retries; i++) {
-            cinder::net::Request req{.opcode = cinder::net::Opcode::AdminInfo};
+            cinder::net::Request req{
+                .opcode = cinder::net::Opcode::AdminInfo,
+                .key = {},
+                .value = {},
+            };
             auto res = rawTlsRequest(port, req, ssl_ctx);
             if (res.has_value()
                 && res.value().status
@@ -208,14 +211,18 @@ namespace {
         cinder::net::Request set_req{
             .opcode = cinder::net::Opcode::Set,
             .key = "tls-key",
-            .value = "tls-value"
+            .value = "tls-value",
         };
 
         auto set_res = rawTlsRequest(port, set_req, *ssl_ctx_);
         ASSERT_TRUE(set_res.has_value()) << set_res.error().message();
         EXPECT_EQ(set_res.value().status, cinder::Errc::OK);
 
-        cinder::net::Request get_req{.opcode = cinder::net::Opcode::Get, .key = "tls-key"};
+        cinder::net::Request get_req{
+            .opcode = cinder::net::Opcode::Get,
+            .key = "tls-key",
+            .value = {},
+        };
 
         auto get_res = rawTlsRequest(port, get_req, *ssl_ctx_);
         ASSERT_TRUE(get_res.has_value()) << get_res.error().message();
@@ -232,7 +239,11 @@ namespace {
         pid_t dpid = spawnTlsDaemon(port);
         ASSERT_TRUE(waitForTlsNode(port, *ssl_ctx_));
 
-        cinder::net::Request ping_req{.opcode = cinder::net::Opcode::Ping};
+        cinder::net::Request ping_req{
+            .opcode = cinder::net::Opcode::Ping,
+            .key = {},
+            .value = {},
+        };
         auto res = rawTlsRequest(port, ping_req, *ssl_ctx_);
         ASSERT_TRUE(res.has_value()) << res.error().message();
         EXPECT_EQ(res.value().status, cinder::Errc::OK);
@@ -254,7 +265,11 @@ namespace {
         ASSERT_FALSE(ec) << ec.message();
 
         // Send a raw (unencrypted) frame — the server expects a TLS ClientHello
-        cinder::net::Request ping_req{.opcode = cinder::net::Opcode::Ping};
+        cinder::net::Request ping_req{
+            .opcode = cinder::net::Opcode::Ping,
+            .key = {},
+            .value = {},
+        };
         auto encoded = cinder::net::encode(ping_req);
         ASSERT_TRUE(encoded.has_value());
         (void)write(socket, buffer(encoded.value()), ec);

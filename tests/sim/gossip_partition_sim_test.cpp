@@ -356,6 +356,108 @@ namespace cinder {
             EXPECT_EQ(info->state, NodeState::Dead);
         }
 
+        // Transport whose sends never complete: callbacks are captured and held,
+        // so probes stay pending forever. SimTransport always completes
+        // synchronously (ack or err), so only a fake like this can exercise the
+        // failure detector's blackhole sweep (pending past suspect_timeout).
+        class BlackholeTransport : public Transport {
+        public:
+
+            void sendAsync(const NodeId&, const net::Request&, SendCallback on_done) override {
+                ++sends;
+                pending_.push_back(std::move(on_done));
+            }
+
+            void sendRequestAsync(
+                const NodeId&,
+                const net::Request&,
+                RequestCallback on_done
+            ) override {
+                on_done(err<net::Response>(Error(Errc::NotReady, "blackholed")));
+            }
+
+            void onMessage(MessageHandler handler) override {
+                handler_ = std::move(handler);
+            }
+
+            int sends = 0;
+
+        private:
+
+            std::vector<SendCallback> pending_;
+            MessageHandler handler_;
+        };
+
+        // K_SUSPECT_THRESHOLD counts *consecutive* failures: an ack between two
+        // failures resets the streak, so fail-ack-fail stays Alive while
+        // fail-fail (with no intervening ack) suspects.
+        TEST(GossipPartitionSimTest, FailureDetectorStreakResetsOnAck) {
+            SimClock clock;
+            SimBus bus(clock, 5);
+
+            auto n1 = std::make_unique<GossipNode>(clock, bus, "node1", "node1");
+            n1->table.seed({{"node1", "127.0.0.1", 17'900}, {"node2", "127.0.0.1", 17'901}});
+            n1->detector.start();
+
+            auto state_of = [&] {
+                auto info = n1->table.get("node2");
+                EXPECT_TRUE(info.has_value());
+                return info->state;
+            };
+
+            n1->detector.tick(); // node2 up: ack, streak zero.
+            bus.setNodeDown("node2");
+            n1->detector.tick(); // fail #1: tolerated.
+            EXPECT_EQ(state_of(), NodeState::Alive);
+
+            bus.setNodeUp("node2");
+            n1->detector.tick(); // ack: streak resets to zero.
+
+            bus.setNodeDown("node2");
+            n1->detector.tick(); // fail #1 again, not #2: must stay Alive.
+            EXPECT_EQ(state_of(), NodeState::Alive)
+                << "streak was not reset by the intervening ack";
+
+            n1->detector.tick(); // fail #2 consecutive: suspects.
+            EXPECT_EQ(state_of(), NodeState::Suspect);
+        }
+
+        // Blackhole: probes never resolve (no ack, no err). Once a probe has
+        // been pending longer than suspect_timeout, the sweep suspects
+        // immediately instead of waiting for K failures.
+        TEST(GossipPartitionSimTest, FailureDetectorBlackholeSuspectsOnTimeout) {
+            SimClock clock;
+            BlackholeTransport transport;
+            MembershipTable table("node1");
+            table.seed({{"node1", "127.0.0.1", 17'900}, {"node2", "127.0.0.1", 17'901}});
+            FailureDetector detector(clock, transport, table, "node1", 3000ms);
+            detector.start();
+
+            detector.tick(); // probe sent, pending forever.
+            EXPECT_GE(transport.sends, 1);
+
+            clock.advance(4000ms);
+            detector.tick(); // sweep: pending past timeout suspects.
+            auto info = table.get("node2");
+            ASSERT_TRUE(info.has_value());
+            EXPECT_EQ(info->state, NodeState::Suspect);
+        }
+
+        // Gossip tick with no known peers is a no-op (early return), not a crash
+        // and not a send. Locks in the peers_.empty() guard.
+        TEST(GossipPartitionSimTest, GossipTickWithNoPeersSendsNothing) {
+            SimClock clock;
+            SimBus bus(clock, 6);
+
+            auto n1 = std::make_unique<GossipNode>(clock, bus, "node1", "node1");
+            n1->gossip.start();
+            for (int i = 0; i < 3; ++i) {
+                n1->gossip.tick();
+                bus.deliver();
+            }
+            EXPECT_EQ(bus.pending(), 0u);
+        }
+
         // Graceful leave: node3 calls leave() → broadcasts self as Dead to all peers.
         // After delivery, node1 sees node3 as Dead immediately — no probe/suspect cycle.
         TEST(GossipPartitionSimTest, GracefulLeaveBroadcastsDead) {

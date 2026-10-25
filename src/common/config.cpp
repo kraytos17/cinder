@@ -204,6 +204,7 @@ namespace cinder {
             cfg.node_id = server["node_id"].as<std::string>(cfg.node_id);
             cfg.port = server["port"].as<uint16_t>(cfg.port);
             cfg.capacity = server["capacity"].as<size_t>(cfg.capacity);
+            cfg.rpc_timeout_ms = server["rpc_timeout_ms"].as<int>(cfg.rpc_timeout_ms);
             cfg.replica_factor = server["replication_factor"].as<int>(cfg.replica_factor);
             cfg.consistency = server["consistency"].as<std::string>(cfg.consistency);
             cfg.metrics_port = server["metrics_port"].as<uint16_t>(cfg.metrics_port);

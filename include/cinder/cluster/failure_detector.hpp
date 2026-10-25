@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <unordered_map>
@@ -93,7 +94,7 @@ namespace cinder {
         Transport& transport_;
         MembershipTable& table_;
         NodeId self_;
-        milliseconds suspect_timeout_;
+        std::atomic<milliseconds> suspect_timeout_;
         mutable std::mutex state_mutex_;
         std::vector<NodeId> peers_;
         size_t next_peer_ = 0;

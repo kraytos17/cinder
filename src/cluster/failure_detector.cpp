@@ -32,7 +32,7 @@ namespace cinder {
         CINDER_INFO(
             "failure_detector started",
             {"suspect_timeout_ms",
-             std::chrono::duration_cast<milliseconds>(suspect_timeout_).count()}
+             std::chrono::duration_cast<milliseconds>(suspect_timeout_.load()).count()}
         );
         // Late joiners discovered via gossip/failure-detection must be added
         // dynamically after start(); each arrival fires this callback.
@@ -66,7 +66,10 @@ namespace cinder {
             std::scoped_lock lock(state_mutex_);
             // Sweep pending probes for timeouts (covers blackholes that never ack).
             for (auto& [peer, state] : peer_state_) {
-                if (state.probe.pending && clock_.now() - state.probe.sent_at > suspect_timeout_) {
+                if (state.probe.pending
+                    && clock_.now()
+                    - state.probe.sent_at
+                    > suspect_timeout_.load()) {
                     state.probe.pending = false;
                     timed_out.push_back(peer);
                 }
@@ -205,7 +208,7 @@ namespace cinder {
             if (!info.has_value() || info->state != NodeState::Suspect) {
                 continue;
             }
-            if (clock_.now() - state.suspect_since > suspect_timeout_) {
+            if (clock_.now() - state.suspect_since > suspect_timeout_.load()) {
                 to_dead.push_back(peer);
             }
         }

@@ -55,7 +55,8 @@ namespace cinder {
 
         CINDER_INFO(
             "gossip started",
-            {"interval_ms", std::chrono::duration_cast<milliseconds>(gossip_interval_).count()}
+            {"interval_ms",
+             std::chrono::duration_cast<milliseconds>(gossip_interval_.load()).count()}
         );
         // Late joiners discovered via gossip/failure-detection must be added
         // dynamically after start(); each arrival fires this callback.

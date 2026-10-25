@@ -2,7 +2,6 @@
 #include <string>
 #include <vector>
 
-#include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/membership.hpp"
 
 using std::chrono::steady_clock;

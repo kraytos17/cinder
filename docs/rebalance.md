@@ -418,6 +418,7 @@ server:
   replication_factor: 2
   consistency: quorum
   metrics_port: 9090
+  rpc_timeout_ms: 5000
 
 cluster:
   peers:

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <mutex>
 #include <string_view>
@@ -69,7 +70,7 @@ namespace cinder {
         Transport& transport_;
         MembershipTable& table_;
         NodeId self_;
-        milliseconds gossip_interval_;
+        std::atomic<milliseconds> gossip_interval_;
         mutable std::mutex peers_mutex_; // guards peers_ only
         std::vector<NodeId> peers_;
         MetricsCollector* metrics_ = nullptr;

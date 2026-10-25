@@ -140,6 +140,11 @@ struct NodeProc {
     std::string id;
 };
 
+// spawnNode forks+execs the real cinderd binary: only available in TUs built
+// with CINDER_TEST_CINDERD_PATH (i.e. the integration suite). Unit tests use
+// in-process servers instead (see unit/cache_node_server_test.cpp) and must
+// not fork daemons.
+#ifdef CINDER_TEST_CINDERD_PATH
 [[maybe_unused]] static auto
 spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum = false,
     int replica_factor = 1, int quarantine_interval_ms = 10'000, int suspect_timeout_ms = 3'000,
@@ -190,6 +195,7 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
     }
     return {pid, port, id};
 }
+#endif // CINDER_TEST_CINDERD_PATH
 
 // Terminate a spawned node; SIGKILL fallback if it does not exit within the
 // deadline so tests can never deadlock on shutdown.

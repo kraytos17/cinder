@@ -147,7 +147,8 @@ auto main(int argc, char* argv[]) -> int {
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
     options.shared_secret = shared_secret.empty() ? cfg.auth.shared_secret : shared_secret;
     options.eviction_policy = eviction_policy;
-    options.rpc_timeout = milliseconds(rpc_timeout_ms);
+    options.rpc_timeout = app.count("--rpc-timeout") == 0 ? milliseconds(cfg.rpc_timeout_ms)
+                                                          : milliseconds(rpc_timeout_ms);
     options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
     options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
     if (!config_path.empty()) {

@@ -131,9 +131,15 @@ namespace cinder {
     void CacheNodeServer::installAdminCallbacks() {
         server_.setAdminCallbacks({
             .info_getter = [this]() -> std::string {
+            Config snapshot;
+            {
+                std::scoped_lock lock(config_mutex_);
+                snapshot = current_config_;
+            }
+
             return formatNodeInfoJson(
                 node_id_,
-                current_config_,
+                snapshot,
                 metrics_.shardMetrics().live.current_bytes.load(),
                 metrics_.shardMetrics().live.current_entries.load()
             );
@@ -240,7 +246,14 @@ namespace cinder {
             &gossip_,
             options.metrics_port,
             &metrics_,
-            [this]() { return formatConfigJson(current_config_); },
+            [this]() {
+                Config snapshot;
+                {
+                    std::scoped_lock lock(config_mutex_);
+                    snapshot = current_config_;
+                }
+                return formatConfigJson(snapshot);
+            },
             &anti_entropy_,
             options.shared_secret
 #ifdef CINDER_ENABLE_TLS
@@ -298,7 +311,7 @@ namespace cinder {
         if (persistence_.enabled()) {
             scheduleCompact();
         }
-        if (anti_entropy_interval_.count() > 0) {
+        if (anti_entropy_interval_.load().count() > 0) {
             scheduleAntiEntropy();
         }
 
@@ -459,11 +472,11 @@ namespace cinder {
     }
 
     void CacheNodeServer::scheduleRebalance() {
-        if (quarantine_interval_.count() <= 0) {
+        if (quarantine_interval_.load().count() <= 0) {
             return;
         }
 
-        timers_.quarantine.expires_after(quarantine_interval_);
+        timers_.quarantine.expires_after(quarantine_interval_.load());
         timers_.quarantine.async_wait([this](std::error_code ec) {
             if (ec) {
                 return;
@@ -522,11 +535,11 @@ namespace cinder {
     }
 
     void CacheNodeServer::scheduleAntiEntropy() {
-        if (anti_entropy_interval_.count() <= 0) {
+        if (anti_entropy_interval_.load().count() <= 0) {
             return;
         }
 
-        timers_.anti_entropy.expires_after(anti_entropy_interval_);
+        timers_.anti_entropy.expires_after(anti_entropy_interval_.load());
         timers_.anti_entropy.async_wait([this](std::error_code ec) {
             if (ec) {
                 return;
@@ -567,9 +580,9 @@ namespace cinder {
         } else if (field == "quarantine_interval_ms") {
             quarantine_interval_ = milliseconds(cfg.quarantine_interval_ms);
         } else if (field == "anti_entropy_interval_ms") {
-            bool was_disabled = anti_entropy_interval_.count() <= 0;
+            bool was_disabled = anti_entropy_interval_.load().count() <= 0;
             anti_entropy_interval_ = milliseconds(cfg.anti_entropy_interval_ms);
-            if (was_disabled && anti_entropy_interval_.count() > 0) {
+            if (was_disabled && anti_entropy_interval_.load().count() > 0) {
                 scheduleAntiEntropy();
             }
         } else {
@@ -590,6 +603,10 @@ namespace cinder {
             return;
         }
 
+        // Serialize whole reloads against each other and against admin readers:
+        // concurrent applyConfig runs (timer + admin trigger) would otherwise
+        // race on current_config_, and readers would race the writers.
+        std::scoped_lock lock(config_mutex_);
         auto changed = diffConfig(current_config_, *new_config);
         if (changed.empty()) {
             return;

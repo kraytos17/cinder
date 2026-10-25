@@ -1,5 +1,10 @@
+#include <atomic>
+#include <deque>
 #include <gtest/gtest.h>
 #include <string>
+#include <thread>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "cinder/node/replication_manager.hpp"
@@ -77,6 +82,96 @@ namespace cinder {
             size_t replayed = 0;
             mgr.replayHints([&](size_t n) { replayed = n; });
             return replayed;
+        }
+
+        // Transport whose completions are deferred until the test pumps them.
+        // SimTransport always completes synchronously, so it can only ever
+        // exercise fanOutQuorum's inline drain. DeferredTransport additionally
+        // exercises the detached async tail: complete some callbacks inline
+        // (before the drain runs) and the rest afterwards (while the tail is
+        // draining) to cover the handoff between the two phases. The tail runs
+        // on asio's system pool, so TSan watches the shared reduce state.
+        class DeferredTransport : public Transport {
+        public:
+
+            // Nodes in this set complete synchronously inside sendAsync (like a
+            // loopback peer); everything else queues until completeSends().
+            std::unordered_set<NodeId> sync_nodes;
+
+            void sendAsync(const NodeId& to, const net::Request&, SendCallback on_done) override {
+                if (sync_nodes.contains(to)) {
+                    on_done(ok());
+                    return;
+                }
+                pending_sends_.push_back(std::move(on_done));
+            }
+
+            void sendRequestAsync(
+                const NodeId&,
+                const net::Request&,
+                RequestCallback on_done
+            ) override {
+                pending_requests_.push_back(std::move(on_done));
+            }
+
+            void onMessage(MessageHandler) override {}
+
+            auto pendingSends() const -> size_t {
+                return pending_sends_.size();
+            }
+
+            auto pendingRequests() const -> size_t {
+                return pending_requests_.size();
+            }
+
+            void completeSends(size_t n, bool ok = true) {
+                for (size_t i = 0; i < n && !pending_sends_.empty(); ++i) {
+                    auto cb = std::move(pending_sends_.front());
+                    pending_sends_.pop_front();
+                    if (ok) {
+                        cb(cinder::ok());
+                    } else {
+                        cb(cinder::err(Error(Errc::NotReady, "deferred failure")));
+                    }
+                }
+            }
+
+            void completeRequest(Version version, uint64_t writer, std::string value) {
+                EXPECT_FALSE(pending_requests_.empty());
+                auto cb = std::move(pending_requests_.front());
+                pending_requests_.pop_front();
+                net::Response resp;
+                resp.status = Errc::OK;
+                resp.value = std::move(value);
+                resp.version = version;
+                resp.writer_node_hash = writer;
+                cb(std::move(resp));
+            }
+
+        private:
+
+            std::deque<SendCallback> pending_sends_;
+            std::deque<RequestCallback> pending_requests_;
+        };
+
+        struct DeferredCluster {
+            SimClock clock;
+            DeferredTransport transport;
+            LruStore store{1024, &clock};
+            ReplicationManager mgr{store, "node1", clock, transport};
+        };
+
+        // Block (up to a generous deadline) until the async decision arrives.
+        // Failure means the quorum never decided — the bug being guarded.
+        auto awaitDecision(std::atomic<int>& done_count) -> bool {
+            auto deadline = std::chrono::steady_clock::now() + seconds(10);
+            while (done_count.load() == 0) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    return false;
+                }
+                std::this_thread::sleep_for(milliseconds(1));
+            }
+            return true;
         }
 
         TEST(ReplicationSimTest, AsyncWriteReachesReplica) {
@@ -282,6 +377,107 @@ namespace cinder {
             EXPECT_EQ(c.mgr1.hintCount(), 1);
         }
 
+        // Mixed sync/async quorum write: node2 acks inline (inline drain),
+        // node3/node4 report while the detached tail is draining. The decision
+        // must fire exactly once at quorum despite completions arriving on
+        // both sides of the handoff.
+        TEST(ReplicationSimTest, QuorumWriteMixedSyncAsyncCompletesOnce) {
+            DeferredCluster c;
+            c.transport.sync_nodes.insert("node2");
+
+            std::atomic<int> done_count{0};
+            Result<void> result = err(Error(Errc::InternalError, "unset"));
+            c.mgr.writeAsync(
+                "k",
+                "v",
+                std::nullopt,
+                {"node2", "node3", "node4"},
+                ConsistencyMode::Quorum,
+                [&](Result<void> r) {
+                // Assign before counting: the counter synchronizes the
+                // handoff to the waiting test thread.
+                result = std::move(r);
+                ++done_count;
+            }
+            );
+            // All three sends launched; the sync one completed inline.
+            EXPECT_EQ(c.transport.pendingSends(), 2u);
+            EXPECT_EQ(done_count.load(), 0);
+
+            // First deferred ack reaches quorum (local + node2 + this one).
+            // The decision lands on the async tail, off the calling thread.
+            c.transport.completeSends(1);
+            ASSERT_TRUE(awaitDecision(done_count));
+            EXPECT_TRUE(result.has_value());
+
+            // Straggler arrives after the decision: still exactly one
+            // delivery, and the tail drains it so no callback is left
+            // outstanding.
+            c.transport.completeSends(1);
+            std::this_thread::sleep_for(milliseconds(100));
+            EXPECT_EQ(done_count.load(), 1);
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
+        }
+
+        // Quorum write with no replicas: W == 1, so the local ack alone
+        // suffices and completes synchronously with no bus traffic.
+        TEST(ReplicationSimTest, QuorumWriteWithNoReplicasCompletesImmediately) {
+            DeferredCluster c;
+            auto wr = runWrite(c.mgr, "k0", "v0", std::nullopt, {}, ConsistencyMode::Quorum);
+            ASSERT_TRUE(wr.has_value());
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
+            ASSERT_TRUE(c.store.get("k0").has_value());
+            EXPECT_EQ(c.store.get("k0").value(), "v0");
+        }
+
+        // Async write with no replicas: best-effort fan-out over zero nodes is
+        // a no-op; the local commit still counts and completes synchronously.
+        TEST(ReplicationSimTest, AsyncWriteWithNoReplicasCompletesImmediately) {
+            DeferredCluster c;
+            auto wr = runWrite(c.mgr, "k0", "v0", std::nullopt, {}, ConsistencyMode::Async);
+            ASSERT_TRUE(wr.has_value());
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
+            ASSERT_TRUE(c.store.get("k0").has_value());
+            EXPECT_EQ(c.store.get("k0").value(), "v0");
+        }
+
+        // Empty replay reports zero AND releases the single-consumer guard: a
+        // stuck guard would silently disable all later replays, so prove the
+        // manager still round-trips a real hint afterward.
+        TEST(ReplicationSimTest, EmptyReplayReportsZeroAndReleasesGuard) {
+            DeferredCluster c;
+            EXPECT_EQ(runReplay(c.mgr), 0u);
+
+            // Enqueue a hint with a failed quorum write (node2 never acks, so
+            // the error completion goes through the async tail).
+            std::atomic<int> wdone{0};
+            c.mgr.writeAsync(
+                "k1",
+                "v1",
+                std::nullopt,
+                {"node2"},
+                ConsistencyMode::Quorum,
+                [&](Result<void>) { ++wdone; }
+            );
+            EXPECT_EQ(wdone.load(), 0);
+            EXPECT_EQ(c.transport.pendingSends(), 1u);
+            c.transport.completeSends(1, false);
+            ASSERT_TRUE(awaitDecision(wdone));
+            ASSERT_EQ(c.mgr.hintCount(), 1u);
+
+            // The guard was released by the empty replay above, so this
+            // replay runs instead of reporting zero.
+            // Zero initial value: awaitDecision waits for any completion, and a
+            // zero result would mean the empty fast path fired instead of the
+            // tail -- either way the assertions below catch a wrong path.
+            std::atomic<int> replayed{0};
+            c.mgr.replayHints([&](size_t n) { replayed = static_cast<int>(n); });
+            c.transport.completeSends(1, true);
+            ASSERT_TRUE(awaitDecision(replayed));
+            EXPECT_EQ(replayed.load(), 1);
+            EXPECT_EQ(c.mgr.hintCount(), 0u);
+        }
+
         TEST(ReplicationSimTest, HintedHandoffReplaysWhenReplicaReturns) {
             TwoNodeCluster c;
             c.bus.setNodeDown("node2");
@@ -421,7 +617,7 @@ namespace cinder {
                         .status = Errc::OK,
                         .value = entry->value,
                         .version = entry->version(),
-                        .writer_node_hash = entry->writer_node_hash
+                        .writer_node_hash = entry->writer_node_hash,
                     };
                     if (entry->hasTtl()) {
                         resp.expires_at = toSystemExpiry(clock, entry->expires_at);
@@ -503,6 +699,38 @@ namespace cinder {
 
             // No Replicate messages should have been sent (bus should be empty).
             EXPECT_EQ(c.bus.pending(), 0);
+        }
+
+        // Async quorum read with deferred responses: local store misses, the
+        // tail reduces two out-of-order replica versions and must return the
+        // LWW winner exactly once. Exercises the read-path reduce (best_*
+        // compound maximum) across the inline/tail handoff.
+        TEST(ReadRepairSimTest, QuorumReadDeferredResponsesReturnBest) {
+            DeferredCluster c;
+
+            std::atomic<int> done_count{0};
+            Result<VersionedEntry> result =
+                err<VersionedEntry>(Error(Errc::InternalError, "unset"));
+            c.mgr.readAsync("key1", {"node2", "node3"}, 2, [&](Result<VersionedEntry> r) {
+                result = std::move(r);
+                ++done_count;
+            });
+            // Both requests launched, nothing reported yet.
+            EXPECT_EQ(c.transport.pendingRequests(), 2u);
+            EXPECT_EQ(done_count.load(), 0);
+
+            // Stale v1 arrives first: no quorum yet (acks=1 < 2), no callback.
+            c.transport.completeRequest(1, 100, "v1");
+            std::this_thread::sleep_for(milliseconds(50));
+            EXPECT_EQ(done_count.load(), 0);
+
+            // Fresh v3 arrives: quorum reached on the tail, best wins.
+            c.transport.completeRequest(3, 200, "v3");
+            ASSERT_TRUE(awaitDecision(done_count));
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->value, "v3");
+            EXPECT_EQ(result->version(), 3);
+            EXPECT_EQ(done_count.load(), 1);
         }
 
         TEST(ReadRepairSimTest, ReadRepairReturnsBestVersion) {
