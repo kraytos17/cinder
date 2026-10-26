@@ -272,7 +272,7 @@ namespace cinder {
             // without adding a case trips -Wswitch on every build (GCC and
             // Clang). The table below is then checked against it, so a missing
             // or duplicated row fails the test rather than passing silently.
-            const std::array<Errc, 11> kAllValues = {
+            const std::array<Errc, 11> k_all_values = {
                 Errc::OK,
                 Errc::NotFound,
                 Errc::CapacityExceeded,
@@ -286,7 +286,7 @@ namespace cinder {
                 Errc::CorruptData,
             };
 
-            for (const auto v : kAllValues) {
+            for (const auto v : k_all_values) {
                 switch (v) {
                     case Errc::OK:
                     case Errc::NotFound:
@@ -316,7 +316,7 @@ namespace cinder {
             }
             // No row may reference a value outside the enumerated set.
             for (const auto& c : cases) {
-                EXPECT_EQ(std::count(std::begin(kAllValues), std::end(kAllValues), c.code), 1)
+                EXPECT_EQ(std::count(std::begin(k_all_values), std::end(k_all_values), c.code), 1)
                     << "table row for an unknown Errc";
             }
         }

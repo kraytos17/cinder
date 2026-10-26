@@ -126,13 +126,13 @@ namespace cinder::net {
             CINDER_INFO("listening on port", {"port", ep.port()});
         }
 
-        asio::post(asio::bind_executor(strand_, [this]() { doAccept(); }));
+        asio::post(asio::bind_executor(strand_, [this] { doAccept(); }));
         if (metrics_acceptor_) {
             auto mep = metrics_acceptor_->local_endpoint(ec);
             if (!ec) {
                 CINDER_INFO("metrics HTTP listening on port", {"port", mep.port()});
             }
-            asio::post(asio::bind_executor(strand_, [this]() { doAcceptMetrics(); }));
+            asio::post(asio::bind_executor(strand_, [this] { doAcceptMetrics(); }));
         }
         return ok();
     }

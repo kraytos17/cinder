@@ -97,7 +97,7 @@ namespace cinder {
 
             // Server loop: accept, read request, send a valid response.
             std::function<void()> do_accept;
-            do_accept = [&]() {
+            do_accept = [&] {
                 auto sock = std::make_shared<tcp::socket>(io);
                 acceptor.async_accept(*sock, [&, sock](error_code ec) {
                     if (ec) {
@@ -210,7 +210,7 @@ namespace cinder {
             tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
 
             std::function<void()> do_accept;
-            do_accept = [&]() {
+            do_accept = [&] {
                 auto sock = std::make_shared<tcp::socket>(io);
                 acceptor.async_accept(*sock, [&, sock](error_code ec) {
                     if (ec) {

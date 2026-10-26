@@ -85,7 +85,7 @@ namespace cinder::net {
         // Called from the accept loop on an arbitrary pool thread; all connection
         // state mutation happens on-strand.
         auto self = shared_from_this();
-        asio::post(strand_, [self]() mutable { self->startOnStrand(); });
+        asio::post(strand_, [self] mutable { self->startOnStrand(); });
     }
 
     void TcpConnection::startOnStrand() {
@@ -130,14 +130,14 @@ namespace cinder::net {
     void TcpConnection::close() {
         Span span("tcp.close");
         auto self = shared_from_this();
-        asio::post(strand_, [this, self]() {
+        asio::post(strand_, [this, self] {
             closeConnection("server shutdown", asio::error::operation_aborted);
         });
     }
 
     void TcpConnection::drain() {
         auto self = shared_from_this();
-        asio::post(strand_, [this, self]() {
+        asio::post(strand_, [this, self] {
             setDraining(true);
             if (!pending_opcode_.has_value() && write_queue_.empty() && !isWriting()) {
                 closeConnection("drained");
@@ -595,7 +595,7 @@ namespace cinder::net {
                         // hop back onto this connection's strand.
                         asio::post(
                             strand_,
-                            [this, self, result = std::move(result), trace_id, span_id]() mutable {
+                            [this, self, result = std::move(result), trace_id, span_id] mutable {
                             Span async_span("replication.read.quorum", span_id);
                             Response async_res;
                             if (result.has_value()) {
@@ -678,7 +678,7 @@ namespace cinder::net {
                         ring_.decrementLoad(node_id_);
                         // Quorum completion lands on an arbitrary pool thread —
                         // hop back onto this connection's strand.
-                        asio::post(strand_, [this, self, result, trace_id, span_id]() {
+                        asio::post(strand_, [this, self, result, trace_id, span_id] {
                             Span async_span("replication.write.quorum", span_id);
                             Response async_res{
                                 .status = result.has_value() ? Errc::OK : result.error().code(),

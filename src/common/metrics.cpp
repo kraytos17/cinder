@@ -261,6 +261,11 @@ namespace cinder {
             "cluster_rebalance_migration_retries_total",
             cluster_.rebalance_migration_retries.load()
         );
+        appendCounter(
+            os,
+            "cluster_rebalance_dropped_underreplicated_total",
+            cluster_.rebalance_dropped_underreplicated.load()
+        );
         // Connection metrics
         appendCounter(os, "connections_opened_total", conn_.connections_opened.load());
         appendCounter(os, "connections_closed_total", conn_.connections_closed.load());

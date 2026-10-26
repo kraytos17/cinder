@@ -393,7 +393,7 @@ namespace cinder {
         }
 
 #ifdef CINDER_ENABLE_TLS
-        auto write_all = [&]() -> asio::awaitable<void> {
+        auto write_all = [&] -> asio::awaitable<void> {
             for (auto& data : all_data) {
                 if (conn.stream) {
                     co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));

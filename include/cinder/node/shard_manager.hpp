@@ -3,6 +3,7 @@
 #include <chrono>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/membership.hpp"
@@ -76,7 +77,14 @@ namespace cinder {
 
         auto makeReplicateRequest(const std::string& key, const VersionedEntry& entry)
             -> net::Request;
-        void migrateKey(const std::string& key, const VersionedEntry& entry, const NodeId& owner);
+
+        void migrateKey(
+            const std::string& key,
+            const VersionedEntry& entry,
+            const NodeId& owner,
+            const std::vector<NodeId>& replica_peers
+        );
+
         void pushReplica(const std::string& key, const VersionedEntry& entry, const NodeId& owner);
 
         CacheStore& store_;

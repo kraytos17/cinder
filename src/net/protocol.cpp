@@ -271,26 +271,19 @@ namespace cinder::net {
             req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), *val_len);
         }
         // Trace context — optional trailing data gated by flag 0x04.
-        if (*flags & K_FLAG_HAS_TRACE) {
-            if (r.remaining() >= sizeof(uint64_t) * 2) {
-                auto tid = mustRead<uint64_t>(r);
-                auto sid = mustRead<uint64_t>(r);
-                if (tid && sid) {
-                    req.trace_id = *tid;
-                    req.span_id = *sid;
-                }
+        if ((*flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {
+            auto tid = mustRead<uint64_t>(r);
+            auto sid = mustRead<uint64_t>(r);
+            if (tid && sid) {
+                req.trace_id = *tid;
+                req.span_id = *sid;
             }
         }
         // Auth token — optional trailing data gated by flag 0x08.
-        if (*flags & K_FLAG_HAS_AUTH) {
-            if (r.remaining() >= 32) {
-                auto auth_bytes = r.readBytes(32);
-                if (auth_bytes) {
-                    decoded.auth_token.assign(
-                        reinterpret_cast<const char*>(auth_bytes->data()),
-                        32
-                    );
-                }
+        if ((*flags & K_FLAG_HAS_AUTH) != 0 && r.remaining() >= 32) {
+            auto auth_bytes = r.readBytes(32);
+            if (auth_bytes) {
+                decoded.auth_token.assign(reinterpret_cast<const char*>(auth_bytes->data()), 32);
             }
         }
         return ok(std::move(decoded));
@@ -452,14 +445,12 @@ namespace cinder::net {
                 res.value = std::string(reinterpret_cast<const char*>(val_bytes->data()), val_len);
             }
         }
-        if (flags & K_FLAG_HAS_TRACE) {
-            if (r.remaining() >= sizeof(uint64_t) * 2) {
-                auto tid = mustRead<uint64_t>(r);
-                auto sid = mustRead<uint64_t>(r);
-                if (tid && sid) {
-                    res.trace_id = *tid;
-                    res.span_id = *sid;
-                }
+        if ((flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {
+            auto tid = mustRead<uint64_t>(r);
+            auto sid = mustRead<uint64_t>(r);
+            if (tid && sid) {
+                res.trace_id = *tid;
+                res.span_id = *sid;
             }
         }
         return ok(std::move(res));

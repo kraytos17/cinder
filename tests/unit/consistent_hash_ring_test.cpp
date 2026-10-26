@@ -120,7 +120,7 @@ namespace cinder {
             std::vector<std::thread> threads;
             threads.reserve(4);
             for (int t = 0; t < 4; t++) {
-                threads.emplace_back([&ring]() {
+                threads.emplace_back([&ring] {
                     for (int i = 0; i < 1000; i++) {
                         auto key = "key" + std::to_string(i);
                         auto node = ring.getNode(key);
@@ -147,7 +147,7 @@ namespace cinder {
             std::vector<std::thread> readers;
             readers.reserve(K_READER_THREADS);
             for (int t = 0; t < K_READER_THREADS; t++) {
-                readers.emplace_back([&ring, &stop, t]() {
+                readers.emplace_back([&ring, &stop, t] {
                     for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
                         auto key = "k" + std::to_string(t) + "-" + std::to_string(i);
                         auto primary = ring.getNode(key);
@@ -162,7 +162,7 @@ namespace cinder {
 
             // Writer: add/remove a rotating cast of nodes until readers have had a
             // good workout. Every published snapshot keeps n0/n1 present.
-            std::thread writer([&ring, &stop]() {
+            std::thread writer([&ring, &stop] {
                 for (int round = 0; round < 200; round++) {
                     auto name = "churn" + std::to_string(round % 8);
                     ring.addNode(name);
@@ -384,7 +384,7 @@ namespace cinder {
 
             // Readers: hammer getNodeBounded while load fluctuates.
             for (int t = 0; t < 4; t++) {
-                threads.emplace_back([&ring, &stop, t]() {
+                threads.emplace_back([&ring, &stop, t] {
                     for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
                         auto key = "k" + std::to_string(t) + "-" + std::to_string(i);
                         auto node = ring.getNodeBounded(key);
@@ -395,7 +395,7 @@ namespace cinder {
 
             // Load chummers: rapidly increment/decrement to stress the mutex.
             for (int t = 0; t < 2; t++) {
-                threads.emplace_back([&ring, &stop]() {
+                threads.emplace_back([&ring, &stop] {
                     for (int i = 0; !stop.load(std::memory_order_relaxed); i++) {
                         const auto* node = (i % 2 == 0) ? "n0" : "n1";
                         ring.incrementLoad(node);

@@ -114,7 +114,7 @@ namespace cinder {
                  on_each = std::forward<OnEach>(on_each),
                  should_fire = std::forward<ShouldFire>(should_fire),
                  fire = std::forward<Fire>(fire),
-                 fail = std::forward<Fail>(fail)]() mutable -> asio::awaitable<void> {
+                 fail = std::forward<Fail>(fail)] mutable -> asio::awaitable<void> {
                 try {
                     for (; drain->seen < n; ++drain->seen) {
                         auto [idx, res] = co_await chan->async_receive(asio::use_awaitable);
@@ -292,7 +292,7 @@ namespace cinder {
                 ++st->acks;
             }
             --st->pending;
-        }, [st]() -> bool { return st->acks >= st->w || st->pending == 0; }, [this, st] {
+        }, [st] -> bool { return st->acks >= st->w || st->pending == 0; }, [this, st] {
             if (st->acks >= st->w) {
                 Span ok_span("replication.write.quorum.ok");
                 CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});
@@ -433,7 +433,7 @@ namespace cinder {
                 st->needs_repair = true;
             }
             --st->pending;
-        }, [st]() -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st] {
+        }, [st] -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st] {
             std::optional<VersionedEntry> result;
             if (st->best_entry.has_value()) {
                 result = std::move(st->best_entry);
@@ -567,7 +567,7 @@ namespace cinder {
                 ++st->replayed;
             }
             --st->pending;
-        }, [st]() -> bool { return st->pending == 0; }, [st] { st->finish(st->replayed); }, [st] {
+        }, [st] -> bool { return st->pending == 0; }, [st] { st->finish(st->replayed); }, [st] {
             st->finish(0);
         });
     }

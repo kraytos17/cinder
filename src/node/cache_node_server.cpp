@@ -130,7 +130,7 @@ namespace cinder {
 
     void CacheNodeServer::installAdminCallbacks() {
         server_.setAdminCallbacks({
-            .info_getter = [this]() -> std::string {
+            .info_getter = [this] -> std::string {
             Config snapshot;
             {
                 std::scoped_lock lock(config_mutex_);
@@ -144,12 +144,12 @@ namespace cinder {
                 metrics_.shardMetrics().live.current_entries.load()
             );
         },
-            .cluster_getter = [this]() -> std::string {
+            .cluster_getter = [this] -> std::string {
             return formatClusterJson(table_.snapshot());
         },
-            .ring_getter = [this]() -> std::string { return formatRingJson(node_id_); },
+            .ring_getter = [this] -> std::string { return formatRingJson(node_id_); },
             .compact_trigger =
-                [this]() {
+                [this] {
             if (persistence_.enabled()) {
                 auto result = persistence_.compact();
                 if (!result.has_value()) {
@@ -157,8 +157,8 @@ namespace cinder {
                 }
             }
         },
-            .config_reload_trigger = [this]() { applyConfig(); },
-            .shutdown_trigger = [this]() { asio::post(io_, [this]() { shutdown(); }); },
+            .config_reload_trigger = [this] { applyConfig(); },
+            .shutdown_trigger = [this] { asio::post(io_, [this] { shutdown(); }); },
         });
     }
 
@@ -246,7 +246,7 @@ namespace cinder {
             &gossip_,
             options.metrics_port,
             &metrics_,
-            [this]() {
+            [this] {
                 Config snapshot;
                 {
                     std::scoped_lock lock(config_mutex_);
@@ -332,7 +332,7 @@ namespace cinder {
             std::vector<std::thread> pool;
             pool.reserve(workers - 1);
             for (unsigned i = 1; i < workers; ++i) {
-                pool.emplace_back([this]() { io_.run(); });
+                pool.emplace_back([this] { io_.run(); });
             }
 
             io_.run(); // this thread participates too

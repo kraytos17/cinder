@@ -180,6 +180,11 @@ namespace cinder {
         alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migrations{0};
         alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_failures{0};
         alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_retries{0};
+        // Keys whose primary ack released the local copy while one or more
+        // non-primary replicas were not confirmed. Under-replication by design
+        // (see ShardManager::migrateKey), but distinct from real data loss --
+        // this lets an operator tell the two apart.
+        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_dropped_underreplicated{0};
     };
 
     // Connection metrics

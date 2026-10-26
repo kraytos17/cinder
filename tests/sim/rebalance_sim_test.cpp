@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -146,6 +147,88 @@ namespace cinder {
             }
             // With 3 nodes and ~1/3 ownership per node, some keys must have moved.
             EXPECT_GT(moved_to_node3, 0);
+        }
+
+        // §2 (rebalance safety): the local copy is dropped only once EVERY member
+        // of the new replica set has acked. If a non-primary replica is
+        // unreachable, the copy must be RETAINED -- over-replication is harmless,
+        // but dropping early is the pattern that silently loses acknowledged
+        // writes (the Dynamo/Cassandra rule: drop a replica only once every
+        // intended holder has it).
+        //
+        // rf=2 on a 3-node cluster, so a migrated key has a primary + exactly one
+        // replica -- which makes the single-replica-down case directly testable.
+        TEST(RebalanceSimTest, UnreachableReplicaRetainsLocalCopy) {
+            RebalanceCluster c(/*rf=*/2);
+            c.seedTwoNodes();
+
+            std::vector<std::string> keys;
+            for (int i = 0; i < 100; i++) {
+                keys.push_back("key" + std::to_string(i));
+                // NOLINTNEXTLINE
+                (void)c.node1->store.put(keys.back(), "v");
+            }
+
+            // node3 joins the ring but is DOWN, so a key whose new replica set
+            // includes node3 cannot gather acks from every intended holder.
+            c.bus.setNodeDown("node3");
+            c.joinNode3();
+            c.clock.advance(1ms);
+            c.bus.deliver();
+
+            size_t retained = 0;
+            for (const auto& k : keys) {
+                auto replica_set = c.node1->ring.getNodes(k, 2);
+                const bool node1_leaving =
+                    std::find(replica_set.begin(), replica_set.end(), "node1") == replica_set.end();
+                const bool set_includes_down_node =
+                    std::find(replica_set.begin(), replica_set.end(), "node3") != replica_set.end();
+                if (!node1_leaving || !set_includes_down_node) {
+                    continue;
+                }
+
+                // The safety property: an unconfirmed replica means the local copy
+                // must survive as a failover replica rather than be dropped.
+                EXPECT_TRUE(c.node1->store.get(k).has_value())
+                    << k
+                    << " was dropped although its replica set was incomplete";
+                ++retained;
+            }
+            EXPECT_GT(retained, 0)
+                << "test setup produced no migration onto an unreachable replica";
+        }
+
+        TEST(RebalanceSimTest, FullyConfirmedMigrationDropsLocalCopy) {
+            // The counterpart: with every replica reachable the local copy MUST be
+            // released, so the safety gate does not degrade into never dropping.
+            RebalanceCluster c(/*rf=*/2);
+            c.seedTwoNodes();
+
+            std::vector<std::string> keys;
+            for (int i = 0; i < 100; i++) {
+                keys.push_back("key" + std::to_string(i));
+                // NOLINTNEXTLINE
+                (void)c.node1->store.put(keys.back(), "v");
+            }
+
+            c.joinNode3(); // all three nodes up and reachable
+            c.clock.advance(1ms);
+            c.bus.deliver();
+
+            size_t dropped = 0;
+            for (const auto& k : keys) {
+                auto replica_set = c.node1->ring.getNodes(k, 2);
+                const bool node1_leaving =
+                    std::find(replica_set.begin(), replica_set.end(), "node1") == replica_set.end();
+                if (!node1_leaving) {
+                    continue;
+                }
+                EXPECT_FALSE(c.node1->store.get(k).has_value())
+                    << k
+                    << " kept locally although every replica acked";
+                ++dropped;
+            }
+            EXPECT_GT(dropped, 0) << "test setup produced no migration";
         }
 
         TEST(RebalanceSimTest, KeysStayingOnNode1AreUntouched) {

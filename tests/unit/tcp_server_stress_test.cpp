@@ -62,7 +62,7 @@ namespace cinder {
                 std::vector<std::thread> clients;
                 clients.reserve(K_CONCURRENT_CONNS);
                 for (int c = 0; c < K_CONCURRENT_CONNS; ++c) {
-                    clients.emplace_back([&io, port, c, i]() {
+                    clients.emplace_back([&io, port, c, i] {
                         error_code ec;
                         tcp::socket sock(io);
                         sock.connect(tcp::endpoint(address_v4::loopback(), port), ec);
@@ -108,7 +108,7 @@ namespace cinder {
                 ASSERT_TRUE(start_res.has_value());
 
                 // Open a connection but write only a partial frame, then shut down.
-                std::thread client([&io, port]() {
+                std::thread client([&io, port] {
                     error_code ec;
                     tcp::socket sock(io);
                     sock.connect(tcp::endpoint(address_v4::loopback(), port), ec);
@@ -148,7 +148,7 @@ namespace cinder {
             for (int round = 0; round < K_ROUNDS; ++round) {
                 io_context io;
                 auto work = asio::make_work_guard(io);
-                std::thread io_thread([&io]() { io.run(); });
+                std::thread io_thread([&io] { io.run(); });
 
                 std::vector<std::unique_ptr<cinder::LruStore>> stores;
                 std::vector<std::unique_ptr<cinder::net::TcpServer>> servers;
@@ -175,7 +175,7 @@ namespace cinder {
                 for (int s = 0; s < K_SERVERS; ++s) {
                     uint16_t port =
                         K_STRESS_BASE + 60 + static_cast<uint16_t>((round * K_SERVERS + s) % 40);
-                    clients.emplace_back([&io, port, round, s]() {
+                    clients.emplace_back([&io, port, round, s] {
                         error_code ec;
                         tcp::socket sock(io);
                         sock.connect(tcp::endpoint(address_v4::loopback(), port), ec);

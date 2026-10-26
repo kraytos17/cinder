@@ -214,7 +214,7 @@ namespace cinder {
             auto registerCalls() const -> size_t {
                 size_t n = 0;
                 for (const auto& e : order) {
-                    n += (e.starts_with("register:")) ? 1 : 0;
+                    n += e.starts_with("register:") ? 1 : 0;
                 }
                 return n;
             }
