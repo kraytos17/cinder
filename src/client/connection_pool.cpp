@@ -301,18 +301,11 @@ namespace cinder {
         // checks above, so close and report it as transient. decodeResponse
         // itself keeps returning InvalidArgument (it is a pure function and
         // callers of it directly are validating their own input); the wire
-        // path re-maps it.
-        auto decoded = net::decodeResponse(frame);
-        if (!decoded.has_value()) {
+        // path re-maps it while keeping the original as the cause.
+        co_return net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
             closeConn(conn);
-            // Re-map the wire desync to a retryable code while KEEPING the original
-            // error as the cause, so the InvalidArgument + source_location from
-            // decodeResponse survive for diagnosis.
-            co_return std::unexpected(
-                asRetryable(decoded.error(), "response decode failed on reused socket")
-            );
-        }
-        co_return decoded;
+            return asRetryable(e, "response decode failed on reused socket");
+        });
     }
 
     auto ConnectionPool::sendBatchCoroutine(
@@ -487,6 +480,9 @@ namespace cinder {
             // Same reused-socket desync rationale as the single-RPC path: a
             // decode failure here is transient, and .value() would otherwise
             // throw std::bad_expected_access into the co_spawn handler.
+            // Deliberately NOT transform_error: the success path has a side
+            // effect (pushing into `responses`), so the explicit branch reads
+            // better than a transform/or_else split across the loop body.
             auto decoded = net::decodeResponse(frame);
             if (!decoded.has_value()) {
                 closeConn(conn);
@@ -528,25 +524,22 @@ namespace cinder {
         if (!shared_secret_.empty() && !node_id_.empty()) {
             auth_token = generateAuthToken(shared_secret_, node_id_);
         }
-
-        auto encoded = net::encode(req, auth_token);
-        if (!encoded.has_value()) {
+        if (auto encoded = net::encode(req, auth_token); !encoded.has_value()) {
             on_done(err<net::Response>(encoded.error()));
             return;
-        }
-
-        auto& conn = getOrCreateConn(node_id);
-        asio::co_spawn(
-            conn.strand,
-            sendCoroutine(conn, std::move(encoded.value())),
-            [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
-            if (ep) {
-                cb(err<net::Response>(Error(Errc::NotReady, "coroutine failed")));
-                return;
+        } else {
+            auto& conn = getOrCreateConn(node_id);
+            asio::co_spawn(
+                conn.strand,
+                sendCoroutine(conn, std::move(encoded.value())),
+                [cb = std::move(
+                     on_done
+                 )](std::exception_ptr ep, Result<net::Response> result) mutable {
+                cb(ep ? err<net::Response>(Error(Errc::NotReady, "coroutine failed"))
+                      : std::move(result));
             }
-            cb(std::move(result));
+            );
         }
-        );
     }
 
     void ConnectionPool::sendBatchAsync(
@@ -595,11 +588,8 @@ namespace cinder {
             [cb = std::move(
                  on_done
              )](std::exception_ptr ep, Result<std::vector<net::Response>> result) mutable {
-            if (ep) {
-                cb(err<std::vector<net::Response>>(Error(Errc::NotReady, "coroutine failed")));
-                return;
-            }
-            cb(std::move(result));
+            cb(ep ? err<std::vector<net::Response>>(Error(Errc::NotReady, "coroutine failed"))
+                  : std::move(result));
         }
         );
     }

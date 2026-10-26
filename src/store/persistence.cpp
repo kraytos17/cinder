@@ -184,9 +184,7 @@ namespace cinder {
             drainQueueLocked();
             wal_->flush();
         }
-
-        auto snap_result = createSnapshot();
-        if (!snap_result.has_value()) {
+        if (auto snap_result = createSnapshot(); !snap_result.has_value()) {
             CINDER_ERROR("shutdown snapshot failed", {"reason", snap_result.error().message()});
         }
     }

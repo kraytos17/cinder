@@ -297,12 +297,12 @@ namespace cinder {
 
         timer.cancel();
         // Wire desync on a reused connection — transient (see ConnectionPool).
-        auto decoded = net::decodeResponse(frame);
-        if (!decoded.has_value()) {
+        // transform_error keeps the original decode error as the cause instead
+        // of discarding it: same re-map, full provenance.
+        co_return net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
             closeConn(conn);
-            co_return err<net::Response>(Error(Errc::NotReady, decoded.error().message()));
-        }
-        co_return decoded;
+            return asRetryable(e, "response decode failed on reused socket");
+        });
     }
 
     void TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
@@ -319,6 +319,10 @@ namespace cinder {
             auth_token = generateAuthToken(shared_secret_, node_id_);
         }
 
+        // Explicit branch, not a transform/or_else chain: the encode error is
+        // consumed by the callback directly, so no [[nodiscard]] value is ever
+        // discarded. (A chain here would need a (void) on the terminal
+        // Result<void> — which defeats nodiscard protection for future edits.)
         auto encoded = net::encode(req, auth_token);
         if (!encoded.has_value()) {
             on_done(err(encoded.error()));
@@ -331,24 +335,20 @@ namespace cinder {
             sendCoroutine(conn, std::move(encoded.value())),
             [cb = std::move(on_done),
              to](std::exception_ptr ep, Result<net::Response> result) mutable {
-            if (ep) {
-                CINDER_WARN("send failed", {"to", to}, {"reason", "coroutine failed"});
-                cb(err(Error(Errc::NotReady, "coroutine failed")));
-                return;
+            Result<void> outcome = ep
+                ? err<void>(Error(Errc::NotReady, "coroutine failed"))
+                : std::move(result).and_then([](const net::Response& res) -> Result<void> {
+                if (res.status != Errc::OK) {
+                    std::string msg = "replica rejected write: ";
+                    msg += toString(res.status);
+                    return err<void>(Error(res.status, msg));
+                }
+                return ok();
+            });
+            if (!outcome.has_value()) {
+                CINDER_WARN("send failed", {"to", to}, {"reason", outcome.error().message()});
             }
-            if (!result.has_value()) {
-                CINDER_WARN("send failed", {"to", to}, {"reason", result.error().message()});
-                cb(err(result.error()));
-                return;
-            }
-            if (result.value().status != Errc::OK) {
-                std::string msg = "replica rejected write: ";
-                msg += toString(result.value().status);
-                CINDER_WARN("send failed", {"to", to}, {"reason", msg});
-                cb(err(Error(result.value().status, msg)));
-                return;
-            }
-            cb(ok());
+            cb(std::move(outcome));
         }
         );
     }
@@ -372,6 +372,9 @@ namespace cinder {
             auth_token = generateAuthToken(shared_secret_, node_id_);
         }
 
+        // Explicit branch, not a transform/or_else chain: the encode error is
+        // consumed by the callback directly, so no [[nodiscard]] value is ever
+        // discarded (see sendAsync above for why a chain is wrong here).
         auto encoded = net::encode(req, auth_token);
         if (!encoded.has_value()) {
             on_done(err<net::Response>(encoded.error()));
@@ -383,11 +386,8 @@ namespace cinder {
             conn.strand,
             sendCoroutine(conn, std::move(encoded.value())),
             [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
-            if (ep) {
-                cb(err<net::Response>(Error(Errc::NotReady, "coroutine failed")));
-                return;
-            }
-            cb(std::move(result));
+            cb(ep ? err<net::Response>(Error(Errc::NotReady, "coroutine failed"))
+                  : std::move(result));
         }
         );
     }
