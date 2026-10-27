@@ -1,8 +1,17 @@
 // cppcheck suppressions for Cinder
 // Format: <check-id>:<file-or-glob>  (or bare <check-id> to suppress everywhere)
 
-// Third-party deps pulled via FetchContent — not to fix
+// Third-party deps pulled via FetchContent — not to fix.
+// Two globs: cppcheck reports absolute paths in some invocations and paths
+// relative to the project root in others (depends on how compile_commands.json
+// spells `file`); the first glob only matches the absolute form.
 *:*/.cache/fetchcontent-*/*
+*:*.cache/fetchcontent-*/*
+
+// Vendored third-party headers (third_party/) — not to fix either.
+// Same absolute + relative glob pairing as above.
+*:*/third_party/*
+*:*third_party/*
 
 // Suppress "unmatchedSuppression" warnings when listed suppressions don't
 // match the current code — avoids noisy re-check churn.

@@ -5,7 +5,12 @@
 namespace cinder {
 
     LfuStore::LfuStore(size_t capacity_bytes, Clock* clock) :
-        EvictionStoreBase(capacity_bytes, clock) {}
+        EvictionStoreBase(capacity_bytes, clock) {
+        // Same sizing rationale as LruStore: one upfront reservation from
+        // capacity avoids rehash churn during warmup. freq_buckets_ stays
+        // unreserved.
+        index_.reserve(capacity_bytes / 256 + 64);
+    }
 
     void LfuStore::applyExisting(ListIt it, VersionedEntry entry) {
         it->entry = std::move(entry);

@@ -1,11 +1,11 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <chrono>
 #include <cstddef>
 #include <list>
 #include <shared_mutex>
 #include <string>
-#include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
@@ -62,7 +62,18 @@ namespace cinder {
 
         mutable std::shared_mutex mutex_;
         std::list<LruNode, SlabAllocator<LruNode>> list_;
-        std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
+        // Dense open-addressing index (ankerl::unordered_dense): contiguous
+        // storage, no per-node allocation, SIMD-filtered probes. Heterogeneous
+        // lookup preserved via TransparentStringHash (is_transparent).
+        //
+        // Unlike std::unordered_map, iterators AND references are invalidated by
+        // ANY insert (rehash) or erase (element relocation) — never hold
+        // it->second across evictIfNeeded()/insertNew; always re-derive via
+        // find() after any map mutation. See putVersioned.
+        using IndexMap = ankerl::unordered_dense::
+            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
+
+        IndexMap index_;
         TtlWheel<LruNode> wheel_;
     };
 } // namespace cinder

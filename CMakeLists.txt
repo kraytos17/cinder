@@ -586,6 +586,7 @@ add_library(cinder::core ALIAS cinder_core)
 
 target_include_directories(cinder_core PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/third_party>
     $<INSTALL_INTERFACE:include>
 )
 

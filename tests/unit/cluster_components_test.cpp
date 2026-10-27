@@ -13,9 +13,12 @@
 // gossip_partition_sim_test.cpp and rebalance_sim_test.cpp; MembershipTable's
 // basic incarnation rules are covered by membership_test.cpp. None duplicated.
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <gtest/gtest.h>
+#include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -67,11 +70,10 @@ namespace cinder {
         }
 
         TEST(HintQueueTest, PushAlwaysSucceedsAndDropsOldestWhenFull) {
-            // Usable capacity is K_MAX_HINTS, not K_CAPACITY: the ring uses the
-            // next==tail_ sentinel to distinguish full from empty, so one slot is
-            // always sacrificed. Asserted explicitly so the constant's name
-            // cannot mislead a future reader into expecting 1024 live hints.
-            constexpr size_t K_USABLE = HintQueue::K_MAX_HINTS;
+            // The lock-free ring uses ticket sequence numbers instead of a
+            // head==tail sentinel, so the full K_CAPACITY slots are usable
+            // (no sacrificed slot, unlike the old mutex version).
+            constexpr size_t K_USABLE = HintQueue::K_CAPACITY;
 
             HintQueue q;
             for (size_t i = 0; i < K_USABLE; ++i) {
@@ -174,6 +176,154 @@ namespace cinder {
             size_t visited = q.replay([](const HintQueue::Hint&) {}, now);
             EXPECT_EQ(visited, 0U);
             EXPECT_EQ(q.size(), 0U);
+        }
+
+        TEST(HintQueueTest, ConcurrentPushReplayRemoveIsSound) {
+            // MPSC stress: N producer threads push while the main thread
+            // replays + removes (the production threading shape). Total live
+            // hints stay under capacity so nothing may be dropped: every pushed
+            // hint must be visited exactly once, and the queue must drain to
+            // empty. Any lost update, torn read, or double-count fails this.
+            // (Single-threaded tests above cannot exercise the atomics; TSan
+            // needs this test to have anything to check.)
+            HintQueue q;
+            constexpr int kProducers = 4;
+            constexpr int kPerProducer = 200; // 800 total < 1024: no drops expected
+            const auto far = steady_clock::now() + std::chrono::seconds(3600);
+
+            std::atomic<int> done{0};
+            std::atomic<bool> go{false};
+            std::vector<std::thread> producers;
+            for (int p = 0; p < kProducers; ++p) {
+                producers.emplace_back([&, p] {
+                    while (!go.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    for (int i = 0; i < kPerProducer; ++i) {
+                        auto h = cctMakeHint("n" + std::to_string(p), "k" + std::to_string(i));
+                        h.expires_at = far;
+                        EXPECT_TRUE(q.push(std::move(h)));
+                    }
+                    done.fetch_add(1, std::memory_order_release);
+                });
+            }
+            go.store(true, std::memory_order_release);
+
+            // Drain pass: visit everything live, remove it immediately (mirrors
+            // the production replay-then-remove flow on one thread).
+            std::vector<std::string> seen;
+            seen.reserve(kProducers * kPerProducer);
+            auto drain_pass = [&] {
+                return q.replay([&](const HintQueue::Hint& h) {
+                    seen.push_back(h.target + "|" + h.req.key);
+                    q.remove(h.target, h.req);
+                }, steady_clock::now());
+            };
+            while (done.load(std::memory_order_acquire) < kProducers) {
+                drain_pass();
+            }
+            for (auto& t : producers) {
+                t.join();
+            }
+            // Post-join there are no more pushes, so repeated passes must
+            // terminate: each pass strictly shrinks the live set.
+            for (int i = 0; i < 1000 && q.size() > 0; ++i) {
+                drain_pass();
+            }
+
+            EXPECT_EQ(q.size(), 0U) << "drain did not terminate: hints leaked";
+            ASSERT_EQ(seen.size(), static_cast<size_t>(kProducers * kPerProducer))
+                << "lost or duplicated hints under concurrency";
+            // Compare as sets: replay order is FIFO per producer but
+            // interleaving across producers is schedule-dependent, and
+            // lexicographic sort does not match numeric key order.
+            std::sort(seen.begin(), seen.end());
+            std::vector<std::string> want;
+            want.reserve(seen.size());
+            for (int p = 0; p < kProducers; ++p) {
+                for (int i = 0; i < kPerProducer; ++i) {
+                    want.push_back("n" + std::to_string(p) + "|k" + std::to_string(i));
+                }
+            }
+            std::sort(want.begin(), want.end());
+            EXPECT_EQ(seen, want) << "hint set mismatch under concurrency";
+        }
+
+        TEST(HintQueueTest, ConcurrentPushDropRemoveExpireStaysBounded) {
+            // Pressure test: far more pushes than capacity, concurrent random
+            // removes, short-TTL expiry mixed in. Asserts the structural
+            // invariants that must hold regardless of interleaving: size never
+            // exceeds capacity, the run terminates, and the queue drains to
+            // empty afterwards. (Which hints survive drop-oldest/expiry is
+            // schedule-dependent by design, so no exact-content assertions.)
+            HintQueue q;
+            constexpr int kProducers = 4;
+            constexpr int kPerProducer = 2000; // 8000 total >> 1024: drops expected
+            const auto start = steady_clock::now();
+            const auto soon = start + milliseconds(50);
+            const auto far = start + std::chrono::seconds(3600);
+
+            std::atomic<int> done{0};
+            std::atomic<bool> go{false};
+            std::atomic<size_t> max_seen{0};
+            std::vector<std::thread> producers;
+            for (int p = 0; p < kProducers; ++p) {
+                producers.emplace_back([&, p] {
+                    while (!go.load(std::memory_order_acquire)) {
+                        std::this_thread::yield();
+                    }
+                    std::random_device rd;
+                    std::mt19937 rng(rd());
+                    for (int i = 0; i < kPerProducer; ++i) {
+                        auto h = cctMakeHint("n" + std::to_string(p), "k" + std::to_string(i));
+                        h.expires_at = (rng() & 1U) != 0U ? soon : far;
+                        q.push(std::move(h));
+                    }
+                    done.fetch_add(1, std::memory_order_release);
+                });
+            }
+            // Remover thread: random (target, key) removals, mostly no-ops,
+            // racing replay and push exactly like send-completion callbacks do.
+            std::thread remover([&] {
+                while (!go.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                std::random_device rd;
+                std::mt19937 rng(rd());
+                for (int i = 0; i < 4000; ++i) {
+                    net::Request probe;
+                    probe.key = "k" + std::to_string(rng() % (kPerProducer * 2));
+                    probe.version = 1;
+                    q.remove("n" + std::to_string(rng() % kProducers), probe);
+                }
+            });
+            go.store(true, std::memory_order_release);
+
+            // Replay continuously while producers run (production shape: the
+            // 1s timer fires regardless of push traffic).
+            while (done.load(std::memory_order_acquire) < kProducers) {
+                const size_t s = q.size();
+                size_t prev = max_seen.load(std::memory_order_relaxed);
+                while (prev < s && !max_seen.compare_exchange_weak(prev, s)) {
+                }
+                q.replay([](const HintQueue::Hint&) {}, steady_clock::now());
+            }
+            for (auto& t : producers) {
+                t.join();
+            }
+            remover.join();
+            EXPECT_LE(max_seen.load(), HintQueue::K_CAPACITY)
+                << "size() exceeded capacity under concurrency";
+
+            // Single-threaded drain: deterministic termination. Every pass
+            // removes or expires what it visits; with no concurrent pushes,
+            // the live set strictly shrinks.
+            for (int i = 0; i < 100'000 && q.size() > 0; ++i) {
+                q.replay([&](const HintQueue::Hint& h) {
+                    q.remove(h.target, h.req);
+                }, steady_clock::now());
+            }
+            EXPECT_EQ(q.size(), 0U) << "drain did not terminate: hints leaked";
         }
 
         // ---------------------------------------------------------------------

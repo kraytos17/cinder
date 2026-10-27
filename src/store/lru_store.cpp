@@ -5,7 +5,13 @@
 namespace cinder {
 
     LruStore::LruStore(size_t capacity_bytes, Clock* clock) :
-        EvictionStoreBase(capacity_bytes, clock) {}
+        EvictionStoreBase(capacity_bytes, clock) {
+        // Size the dense index once from capacity: at ~256 B average entry this
+        // holds the steady-state working set without rehash churn during warmup.
+        // Under-estimates grow geometrically (amortized); over-estimates waste
+        // ~7 B per spare slot.
+        index_.reserve(capacity_bytes / 256 + 64);
+    }
 
     void LruStore::applyExisting(ListIt it, VersionedEntry entry) {
         it->entry = std::move(entry);

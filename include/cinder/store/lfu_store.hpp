@@ -1,11 +1,11 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <chrono>
 #include <cstddef>
 #include <list>
 #include <shared_mutex>
 #include <string>
-#include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
@@ -68,9 +68,21 @@ namespace cinder {
 
         mutable std::shared_mutex mutex_;
         std::list<LfuNode, SlabAllocator<LfuNode>> list_;
-        std::unordered_map<std::string, ListIt, TransparentStringHash, std::equal_to<>> index_;
+        // Dense open-addressing index — same invalidation contract as LruStore:
+        // never hold it->second across evictIfNeeded()/insertNew; re-derive via
+        // find() after any map mutation. Heterogeneous lookup preserved via
+        // TransparentStringHash (is_transparent).
+        using IndexMap = ankerl::unordered_dense::
+            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
+
+        IndexMap index_;
         TtlWheel<LfuNode> wheel_;
-        std::unordered_map<size_t, std::vector<ListIt>> freq_buckets_;
+        // Frequency buckets: tiny (one entry per distinct frequency present), so
+        // a dense map is fine here too; same no-held-iterators-across-mutation
+        // discipline as index_.
+        using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
+
+        FreqMap freq_buckets_;
         size_t min_freq_ = 1;
     };
 } // namespace cinder

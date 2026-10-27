@@ -82,34 +82,43 @@ namespace cinder {
 
             auto it = self.index_.find(key);
             if (it != self.index_.end()) {
-                auto& node = it->second;
-                // Idempotent apply: reject stale/equal-lower writes (replay-safe).
-                if (entry.version() < Derived::nodeEntry(*node).version()) {
-                    return ok();
-                }
-                if (entry.version()
-                    == Derived::nodeEntry(*node).version()
-                    && entry.writer_node_hash
-                    < Derived::nodeEntry(*node).writer_node_hash) {
-                    return ok();
+                {
+                    // Idempotent apply: reject stale/equal-lower writes (replay-safe).
+                    // Scoped: `it`/`it->second` must not survive evictIfNeeded() below.
+                    // The dense index may relocate elements on ANY erase, invalidating
+                    // all iterators/references — unlike std::unordered_map, which only
+                    // invalidates the erased element. No map mutation happens inside
+                    // this block (applyExisting touches list/freq structures only).
+                    auto& entry0 = Derived::nodeEntry(*it->second);
+                    if (entry.version() < entry0.version()) {
+                        return ok();
+                    }
+                    if (entry.version()
+                        == entry0.version()
+                        && entry.writer_node_hash
+                        < entry0.writer_node_hash) {
+                        return ok();
+                    }
                 }
 
                 // Lamport bump: advance past any observed version so
                 // this node wins LWW if it later coordinates the same key.
                 next_version_ = std::max(next_version_, entry.version() + 1);
-                current_bytes_ -= Derived::nodeSize(*node);
-                self.applyExisting(node, std::move(entry));
-                current_bytes_ += Derived::nodeSize(*node);
+                current_bytes_ -= Derived::nodeSize(*it->second);
+                self.applyExisting(it->second, std::move(entry));
+                current_bytes_ += Derived::nodeSize(*it->second);
                 evictIfNeeded();
                 // evictIfNeeded may have evicted this very node (LFU evicts the
                 // min-frequency entry, which can be the just-written one when
-                // it is uniquely minimal). `node` would then dangle — re-lookup
-                // and skip the wheel/WAL update if it is gone.
-                if (self.index_.find(key) == self.index_.end()) {
+                // it is uniquely minimal). Re-derive the iterator: the one above
+                // is dead after the erasures regardless of whether our key
+                // survived, so updateWheel must use the fresh one.
+                it = self.index_.find(key);
+                if (it == self.index_.end()) {
                     return ok();
                 }
 
-                updateWheel(node);
+                updateWheel(it->second);
                 writeWal(key);
                 if (metrics_) {
                     metrics_->shardMetrics().live.writes.fetch_add(1, std::memory_order_relaxed);
