@@ -39,6 +39,15 @@ namespace cinder {
         struct FanOutDrain {
             bool fired = false;
             size_t seen = 0;
+            // Per-target delivery record. Transports must invoke each send's
+            // callback exactly once, but a duplicate delivery must not corrupt
+            // pending/ack accounting (an extra --pending can underflow the
+            // counter or force a premature decision), so repeats are ignored
+            // here. Distinct targets complete on different threads; each index
+            // is written by its own target's callback chain, so plain bytes
+            // suffice — a transport double-firing the SAME callback
+            // concurrently is already broken beyond what dedup can paper over.
+            std::vector<char> delivered;
         };
 
         template <typename Result>
@@ -61,7 +70,10 @@ namespace cinder {
         //
         // Contract: every launched send reports exactly once (all Transport
         // implementations always invoke their callback). Capacity N provably
-        // fits N single-shot senders, so try_send cannot drop.
+        // fits N single-shot senders, so try_send cannot drop. A duplicate
+        // report for an already-delivered target is ignored defensively (see
+        // FanOutDrain::delivered): accounting must not depend on a transport
+        // never double-firing.
         template <
             typename Result,
             typename SendAll,
@@ -80,10 +92,18 @@ namespace cinder {
         ) {
             auto chan = std::make_shared<FanOutChannel<Result>>(asio::system_executor{}, n);
             auto drain = std::make_shared<FanOutDrain>();
-            send_all([chan](std::size_t i, Result r) {
-                (void)chan->try_send(asio::error_code{}, i, std::move(r));
-            });
+            drain->delivered.assign(n, 0);
+            // Deduping reporter handed to send_all instead of the raw channel
+            // sender: first delivery per target goes through, repeats are
+            // dropped before they can touch accounting or the channel.
+            auto report_once = [chan, drain, n](std::size_t i, Result r) {
+                if (i < n && !drain->delivered[i]) {
+                    drain->delivered[i] = 1;
+                    (void)chan->try_send(asio::error_code{}, i, std::move(r));
+                }
+            };
 
+            send_all(report_once);
             // Phase 1: inline drain on the caller thread. try_receive unlocks
             // the channel before invoking the handler, so running user code
             // here cannot deadlock against the channel.
@@ -292,7 +312,15 @@ namespace cinder {
                 ++st->acks;
             }
             --st->pending;
-        }, [st] -> bool { return st->acks >= st->w || st->pending == 0; }, [this, st] {
+            // Fail fast when quorum is unreachable: even if every outstanding
+            // replica acked, acks could not reach W. The decision fires now
+            // instead of waiting out the stragglers, but the drain continues
+            // so late failures still enqueue hints. (Reads deliberately omit
+            // this: firing early could return a stale best_entry while a newer
+            // version is still in flight.)
+        }, [st] -> bool {
+            return st->acks >= st->w || st->pending == 0 || st->acks + st->pending < st->w;
+        }, [this, st] {
             if (st->acks >= st->w) {
                 Span ok_span("replication.write.quorum.ok");
                 CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});

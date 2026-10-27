@@ -1,6 +1,7 @@
 #include <atomic>
 #include <deque>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -103,7 +104,7 @@ namespace cinder {
                     on_done(ok());
                     return;
                 }
-                pending_sends_.push_back(std::move(on_done));
+                pending_sends_.push_back(std::make_shared<SendCallback>(std::move(on_done)));
             }
 
             void sendRequestAsync(
@@ -129,11 +130,20 @@ namespace cinder {
                     auto cb = std::move(pending_sends_.front());
                     pending_sends_.pop_front();
                     if (ok) {
-                        cb(cinder::ok());
+                        (*cb)(cinder::ok());
                     } else {
-                        cb(cinder::err(Error(Errc::NotReady, "deferred failure")));
+                        (*cb)(cinder::err(Error(Errc::NotReady, "deferred failure")));
                     }
                 }
+            }
+
+            // Borrow the i-th outstanding send without removing it: lets a test
+            // deliver the same completion twice (transport double-fire) or
+            // deliver out of order. The borrowed callback stays queued until a
+            // later completeSends() pops it.
+            auto peekSend(size_t i) -> std::shared_ptr<SendCallback> {
+                EXPECT_LT(i, pending_sends_.size());
+                return pending_sends_.at(i);
             }
 
             void completeRequest(Version version, uint64_t writer, std::string value) {
@@ -150,7 +160,7 @@ namespace cinder {
 
         private:
 
-            std::deque<SendCallback> pending_sends_;
+            std::deque<std::shared_ptr<SendCallback>> pending_sends_;
             std::deque<RequestCallback> pending_requests_;
         };
 
@@ -166,6 +176,20 @@ namespace cinder {
         auto awaitDecision(std::atomic<int>& done_count) -> bool {
             auto deadline = std::chrono::steady_clock::now() + seconds(10);
             while (done_count.load() == 0) {
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    return false;
+                }
+                std::this_thread::sleep_for(milliseconds(1));
+            }
+            return true;
+        }
+
+        // Same idea for hint accounting: failure hints are enqueued by the
+        // async tail, so a test must wait for the count to settle instead of
+        // asserting it synchronously after delivering a completion.
+        auto awaitHintCount(ReplicationManager& mgr, size_t n) -> bool {
+            auto deadline = std::chrono::steady_clock::now() + seconds(10);
+            while (mgr.hintCount() != n) {
                 if (std::chrono::steady_clock::now() >= deadline) {
                     return false;
                 }
@@ -417,6 +441,89 @@ namespace cinder {
             std::this_thread::sleep_for(milliseconds(100));
             EXPECT_EQ(done_count.load(), 1);
             EXPECT_EQ(c.transport.pendingSends(), 0u);
+        }
+
+        // Quorum write fails fast when the decision becomes unreachable:
+        // 4 nodes (W=3, local ack=1) with two failures outstanding means
+        // 1 + 1 pending < 3, so NotReady fires while the third replica is
+        // still in flight — no waiting out the straggler. The drain still
+        // runs, so the late ack is consumed and both failures are hinted.
+        TEST(ReplicationSimTest, QuorumWriteFailsFastWhenQuorumImpossible) {
+            DeferredCluster c;
+            std::atomic<int> done_count{0};
+            Result<void> result = err(Error(Errc::InternalError, "unset"));
+            c.mgr.writeAsync(
+                "k",
+                "v",
+                std::nullopt,
+                {"node2", "node3", "node4"},
+                ConsistencyMode::Quorum,
+                [&](Result<void> r) {
+                result = std::move(r);
+                ++done_count;
+            }
+            );
+            EXPECT_EQ(c.transport.pendingSends(), 3u);
+
+            // Two failures: acks(1) + pending(1) < W(3) → decide now.
+            // Pre-fix this did not fire until the third send completed.
+            c.transport.completeSends(2, false);
+            ASSERT_TRUE(awaitDecision(done_count));
+            EXPECT_FALSE(result.has_value());
+            EXPECT_EQ(c.transport.pendingSends(), 1u);
+
+            // Straggler acks late: still exactly one delivery, queue drains,
+            // and only the two genuine failures were hinted.
+            c.transport.completeSends(1, true);
+            std::this_thread::sleep_for(milliseconds(100));
+            EXPECT_EQ(done_count.load(), 1);
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
+            EXPECT_EQ(c.mgr.hintCount(), 2u);
+        }
+
+        // Duplicate transport delivery is ignored: the same completion fired
+        // twice must not double-decrement pending (which both corrupts the
+        // counter and can force a premature fail). Pre-fix the repeated
+        // failure below drove pending to zero and failed the write while a
+        // success was still outstanding.
+        TEST(ReplicationSimTest, QuorumWriteIgnoresDuplicateCompletion) {
+            DeferredCluster c;
+            std::atomic<int> done_count{0};
+            Result<void> result = err(Error(Errc::InternalError, "unset"));
+            c.mgr.writeAsync(
+                "k",
+                "v",
+                std::nullopt,
+                {"node2", "node3"},
+                ConsistencyMode::Quorum,
+                [&](Result<void> r) {
+                result = std::move(r);
+                ++done_count;
+            }
+            );
+            EXPECT_EQ(c.transport.pendingSends(), 2u);
+
+            // node2 fails once (hinted, pending 2→1: no decision either way).
+            auto dup = c.transport.peekSend(0);
+            (*dup)(cinder::err(Error(Errc::NotReady, "deferred failure")));
+            ASSERT_TRUE(awaitHintCount(c.mgr, 1u));
+            EXPECT_EQ(done_count.load(), 0);
+
+            // Same completion delivered again: must be a no-op. Pre-fix this
+            // decremented pending a second time and failed the write here.
+            (*dup)(cinder::err(Error(Errc::NotReady, "deferred failure")));
+            EXPECT_EQ(done_count.load(), 0);
+            EXPECT_EQ(c.mgr.hintCount(), 1u);
+
+            // node3 acks (local + node3 = W=2): success, exactly once. The
+            // re-fired node2 callback still queued is ignored as a duplicate.
+            c.transport.completeSends(2, true);
+            ASSERT_TRUE(awaitDecision(done_count));
+            EXPECT_TRUE(result.has_value());
+            std::this_thread::sleep_for(milliseconds(100));
+            EXPECT_EQ(done_count.load(), 1);
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
+            EXPECT_EQ(c.mgr.hintCount(), 1u);
         }
 
         // Quorum write with no replicas: W == 1, so the local ack alone

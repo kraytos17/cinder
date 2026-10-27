@@ -25,10 +25,14 @@ namespace cinder {
 
         // Non-blocking: initiates an async send to `to` and invokes `on_done` on
         // the io thread when the peer has acknowledged (or failed). Never blocks.
+        // The callback fires exactly once per call, with either success or a
+        // terminal failure (including timeout/cancel). fanOutQuorum ignores
+        // duplicate deliveries defensively, but exactly-once is the contract.
         virtual void sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) = 0;
 
         // Non-blocking request-response: sends `req` and invokes `on_done` with the
         // peer's decoded Response. Used for GetVersioned fan-out (read repair).
+        // Same exactly-once callback contract as sendAsync.
         virtual void sendRequestAsync(
             const NodeId& to,
             const net::Request& req,
