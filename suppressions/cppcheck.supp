@@ -1,12 +1,19 @@
 // cppcheck suppressions for Cinder
 // Format: <check-id>:<file-or-glob>  (or bare <check-id> to suppress everywhere)
 
-// Third-party deps pulled via FetchContent — not to fix.
-// Two globs: cppcheck reports absolute paths in some invocations and paths
-// relative to the project root in others (depends on how compile_commands.json
-// spells `file`); the first glob only matches the absolute form.
-*:*/.cache/fetchcontent-*/*
-*:*.cache/fetchcontent-*/*
+// Shared dependency source cache (cmake/CinderDeps.cmake, default
+// ~/.cache/cinder/deps/<dep>-<tag>; repo-local fallback .cache/deps when
+// $HOME is unset). Same absolute + relative pairing as above.
+*:*/.cache/cinder/deps/*
+*:*cinder/deps/*
+*:*/.cache/deps/*
+*:*.cache/deps/*
+
+// Dependency sources fetched into the build tree by nested projects
+// (e.g. spdlog's own fmt checkout at build/<preset>/_deps/fmt-src).
+// Our own code never lives under a _deps directory.
+*:*/_deps/*
+*:*_deps/*
 
 // Vendored third-party headers (third_party/) — not to fix either.
 // Same absolute + relative glob pairing as above.
