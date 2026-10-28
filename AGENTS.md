@@ -150,14 +150,16 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   `build-test` (7 presets: debug, debug-tls, release, debug-clang,
   debug-tls-clang, release-clang, asan-clang; each runs unit+sim+cli+integration
   with `-j$(nproc)`) → `feature-flags` (tls-grpc*) → `sanitize` (ci-gcc) →
-  `tsan` → `lint` → `codeql` → `ci-success` gate. Build jobs restore the
-  FetchContent cache **read-only** with a family-prefix `restore-keys` fallback
-  (a new `CMakeLists.txt` hash reuses previous deps); parallel jobs sharing one
+  `tsan` → `lint` → `codeql` → `ci-success` gate. Fetch Deps seeds the shared
+  dependency source cache once (`~/.cache/cinder/deps`, keyed by
+  `cmake/CinderDepVersions.cmake` hash — the **sole writer**); build jobs
+  restore it **read-only** with a `deps-` prefix `restore-keys` fallback
+  (a new pins-file hash reuses previous sources); parallel jobs sharing one
   save key raced (`Unable to reserve cache`), hence the single writer.
-  `SCCACHE_GHA_ENABLED=true` is set workflow-wide — without it the installed
-  sccache writes to ephemeral disk and every job compiles cold. Writes are
-  main-only (`SCCACHE_GHA_RW_MODE` is `READ_WRITE` on main, `READ_ONLY`
-  elsewhere): PR-branch sccache entries are unreadable by other branches, so
+  ccache (preferred; sccache fallback) is restored per-preset via
+  `hendrikmuhs/ccache-action` — entries are content-hashed (compiler binary
+  included via `CCACHE_COMPILERCHECK=content`), so presets share hits safely.
+  Saves are main-only: PR-branch entries are unreadable by other branches, so
   PR writes would be pure quota churn. Markdown/docs-only
   changes skip CI (`paths-ignore`).
 

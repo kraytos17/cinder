@@ -52,24 +52,98 @@ option(CINDER_USE_MIMALLOC          "Override global allocator with mimalloc" ON
 option(CINDER_ENABLE_GRPC          "Build with gRPC gateway for multi-language clients" OFF)
 option(CINDER_PREFER_SYSTEM_DEPS    "Try find_package() before FetchContent for each dep" ON)
 
-find_program(SCCACHE_PROGRAM sccache)
-find_program(CCACHE_PROGRAM ccache)
-if(SCCACHE_PROGRAM)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
-    message(STATUS "Cinder: using sccache")
-elseif(CCACHE_PROGRAM)
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    set(CCACHE_BASEDIR "${CMAKE_SOURCE_DIR}")
-    message(STATUS "Cinder: using ccache (basedir: ${CCACHE_BASEDIR})")
+# Build-speed options -------------------------------------------------------
+set(CINDER_CACHE_TOOL "AUTO" CACHE STRING
+    "Compiler cache: AUTO (ccache, then sccache), CCACHE, SCCACHE or NONE")
+set_property(CACHE CINDER_CACHE_TOOL PROPERTY STRINGS AUTO CCACHE SCCACHE NONE)
+option(CINDER_USE_PCH               "Use precompiled headers for cinder_core (and targets calling cinder_reuse_pch)" ON)
+option(CINDER_PCH_GCC_WITH_CCACHE   "Keep PCH on for GCC when ccache is active (needs sloppiness; LLVM disables it in that case — benchmark both)" ON)
+option(CINDER_CCACHE_RELOCATABLE    "Make ccache hits independent of checkout path (hash_dir off + -ffile-prefix-map); useful for worktrees/CI" OFF)
+option(CINDER_FAST_LINKER_WITH_GCC_LTO "Allow mold/lld together with GCC LTO (mold supports GCC LTO via the linker plugin; retest before enabling)" OFF)
+option(CINDER_OPTIMIZE_DEPENDENCIES "Set CMAKE_OPTIMIZE_DEPENDENCIES (skip needless static-lib build-order deps; disabled with gRPC)" ON)
+set(CINDER_LINK_JOBS "" CACHE STRING
+    "Max parallel link jobs (Ninja only). Empty = unlimited. Set to 1-2 for LTO/sanitizer presets")
+option(CINDER_USE_DEPS_CACHE        "Share pinned dependency sources across presets/compilers (see cmake/CinderDeps.cmake)" ON)
+option(CINDER_DEPS_AUTOFETCH        "Populate the shared dependency cache on configure when an entry is missing" ON)
+set(CINDER_DEPS_CACHE "" CACHE PATH
+    "Shared dependency source cache (default: $CINDER_DEPS_CACHE or ~/.cache/cinder/deps)")
+
+# ---------------------------------------------------------------------------
+# Compiler cache
+# ---------------------------------------------------------------------------
+# ccache is preferred over sccache: sccache cannot handle GCC precompiled
+# headers (cinder_core uses a PCH), ccache can once it is configured for PCH.
+# The ccache settings are passed through the launcher (cmake -E env) rather than
+# the user's ccache.conf so they apply identically in every preset, under
+# `just`, in CI and in IDEs. NB: a CMake variable named CCACHE_BASEDIR does
+# nothing — ccache only reads the environment variable / config key.
+set(_cinder_cache_kind "")
+if(CINDER_CACHE_TOOL STREQUAL "AUTO" OR CINDER_CACHE_TOOL STREQUAL "CCACHE")
+    find_program(CCACHE_PROGRAM ccache)
+    if(CCACHE_PROGRAM)
+        set(_cinder_cache_kind ccache)
+    endif()
+endif()
+if(NOT _cinder_cache_kind AND (CINDER_CACHE_TOOL STREQUAL "AUTO" OR CINDER_CACHE_TOOL STREQUAL "SCCACHE"))
+    find_program(SCCACHE_PROGRAM sccache)
+    if(SCCACHE_PROGRAM)
+        set(_cinder_cache_kind sccache)
+    endif()
 endif()
 
-# NB: GCC LTO emits slim bytecode objects that neither mold nor lld can
-# read (GCC's LTO plugin interface is GNU-ld-only); combining them breaks
-# the link with `undefined symbol: main`. Clang LTO (LLVM bitcode) works
-# fine with both fast linkers, so gate them out for exactly GNU+LTO.
-if(CINDER_USE_FAST_LINKER AND NOT (CINDER_ENABLE_LTO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"))
+set(_cinder_use_pch ${CINDER_USE_PCH})
+if(_cinder_cache_kind STREQUAL "ccache")
+    set(_cinder_ccache_env
+        CCACHE_BASEDIR=${CMAKE_SOURCE_DIR}
+        # Required for precompiled headers (ccache manual, "Precompiled headers").
+        CCACHE_SLOPPINESS=pch_defines,time_macros
+        # Toolchains (toolchains/gcc16.cmake, clang22.cmake) may be rebuilt in
+        # place; hash the compiler binary instead of trusting its mtime.
+        CCACHE_COMPILERCHECK=content)
+    if(CINDER_CCACHE_RELOCATABLE)
+        list(APPEND _cinder_ccache_env CCACHE_NOHASHDIR=1)
+        add_compile_options(-ffile-prefix-map=${CMAKE_SOURCE_DIR}=.)
+    endif()
+    set(_cinder_launcher ${CMAKE_COMMAND} -E env ${_cinder_ccache_env} ${CCACHE_PROGRAM})
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${_cinder_launcher}")
+    set(CMAKE_C_COMPILER_LAUNCHER   "${_cinder_launcher}")
+    message(STATUS "Cinder: using ccache (basedir: ${CMAKE_SOURCE_DIR})")
+elseif(_cinder_cache_kind STREQUAL "sccache")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${SCCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER   "${SCCACHE_PROGRAM}")
+    message(STATUS "Cinder: using sccache")
+    if(_cinder_use_pch AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        message(STATUS "Cinder: sccache cannot cache GCC PCH builds -> precompiled headers disabled "
+                       "(install ccache, or use -DCINDER_CACHE_TOOL=CCACHE)")
+        set(_cinder_use_pch OFF)
+    endif()
+endif()
+
+if(_cinder_use_pch AND _cinder_cache_kind STREQUAL "ccache"
+   AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND NOT CINDER_PCH_GCC_WITH_CCACHE)
+    message(STATUS "Cinder: GCC + ccache -> precompiled headers disabled (CINDER_PCH_GCC_WITH_CCACHE=OFF)")
+    set(_cinder_use_pch OFF)
+endif()
+
+if(NOT _cinder_use_pch)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+elseif(_cinder_cache_kind STREQUAL "ccache")
+    # Flags ccache needs to cache compilations that use a PCH.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-Xclang -fno-pch-timestamp>")
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fpch-preprocess>")
+    endif()
+endif()
+
+# NB: GCC LTO emits slim bytecode objects that need the linker plugin. This
+# project originally saw `undefined symbol: main` when combining them with
+# mold/lld, so the combination is gated out by default for exactly GNU+LTO.
+# Current mold supports GCC LTO through the standard linker-plugin interface
+# (lld does not), so retest with -DCINDER_FAST_LINKER_WITH_GCC_LTO=ON and
+# flip the default if it links. Clang LTO (LLVM bitcode) works with both.
+if(CINDER_USE_FAST_LINKER AND (CINDER_FAST_LINKER_WITH_GCC_LTO
+                               OR NOT (CINDER_ENABLE_LTO AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")))
     find_program(MOLD_PROGRAM mold)
     if(MOLD_PROGRAM)
         set(CMAKE_LINKER_TYPE MOLD)
@@ -198,6 +272,11 @@ endif()
 if(CINDER_ENABLE_LTO)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
     message(STATUS "Cinder: LTO enabled")
+    # lld's ThinLTO cache makes LTO relinks incremental (Clang only).
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_LINKER_TYPE STREQUAL "LLD")
+        add_link_options("LINKER:--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache")
+        message(STATUS "Cinder: ThinLTO cache -> ${CMAKE_BINARY_DIR}/thinlto-cache")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
@@ -205,6 +284,17 @@ endif()
 # ---------------------------------------------------------------------------
 if(CINDER_USE_PIPE)
     add_compile_options(-pipe)
+endif()
+
+# Ninja: cap concurrent links (LTO / sanitizer links are memory-hungry), and
+# drop static-library build-order edges that are not actually needed.
+if(CINDER_LINK_JOBS AND CMAKE_GENERATOR MATCHES "Ninja")
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS cinder_link=${CINDER_LINK_JOBS})
+    set(CMAKE_JOB_POOL_LINK cinder_link)
+    message(STATUS "Cinder: Ninja link pool limited to ${CINDER_LINK_JOBS} job(s)")
+endif()
+if(CINDER_OPTIMIZE_DEPENDENCIES AND NOT CINDER_ENABLE_GRPC)
+    set(CMAKE_OPTIMIZE_DEPENDENCIES ON)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -254,35 +344,19 @@ endif()
 find_package(Threads REQUIRED)
 include(FetchContent)
 
-# Share fetchcontent source downloads across all presets of the SAME
-# compiler family, avoiding N clones per new build/asan/tsan/etc directory.
-# Partitioned by compiler ID (clang vs gcc) rather than a single shared
-# dir: FETCHCONTENT_BASE_DIR governs the default -src, -subbuild, AND
-# -build locations for every dep, and mixing object files/build trees
-# produced by two different compilers/ABIs in one shared build dir is
-# unsafe. Each compiler family gets its own source+subbuild cache under
-# .cache/fetchcontent-<compiler>/; each preset still gets its own
-# per-target BINARY_DIR under binaryDir/_deps/<name>-build below so
-# compiler/sanitizer flags never collide on the compiled artifacts.
-# .cache/ is already gitignored.
-if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
-    set(_cinder_toolchain_key "clang")
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    set(_cinder_toolchain_key "gcc")
-else()
-    string(TOLOWER "${CMAKE_CXX_COMPILER_ID}" _cinder_toolchain_key)
-endif()
+# Dependency sources are cached ONCE per (dependency, pinned tag) outside the
+# build trees (see cmake/CinderDeps.cmake) and shared by every preset, compiler
+# and git worktree: no per-compiler or per-preset clone. Each dependency's
+# BINARY_DIR below stays per-preset, so compiler/sanitizer flags never collide.
+# Pins live in cmake/CinderDepVersions.cmake.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/CinderDeps.cmake)
 
-set(FETCHCONTENT_BASE_DIR
-    "${CMAKE_SOURCE_DIR}/.cache/fetchcontent-${_cinder_toolchain_key}"
-    CACHE PATH "Shared FetchContent source/subbuild cache, partitioned per compiler" FORCE)
+# Everything is pinned to fixed tags/SHAs, so skip FetchContent's update check
+# on the fallback (non-cached) path. Not FORCEd: pass
+# -DFETCHCONTENT_UPDATES_DISCONNECTED=OFF to override.
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "")
 
-# All our deps are pinned to fixed tags, never floating branches, so there
-# is nothing for FetchContent to "update" to on reconfigure — skip the
-# git-fetch existence/update check it otherwise runs every configure.
-set(FETCHCONTENT_UPDATES_DISCONNECTED ON CACHE BOOL "" FORCE)
-
-message(STATUS "Cinder: FetchContent cache -> ${FETCHCONTENT_BASE_DIR}")
+message(STATUS "Cinder: dependency source cache -> ${CINDER_DEPS_CACHE} (empty = auto)")
 
 # Retry flaky git clones instead of failing configure outright
 set(CMAKE_EP_GIT_CLONE_RETRY_COUNT 3)
@@ -318,10 +392,11 @@ macro(_cinder_find_package_args out_var package_name)
     endif()
 endmacro()
 
+cinder_use_cached_dep(asio)
 FetchContent_Declare(
     asio
-    GIT_REPOSITORY https://github.com/chriskohlhoff/asio.git
-    GIT_TAG        asio-1-38-2
+    GIT_REPOSITORY ${CINDER_DEP_asio_REPO}
+    GIT_TAG        ${CINDER_DEP_asio_TAG}
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/asio-build
@@ -335,10 +410,11 @@ target_compile_definitions(asio INTERFACE
     ASIO_NO_DEPRECATED
 )
 
+cinder_use_cached_dep(xxhash)
 FetchContent_Declare(
     xxhash
-    GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
-    GIT_TAG        v0.8.3
+    GIT_REPOSITORY ${CINDER_DEP_xxhash_REPO}
+    GIT_TAG        ${CINDER_DEP_xxhash_TAG}
     SOURCE_SUBDIR  cmake_unofficial
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
@@ -348,11 +424,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(xxhash)
 
 _cinder_find_package_args(_spdlog_args spdlog 2)
+cinder_use_cached_dep(spdlog PACKAGE spdlog VERSION 2)
 FetchContent_Declare(
     spdlog
-    GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    # Pinned v2.x (v2.0.0 unreleased): d24088deaa441a79267df8ae3dbc567fbe2a5e03.
-    GIT_TAG        d24088deaa441a79267df8ae3dbc567fbe2a5e03
+    GIT_REPOSITORY ${CINDER_DEP_spdlog_REPO}
+    GIT_TAG        ${CINDER_DEP_spdlog_TAG}
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/spdlog-build
@@ -363,10 +439,11 @@ set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(spdlog)
 
 _cinder_find_package_args(_cli11_args CLI11)
+cinder_use_cached_dep(cli11 PACKAGE CLI11)
 FetchContent_Declare(
     CLI11
-    GIT_REPOSITORY https://github.com/CLIUtils/CLI11.git
-    GIT_TAG        v2.7.2
+    GIT_REPOSITORY ${CINDER_DEP_cli11_REPO}
+    GIT_TAG        ${CINDER_DEP_cli11_TAG}
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/cli11-build
@@ -376,10 +453,11 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(CLI11)
 
 _cinder_find_package_args(_yaml_cpp_args yaml-cpp)
+cinder_use_cached_dep(yaml-cpp PACKAGE yaml-cpp)
 FetchContent_Declare(
     yaml-cpp
-    GIT_REPOSITORY https://github.com/jbeder/yaml-cpp.git
-    GIT_TAG        yaml-cpp-0.9.0
+    GIT_REPOSITORY ${CINDER_DEP_yaml-cpp_REPO}
+    GIT_TAG        ${CINDER_DEP_yaml-cpp_TAG}
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/yaml-cpp-build
@@ -398,10 +476,11 @@ if(CINDER_USE_MIMALLOC AND (CINDER_ENABLE_ASAN OR CINDER_ENABLE_TSAN OR CINDER_E
 endif()
 
 if(CINDER_USE_MIMALLOC)
+    cinder_use_cached_dep(mimalloc)
     FetchContent_Declare(
         mimalloc
-        GIT_REPOSITORY https://github.com/microsoft/mimalloc.git
-        GIT_TAG        v3.5.0
+        GIT_REPOSITORY ${CINDER_DEP_mimalloc_REPO}
+        GIT_TAG        ${CINDER_DEP_mimalloc_TAG}
         GIT_SHALLOW    TRUE
         GIT_SUBMODULES ""
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/mimalloc-build
@@ -428,10 +507,11 @@ endif()
 
 if(CINDER_BUILD_TESTS)
     _cinder_find_package_args(_gtest_args GTest)
+    cinder_use_cached_dep(googletest PACKAGE GTest)
     FetchContent_Declare(
         googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG        v1.18.0
+        GIT_REPOSITORY ${CINDER_DEP_googletest_REPO}
+        GIT_TAG        ${CINDER_DEP_googletest_TAG}
         GIT_SHALLOW    TRUE
         GIT_SUBMODULES ""
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/googletest-build
@@ -449,10 +529,11 @@ endif()
 
 if(CINDER_BUILD_BENCHMARKS)
     _cinder_find_package_args(_benchmark_args benchmark)
+    cinder_use_cached_dep(benchmark PACKAGE benchmark)
     FetchContent_Declare(
         benchmark
-        GIT_REPOSITORY https://github.com/google/benchmark.git
-        GIT_TAG        v1.9.5
+        GIT_REPOSITORY ${CINDER_DEP_benchmark_REPO}
+        GIT_TAG        ${CINDER_DEP_benchmark_TAG}
         GIT_SHALLOW    TRUE
         GIT_SUBMODULES ""
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/benchmark-build
@@ -492,10 +573,11 @@ if(CINDER_ENABLE_GRPC)
     set(absl_PROPAGATE_CXX_STD    ON  CACHE BOOL "" FORCE)
     set(RE2_BUILD_TESTING         OFF CACHE BOOL "" FORCE)
 
+    cinder_use_cached_dep(grpc)
     FetchContent_Declare(
         grpc
-        GIT_REPOSITORY https://github.com/grpc/grpc.git
-        GIT_TAG        v1.83.1
+        GIT_REPOSITORY ${CINDER_DEP_grpc_REPO}
+        GIT_TAG        ${CINDER_DEP_grpc_TAG}
         GIT_SHALLOW    TRUE
         BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/grpc-build
         SYSTEM
@@ -633,6 +715,19 @@ target_precompile_headers(cinder_core PRIVATE
     <spdlog/spdlog.h>
     <xxhash.h>
 )
+
+# Let other targets (tools, tests, benchmarks) reuse cinder_core's PCH instead
+# of re-parsing asio/spdlog/xxhash. Call from their CMakeLists.txt right after
+# add_executable()/add_library(). GCC rejects a PCH built with different
+# optimisation flags (-Winvalid-pch: "__OPTIMIZE__ not defined"), so this also
+# applies the same per-target debug/opt options cinder_core gets. Don't use it
+# on targets with extra instrumentation flags (e.g. the libFuzzer targets).
+function(cinder_reuse_pch target)
+    if(NOT CMAKE_DISABLE_PRECOMPILE_HEADERS AND TARGET cinder_core)
+        _cinder_apply_debug_options(${target})
+        target_precompile_headers(${target} REUSE_FROM cinder_core)
+    endif()
+endfunction()
 
 # ---------------------------------------------------------------------------
 # Executables

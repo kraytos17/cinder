@@ -217,7 +217,7 @@ just --list
 
 - **clang-tidy** runs inline during `ci` builds; `.clang-tidy` excludes noisy checks for the project's coding style.
 - **clangd** reads `build/debug/compile_commands.json` (per-file). Use `just build` for editor indexing; `fast`/unity builds hide per-file commands from clangd.
-- **sccache** auto-detected via CMake; falls back to ccache.
+- **ccache** auto-detected via CMake (preferred; falls back to sccache).
 - **mold** auto-selected as the linker (falls back to lld, then GNU ld; skipped for GCC+LTO, whose slim bytecode neither handles) — disable with `-DCINDER_USE_FAST_LINKER=OFF`.
 - **split-dwarf** (`-gsplit-dwarf` + `--gdb-index`) enabled in Debug/RelWithDebInfo for faster linking — disable with `-DCINDER_USE_SPLIT_DWARF=OFF`.
 
@@ -232,7 +232,7 @@ check: `CI Success`.
 | Job | What |
 |---|---|
 | Build CI image | Toolchain image build/push |
-| Fetch Deps (×2) | Seed per-family FetchContent caches, GCC + Clang (single writer per cache key) |
+| Fetch Deps | Seed the shared dependency source cache (sole writer) |
 | build-test (×7) | GCC/Clang debug, release, TLS, ASan+UBSan — unit/sim/cli |
 | Feature Flags (×2) | Release + TLS + gRPC, GCC and Clang |
 | Sanitizers (GCC) | ASan+UBSan (`ci-gcc`) — unit/sim/cli |
@@ -242,13 +242,14 @@ check: `CI Success`.
 
 - Same-repo PRs run the full matrix against their own image; fork PRs validate the Dockerfile only (no registry push) and skip the matrix.
 - Docs-only changes skip the matrix via `ci-skip.yaml`, which still reports `CI Success`.
-- Caches: per-family FetchContent sources seeded once by the Fetch Deps jobs
-  (sole writer per key — parallel builds used to race saving the same key);
-  consumers restore read-only with a family-prefix fallback, so a new
-  `CMakeLists.txt` hash reuses the previous deps instead of cold-starting.
-  sccache's GHA backend is enabled (`SCCACHE_GHA_ENABLED`), entries are
-  content-hashed so all jobs share one key space; writes are main-only
-  (PRs read-only) so PR-branch entries can't churn the quota.
+- Caches: one shared dependency source cache (`~/.cache/cinder/deps`, keyed by
+  pinned tag) seeded once by the Fetch Deps job (sole writer — parallel builds
+  used to race saving the same key); consumers restore read-only with a `deps-`
+  prefix fallback, so a new `CinderDepVersions.cmake` hash reuses the previous
+  sources instead of cold-starting.
+  ccache (via `hendrikmuhs/ccache-action`, per-preset keys) is content-hashed so
+  all jobs share hits safely; saves are main-only (PRs read-only) so PR-branch
+  entries can't churn the quota.
 
 ## Dependencies
 

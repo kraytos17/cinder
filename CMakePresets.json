@@ -7,7 +7,8 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build/${presetName}",
       "cacheVariables": {
-        "CINDER_ENABLE_CRYPTO": "ON"
+        "CINDER_ENABLE_CRYPTO": "ON",
+        "CMAKE_COLOR_DIAGNOSTICS": "ON"
       }
     },
     {
@@ -60,6 +61,7 @@
       "description": "Optimized release build with LTO (GCC)",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Release",
         "CINDER_ENABLE_LTO": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON"
@@ -72,6 +74,7 @@
       "description": "Optimized release build with LTO (Clang)",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Release",
         "CINDER_ENABLE_LTO": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON"
@@ -84,6 +87,7 @@
       "description": "Debug build with ASan+UBSan; mimalloc auto-disabled",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON"
@@ -96,6 +100,7 @@
       "description": "Clang debug with ASan+UBSan + use-after-scope/return + ignorelist; mimalloc auto-disabled",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON"
@@ -108,6 +113,7 @@
       "description": "Clang with MemorySanitizer — requires an MSan-instrumented C++ standard library to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_MSAN": "ON"
       }
@@ -119,6 +125,7 @@
       "description": "Debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_TSAN": "ON",
         "CINDER_BUILD_BENCHMARKS": "OFF"
@@ -131,6 +138,7 @@
       "description": "Clang debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_TSAN": "ON",
         "CINDER_BUILD_BENCHMARKS": "OFF"
@@ -166,6 +174,7 @@
       "description": "CI build with GCC, ASan+UBSan; mimalloc auto-disabled",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON",
@@ -263,6 +272,7 @@
       "description": "Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_FUZZER": "ON",
         "CINDER_ENABLE_ASAN": "ON",
@@ -276,6 +286,7 @@
       "description": "Clang build with coverage instrumentation for corpus minimization",
       "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
         "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_COVERAGE": "ON",
         "CINDER_ENABLE_ASAN": "ON"

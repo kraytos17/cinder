@@ -21,6 +21,9 @@ set_target_properties(cinderd cinder-cli cinder-admin PROPERTIES
 _cinder_apply_debug_options(cinderd)
 _cinder_apply_debug_options(cinder-cli)
 _cinder_apply_debug_options(cinder-admin)
+cinder_reuse_pch(cinderd)
+cinder_reuse_pch(cinder-cli)
+cinder_reuse_pch(cinder-admin)
 
 list(TRANSFORM CINDER_TOOL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tools FILES ${CINDER_TOOL_SOURCES})

@@ -18,10 +18,6 @@ on:
 permissions:
   contents: read
 
-env:
-  SCCACHE_GHA_ENABLED: "true"
-  SCCACHE_GHA_RW_MODE: ${{ case(github.ref == 'refs/heads/main', 'READ_WRITE', 'READ_ONLY') }}
-
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -85,35 +81,27 @@ jobs:
           push-to-registry: true
 
   fetch-deps:
-    name: Fetch dependencies (${{ matrix.family }})
+    name: Fetch dependencies
     needs: [build-image]
     if: needs.build-image.outputs.image-pushed == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - preset: tls-grpc
-            family: gcc
-          - preset: tls-grpc-clang
-            family: clang
     runs-on: ubuntu-26.04
     container:
       image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - name: Restore + seed FetchContent
+      - name: Restore + seed dependency cache
         uses: actions/cache@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-${{ matrix.family }}-
-      - name: Configure (populate FetchContent)
-        run: cmake --preset ${{ matrix.preset }} -DCINDER_BUILD_BENCHMARKS=ON
+            deps-
+      - name: Configure (populate dependencies)
+        run: cmake --preset tls-grpc -DCINDER_BUILD_BENCHMARKS=ON
 
       - name: Report cache size
-        run: du -sh .cache/fetchcontent-${{ matrix.family }}
+        run: du -sh ~/.cache/cinder/deps
 
   build-test:
     needs: [build-image]
@@ -150,15 +138,19 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
-      - name: Restore FetchContent
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ matrix.preset }}
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-${{ matrix.family }}-
+            deps-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -208,16 +200,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
-
-      - name: Restore FetchContent
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ matrix.preset }}
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-${{ matrix.family }}-
+            deps-
 
       - name: Configure (TLS + gRPC)
         run: cmake --preset ${{ matrix.preset }}
@@ -251,16 +246,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
-
-      - name: Restore FetchContent
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-ci-gcc
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-gcc-
+            deps-
 
       - name: Configure
         run: cmake --preset ci-gcc
@@ -314,16 +312,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
-
-      - name: Restore FetchContent
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ matrix.preset }}
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-${{ matrix.family }}
-          key: fetchcontent-${{ matrix.family }}-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-${{ matrix.family }}-
+            deps-
 
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
@@ -363,24 +364,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-lint
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Restore FetchContent (Clang)
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-clang
-          key: fetchcontent-clang-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-clang-
-
-      - name: Restore FetchContent (GCC)
-        uses: actions/cache/restore@v6
-        with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            fetchcontent-gcc-
+            deps-
 
       - name: Check hook syntax
         run: bash -n .githooks/pre-commit
@@ -425,16 +422,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install sccache
-        uses: Mozilla-Actions/sccache-action@v0.0.11
-
-      - name: Restore FetchContent
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-${{ matrix.preset }}
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
         uses: actions/cache/restore@v6
         with:
-          path: ${{ github.workspace }}/.cache/fetchcontent-gcc
-          key: fetchcontent-gcc-${{ hashFiles('CMakeLists.txt') }}
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
           restore-keys: |
-            fetchcontent-gcc-
+            deps-
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

@@ -1,9 +1,11 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
-presets := `jq -r '.configurePresets[].name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-gcc tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
+presets := `jq -r '.configurePresets[] | select(.hidden != true) | .name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-gcc tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
 
 preset := "debug"
+# Preset used by `just bench` (must have CINDER_BUILD_BENCHMARKS=ON).
+bench_preset := "release"
 jobs := `nproc`
 args := ""
 
@@ -367,15 +369,15 @@ proto-generate:
 proto-breaking:
     buf breaking --against '.git#branch=main'
 
-# Benchmarks are OFF by default, so this recipe turns them on for the
-# configured preset regardless of which preset is selected. Requires the
-# preset to be configured already (see `just preset=<name> configure`).
+# Benchmarks use a preset that already enables them (release by default), so no
+# preset's CMake cache is ever mutated with -D. Override with
+# `just bench_preset=profile bench`.
 [group('misc')]
-[doc('Run the throughput benchmark (enables benchmarks for the preset)')]
+[doc('Run the throughput benchmark (bench_preset, default: release).')]
 bench:
-    cmake -S . -B build/{{ preset }} -DCINDER_BUILD_BENCHMARKS=ON
-    cmake --build --preset {{ preset }} -j{{ jobs }}
-    ./build/{{ preset }}/bin/cinder_throughput_bench {{ args }}
+    [ -f build/{{ bench_preset }}/CMakeCache.txt ] || cmake --preset {{ bench_preset }}
+    cmake --build --preset {{ bench_preset }} -j{{ jobs }}
+    ./build/{{ bench_preset }}/bin/cinder_throughput_bench {{ args }}
 
 [group('misc')]
 [doc('Install the current preset to the CMake prefix.')]
@@ -388,9 +390,47 @@ clean:
     rm -rf build/{{ preset }}
 
 [group('misc')]
-[doc('Delete all build dirs and the FetchContent cache.')]
+[doc('Delete all build dirs (keeps the shared dependency cache; see clean-deps).')]
 clean-all:
-    rm -rf build/ .cache/
+    rm -rf build/
+
+# The dependency source cache lives OUTSIDE the repo (default ~/.cache/cinder/deps,
+# override with CINDER_DEPS_CACHE=<dir>) so it survives clean-all, is shared by
+# every preset/compiler/worktree, and is keyed by <dep>-<pinned tag>.
+# Configure populates missing entries automatically; these recipes are for
+# priming it ahead of time (CI images, offline work) and for housekeeping.
+[group('deps')]
+[doc('Prime the shared dependency source cache (all pinned deps except gRPC).')]
+deps:
+    cmake -P cmake/FetchDeps.cmake
+
+[group('deps')]
+[doc('Prime the shared dependency source cache including gRPC (large).')]
+deps-grpc:
+    cmake -DCINDER_DEPS_WITH_GRPC=ON -P cmake/FetchDeps.cmake
+
+[group('deps')]
+[doc('Print the shared dependency source cache directory.')]
+deps-dir:
+    cmake -DCINDER_PRINT_DIR=ON -P cmake/FetchDeps.cmake
+
+[group('deps')]
+[doc('Delete the shared dependency source cache (next configure refetches).')]
+clean-deps:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir="$(cmake -DCINDER_PRINT_DIR=ON -P cmake/FetchDeps.cmake)"
+    [ -n "$dir" ] && [ "$dir" != "/" ] && rm -rf "$dir" && echo "removed $dir"
+
+[group('deps')]
+[doc('Show compiler-cache (ccache) statistics.')]
+ccache-stats:
+    ccache -s
+
+[group('deps')]
+[doc('Reset compiler-cache (ccache) statistics before a timing run.')]
+ccache-zero:
+    ccache -z
 
 [group('misc')]
 [doc('Print the effective preset, build dir, jobs, and preset list.')]
@@ -398,4 +438,5 @@ info:
     echo "preset={{ preset }}"
     echo "build_dir=build/{{ preset }}"
     echo "jobs={{ jobs }}"
+    echo "deps_cache=$(cmake -DCINDER_PRINT_DIR=ON -P cmake/FetchDeps.cmake)"
     echo "presets={{ presets }}"

@@ -5,7 +5,7 @@ RUN pacman -Syu --noconfirm \
        gcc clang lld llvm compiler-rt \
        cmake ninja cppcheck openssl \
        actionlint shellcheck \
-       curl git \
+       ccache curl git \
     && pacman -Scc --noconfirm
 
 RUN curl -fsSL https://just.systems/install.sh | bash -s -- --to /usr/local/bin
