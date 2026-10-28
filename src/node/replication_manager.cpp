@@ -6,10 +6,13 @@
 #include <asio/experimental/concurrent_channel.hpp>
 #include <asio/system_executor.hpp>
 #include <asio/use_awaitable.hpp>
+#include <atomic>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/tracing.hpp"
@@ -43,11 +46,13 @@ namespace cinder {
             // callback exactly once, but a duplicate delivery must not corrupt
             // pending/ack accounting (an extra --pending can underflow the
             // counter or force a premature decision), so repeats are ignored
-            // here. Distinct targets complete on different threads; each index
-            // is written by its own target's callback chain, so plain bytes
-            // suffice — a transport double-firing the SAME callback
-            // concurrently is already broken beyond what dedup can paper over.
-            std::vector<char> delivered;
+            // here. Atomic because duplicate deliveries can race on different
+            // threads: exchange admits exactly one winner even under
+            // concurrent double-fire; the loser is dropped before touching
+            // accounting or the channel. A deque holds the flags because
+            // vector growth requires relocating elements and atomics are
+            // neither copyable nor movable.
+            std::deque<std::atomic<bool>> delivered;
         };
 
         template <typename Result>
@@ -61,12 +66,19 @@ namespace cinder {
         // their side effects, exactly as the old per-callback code did, and
         // draining guarantees no transport callback outlives the operation.
         //
-        // Two phases. The INLINE drain runs first on the caller's thread, so
-        // fully synchronous transports complete synchronously: on_done fires
-        // before this function returns, exactly as before. If any completion
-        // is still outstanding, a detached tail coroutine drains the rest on
-        // the system thread pool. The handoff is safe: the inline drain
-        // happens-before co_spawn, and only one phase reads shared state.
+        // Executor contract (the whole point of this helper):
+        //   * Reduction is serialized. on_each / should_fire / fire / fail run
+        //     either entirely in the INLINE phase on the caller's thread, or
+        //     entirely in the TAIL phase on the system thread pool — never
+        //     both, never concurrently. The handoff (co_spawn after the inline
+        //     drain gives up) happens-before the tail reads shared state, and
+        //     only one phase reads it at a time.
+        //   * Delivery thread is therefore "caller's thread OR system pool",
+        //     never a specific io thread. Terminal callbacks must be
+        //     thread-safe and non-blocking; strand-bound work re-posts itself.
+        //   * Fully synchronous transports complete synchronously: when every
+        //     send reports before the inline drain gives up, on_done fires
+        //     before this function returns and no coroutine is spawned.
         //
         // Contract: every launched send reports exactly once (all Transport
         // implementations always invoke their callback). Capacity N provably
@@ -92,13 +104,14 @@ namespace cinder {
         ) {
             auto chan = std::make_shared<FanOutChannel<Result>>(asio::system_executor{}, n);
             auto drain = std::make_shared<FanOutDrain>();
-            drain->delivered.assign(n, 0);
+            for (size_t k = 0; k < n; ++k) {
+                drain->delivered.emplace_back(false);
+            }
             // Deduping reporter handed to send_all instead of the raw channel
             // sender: first delivery per target goes through, repeats are
             // dropped before they can touch accounting or the channel.
             auto report_once = [chan, drain, n](std::size_t i, Result r) {
-                if (i < n && !drain->delivered[i]) {
-                    drain->delivered[i] = 1;
+                if (i < n && !drain->delivered[i].exchange(true, std::memory_order_acq_rel)) {
                     (void)chan->try_send(asio::error_code{}, i, std::move(r));
                 }
             };
@@ -136,8 +149,9 @@ namespace cinder {
                  fire = std::forward<Fire>(fire),
                  fail = std::forward<Fail>(fail)] mutable -> asio::awaitable<void> {
                 try {
-                    for (; drain->seen < n; ++drain->seen) {
+                    while (drain->seen < n) {
                         auto [idx, res] = co_await chan->async_receive(asio::use_awaitable);
+                        ++drain->seen;
                         on_each(idx, std::move(res), !drain->fired);
                         if (!drain->fired && should_fire()) {
                             drain->fired = true;
@@ -209,6 +223,7 @@ namespace cinder {
                 {"key", key},
                 {"reason", local_res.error().message()}
             );
+
             on_done(local_res);
             return;
         }
@@ -220,10 +235,8 @@ namespace cinder {
         req.expires_at = wire_expiry;
         req.version = version;
         req.writer_node_hash = writer;
-        // Propagate structured trace context from the originating request.
         req.trace_id = trace_id;
         req.span_id = span_id;
-
         if (mode == ConsistencyMode::Async) {
             CINDER_DEBUG("async write fan-out", {"key", key}, {"replicas", replica_nodes.size()});
             // Local commit counts; fan-out best-effort, hint on failure.
@@ -245,6 +258,7 @@ namespace cinder {
             if (metrics_) {
                 metrics_->replicationMetrics().async_writes.fetch_add(1, std::memory_order_relaxed);
             }
+
             on_done(ok());
             return;
         }
@@ -547,9 +561,7 @@ namespace cinder {
         }
 
         auto now = clock_.now();
-        std::vector<HintQueue::Hint> batch;
-        hints_.replay([&](const HintQueue::Hint& hint) { batch.push_back(hint); }, now);
-
+        auto batch = hints_.snapshot(now);
         // Wrap the user callback: report metrics, release the single-consumer
         // guard, then deliver. Used for both the empty fast path and fan-out.
         auto finish = [this, done = std::move(on_done)](size_t n) mutable {
@@ -571,7 +583,7 @@ namespace cinder {
         }
 
         struct HintReplay {
-            std::vector<HintQueue::Hint> batch;
+            std::vector<HintQueue::SnapshotEntry> batch;
             ReplayCallback finish;
             size_t pending = 0;
             size_t replayed = 0;
@@ -584,14 +596,14 @@ namespace cinder {
         fanOutQuorum<Result<void>>(st->batch.size(), [this, st](auto report) {
             for (size_t i = 0; i < st->batch.size(); ++i) {
                 transport_.sendAsync(
-                    st->batch[i].target,
-                    st->batch[i].req,
+                    st->batch[i].hint.target,
+                    st->batch[i].hint.req,
                     [report, i](Result<void> r) mutable { report(i, std::move(r)); }
                 );
             }
         }, [this, st](std::size_t i, Result<void> r, bool) {
             if (r.has_value()) {
-                hints_.remove(st->batch[i].target, st->batch[i].req);
+                hints_.remove(st->batch[i].handle);
                 ++st->replayed;
             }
             --st->pending;

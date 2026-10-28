@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <functional>
 #include <string_view>
-#include <unordered_set>
 #include <vector>
 
 namespace cinder {
@@ -21,9 +20,13 @@ namespace cinder {
         // has wheel_slot == 0 and never looks "scheduled").
         uint16_t wheel_slot = 0;
         bool in_heap = false; // true when scheduled in the min-heap
+        // Generation tag for the long-TTL heap: bumped every time the node
+        // leaves the heap path, so a stale HeapEntry can be detected without
+        // a separate tombstone hash set.
+        uint64_t heap_generation = 0;
     };
 
-    static_assert(sizeof(WheelNode) == 24, "WheelNode should be 24 bytes");
+    static_assert(sizeof(WheelNode) == 32, "WheelNode should be 32 bytes");
 
     // Concept: Node must inherit from WheelNode and expose a `key` member.
     template <typename Node>
@@ -60,7 +63,7 @@ namespace cinder {
                 linkBefore(node, &wheel_[slot]);
             } else {
                 auto absolute_tick = tick_count_ + ttl_ticks;
-                heap_.push_back({absolute_tick, node});
+                heap_.push_back({absolute_tick, node, node->heap_generation});
                 node->in_heap = true;
                 std::push_heap(
                     heap_.begin(),
@@ -75,9 +78,9 @@ namespace cinder {
         // Remove node from wherever it is scheduled.
         void remove(Node* node) {
             unlink(node);
-            // Tombstone for heap path — only if actually in the heap.
+            // Generation-tag invalidation for the heap path — no hash set.
             if (node->in_heap) {
-                heap_removed_.insert(node);
+                ++node->heap_generation;
                 node->in_heap = false;
             }
         }
@@ -158,11 +161,14 @@ namespace cinder {
                 );
 
                 heap_.pop_back();
-                entry.node->in_heap = false;
-                if (heap_removed_.contains(entry.node)) {
-                    heap_removed_.erase(entry.node);
+                // Stale entry: node was removed/reinserted after this entry
+                // was pushed (generation mismatch). Only clear in_heap when
+                // the popped entry is the live one.
+                if (entry.generation != entry.node->heap_generation) {
                     continue;
                 }
+
+                entry.node->in_heap = false;
                 on_expired(*entry.node);
             }
         }
@@ -178,9 +184,9 @@ namespace cinder {
         struct HeapEntry {
             size_t absolute_tick = 0;
             Node* node = nullptr;
+            uint64_t generation = 0;
         };
 
         std::vector<HeapEntry> heap_;
-        std::unordered_set<Node*> heap_removed_;
     };
 } // namespace cinder

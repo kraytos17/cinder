@@ -153,7 +153,6 @@ namespace cinder::net {
 
         w.write(req.version);
         w.write(req.writer_node_hash);
-
         w.write(static_cast<uint32_t>(req.key.size()));
         w.writeString(req.key);
         w.write(static_cast<uint32_t>(req.value.size()));
@@ -252,11 +251,11 @@ namespace cinder::net {
             return err<DecodedRequest>(key_len.error());
         }
         if (*key_len > 0) {
-            auto key_bytes = r.readBytes(*key_len);
-            if (!key_bytes) {
-                return err<DecodedRequest>(key_bytes.error());
+            auto key_view = r.readStringView(*key_len);
+            if (!key_view) {
+                return err<DecodedRequest>(key_view.error());
             }
-            req.key.assign(reinterpret_cast<const char*>(key_bytes->data()), *key_len);
+            req.key.assign(*key_view);
         }
 
         auto val_len = mustRead<uint32_t>(r);
@@ -264,11 +263,11 @@ namespace cinder::net {
             return err<DecodedRequest>(val_len.error());
         }
         if (*val_len > 0) {
-            auto val_bytes = r.readBytes(*val_len);
-            if (!val_bytes) {
-                return err<DecodedRequest>(val_bytes.error());
+            auto val_view = r.readStringView(*val_len);
+            if (!val_view) {
+                return err<DecodedRequest>(val_view.error());
             }
-            req.value.assign(reinterpret_cast<const char*>(val_bytes->data()), *val_len);
+            req.value.assign(*val_view);
         }
         // Trace context — optional trailing data gated by flag 0x04.
         if ((*flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {
@@ -438,11 +437,11 @@ namespace cinder::net {
             size_t remaining = r.remaining();
             size_t val_len = (remaining > trace_size) ? (remaining - trace_size) : 0;
             if (val_len > 0) {
-                auto val_bytes = r.readBytes(val_len);
-                if (!val_bytes) {
-                    return err<Response>(val_bytes.error());
+                auto val_view = r.readStringView(val_len);
+                if (!val_view) {
+                    return err<Response>(val_view.error());
                 }
-                res.value = std::string(reinterpret_cast<const char*>(val_bytes->data()), val_len);
+                res.value = std::string(*val_view);
             }
         }
         if ((flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {

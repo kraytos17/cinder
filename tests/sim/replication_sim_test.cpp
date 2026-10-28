@@ -184,20 +184,6 @@ namespace cinder {
             return true;
         }
 
-        // Same idea for hint accounting: failure hints are enqueued by the
-        // async tail, so a test must wait for the count to settle instead of
-        // asserting it synchronously after delivering a completion.
-        auto awaitHintCount(ReplicationManager& mgr, size_t n) -> bool {
-            auto deadline = std::chrono::steady_clock::now() + seconds(10);
-            while (mgr.hintCount() != n) {
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    return false;
-                }
-                std::this_thread::sleep_for(milliseconds(1));
-            }
-            return true;
-        }
-
         TEST(ReplicationSimTest, AsyncWriteReachesReplica) {
             TwoNodeCluster c;
             c.bus.setDelay(10ms);
@@ -506,7 +492,11 @@ namespace cinder {
             // node2 fails once (hinted, pending 2→1: no decision either way).
             auto dup = c.transport.peekSend(0);
             (*dup)(cinder::err(Error(Errc::NotReady, "deferred failure")));
-            ASSERT_TRUE(awaitHintCount(c.mgr, 1u));
+            auto hint_deadline = std::chrono::steady_clock::now() + seconds(10);
+            while (c.mgr.hintCount() != 1u && std::chrono::steady_clock::now() < hint_deadline) {
+                std::this_thread::sleep_for(milliseconds(1));
+            }
+            ASSERT_EQ(c.mgr.hintCount(), 1u);
             EXPECT_EQ(done_count.load(), 0);
 
             // Same completion delivered again: must be a no-op. Pre-fix this
@@ -524,6 +514,49 @@ namespace cinder {
             EXPECT_EQ(done_count.load(), 1);
             EXPECT_EQ(c.transport.pendingSends(), 0u);
             EXPECT_EQ(c.mgr.hintCount(), 1u);
+        }
+
+        // Concurrent duplicate delivery: the same completion fired from two
+        // threads at once must still reduce exactly once. The atomic exchange
+        // admits a single winner; the loser is dropped before accounting.
+        // Pre-fix this raced on a plain byte (TSan flags it) and could admit
+        // both deliveries, double-decrementing pending.
+        TEST(ReplicationSimTest, QuorumWriteIgnoresConcurrentDuplicateCompletion) {
+            DeferredCluster c;
+            std::atomic<int> done_count{0};
+            Result<void> result = err(Error(Errc::InternalError, "unset"));
+            c.mgr.writeAsync(
+                "k",
+                "v",
+                std::nullopt,
+                {"node2", "node3"},
+                ConsistencyMode::Quorum,
+                [&](Result<void> r) {
+                result = std::move(r);
+                ++done_count;
+            }
+            );
+            EXPECT_EQ(c.transport.pendingSends(), 2u);
+
+            // Same node2 success from two threads: exactly one wins the
+            // exchange, so acks goes 1→2 once and the write succeeds.
+            auto dup = c.transport.peekSend(0);
+            std::thread t1([dup] { (*dup)(cinder::ok()); });
+            std::thread t2([dup] { (*dup)(cinder::ok()); });
+            t1.join();
+            t2.join();
+
+            ASSERT_TRUE(awaitDecision(done_count));
+            EXPECT_TRUE(result.has_value());
+            EXPECT_EQ(done_count.load(), 1);
+            EXPECT_EQ(c.transport.pendingSends(), 2u);
+
+            // Drain both queued callbacks: node2's re-fire is a duplicate and
+            // ignored, node3's ack is consumed. Still exactly one delivery.
+            c.transport.completeSends(2, true);
+            std::this_thread::sleep_for(milliseconds(100));
+            EXPECT_EQ(done_count.load(), 1);
+            EXPECT_EQ(c.transport.pendingSends(), 0u);
         }
 
         // Quorum write with no replicas: W == 1, so the local ack alone

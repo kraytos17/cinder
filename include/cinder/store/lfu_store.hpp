@@ -26,7 +26,7 @@ namespace cinder {
         VersionedEntry entry;
     };
 
-    static_assert(sizeof(LfuNode) == 128, "LfuNode should be 128 bytes");
+    static_assert(sizeof(LfuNode) == 136, "LfuNode should be 136 bytes");
 
     class LfuStore : public EvictionStoreBase<LfuStore, LfuNode> {
         friend class EvictionStoreBase<LfuStore, LfuNode>;

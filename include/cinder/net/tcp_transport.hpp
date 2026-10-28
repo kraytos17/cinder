@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <asio.hpp>
 #include <atomic>
 #include <flat_map>
@@ -116,7 +117,7 @@ namespace cinder {
         // Set once by shutdown(); observed by in-flight coroutines. Atomic so
         // the check needs no lock on the send path.
         std::atomic<bool> stopping_{false};
-        std::unordered_map<NodeId, std::unique_ptr<NodeConn>> conns_;
+        ankerl::unordered_dense::map<NodeId, std::unique_ptr<NodeConn>> conns_;
         std::flat_map<NodeId, ClusterConfig::NodeConfig> addrs_;
         MessageHandler handler_;
     };

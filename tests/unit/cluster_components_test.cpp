@@ -2,7 +2,7 @@
 // coverage (§4.2). Deliberately narrow, and deliberately NOT a re-test of what
 // existing files already pin:
 //
-//   * HintQueue  — previously ZERO direct tests, despite non-obvious ring-buffer
+//   * HintQueue  — previously ZERO direct tests, despite non-obvious bounded-FIFO
 //                  semantics: drop-oldest on overflow, expiry during snapshot,
 //                  remove-by-triple-match, and the documented
 //                  "visitor runs outside the lock" contract.
@@ -70,9 +70,8 @@ namespace cinder {
         }
 
         TEST(HintQueueTest, PushAlwaysSucceedsAndDropsOldestWhenFull) {
-            // The lock-free ring uses ticket sequence numbers instead of a
-            // head==tail sentinel, so the full K_CAPACITY slots are usable
-            // (no sacrificed slot, unlike the old mutex version).
+            // The bounded mutex queue uses every slot; overflow drops the
+            // oldest hint rather than sacrificing a sentinel slot.
             constexpr size_t K_USABLE = HintQueue::K_CAPACITY;
 
             HintQueue q;
@@ -114,6 +113,108 @@ namespace cinder {
             EXPECT_EQ(seen, (std::vector<std::string>{"live"}));
             // Expired hints are dropped during the snapshot, not merely skipped.
             EXPECT_EQ(q.size(), 1U);
+        }
+
+        TEST(HintQueueTest, SnapshotCopiesLiveHintsWithoutConsumingThem) {
+            HintQueue q;
+            const auto now = steady_clock::now();
+            auto expired = cctMakeHint("n2", "expired");
+            expired.expires_at = now - milliseconds(1);
+            auto live = cctMakeHint("n3", "live");
+            live.expires_at = now + milliseconds(1000);
+            q.push(std::move(expired));
+            q.push(std::move(live));
+
+            auto snapshot = q.snapshot(now);
+            ASSERT_EQ(snapshot.size(), 1U);
+            EXPECT_EQ(snapshot.front().hint.target, "n3");
+            EXPECT_EQ(snapshot.front().hint.req.key, "live");
+            // Snapshot leaves live hints queued for completion-driven removal.
+            EXPECT_EQ(q.size(), 1U);
+        }
+
+        TEST(HintQueueTest, StaleHandleCannotRemoveReusedSlot) {
+            HintQueue q;
+            q.push(cctMakeHint("n2", "old"));
+            auto old_snapshot = q.snapshot(steady_clock::now());
+            ASSERT_EQ(old_snapshot.size(), 1U);
+
+            // Remove the old generation, then reuse its slot for another key.
+            q.remove(old_snapshot.front().handle);
+            q.push(cctMakeHint("n2", "replacement"));
+            auto replacement = q.snapshot(steady_clock::now());
+            ASSERT_EQ(replacement.size(), 1U);
+            EXPECT_EQ(replacement.front().hint.req.key, "replacement");
+            EXPECT_NE(replacement.front().handle, old_snapshot.front().handle);
+
+            // A late completion from the old batch must not remove the
+            // replacement occupying the same physical slot.
+            q.remove(old_snapshot.front().handle);
+            EXPECT_EQ(q.size(), 1U);
+            q.remove(replacement.front().handle);
+            EXPECT_EQ(q.size(), 0U);
+        }
+
+        TEST(HintQueueTest, DroppingOldestInvalidatesItsHandle) {
+            HintQueue q;
+            auto first = cctMakeHint("n2", "first");
+            auto oldest_handle = HintQueue::Handle{};
+            q.push(std::move(first));
+            auto initial = q.snapshot(steady_clock::now());
+            ASSERT_EQ(initial.size(), 1U);
+            oldest_handle = initial.front().handle;
+
+            for (size_t i = 1; i < HintQueue::K_CAPACITY; ++i) {
+                q.push(cctMakeHint("n2", "k" + std::to_string(i)));
+            }
+            ASSERT_EQ(q.size(), HintQueue::K_CAPACITY);
+            q.push(cctMakeHint("n2", "newest")); // evicts the oldest slot
+
+            // Capacity is full again and the old handle is stale. Whether the
+            // physical slot has already been reused is deliberately hidden by
+            // its generation tag; removing with the old handle is a no-op.
+            const auto count_before = q.size();
+            q.remove(oldest_handle);
+            EXPECT_EQ(q.size(), count_before);
+            auto live = q.snapshot(steady_clock::now());
+            ASSERT_EQ(live.size(), HintQueue::K_CAPACITY);
+            EXPECT_EQ(live.front().hint.req.key, "k1");
+            EXPECT_EQ(live.back().hint.req.key, "newest");
+        }
+
+        TEST(HintQueueTest, ReusesFreedSlotsBeforeGrowingAndKeepsHandlesDistinct) {
+            HintQueue q;
+            std::vector<HintQueue::Handle> first_generation;
+            first_generation.reserve(HintQueue::K_CAPACITY / 2);
+            for (size_t i = 0; i < HintQueue::K_CAPACITY / 2; ++i) {
+                q.push(cctMakeHint("n2", "old-" + std::to_string(i)));
+            }
+            auto first = q.snapshot(steady_clock::now());
+            for (const auto& entry : first) {
+                first_generation.push_back(entry.handle);
+            }
+            for (const auto handle : first_generation) {
+                q.remove(handle);
+            }
+            ASSERT_EQ(q.size(), 0U);
+
+            for (size_t i = 0; i < HintQueue::K_CAPACITY; ++i) {
+                q.push(cctMakeHint("n3", "new-" + std::to_string(i)));
+            }
+            ASSERT_EQ(q.size(), HintQueue::K_CAPACITY);
+
+            // Reused slots have incremented generations, so stale handles
+            // from the previous occupants cannot erase new hints.
+            for (const auto handle : first_generation) {
+                q.remove(handle);
+            }
+            EXPECT_EQ(q.size(), HintQueue::K_CAPACITY);
+
+            auto current = q.snapshot(steady_clock::now());
+            ASSERT_EQ(current.size(), HintQueue::K_CAPACITY);
+            for (size_t i = 0; i < current.size(); ++i) {
+                EXPECT_EQ(current[i].hint.req.key, "new-" + std::to_string(i));
+            }
         }
 
         TEST(HintQueueTest, RemoveMatchesOnTargetKeyAndVersionTogether) {
@@ -184,8 +285,8 @@ namespace cinder {
             // hints stay under capacity so nothing may be dropped: every pushed
             // hint must be visited exactly once, and the queue must drain to
             // empty. Any lost update, torn read, or double-count fails this.
-            // (Single-threaded tests above cannot exercise the atomics; TSan
-            // needs this test to have anything to check.)
+            // (Single-threaded tests above cannot exercise the concurrency;
+            // TSan needs this test to have anything to check.)
             HintQueue q;
             constexpr int kProducers = 4;
             constexpr int kPerProducer = 200; // 800 total < 1024: no drops expected

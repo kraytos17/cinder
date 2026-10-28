@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <asio.hpp>
 #include <chrono>
 #include <flat_map>
@@ -150,7 +151,7 @@ namespace cinder {
         std::chrono::milliseconds rpc_timeout_{0};
         mutable std::mutex mu_;
         bool stopping_ = false;
-        std::unordered_map<NodeId, std::unique_ptr<NodePool>> pools_;
+        ankerl::unordered_dense::map<NodeId, std::unique_ptr<NodePool>> pools_;
         std::flat_map<NodeId, ClusterConfig::NodeConfig> node_addrs_;
     };
 } // namespace cinder

@@ -1,12 +1,12 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string_view>
-#include <unordered_map>
 #include <vector>
 
 #include "cinder/common/types.hpp"
@@ -91,7 +91,7 @@ namespace cinder {
         // const ring reference.
         using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
         using LoadMap =
-            std::unordered_map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
+            ankerl::unordered_dense::map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
 
         mutable std::atomic<std::shared_ptr<const LoadMap>> loads_;
         mutable std::mutex loads_mu_; // writers only (add/removeNode)

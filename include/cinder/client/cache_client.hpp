@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <asio.hpp>
 #include <charconv>
 #include <chrono>
@@ -11,7 +12,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -158,7 +158,7 @@ namespace cinder {
         // a wrong entry self-heals — it just yields another redirect, which
         // re-learns. Guarded: client entry points may run on user threads.
         mutable std::mutex learned_mu_;
-        std::unordered_map<std::string, NodeId> learned_;
+        ankerl::unordered_dense::map<std::string, NodeId> learned_;
     };
 
     // Parse a server redirect hint ("moved to <node>" or

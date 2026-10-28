@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstring>
 #include <span>
+#include <string>
+#include <string_view>
 
 #include "cinder/common/status.hpp"
 
@@ -51,11 +53,19 @@ namespace cinder::net {
         }
 
         auto readString(size_t len) -> Result<std::string> {
+            auto view = readStringView(len);
+            if (!view) {
+                return err<std::string>(view.error());
+            }
+            return std::string(*view);
+        }
+
+        auto readStringView(size_t len) -> Result<std::string_view> {
             auto bytes = readBytes(len);
             if (!bytes) {
-                return err<std::string>(bytes.error());
+                return err<std::string_view>(bytes.error());
             }
-            return std::string(reinterpret_cast<const char*>(bytes->data()), len);
+            return std::string_view(reinterpret_cast<const char*>(bytes->data()), len);
         }
 
         [[nodiscard]]

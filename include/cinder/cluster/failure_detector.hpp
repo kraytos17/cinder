@@ -1,9 +1,9 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <atomic>
 #include <chrono>
 #include <mutex>
-#include <unordered_map>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/membership.hpp"
@@ -98,7 +98,7 @@ namespace cinder {
         mutable std::mutex state_mutex_;
         std::vector<NodeId> peers_;
         size_t next_peer_ = 0;
-        std::unordered_map<NodeId, PeerState> peer_state_;
+        ankerl::unordered_dense::map<NodeId, PeerState> peer_state_;
         MetricsCollector* metrics_ = nullptr;
     };
 } // namespace cinder

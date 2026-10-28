@@ -40,15 +40,26 @@ namespace cinder {
         ReplicationManager(ReplicationManager&&) = delete;
         auto operator=(ReplicationManager&&) -> ReplicationManager& = delete;
 
+        // Callback contract for all three callbacks below: each fires exactly
+        // once, but on no particular thread. When every completion is already
+        // available the callback runs inline on the calling thread (so fully
+        // synchronous transports complete synchronously); otherwise it runs on
+        // Asio's system thread pool once the outstanding completions drain.
+        // Callbacks must therefore be thread-safe and non-blocking, and must
+        // re-post (e.g. asio::post to a strand) before touching strand-bound
+        // state. Reduction itself is serialized — see fanOutQuorum.
         using WriteCallback = std::move_only_function<void(Result<void>)>;
         using ReadCallback = std::move_only_function<void(Result<VersionedEntry>)>;
         using ReplayCallback = std::move_only_function<void(size_t)>;
 
-        // Async write: commits locally, then fans out to replicas. `on_done` is
-        // invoked on the io thread.
-        //   Async  — immediately after local commit (fan-out is best-effort).
-        //   Quorum — after W = R/2+1 acks (incl. local) are observed, or when all
-        //            replicas answered with fewer than W (fails closed NotReady).
+        // Async write: commits locally, then fans out to replicas.
+        //   Async  — `on_done` runs inline after local commit (fan-out is
+        //            best-effort).
+        //   Quorum — `on_done` runs after W = R/2+1 acks (incl. local) are
+        //            observed, when quorum becomes unreachable (fails closed
+        //            NotReady without waiting out stragglers), or when all
+        //            replicas answer. RPC deadlines are enforced by Transport;
+        //            there is no separate fan-out deadline.
         void writeAsync(
             const std::string& key,
             std::string value,
