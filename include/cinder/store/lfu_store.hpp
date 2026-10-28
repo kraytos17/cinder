@@ -6,6 +6,7 @@
 #include <list>
 #include <shared_mutex>
 #include <string>
+#include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
@@ -35,6 +36,33 @@ namespace cinder {
 
         using ListIt = std::list<LfuNode, SlabAllocator<LfuNode>>::iterator;
 
+        // Dense open-addressing index — same invalidation contract as LruStore:
+        // never hold it->second across evictIfNeeded()/insertNew; re-derive via
+        // find() after any map mutation. Heterogeneous lookup preserved via
+        // TransparentStringHash (is_transparent).
+        using IndexMap = ankerl::unordered_dense::
+            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
+
+        // One stripe of the store; frequency buckets are per-shard so all
+        // LFU bookkeeping stays under the same shard mutex.
+        struct Shard {
+            mutable std::shared_mutex mutex;
+            std::list<LfuNode, SlabAllocator<LfuNode>> list;
+            IndexMap index;
+            TtlWheel<LfuNode> wheel;
+            size_t current_bytes = 0;
+            steady_clock::time_point last_evict = steady_clock::now();
+            // Frequency buckets: tiny (one entry per distinct frequency present).
+            using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
+            FreqMap freq_buckets;
+            size_t min_freq = 1;
+        };
+
+        // Frequency buckets: tiny (one entry per distinct frequency present), so
+        // a dense map is fine here too; same no-held-iterators-across-mutation
+        // discipline as index_.
+        using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
+
         explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
     private:
@@ -55,34 +83,18 @@ namespace cinder {
             return n.key.size() + n.entry.value.size() + sizeof(LfuNode);
         }
 
-        void applyExisting(ListIt it, VersionedEntry entry);
-        auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
-        void onAccess(ListIt it);
-        void onEvictExpired(ListIt it);
-        void evictOne();
+        void applyExisting(Shard& sh, ListIt it, VersionedEntry entry);
+        auto insertNew(Shard& sh, const std::string& key, VersionedEntry entry) -> ListIt;
+        void onAccess(Shard& sh, ListIt it);
+        void onEvictExpired(Shard& sh, ListIt it);
+        auto evictOne(Shard& sh) -> size_t;
 
-        void incrementFreq(ListIt it);
-        void removeFromFreqBucket(ListIt it);
-        void removeFromFreqBucket(ListIt it, size_t freq);
-        void advanceMinFreq();
+        void incrementFreq(Shard& sh, ListIt it);
+        void removeFromFreqBucket(Shard& sh, ListIt it);
+        void removeFromFreqBucket(Shard& sh, ListIt it, size_t freq);
+        void advanceMinFreq(Shard& sh);
 
-        mutable std::shared_mutex mutex_;
-        std::list<LfuNode, SlabAllocator<LfuNode>> list_;
-        // Dense open-addressing index — same invalidation contract as LruStore:
-        // never hold it->second across evictIfNeeded()/insertNew; re-derive via
-        // find() after any map mutation. Heterogeneous lookup preserved via
-        // TransparentStringHash (is_transparent).
-        using IndexMap = ankerl::unordered_dense::
-            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
-
-        IndexMap index_;
-        TtlWheel<LfuNode> wheel_;
-        // Frequency buckets: tiny (one entry per distinct frequency present), so
-        // a dense map is fine here too; same no-held-iterators-across-mutation
-        // discipline as index_.
-        using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
-
-        FreqMap freq_buckets_;
-        size_t min_freq_ = 1;
+        // Sized from capacity (one shard per 64 KiB, max 16).
+        std::vector<Shard> shards_;
     };
 } // namespace cinder

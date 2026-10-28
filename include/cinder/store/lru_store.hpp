@@ -6,6 +6,7 @@
 #include <list>
 #include <shared_mutex>
 #include <string>
+#include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/slab_allocator.hpp"
@@ -33,6 +34,29 @@ namespace cinder {
 
         using ListIt = std::list<LruNode, SlabAllocator<LruNode>>::iterator;
 
+        // Dense open-addressing index (ankerl::unordered_dense): contiguous
+        // storage, no per-node allocation, SIMD-filtered probes. Heterogeneous
+        // lookup preserved via TransparentStringHash (is_transparent).
+        //
+        // Unlike std::unordered_map, iterators AND references are invalidated by
+        // ANY insert (rehash) or erase (element relocation) — never hold
+        // it->second across evictIfNeeded()/insertNew; always re-derive via
+        // find() after any map mutation. See putVersioned.
+        using IndexMap = ankerl::unordered_dense::
+            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
+
+        // One stripe of the store. Base-class ops hold exactly one shard's
+        // mutex; cross-shard aggregation (size/liveEntries/evictExpired)
+        // visits shards in index order without nesting.
+        struct Shard {
+            mutable std::shared_mutex mutex;
+            std::list<LruNode, SlabAllocator<LruNode>> list;
+            IndexMap index;
+            TtlWheel<LruNode> wheel;
+            size_t current_bytes = 0;
+            steady_clock::time_point last_evict = steady_clock::now();
+        };
+
         explicit LruStore(size_t capacity_bytes, Clock* clock = nullptr);
 
     private:
@@ -53,27 +77,15 @@ namespace cinder {
             return n.key.size() + n.entry.value.size() + sizeof(LruNode);
         }
 
-        void applyExisting(ListIt it, VersionedEntry entry);
-        auto insertNew(const std::string& key, VersionedEntry entry) -> ListIt;
-        void onAccess(ListIt it);
-        void onEvictExpired(ListIt it);
-        void evictOne();
-        void touch(ListIt it);
+        void applyExisting(Shard& sh, ListIt it, VersionedEntry entry);
+        auto insertNew(Shard& sh, const std::string& key, VersionedEntry entry) -> ListIt;
+        void onAccess(Shard& sh, ListIt it);
+        void onEvictExpired(Shard& sh, ListIt it);
+        auto evictOne(Shard& sh) -> size_t;
+        void touch(Shard& sh, ListIt it);
 
-        mutable std::shared_mutex mutex_;
-        std::list<LruNode, SlabAllocator<LruNode>> list_;
-        // Dense open-addressing index (ankerl::unordered_dense): contiguous
-        // storage, no per-node allocation, SIMD-filtered probes. Heterogeneous
-        // lookup preserved via TransparentStringHash (is_transparent).
-        //
-        // Unlike std::unordered_map, iterators AND references are invalidated by
-        // ANY insert (rehash) or erase (element relocation) — never hold
-        // it->second across evictIfNeeded()/insertNew; always re-derive via
-        // find() after any map mutation. See putVersioned.
-        using IndexMap = ankerl::unordered_dense::
-            map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
-
-        IndexMap index_;
-        TtlWheel<LruNode> wheel_;
+        // Sized from capacity (one shard per 64 KiB, max 16); single-shard
+        // for small stores, striped for production capacities.
+        std::vector<Shard> shards_;
     };
 } // namespace cinder

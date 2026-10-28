@@ -288,19 +288,19 @@ namespace cinder {
             // (Single-threaded tests above cannot exercise the concurrency;
             // TSan needs this test to have anything to check.)
             HintQueue q;
-            constexpr int kProducers = 4;
-            constexpr int kPerProducer = 200; // 800 total < 1024: no drops expected
+            constexpr int K_PRODUCERS = 4;
+            constexpr int K_PER_PRODUCER = 200; // 800 total < 1024: no drops expected
             const auto far = steady_clock::now() + std::chrono::seconds(3600);
 
             std::atomic<int> done{0};
             std::atomic<bool> go{false};
             std::vector<std::thread> producers;
-            for (int p = 0; p < kProducers; ++p) {
+            for (int p = 0; p < K_PRODUCERS; ++p) {
                 producers.emplace_back([&, p] {
                     while (!go.load(std::memory_order_acquire)) {
                         std::this_thread::yield();
                     }
-                    for (int i = 0; i < kPerProducer; ++i) {
+                    for (int i = 0; i < K_PER_PRODUCER; ++i) {
                         auto h = cctMakeHint("n" + std::to_string(p), "k" + std::to_string(i));
                         h.expires_at = far;
                         EXPECT_TRUE(q.push(std::move(h)));
@@ -313,14 +313,14 @@ namespace cinder {
             // Drain pass: visit everything live, remove it immediately (mirrors
             // the production replay-then-remove flow on one thread).
             std::vector<std::string> seen;
-            seen.reserve(kProducers * kPerProducer);
+            seen.reserve(K_PRODUCERS * K_PER_PRODUCER);
             auto drain_pass = [&] {
                 return q.replay([&](const HintQueue::Hint& h) {
                     seen.push_back(h.target + "|" + h.req.key);
                     q.remove(h.target, h.req);
                 }, steady_clock::now());
             };
-            while (done.load(std::memory_order_acquire) < kProducers) {
+            while (done.load(std::memory_order_acquire) < K_PRODUCERS) {
                 drain_pass();
             }
             for (auto& t : producers) {
@@ -333,7 +333,7 @@ namespace cinder {
             }
 
             EXPECT_EQ(q.size(), 0U) << "drain did not terminate: hints leaked";
-            ASSERT_EQ(seen.size(), static_cast<size_t>(kProducers * kPerProducer))
+            ASSERT_EQ(seen.size(), static_cast<size_t>(K_PRODUCERS * K_PER_PRODUCER))
                 << "lost or duplicated hints under concurrency";
             // Compare as sets: replay order is FIFO per producer but
             // interleaving across producers is schedule-dependent, and
@@ -341,8 +341,8 @@ namespace cinder {
             std::sort(seen.begin(), seen.end());
             std::vector<std::string> want;
             want.reserve(seen.size());
-            for (int p = 0; p < kProducers; ++p) {
-                for (int i = 0; i < kPerProducer; ++i) {
+            for (int p = 0; p < K_PRODUCERS; ++p) {
+                for (int i = 0; i < K_PER_PRODUCER; ++i) {
                     want.push_back("n" + std::to_string(p) + "|k" + std::to_string(i));
                 }
             }
@@ -358,8 +358,8 @@ namespace cinder {
             // empty afterwards. (Which hints survive drop-oldest/expiry is
             // schedule-dependent by design, so no exact-content assertions.)
             HintQueue q;
-            constexpr int kProducers = 4;
-            constexpr int kPerProducer = 2000; // 8000 total >> 1024: drops expected
+            constexpr int K_PRODUCERS = 4;
+            constexpr int K_PER_PRODUCER = 2000; // 8000 total >> 1024: drops expected
             const auto start = steady_clock::now();
             const auto soon = start + milliseconds(50);
             const auto far = start + std::chrono::seconds(3600);
@@ -368,14 +368,14 @@ namespace cinder {
             std::atomic<bool> go{false};
             std::atomic<size_t> max_seen{0};
             std::vector<std::thread> producers;
-            for (int p = 0; p < kProducers; ++p) {
+            for (int p = 0; p < K_PRODUCERS; ++p) {
                 producers.emplace_back([&, p] {
                     while (!go.load(std::memory_order_acquire)) {
                         std::this_thread::yield();
                     }
                     std::random_device rd;
                     std::mt19937 rng(rd());
-                    for (int i = 0; i < kPerProducer; ++i) {
+                    for (int i = 0; i < K_PER_PRODUCER; ++i) {
                         auto h = cctMakeHint("n" + std::to_string(p), "k" + std::to_string(i));
                         h.expires_at = (rng() & 1U) != 0U ? soon : far;
                         q.push(std::move(h));
@@ -393,16 +393,16 @@ namespace cinder {
                 std::mt19937 rng(rd());
                 for (int i = 0; i < 4000; ++i) {
                     net::Request probe;
-                    probe.key = "k" + std::to_string(rng() % (kPerProducer * 2));
+                    probe.key = "k" + std::to_string(rng() % (K_PER_PRODUCER * 2));
                     probe.version = 1;
-                    q.remove("n" + std::to_string(rng() % kProducers), probe);
+                    q.remove("n" + std::to_string(rng() % K_PRODUCERS), probe);
                 }
             });
             go.store(true, std::memory_order_release);
 
             // Replay continuously while producers run (production shape: the
             // 1s timer fires regardless of push traffic).
-            while (done.load(std::memory_order_acquire) < kProducers) {
+            while (done.load(std::memory_order_acquire) < K_PRODUCERS) {
                 const size_t s = q.size();
                 size_t prev = max_seen.load(std::memory_order_relaxed);
                 while (prev < s && !max_seen.compare_exchange_weak(prev, s)) {

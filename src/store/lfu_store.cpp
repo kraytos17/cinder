@@ -5,48 +5,53 @@
 namespace cinder {
 
     LfuStore::LfuStore(size_t capacity_bytes, Clock* clock) :
-        EvictionStoreBase(capacity_bytes, clock) {
-        // Same sizing rationale as LruStore: one upfront reservation from
-        // capacity avoids rehash churn during warmup. freq_buckets_ stays
-        // unreserved.
-        index_.reserve(capacity_bytes / 256 + 64);
+        EvictionStoreBase(capacity_bytes, clock),
+        shards_(shardCountFor(capacity_bytes)) {
+        // Same sizing rationale as LruStore: one upfront reservation per
+        // shard from its capacity slice avoids rehash churn during warmup.
+        // freq_buckets stays unreserved.
+        size_t per_shard = capacity_bytes / shards_.size();
+        for (auto& sh : shards_) {
+            sh.index.reserve(per_shard / 256 + 64);
+            sh.last_evict = now();
+        }
     }
 
-    void LfuStore::applyExisting(ListIt it, VersionedEntry entry) {
+    void LfuStore::applyExisting(Shard& sh, ListIt it, VersionedEntry entry) {
         it->entry = std::move(entry);
-        incrementFreq(it);
+        incrementFreq(sh, it);
     }
 
-    auto LfuStore::insertNew(const std::string& key, VersionedEntry entry) -> ListIt {
+    auto LfuStore::insertNew(Shard& sh, const std::string& key, VersionedEntry entry) -> ListIt {
         LfuNode n{};
         n.freq = 1;
         n.key = key;
         n.entry = std::move(entry);
-        list_.push_front(std::move(n));
-        index_[key] = list_.begin();
-        list_.begin()->freq_index = freq_buckets_[1].size();
-        freq_buckets_[1].push_back(list_.begin());
-        min_freq_ = 1;
-        return list_.begin();
+        sh.list.push_front(std::move(n));
+        sh.index[key] = sh.list.begin();
+        sh.list.begin()->freq_index = sh.freq_buckets[1].size();
+        sh.freq_buckets[1].push_back(sh.list.begin());
+        sh.min_freq = 1;
+        return sh.list.begin();
     }
 
-    void LfuStore::onAccess(ListIt it) {
-        incrementFreq(it);
+    void LfuStore::onAccess(Shard& sh, ListIt it) {
+        incrementFreq(sh, it);
     }
 
-    void LfuStore::onEvictExpired(ListIt it) {
-        removeFromFreqBucket(it);
+    void LfuStore::onEvictExpired(Shard& sh, ListIt it) {
+        removeFromFreqBucket(sh, it);
     }
 
-    void LfuStore::evictOne() {
-        // min_freq_ may lag if buckets drained without advancing it; resync
+    auto LfuStore::evictOne(Shard& sh) -> size_t {
+        // min_freq may lag if buckets drained without advancing it; resync
         // before evicting so we always make progress when the list is
         // non-empty. Without this, evictIfNeeded's while loop spins forever
-        // holding the mutex when min_freq_ points at a missing bucket.
-        advanceMinFreq();
-        auto bucket_it = freq_buckets_.find(min_freq_);
-        if (bucket_it == freq_buckets_.end() || bucket_it->second.empty()) {
-            return;
+        // holding the mutex when min_freq points at a missing bucket.
+        advanceMinFreq(sh);
+        auto bucket_it = sh.freq_buckets.find(sh.min_freq);
+        if (bucket_it == sh.freq_buckets.end() || bucket_it->second.empty()) {
+            return 0;
         }
 
         auto& vec = bucket_it->second;
@@ -61,36 +66,37 @@ namespace cinder {
 
         vec.pop_back();
         if (vec.empty()) {
-            freq_buckets_.erase(bucket_it);
-            advanceMinFreq();
+            sh.freq_buckets.erase(bucket_it);
+            advanceMinFreq(sh);
         }
 
-        current_bytes_ -= node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
-        wheel_.remove(&(*node_it));
-        index_.erase(node_it->key);
-        list_.erase(node_it);
+        size_t freed = node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
+        sh.wheel.remove(&(*node_it));
+        sh.index.erase(node_it->key);
+        sh.list.erase(node_it);
+        return freed;
     }
 
-    void LfuStore::incrementFreq(ListIt it) {
+    void LfuStore::incrementFreq(Shard& sh, ListIt it) {
         size_t old_freq = it->freq;
         size_t new_freq = old_freq + 1;
         it->freq = new_freq;
 
-        removeFromFreqBucket(it, old_freq);
-        it->freq_index = freq_buckets_[new_freq].size();
-        freq_buckets_[new_freq].push_back(it);
-        if (old_freq == min_freq_ && !freq_buckets_.contains(old_freq)) {
-            advanceMinFreq();
+        removeFromFreqBucket(sh, it, old_freq);
+        it->freq_index = sh.freq_buckets[new_freq].size();
+        sh.freq_buckets[new_freq].push_back(it);
+        if (old_freq == sh.min_freq && !sh.freq_buckets.contains(old_freq)) {
+            advanceMinFreq(sh);
         }
     }
 
-    void LfuStore::removeFromFreqBucket(ListIt it) {
-        removeFromFreqBucket(it, it->freq);
+    void LfuStore::removeFromFreqBucket(Shard& sh, ListIt it) {
+        removeFromFreqBucket(sh, it, it->freq);
     }
 
-    void LfuStore::removeFromFreqBucket(ListIt it, size_t freq) {
-        auto bucket_it = freq_buckets_.find(freq);
-        if (bucket_it == freq_buckets_.end()) {
+    void LfuStore::removeFromFreqBucket(Shard& sh, ListIt it, size_t freq) {
+        auto bucket_it = sh.freq_buckets.find(freq);
+        if (bucket_it == sh.freq_buckets.end()) {
             return;
         }
 
@@ -104,22 +110,22 @@ namespace cinder {
 
         vec.pop_back();
         if (vec.empty()) {
-            freq_buckets_.erase(bucket_it);
-            if (freq == min_freq_) {
-                advanceMinFreq();
+            sh.freq_buckets.erase(bucket_it);
+            if (freq == sh.min_freq) {
+                advanceMinFreq(sh);
             }
         }
     }
 
-    void LfuStore::advanceMinFreq() {
+    void LfuStore::advanceMinFreq(Shard& sh) {
         // Frequencies only increase, so the minimum is non-decreasing; probe
-        // upward past gaps left by drained buckets. freq_buckets_ is an
-        // unordered_map, so begin()->first is arbitrary and must NOT be used.
-        while (!freq_buckets_.empty() && !freq_buckets_.contains(min_freq_)) {
-            ++min_freq_;
+        // upward past gaps left by drained buckets. freq_buckets is an
+        // unordered map, so begin()->first is arbitrary and must NOT be used.
+        while (!sh.freq_buckets.empty() && !sh.freq_buckets.contains(sh.min_freq)) {
+            ++sh.min_freq;
         }
-        if (freq_buckets_.empty()) {
-            min_freq_ = 1;
+        if (sh.freq_buckets.empty()) {
+            sh.min_freq = 1;
         }
     }
 } // namespace cinder

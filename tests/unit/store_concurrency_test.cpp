@@ -217,5 +217,58 @@ namespace cinder {
         TEST(StoreConcurrencyTest, LfuConcurrentVersionedWritesSingleKey) {
             concurrentVersionedWritesSingleKey<LfuStore>("lfu");
         }
+
+        // Striped routing: a 1 MiB store has 16 shards. Keys spread across
+        // shards must all round-trip, size must aggregate, and concurrent
+        // disjoint-key traffic must not corrupt the index (tsan preset).
+        template <typename Store> void stripedDisjointKeys(const char* label) {
+            // 4 MiB still stripes over the max 16 shards (256 KiB slices)
+            // with headroom for hash skew: ~10k small keys ≈ 1.4 MiB live.
+            Store store(4U << 20U);
+            constexpr int K_KEYS = 2000;
+            for (int i = 0; i < K_KEYS; ++i) {
+                ASSERT_TRUE(
+                    store.put("sk" + std::to_string(i), "v" + std::to_string(i)).has_value()
+                ) << label;
+            }
+            EXPECT_EQ(store.size(), static_cast<size_t>(K_KEYS)) << label;
+            for (int i = 0; i < K_KEYS; ++i) {
+                auto got = store.get("sk" + std::to_string(i));
+                ASSERT_TRUE(got.has_value()) << label << " i=" << i;
+                EXPECT_EQ(*got, "v" + std::to_string(i)) << label;
+            }
+            auto entries = store.liveEntries();
+            EXPECT_EQ(entries.size(), static_cast<size_t>(K_KEYS)) << label;
+
+            // Concurrent disjoint puts/gets/removes across shards.
+            constexpr int K_THREADS = 8;
+            constexpr int K_ITERS = 2000;
+            std::vector<std::jthread> threads;
+            for (int t = 0; t < K_THREADS; ++t) {
+                threads.emplace_back([&store, t] {
+                    for (int i = 0; i < K_ITERS; ++i) {
+                        auto key = "t" + std::to_string(t) + "-" + std::to_string(i);
+                        (void)store.put(key, "v");
+                        (void)store.get(key);
+                        if (i % 2 == 0) {
+                            (void)store.remove(key);
+                        }
+                    }
+                });
+            }
+            threads.clear();
+            // Half the striped keys removed; size must reflect exactly that.
+            EXPECT_EQ(store.size(), static_cast<size_t>(K_KEYS + K_THREADS * K_ITERS / 2)) << label;
+            EXPECT_TRUE(store.put("post", "check").has_value()) << label;
+            EXPECT_EQ(store.get("post"), std::optional<std::string>("check")) << label;
+        }
+
+        TEST(StoreConcurrencyTest, LruStripedDisjointKeys) {
+            stripedDisjointKeys<LruStore>("lru");
+        }
+
+        TEST(StoreConcurrencyTest, LfuStripedDisjointKeys) {
+            stripedDisjointKeys<LfuStore>("lfu");
+        }
     } // namespace
 } // namespace cinder
