@@ -310,7 +310,9 @@ endif()
 # the download step). Hence this helper builds the whole clause or nothing.
 macro(_cinder_find_package_args out_var package_name)
     if(CINDER_PREFER_SYSTEM_DEPS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-        set(${out_var} FIND_PACKAGE_ARGS NAMES ${package_name})
+        # Optional extra args (e.g. a minimum version) are forwarded to
+        # find_package() ahead of NAMES.
+        set(${out_var} FIND_PACKAGE_ARGS ${ARGN} NAMES ${package_name})
     else()
         set(${out_var} "")
     endif()
@@ -345,11 +347,12 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(xxhash)
 
-_cinder_find_package_args(_spdlog_args spdlog)
+_cinder_find_package_args(_spdlog_args spdlog 2)
 FetchContent_Declare(
     spdlog
     GIT_REPOSITORY https://github.com/gabime/spdlog.git
-    GIT_TAG        v1.17.0
+    # Pinned v2.x (v2.0.0 unreleased): d24088deaa441a79267df8ae3dbc567fbe2a5e03.
+    GIT_TAG        d24088deaa441a79267df8ae3dbc567fbe2a5e03
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/spdlog-build

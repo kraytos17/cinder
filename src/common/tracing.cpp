@@ -123,7 +123,7 @@ namespace cinder {
         }
     }
 
-    static auto toSpdlogLevel(LogLevel level) -> spdlog::level::level_enum {
+    static auto toSpdlogLevel(LogLevel level) -> spdlog::level {
         switch (level) {
             case LogLevel::Trace:
                 return spdlog::level::trace;
@@ -152,11 +152,11 @@ namespace cinder {
 
         auto logger = std::make_shared<spdlog::logger>(std::string(name), spd_sink);
         logger->set_level(toSpdlogLevel(level));
-        spdlog::set_default_logger(logger);
+        spdlog::set_global_logger(logger);
     }
 
     void setLogLevel(LogLevel level) {
-        spdlog::default_logger()->set_level(toSpdlogLevel(level));
+        spdlog::global_logger()->set_level(toSpdlogLevel(level));
     }
 
     void shutdownLogger() {
