@@ -42,6 +42,7 @@ namespace cinder {
         if (sh.list.empty()) {
             return 0;
         }
+
         auto& node = sh.list.back();
         size_t freed = node.key.size() + node.entry.value.size() + sizeof(LruNode);
         sh.wheel.remove(&node);
