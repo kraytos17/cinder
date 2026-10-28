@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <mutex>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -23,10 +23,20 @@ namespace cinder {
         }
     };
 
+    // Per-node in-flight load counters, carried inside the snapshot.
+    // Cells are shared_ptr so in-flight counts survive membership changes:
+    // addNode/removeNode copy the cell pointers into the new snapshot, so an
+    // increment issued against an older snapshot still lands in the same
+    // counter the latest snapshot reads. Mutable because load tracking is
+    // logically orthogonal to the ring's snapshot immutability — readers call
+    // increment/decrement on a const ring reference.
+    using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
+
     struct RingSnapshot {
         std::vector<uint64_t> hashes; // sorted, binary-searched
         std::vector<uint16_t> node_index; // parallel: index into physical_nodes
         std::vector<NodeId> physical_nodes;
+        std::vector<LoadCell> load_cells; // parallel: per-node in-flight load
     };
 
     // Consistent-hash ring with virtual nodes and lock-free reads.
@@ -82,18 +92,25 @@ namespace cinder {
         int vnodes_per_node_;
         double bounded_load_factor_;
 
-        // Per-node in-flight load counters. Copy-on-write like the snapshot:
-        // readers load an immutable LoadMap and bump the cell atomically with no
-        // locks; writers (add/removeNode) serialize on loads_mu_ and publish a
-        // fresh map. Cells are shared_ptr so in-flight counts survive membership
-        // changes. Mutable because load tracking is logically orthogonal to the
-        // ring's snapshot immutability — readers call increment/decrement on a
-        // const ring reference.
-        using LoadCell = std::shared_ptr<std::atomic<uint64_t>>;
-        using LoadMap =
-            ankerl::unordered_dense::map<NodeId, LoadCell, TransparentStringHash, std::equal_to<>>;
+        // Load cells live in RingSnapshot (parallel to physical_nodes) and
+        // are shared across snapshots, so in-flight counts survive membership
+        // changes. Writers need no separate loads mutex: the snapshot CAS is
+        // the linearization point.
 
-        mutable std::atomic<std::shared_ptr<const LoadMap>> loads_;
-        mutable std::mutex loads_mu_; // writers only (add/removeNode)
+        // Linear scan: cluster size is tiny (indexed by uint16_t), so a
+        // cache-friendly scan of short node ids beats hashing + probing.
+        // Miss (concurrent removeNode) returns nullopt; callers treat it as
+        // zero load / no-op, matching the old map-lookup miss semantics.
+        static auto findIndex(
+            const std::shared_ptr<const RingSnapshot>& snap,
+            std::string_view node
+        ) -> std::optional<size_t> {
+            for (size_t i = 0; i < snap->physical_nodes.size(); ++i) {
+                if (snap->physical_nodes[i] == node) {
+                    return i;
+                }
+            }
+            return std::nullopt;
+        }
     };
 } // namespace cinder

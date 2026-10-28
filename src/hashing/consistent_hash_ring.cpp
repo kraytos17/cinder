@@ -18,7 +18,6 @@ namespace cinder {
         vnodes_per_node_(vnodes_per_node),
         bounded_load_factor_(bounded_load_factor) {
         snapshot_.store(std::make_shared<const RingSnapshot>());
-        loads_.store(std::make_shared<const LoadMap>());
     }
 
     void ConsistentHashRing::addNode(const NodeId& node_id) {
@@ -50,6 +49,8 @@ namespace cinder {
 
             snap->hashes = old->hashes;
             snap->node_index = old->node_index;
+            snap->load_cells = old->load_cells;
+            snap->load_cells.push_back(std::make_shared<std::atomic<uint64_t>>(0ULL));
             for (int i = 0; i < vnodes_per_node_; i++) {
                 snap->hashes.push_back(hashVnode(node_id, i));
                 snap->node_index.push_back(phys_idx);
@@ -61,6 +62,7 @@ namespace cinder {
             for (size_t i = 0; i < order.size(); i++) {
                 order[i] = i;
             }
+
             std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
                 return snap->hashes[a] < snap->hashes[b];
             });
@@ -72,14 +74,6 @@ namespace cinder {
                 snap->node_index[i] = sorted_indices[order[i]];
             }
             if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
-                // Initialize load counter for the new node (zero in-flight).
-                {
-                    std::scoped_lock lock(loads_mu_);
-                    auto cur = loads_.load();
-                    auto fresh = std::make_shared<LoadMap>(*cur);
-                    fresh->try_emplace(node_id, std::make_shared<std::atomic<uint64_t>>(0ULL));
-                    loads_.store(std::move(fresh));
-                }
                 return;
             }
             // Another mutator published first — retry on its snapshot.
@@ -104,6 +98,8 @@ namespace cinder {
             auto snap = std::make_shared<RingSnapshot>();
             snap->physical_nodes = old->physical_nodes;
             snap->physical_nodes.erase(snap->physical_nodes.begin() + phys_idx);
+            snap->load_cells = old->load_cells;
+            snap->load_cells.erase(snap->load_cells.begin() + phys_idx);
             // Remove all ring entries for this node, and remap indices > phys_idx down by 1.
             snap->hashes.reserve(old->hashes.size());
             snap->node_index.reserve(old->node_index.size());
@@ -120,14 +116,6 @@ namespace cinder {
                 return; // nothing changed
             }
             if (snapshot_.compare_exchange_weak(old, std::move(snap))) {
-                // Remove load counter for the departed node.
-                {
-                    std::scoped_lock lock(loads_mu_);
-                    auto cur = loads_.load();
-                    auto fresh = std::make_shared<LoadMap>(*cur);
-                    fresh->erase(std::string(node_id));
-                    loads_.store(std::move(fresh));
-                }
                 return;
             }
         }
@@ -219,26 +207,21 @@ namespace cinder {
         }
 
         uint64_t total = 0;
-        auto loads = loads_.load();
-        for (const auto& [id, cnt] : *loads) {
-            total += cnt->load(std::memory_order_relaxed);
+        for (const auto& cell : snap->load_cells) {
+            total += cell->load(std::memory_order_relaxed);
         }
 
         const double avg = static_cast<double>(total) / static_cast<double>(num_nodes);
         const auto max_load = static_cast<uint64_t>(std::ceil(avg * bounded_load_factor_));
         // Walk the ring from the hash position. Return the first node whose
         // in-flight load is below the max. Wrap around at most once.
-        // Single immutable loads snapshot for the whole walk — no per-step lock.
+        // Single immutable snapshot for the whole walk — no per-step lock.
         auto start = idx;
         do {
-            const auto& node = snap->physical_nodes[snap->node_index[static_cast<size_t>(idx)]];
-            auto it2 = loads->find(node);
-            uint64_t node_load = 0;
-            if (it2 != loads->end()) {
-                node_load = it2->second->load(std::memory_order_relaxed);
-            }
+            const auto phys = snap->node_index[static_cast<size_t>(idx)];
+            const uint64_t node_load = snap->load_cells[phys]->load(std::memory_order_relaxed);
             if (node_load < max_load) {
-                return node;
+                return snap->physical_nodes[phys];
             }
 
             idx++;
@@ -250,51 +233,47 @@ namespace cinder {
     }
 
     void ConsistentHashRing::incrementLoad(std::string_view node) const {
-        auto loads = loads_.load();
-        auto it = loads->find(node);
-        if (it != loads->end()) {
-            it->second->fetch_add(1, std::memory_order_relaxed);
+        auto snap = snapshot_.load();
+        if (auto idx = findIndex(snap, node); idx.has_value()) {
+            snap->load_cells[*idx]->fetch_add(1, std::memory_order_relaxed);
         }
     }
 
     void ConsistentHashRing::decrementLoad(std::string_view node) const {
-        auto loads = loads_.load();
-        auto it = loads->find(node);
-        if (it != loads->end()) {
-            auto prev = it->second->fetch_sub(1, std::memory_order_relaxed);
+        auto snap = snapshot_.load();
+        if (auto idx = findIndex(snap, node); idx.has_value()) {
+            auto prev = snap->load_cells[*idx]->fetch_sub(1, std::memory_order_relaxed);
             assert(prev > 0 && "decrementLoad called without matching incrementLoad");
-            (void)prev;
         }
     }
 
     auto ConsistentHashRing::currentLoad(std::string_view node) const -> uint64_t {
-        auto loads = loads_.load();
-        auto it = loads->find(node);
-        if (it != loads->end()) {
-            return it->second->load(std::memory_order_relaxed);
+        auto snap = snapshot_.load();
+        if (auto idx = findIndex(snap, node); idx.has_value()) {
+            return snap->load_cells[*idx]->load(std::memory_order_relaxed);
         }
         return 0;
     }
 
     auto ConsistentHashRing::totalLoad() const -> uint64_t {
         uint64_t total = 0;
-        auto loads = loads_.load();
-        for (const auto& [id, cnt] : *loads) {
-            total += cnt->load(std::memory_order_relaxed);
+        auto snap = snapshot_.load();
+        for (const auto& cell : snap->load_cells) {
+            total += cell->load(std::memory_order_relaxed);
         }
         return total;
     }
 
     auto ConsistentHashRing::loadFactor() const -> double {
-        auto loads = loads_.load();
-        const auto num_nodes = loads->size();
+        auto snap = snapshot_.load();
+        const auto num_nodes = snap->load_cells.size();
         if (num_nodes == 0) {
             return 0.0;
         }
 
         uint64_t total = 0;
-        for (const auto& [id, cnt] : *loads) {
-            total += cnt->load(std::memory_order_relaxed);
+        for (const auto& cell : snap->load_cells) {
+            total += cell->load(std::memory_order_relaxed);
         }
 
         const double avg = static_cast<double>(total) / static_cast<double>(num_nodes);
