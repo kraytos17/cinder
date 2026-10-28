@@ -12,31 +12,54 @@ namespace cinder {
     SnapshotWriter::SnapshotWriter(const std::string& path) :
         path_(path) {}
 
-    auto SnapshotWriter::write(Version next_version, const std::vector<SnapshotEntry>& entries)
+    auto SnapshotWriter::write(Version next_version, std::span<const SnapshotEntry> entries)
         -> Result<void> {
         std::ofstream out(path_ + ".tmp", std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
             return err(Error(Errc::InternalError, "cannot open snapshot file for writing"));
         }
 
-        writeU32(out, K_SNAPSHOT_MAGIC);
-        writeU32(out, K_SNAPSHOT_FORMAT_VERSION);
-        writeU64(out, next_version);
-        writeU32(out, static_cast<uint32_t>(entries.size()));
+        // Header in one write: magic + version + next_version + entry_count.
+        scratch_.resize(sizeof(uint32_t) * 3 + sizeof(uint64_t));
+        size_t off = 0;
+        writeU32(scratch_, off, K_SNAPSHOT_MAGIC);
+        writeU32(scratch_, off, K_SNAPSHOT_FORMAT_VERSION);
+        writeU64(scratch_, off, next_version);
+        writeU32(scratch_, off, static_cast<uint32_t>(entries.size()));
+        out.write(
+            reinterpret_cast<const char*>(scratch_.data()),
+            static_cast<std::streamsize>(scratch_.size())
+        );
 
+        // One write per entry. Field order, widths, and native-endian byte
+        // layout are unchanged from the per-field stream writes, so files
+        // stay byte-identical (WAL0/CSNP magic, fuzz corpora still decode).
         for (const auto& entry : entries) {
             auto key_len = static_cast<uint32_t>(entry.key.size());
             auto val_len = static_cast<uint32_t>(entry.value.size());
+            const size_t size = sizeof(uint32_t)
+                + key_len
+                + sizeof(uint32_t)
+                + val_len
+                + sizeof(uint64_t)
+                * 4
+                + sizeof(uint8_t);
 
-            writeU32(out, key_len);
-            out.write(entry.key.data(), static_cast<std::streamsize>(key_len));
-            writeU32(out, val_len);
-            out.write(entry.value.data(), static_cast<std::streamsize>(val_len));
-            writeU64(out, entry.version);
-            writeU64(out, entry.writer_node_hash);
-            writeU64(out, entry.expires_at_ms);
-            writeU8(out, entry.has_ttl ? 1 : 0);
-            writeU64(out, entry.freq);
+            scratch_.resize(size);
+            off = 0;
+            writeU32(scratch_, off, key_len);
+            writeBytes(scratch_, off, entry.key.data(), key_len);
+            writeU32(scratch_, off, val_len);
+            writeBytes(scratch_, off, entry.value.data(), val_len);
+            writeU64(scratch_, off, entry.version);
+            writeU64(scratch_, off, entry.writer_node_hash);
+            writeU64(scratch_, off, entry.expires_at_ms);
+            writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
+            writeU64(scratch_, off, entry.freq);
+            out.write(
+                reinterpret_cast<const char*>(scratch_.data()),
+                static_cast<std::streamsize>(scratch_.size())
+            );
         }
 
         out.flush();

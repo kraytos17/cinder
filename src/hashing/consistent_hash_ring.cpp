@@ -244,6 +244,7 @@ namespace cinder {
         if (auto idx = findIndex(snap, node); idx.has_value()) {
             auto prev = snap->load_cells[*idx]->fetch_sub(1, std::memory_order_relaxed);
             assert(prev > 0 && "decrementLoad called without matching incrementLoad");
+            (void)prev;
         }
     }
 

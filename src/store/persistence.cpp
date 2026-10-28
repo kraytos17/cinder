@@ -195,12 +195,17 @@ namespace cinder {
             + K_SNAPSHOT_SUFFIX;
 
         auto snap_path = std::filesystem::path(opts_.data_dir) / filename;
+        // Single copy: liveEntries() already snapshots (skipping expired
+        // entries, like forEach did); move its strings into SnapshotEntry
+        // instead of copying them a second time via the forEach visitor.
         std::vector<SnapshotEntry> all_entries;
         Version next_version = 0;
-        store_.forEach([&](const std::string& key, const VersionedEntry& ve) {
+        auto live = store_.liveEntries();
+        all_entries.reserve(live.size());
+        for (auto& [key, ve] : live) {
             SnapshotEntry se;
-            se.key = key;
-            se.value = ve.value;
+            se.key = std::move(key);
+            se.value = std::move(ve.value);
             se.version = ve.version();
             se.writer_node_hash = ve.writer_node_hash;
             se.has_ttl = ve.hasTtl();
@@ -216,7 +221,7 @@ namespace cinder {
                 next_version = ve.version() + 1;
             }
             all_entries.push_back(std::move(se));
-        });
+        }
 
         SnapshotWriter writer(snap_path.string());
         auto write_result = writer.write(next_version, all_entries);

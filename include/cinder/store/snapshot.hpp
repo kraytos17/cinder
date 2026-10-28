@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -39,11 +40,15 @@ namespace cinder {
         SnapshotWriter(SnapshotWriter&&) = delete;
         auto operator=(SnapshotWriter&&) -> SnapshotWriter& = delete;
 
-        auto write(Version next_version, const std::vector<SnapshotEntry>& entries) -> Result<void>;
+        auto write(Version next_version, std::span<const SnapshotEntry> entries) -> Result<void>;
 
     private:
 
         std::string path_;
+        // Reused per-entry encode buffer: one out.write per entry instead of
+        // ~9 small stream writes. Grows to the largest entry seen; never
+        // shrinks within a snapshot.
+        std::vector<std::byte> scratch_;
     };
 
     class SnapshotReader {

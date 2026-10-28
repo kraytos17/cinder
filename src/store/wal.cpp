@@ -138,8 +138,10 @@ namespace cinder {
 
         // Pre-size scratch buffer: 1(op) + 4(key_len) + key + 4(val_len) + value
         // + 8(version) + 8(writer_node_hash) + 8(expires_at_ms) + 1(has_ttl)
+        // + 8(checksum). Digest appended in-buffer so the record lands with a
+        // single stream write; on-disk bytes are unchanged.
         const size_t size = 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 8 + 1;
-        scratch_.resize(size);
+        scratch_.resize(size + sizeof(uint64_t));
 
         size_t off = 0;
         writeU8(scratch_, off, std::to_underlying(entry.op));
@@ -152,12 +154,12 @@ namespace cinder {
         writeU64(scratch_, off, entry.expires_at_ms);
         writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
 
-        auto digest = XXH3_64bits(scratch_.data(), scratch_.size());
+        auto digest = XXH3_64bits(scratch_.data(), size);
+        writeU64(scratch_, off, digest);
         out_.write(
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
         );
-        writeU64(out_, digest);
         if (!out_.good()) {
             return err(Error(Errc::InternalError, "WAL write failed"));
         }
