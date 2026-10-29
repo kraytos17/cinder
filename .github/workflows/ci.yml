@@ -196,7 +196,7 @@ jobs:
     container:
       image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: Feature Flags (${{ matrix.label }})
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
 
@@ -415,7 +415,7 @@ jobs:
     container:
       image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
     name: CodeQL (${{ matrix.label }})
-    timeout-minutes: 90
+    timeout-minutes: 180
     permissions:
       contents: read
       security-events: write

@@ -120,8 +120,9 @@ namespace cinder {
 
                 slabs_.push_back(raw);
                 CINDER_DEBUG("growing pool", {"total_slabs", slabs_.size()});
+                T* typed_raw = std::start_lifetime_as_array<T>(raw, n);
                 for (size_t i = n; i > 0; --i) {
-                    auto* block = std::start_lifetime_as<FreeBlock>(raw + (i - 1) * sizeof(T));
+                    auto* block = std::start_lifetime_as<FreeBlock>(typed_raw + (i - 1));
                     block->next = free_head_.load(std::memory_order_relaxed);
                     free_head_.store(block, std::memory_order_release);
                 }
