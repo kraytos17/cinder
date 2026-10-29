@@ -481,9 +481,10 @@ namespace cinder {
         st->req = std::move(req);
         // Route the quorum decision through the flight: every waiter (leader
         // first) receives the LWW result, and the entry is erased before any
-        // waiter runs.
-        st->on_done = [this, st, flight](Result<VersionedEntry> r) mutable {
-            finishReadFlight(st->key, flight, std::move(r));
+        // waiter runs. Captures the key by value — capturing `st` here would
+        // form a shared_ptr cycle (st owns on_done owns st) and leak.
+        st->on_done = [this, key, flight](Result<VersionedEntry> r) mutable {
+            finishReadFlight(key, flight, std::move(r));
         };
 
         st->key = key;
