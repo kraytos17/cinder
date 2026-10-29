@@ -435,7 +435,13 @@ FetchContent_Declare(
     SYSTEM
     ${_spdlog_args}
 )
-set(SPDLOG_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+# NOTE: SPDLOG_BUILD_SHARED is deliberately NOT forced here. xxHash's
+# cmake_unofficial declares option(BUILD_SHARED_LIBS ON), which seeds the
+# cache before spdlog configures, so spdlog v2.x (which follows
+# BUILD_SHARED_LIBS and offers no force-static switch) builds shared — as do
+# grpc/abseil. Forcing static would additionally require
+# POSITION_INDEPENDENT_CODE for PIE links; revisit only if static
+# third-party linkage becomes an explicit goal.
 FetchContent_MakeAvailable(spdlog)
 
 _cinder_find_package_args(_cli11_args CLI11)

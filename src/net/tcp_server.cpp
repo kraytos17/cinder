@@ -178,9 +178,9 @@ namespace cinder::net {
                     CINDER_WARN("rejecting connection", {"max", K_MAX_CONNECTIONS});
                 } else {
                     active_connections_.fetch_add(1, std::memory_order_relaxed);
-                    std::shared_ptr<std::atomic<size_t>> counter(&active_connections_, [](auto*) {
-                    }); // TcpConnection dtor decrements; we own the counter
-
+                    // Guard owns the matching decrement; no per-connection
+                    // allocation
+                    ConnectionCountGuard counter(active_connections_);
                     auto conn = std::make_shared<TcpConnection>(
                         std::move(socket),
                         store_,
@@ -191,7 +191,7 @@ namespace cinder::net {
                         replica_factor_,
                         mode_,
                         gossip_,
-                        counter,
+                        std::move(counter),
                         anti_entropy_,
                         shared_secret_
 #ifdef CINDER_ENABLE_TLS

@@ -81,12 +81,49 @@ namespace cinder {
         }
     };
 
+    // Sharded counter for hot paths: N threads hammering one atomic<uint64_t>
+    // bounce its line on every op. Striping spreads writers across cache
+    // lines; scrape sums the stripes.
+    struct StripedCounter {
+        static constexpr size_t K_STRIPES = 16;
+
+        struct alignas(K_CACHE_LINE) Stripe {
+            std::atomic<uint64_t> value{0};
+        };
+
+        std::array<Stripe, K_STRIPES> stripes{};
+
+        void fetchAdd(uint64_t n, std::memory_order /*order*/ = std::memory_order_relaxed) {
+            stripes[stripeIndex()].value.fetch_add(n, std::memory_order_relaxed);
+        }
+
+        [[nodiscard]]
+        auto load(std::memory_order /*order*/ = std::memory_order_seq_cst) const -> uint64_t {
+            uint64_t total = 0;
+            for (const auto& s : stripes) {
+                total += s.value.load(std::memory_order_relaxed);
+            }
+            return total;
+        }
+
+    private:
+
+        static auto stripeIndex() -> size_t {
+            // Round-robin assignment at first use: stable per thread, no
+            // registration, no lifetime tracking. Threads beyond K_STRIPES
+            // share a stripe (still far less contention than one line).
+            static std::atomic<size_t> s_next{0};
+            thread_local size_t t_idx = s_next.fetch_add(1, std::memory_order_relaxed) % K_STRIPES;
+            return t_idx;
+        }
+    };
+
     struct OpcodeMetrics {
         // Client opcodes: GET, SET, DEL, PING — one increment per request.
         struct alignas(K_CACHE_LINE) ClientCounters {
-            std::atomic<uint64_t> gets{0};
-            std::atomic<uint64_t> sets{0};
-            std::atomic<uint64_t> dels{0};
+            StripedCounter gets{};
+            StripedCounter sets{};
+            StripedCounter dels{};
             std::atomic<uint64_t> pings{0};
         };
 
@@ -125,9 +162,9 @@ namespace cinder {
     struct ShardMetrics {
         // Live counters: hits/misses/writes/deletes/bytes/entries — updated on every request.
         struct alignas(K_CACHE_LINE) LiveCounters {
-            std::atomic<uint64_t> hits{0};
-            std::atomic<uint64_t> misses{0};
-            std::atomic<uint64_t> writes{0};
+            StripedCounter hits{};
+            StripedCounter misses{};
+            StripedCounter writes{};
             std::atomic<uint64_t> deletes{0};
             std::atomic<size_t> current_bytes{0};
             std::atomic<size_t> current_entries{0};
@@ -145,19 +182,21 @@ namespace cinder {
         CapacityCounters cap{};
     };
 
-    // Replication metrics. Each counter sits on its own cache line: these are
-    // bumped concurrently from io threads (async_writes vs quorum_* vs hints)
+    // Replication metrics. Packed: these are bumped on the replication
+    // completion path (far less frequent than the striped hot counters),
+    // so one shared line is cheaper than a line per counter, and scrape
+    // reads them together.
     struct ReplicationMetrics {
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> async_writes{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_writes_ok{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_writes_failed{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> quorum_reads{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> read_repairs{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> hints_enqueued{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> hints_replayed{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> replica_unreachable{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> anti_entropy_rounds{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> anti_entropy_keys_repaired{0};
+        std::atomic<uint64_t> async_writes{0};
+        std::atomic<uint64_t> quorum_writes_ok{0};
+        std::atomic<uint64_t> quorum_writes_failed{0};
+        std::atomic<uint64_t> quorum_reads{0};
+        std::atomic<uint64_t> read_repairs{0};
+        std::atomic<uint64_t> hints_enqueued{0};
+        std::atomic<uint64_t> hints_replayed{0};
+        std::atomic<uint64_t> replica_unreachable{0};
+        std::atomic<uint64_t> anti_entropy_rounds{0};
+        std::atomic<uint64_t> anti_entropy_keys_repaired{0};
 
         struct ReplicaLag {
             std::string node_id;
@@ -167,33 +206,33 @@ namespace cinder {
         std::vector<ReplicaLag> replica_lags;
     };
 
-    // Cluster metrics
+    // Cluster metrics. Packed: gossip/rebalance ticks, not request-hot.
     struct ClusterMetrics {
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> gossip_rounds{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> probe_sent{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> probe_received{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> suspect_marked{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> dead_marked{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> alive_marked{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> refuted_self_rumors{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_copies{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migrations{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_failures{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_migration_retries{0};
+        std::atomic<uint64_t> gossip_rounds{0};
+        std::atomic<uint64_t> probe_sent{0};
+        std::atomic<uint64_t> probe_received{0};
+        std::atomic<uint64_t> suspect_marked{0};
+        std::atomic<uint64_t> dead_marked{0};
+        std::atomic<uint64_t> alive_marked{0};
+        std::atomic<uint64_t> refuted_self_rumors{0};
+        std::atomic<uint64_t> rebalance_copies{0};
+        std::atomic<uint64_t> rebalance_migrations{0};
+        std::atomic<uint64_t> rebalance_migration_failures{0};
+        std::atomic<uint64_t> rebalance_migration_retries{0};
         // Keys whose primary ack released the local copy while one or more
         // non-primary replicas were not confirmed. Under-replication by design
         // (see ShardManager::migrateKey), but distinct from real data loss --
         // this lets an operator tell the two apart.
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> rebalance_dropped_underreplicated{0};
+        std::atomic<uint64_t> rebalance_dropped_underreplicated{0};
     };
 
-    // Connection metrics
+    // Connection metrics. Packed: per-connection setup/teardown, not hot.
     struct ConnectionMetrics {
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> connections_opened{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> connections_closed{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> decode_failures{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> redirects{0};
-        alignas(K_CACHE_LINE) std::atomic<uint64_t> write_failures{0};
+        std::atomic<uint64_t> connections_opened{0};
+        std::atomic<uint64_t> connections_closed{0};
+        std::atomic<uint64_t> decode_failures{0};
+        std::atomic<uint64_t> redirects{0};
+        std::atomic<uint64_t> write_failures{0};
     };
 
     class MetricsCollector {

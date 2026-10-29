@@ -17,8 +17,8 @@ TEST(MetricsTest, ZeroCounters) {
 
 TEST(MetricsTest, HitMissCounters) {
     MetricsCollector m;
-    m.shardMetrics().live.hits.fetch_add(5);
-    m.shardMetrics().live.misses.fetch_add(3);
+    m.shardMetrics().live.hits.fetchAdd(5);
+    m.shardMetrics().live.misses.fetchAdd(3);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_cache_hits_total 5"), std::string::npos);
@@ -27,9 +27,9 @@ TEST(MetricsTest, HitMissCounters) {
 
 TEST(MetricsTest, OpcodeCounters) {
     MetricsCollector m;
-    m.opcodeMetrics().client.gets.fetch_add(10);
-    m.opcodeMetrics().client.sets.fetch_add(2);
-    m.opcodeMetrics().client.dels.fetch_add(1);
+    m.opcodeMetrics().client.gets.fetchAdd(10);
+    m.opcodeMetrics().client.sets.fetchAdd(2);
+    m.opcodeMetrics().client.dels.fetchAdd(1);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_operations_total{opcode=\"get\"} 10"), std::string::npos);
@@ -123,7 +123,7 @@ TEST(MetricsTest, StoreGauges) {
 
 TEST(MetricsTest, PrometheusFormatStructure) {
     MetricsCollector m;
-    m.shardMetrics().live.hits.fetch_add(1);
+    m.shardMetrics().live.hits.fetchAdd(1);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("# HELP cinder_cache_hits_total"), std::string::npos);
@@ -251,7 +251,7 @@ TEST(HttpParserTest, EmptyBody) {
 
 TEST(HttpParserTest, MetricsEndpoint) {
     MetricsCollector m;
-    m.shardMetrics().live.hits.fetch_add(42);
+    m.shardMetrics().live.hits.fetchAdd(42);
     auto body = m.formatPrometheus();
     auto resp = cinder::net::formatHttpResponse(body);
 

@@ -131,11 +131,15 @@ namespace cinder {
                 // Lamport bump: advance past any observed version so
                 // this node wins LWW if it later coordinates the same key.
                 observeVersion(entry.version() + 1);
-                sh.current_bytes -= Derived::nodeSize(*it->second);
-                total_bytes_ -= Derived::nodeSize(*it->second);
+                const size_t old_size = Derived::nodeSize(*it->second);
+                sh.current_bytes -= old_size;
+
+                total_bytes_.fetch_sub(old_size, std::memory_order_relaxed);
                 self.applyExisting(sh, it->second, std::move(entry));
-                sh.current_bytes += Derived::nodeSize(*it->second);
-                total_bytes_ += Derived::nodeSize(*it->second);
+                const size_t new_size = Derived::nodeSize(*it->second);
+
+                sh.current_bytes += new_size;
+                total_bytes_.fetch_add(new_size, std::memory_order_relaxed);
                 evictIfNeeded(sh);
                 // evictIfNeeded may have evicted this very node (LFU evicts the
                 // min-frequency entry, which can be the just-written one when
@@ -151,7 +155,7 @@ namespace cinder {
                 updateWheel(sh, it->second);
                 writeWal(sh, key);
                 if (metrics_) {
-                    metrics_->shardMetrics().live.writes.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
                     refreshMetrics();
                 }
                 return ok();
@@ -166,7 +170,7 @@ namespace cinder {
             observeVersion(entry.version() + 1);
             auto new_it = self.insertNew(sh, key, std::move(entry));
             sh.current_bytes += entry_size;
-            total_bytes_ += entry_size;
+            total_bytes_.fetch_add(entry_size, std::memory_order_relaxed);
             total_entries_.fetch_add(1, std::memory_order_relaxed);
             evictIfNeeded(sh);
             // Same self-eviction hazard as above: the new node starts at freq 1
@@ -180,7 +184,7 @@ namespace cinder {
             updateWheel(sh, new_it);
             writeWal(sh, key);
             if (metrics_) {
-                metrics_->shardMetrics().live.writes.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
                 refreshMetrics();
             }
             return ok();
@@ -194,7 +198,7 @@ namespace cinder {
             auto it = sh.index.find(key);
             if (it == sh.index.end()) {
                 if (metrics_) {
-                    metrics_->shardMetrics().live.misses.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->shardMetrics().live.misses.fetchAdd(1, std::memory_order_relaxed);
                 }
                 return std::nullopt;
             }
@@ -216,7 +220,7 @@ namespace cinder {
 
             self.onAccess(sh, node);
             if (metrics_) {
-                metrics_->shardMetrics().live.hits.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.hits.fetchAdd(1, std::memory_order_relaxed);
             }
             return Derived::nodeEntry(*node).value;
         }
@@ -229,7 +233,7 @@ namespace cinder {
             auto it = sh.index.find(key);
             if (it == sh.index.end()) {
                 if (metrics_) {
-                    metrics_->shardMetrics().live.misses.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->shardMetrics().live.misses.fetchAdd(1, std::memory_order_relaxed);
                 }
                 return std::nullopt;
             }
@@ -249,7 +253,7 @@ namespace cinder {
                 return std::nullopt;
             }
             if (metrics_) {
-                metrics_->shardMetrics().live.hits.fetch_add(1, std::memory_order_relaxed);
+                metrics_->shardMetrics().live.hits.fetchAdd(1, std::memory_order_relaxed);
             }
             return Derived::nodeEntry(*node);
         }
@@ -488,7 +492,7 @@ namespace cinder {
             sh.list.erase(list_it);
             sh.index.erase(it);
             sh.current_bytes -= freed;
-            total_bytes_ -= freed;
+            total_bytes_.fetch_sub(freed, std::memory_order_relaxed);
             total_entries_.fetch_sub(1, std::memory_order_relaxed);
         }
 
@@ -543,8 +547,9 @@ namespace cinder {
                 if (freed == 0) {
                     break;
                 }
+
                 sh.current_bytes -= freed;
-                total_bytes_ -= freed;
+                total_bytes_.fetch_sub(freed, std::memory_order_relaxed);
                 total_entries_.fetch_sub(1, std::memory_order_relaxed);
                 ++evicted;
             }

@@ -50,6 +50,24 @@ function(_cinder_git rc_var workdir)
     set(${rc_var} ${_rc} PARENT_SCOPE)
 endfunction()
 
+# Verify a cached checkout: the marker must record this exact repo and tag.
+# Guards against hand-edited or corrupted cache entries being trusted blindly
+# (a mismatch falls through to a clean re-fetch below).
+function(_cinder_cache_valid dir repo tag out_var)
+    set(${out_var} FALSE PARENT_SCOPE)
+    set(_marker "${dir}/.cinder-populated")
+    if(NOT EXISTS "${_marker}")
+        return()
+    endif()
+    file(READ "${_marker}" _content LIMIT 4096)
+    string(STRIP "${_content}" _content)
+    if(_content STREQUAL "${repo} ${tag}")
+        set(${out_var} TRUE PARENT_SCOPE)
+    else()
+        message(STATUS "Cinder deps: cached ${dir} marker mismatch, refetching")
+    endif()
+endfunction()
+
 # Populate <cache>/<key>-<tag> if missing. Sets <out_var> to the directory on
 # success, or "" on failure. Safe against concurrent configures/processes
 # (file lock) and against interrupted runs (clone into .partial, then rename).
@@ -65,7 +83,8 @@ function(cinder_populate_dep key out_var)
     cinder_deps_cache_dir(_cache)
     set(_dir "${_cache}/${key}-${_tag}")
 
-    if(EXISTS "${_dir}/.cinder-populated")
+    _cinder_cache_valid("${_dir}" "${_repo}" "${_tag}" _valid)
+    if(_valid)
         set(${out_var} "${_dir}" PARENT_SCOPE)
         return()
     endif()
@@ -86,7 +105,8 @@ function(cinder_populate_dep key out_var)
     endif()
 
     # Another process may have finished while we waited for the lock.
-    if(EXISTS "${_dir}/.cinder-populated")
+    _cinder_cache_valid("${_dir}" "${_repo}" "${_tag}" _valid)
+    if(_valid)
         set(${out_var} "${_dir}" PARENT_SCOPE)
         return()
     endif()
@@ -157,7 +177,10 @@ function(cinder_use_cached_dep key)
 
     cinder_deps_cache_dir(_cache)
     set(_dir "${_cache}/${key}-${CINDER_DEP_${key}_TAG}")
-    if(NOT EXISTS "${_dir}/.cinder-populated")
+    _cinder_cache_valid(
+        "${_dir}" "${CINDER_DEP_${key}_REPO}" "${CINDER_DEP_${key}_TAG}" _valid
+    )
+    if(NOT _valid)
         if(CINDER_DEPS_AUTOFETCH)
             cinder_populate_dep(${key} _dir)
         else()

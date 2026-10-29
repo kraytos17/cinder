@@ -44,6 +44,10 @@ namespace cinder {
     public:
 
         static constexpr size_t K_SLOT_COUNT = 256;
+        // Retained drain-batch ceiling: 64K pointers (512 KiB). A one-off
+        // mass expiry may grow the buffer past this; it is cut back on the
+        // next tick instead of pinning the spike forever.
+        static constexpr size_t K_MAX_DRAIN_RETAIN = 65'536;
 
         TtlWheel() {
             // Initialize each sentinel as a self-referencing circular list.
@@ -136,8 +140,18 @@ namespace cinder {
             // head) or chase a stale `next` (if pre-captured before the
             // callback rewrote the links). Draining first makes re-inserts
             // land in the wheel for a future tick and guarantees termination.
+            //
+            // The batch buffer is reused across ticks (clear keeps capacity)
+            // instead of allocating a fresh vector per sweep; it is capped so
+            // a one-off mass expiry cannot pin megabytes forever.
             auto* sentinel = &wheel_[cursor_];
-            std::vector<Node*> batch;
+            auto& batch = drain_batch_;
+            if (batch.capacity() > K_MAX_DRAIN_RETAIN) {
+                batch = std::vector<Node*>{};
+                batch.reserve(K_MAX_DRAIN_RETAIN);
+            }
+
+            batch.clear();
             while (sentinel->wheel_next != sentinel) {
                 auto* node = sentinel->wheel_next;
                 unlink(node);
@@ -188,5 +202,6 @@ namespace cinder {
         };
 
         std::vector<HeapEntry> heap_;
+        std::vector<Node*> drain_batch_;
     };
 } // namespace cinder

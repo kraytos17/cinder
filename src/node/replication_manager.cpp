@@ -111,7 +111,9 @@ namespace cinder {
             // sender: first delivery per target goes through, repeats are
             // dropped before they can touch accounting or the channel.
             auto report_once = [chan, drain, n](std::size_t i, Result r) {
-                if (i < n && !drain->delivered[i].exchange(true, std::memory_order_acq_rel)) {
+                // Relaxed: the winner's channel send synchronizes with the
+                // single-consumer reducer; the loser touches nothing.
+                if (i < n && !drain->delivered[i].exchange(true, std::memory_order_relaxed)) {
                     (void)chan->try_send(asio::error_code{}, i, std::move(r));
                 }
             };

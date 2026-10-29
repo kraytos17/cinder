@@ -29,7 +29,7 @@ namespace cinder::net {
         int replica_factor,
         ConsistencyMode mode,
         GossipManager* gossip,
-        std::shared_ptr<std::atomic<size_t>> conn_counter,
+        ConnectionCountGuard conn_counter,
         AntiEntropyManager* anti_entropy,
         std::string shared_secret
 #ifdef CINDER_ENABLE_TLS
@@ -70,9 +70,8 @@ namespace cinder::net {
 #endif
             socket_.close(ec);
         }
-        if (conn_counter_) {
-            conn_counter_->fetch_sub(1, std::memory_order_relaxed);
-        }
+        // conn_counter_ guard decrements active_connections_ in its own
+        // destructor
         if (metrics_) {
             metrics_->connectionMetrics().connections_closed.fetch_add(
                 1,
@@ -355,14 +354,18 @@ namespace cinder::net {
         auto decoded = std::move(result.value());
         auto& req = decoded.req;
         // Generate structured trace-id at the connection entry point if not already
-        // present
-        if (req.trace_id == 0) {
-            static std::atomic<uint64_t> s_next_trace_id{1};
-            req.trace_id = s_next_trace_id.fetch_add(1, std::memory_order_relaxed);
-        }
-        if (req.span_id == 0) {
-            static std::atomic<uint64_t> s_next_span_id{1};
-            req.span_id = s_next_span_id.fetch_add(1, std::memory_order_relaxed);
+        // present. One fetch_add mints both IDs (trace takes the even slot,
+        // span the odd): halves the globally-contended RMWs and keeps the two
+        // counters off each other's cache line.
+        if (req.trace_id == 0 || req.span_id == 0) {
+            static std::atomic<uint64_t> s_next_id{1};
+            uint64_t base = s_next_id.fetch_add(2, std::memory_order_relaxed);
+            if (req.trace_id == 0) {
+                req.trace_id = base;
+            }
+            if (req.span_id == 0) {
+                req.span_id = base + 1;
+            }
         }
         handleRequest(req, decoded.auth_token);
     }
@@ -435,13 +438,13 @@ namespace cinder::net {
         if (metrics_) {
             switch (req.opcode) {
                 case Opcode::Get:
-                    metrics_->opcodeMetrics().client.gets.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->opcodeMetrics().client.gets.fetchAdd(1, std::memory_order_relaxed);
                     break;
                 case Opcode::Set:
-                    metrics_->opcodeMetrics().client.sets.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->opcodeMetrics().client.sets.fetchAdd(1, std::memory_order_relaxed);
                     break;
                 case Opcode::Del:
-                    metrics_->opcodeMetrics().client.dels.fetch_add(1, std::memory_order_relaxed);
+                    metrics_->opcodeMetrics().client.dels.fetchAdd(1, std::memory_order_relaxed);
                     break;
                 case Opcode::Ping:
                     metrics_->opcodeMetrics().client.pings.fetch_add(1, std::memory_order_relaxed);

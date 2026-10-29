@@ -37,6 +37,40 @@ namespace cinder {
 
 namespace cinder::net {
 
+    // RAII decrement guard for the server's active-connection counter.
+    struct ConnectionCountGuard {
+        ConnectionCountGuard() = default;
+
+        explicit ConnectionCountGuard(std::atomic<size_t>& counter) :
+            counter_(&counter) {}
+
+        ConnectionCountGuard(const ConnectionCountGuard&) = delete;
+        auto operator=(const ConnectionCountGuard&) -> ConnectionCountGuard& = delete;
+
+        ConnectionCountGuard(ConnectionCountGuard&& other) noexcept :
+            counter_(std::exchange(other.counter_, nullptr)) {}
+
+        auto operator=(ConnectionCountGuard&& other) noexcept -> ConnectionCountGuard& {
+            release();
+            counter_ = std::exchange(other.counter_, nullptr);
+            return *this;
+        }
+
+        ~ConnectionCountGuard() {
+            release();
+        }
+
+    private:
+
+        void release() noexcept {
+            if (counter_ != nullptr) {
+                counter_->fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+
+        std::atomic<size_t>* counter_ = nullptr;
+    };
+
     class TcpConnection : public std::enable_shared_from_this<TcpConnection> {
     public:
 
@@ -64,7 +98,7 @@ namespace cinder::net {
             int replica_factor = 1,
             ConsistencyMode mode = ConsistencyMode::Async,
             GossipManager* gossip = nullptr,
-            std::shared_ptr<std::atomic<size_t>> conn_counter = nullptr,
+            ConnectionCountGuard conn_counter = {},
             AntiEntropyManager* anti_entropy = nullptr,
             std::string shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
@@ -235,7 +269,7 @@ namespace cinder::net {
         ConsistencyMode mode_;
 
         std::string shared_secret_;
-        std::shared_ptr<std::atomic<size_t>> conn_counter_;
+        ConnectionCountGuard conn_counter_;
         MetricsCollector* metrics_ = nullptr;
         // Admin opcode callbacks, populated by TcpServer after construction.
         std::unique_ptr<AdminCallbacks> admin_;

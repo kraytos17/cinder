@@ -41,8 +41,25 @@ namespace cinder {
         return g_subscriber.load(std::memory_order_acquire);
     }
 
+    // Fast path for the per-event subscriber lookup. g_subscriber is a
+    // spinlock-backed atomic<shared_ptr> on libstdc++/libc++; loading it on
+    // every event costs two lock round-trips. Cache it thread-locally and
+    // revalidate against the interest generation (bumped on every
+    // install/reset, so staleness is bounded by ~one event — the same benign
+    // swap race the direct load already accepted).
+    auto cachedSubscriber() -> std::shared_ptr<Subscriber> {
+        thread_local std::shared_ptr<Subscriber> t_sub;
+        thread_local uint64_t t_gen = 0; // generations start at 1; 0 forces first load
+        uint64_t gen = g_interest_generation.load(std::memory_order_relaxed);
+        if (gen != t_gen) {
+            t_sub = g_subscriber.load(std::memory_order_acquire);
+            t_gen = gen;
+        }
+        return t_sub;
+    }
+
     auto isCallsiteEnabled(Callsite& callsite) -> bool {
-        auto sub = g_subscriber.load(std::memory_order_acquire);
+        auto sub = cachedSubscriber();
         if (sub == nullptr) {
             return true; // direct path; spdlog level filtering applies instead
         }
@@ -427,13 +444,14 @@ namespace cinder {
         // Macro path: the callsite was already interest-checked (cached), so
         // route directly. A subscriber swap racing this load is benign — the
         // event simply goes to whichever backend is current.
-        if (auto sub = g_subscriber.load(std::memory_order_acquire); sub != nullptr) {
+        if (auto sub = cachedSubscriber(); sub != nullptr) {
             EventRecord record{
                 .metadata = meta,
                 .message = msg,
                 .fields = fields,
                 .context = t_trace_ctx,
             };
+
             sub->event(record);
             return;
         }

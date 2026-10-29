@@ -51,12 +51,11 @@ namespace cinder::grpc {
                 handle_(std::move(handle)) {}
 
             static auto makeTraceId() -> std::pair<uint64_t, uint64_t> {
+                // One fetch_add mints both IDs (trace takes the even slot,
+                // span the odd) instead of two globally-contended RMWs.
                 static std::atomic<uint64_t> next_id{1};
-                static std::atomic<uint64_t> next_span{1};
-                return {
-                    next_id.fetch_add(1, std::memory_order_relaxed),
-                    next_span.fetch_add(1, std::memory_order_relaxed)
-                };
+                uint64_t base = next_id.fetch_add(2, std::memory_order_relaxed);
+                return {base, base + 1};
             }
 
             ::grpc::Status Get(
