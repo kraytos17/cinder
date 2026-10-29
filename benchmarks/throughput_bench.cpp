@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <benchmark/benchmark.h>
+#include <filesystem>
 #include <numeric>
 #include <random>
 #include <string>
@@ -8,6 +9,8 @@
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
+#include "cinder/store/snapshot.hpp"
+#include "cinder/store/wal.hpp"
 
 namespace cinder {
     namespace {
@@ -196,5 +199,108 @@ namespace cinder {
         BENCHMARK(bmHintQueueReplayAndHandleRemoveReverse)->Arg(64)->Arg(256)->Arg(1024);
         // NOLINTNEXTLINE
         BENCHMARK(bmHintQueueReplayAndHandleRemoveShuffled)->Arg(64)->Arg(256)->Arg(1024);
+
+        auto makeWalEntry(size_t index, size_t value_size) -> WalEntry {
+            WalEntry entry;
+            entry.op = WalEntry::Op::Set;
+            entry.key = "key-" + std::to_string(index);
+            entry.value.assign(value_size, 'v');
+            entry.version = index + 1;
+            return entry;
+        }
+
+        // Production-shaped drain: append a batch, then one flush, optionally
+        // followed by one fdatasync (the wal_fsync knob). Bench files live in
+        // the build dir (real disk) — never /tmp (tmpfs makes fsync free).
+        void bmWalAppendBatch(benchmark::State& state, bool fsync) {
+            const auto batch = static_cast<size_t>(state.range(0));
+            const auto value_size = static_cast<size_t>(state.range(1));
+            std::filesystem::create_directories("bench-tmp");
+            const std::string path = "bench-tmp/wal-bench.log";
+
+            std::vector<WalEntry> entries;
+            entries.reserve(batch);
+            for (size_t i = 0; i < batch; ++i) {
+                entries.push_back(makeWalEntry(i, value_size));
+            }
+            for (auto _ : state) {
+                state.PauseTiming();
+                std::filesystem::remove(path);
+                WalWriter writer(path);
+                state.ResumeTiming();
+                for (const auto& entry : entries) {
+                    auto res = writer.append(entry);
+                    benchmark::DoNotOptimize(res.has_value());
+                }
+
+                writer.flush();
+                if (fsync) {
+                    auto synced = writer.sync();
+                    benchmark::DoNotOptimize(synced.has_value());
+                }
+            }
+            // Timing already stopped: plain cleanup.
+            std::filesystem::remove(path);
+            state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(batch));
+            state.SetBytesProcessed(
+                state.iterations() * static_cast<int64_t>(batch * (value_size + 64))
+            );
+        }
+
+        void bmWalAppendNoFsync(benchmark::State& state) {
+            bmWalAppendBatch(state, false);
+        }
+
+        void bmWalAppendFsync(benchmark::State& state) {
+            bmWalAppendBatch(state, true);
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmWalAppendNoFsync)->Args({1, 64})->Args({64, 64})->Args({256, 256});
+        // NOLINTNEXTLINE
+        BENCHMARK(bmWalAppendFsync)->Args({1, 64})->Args({64, 64})->Args({256, 256});
+
+        auto makeSnapshotBatch(size_t count, size_t value_size) -> std::vector<SnapshotEntry> {
+            std::vector<SnapshotEntry> entries;
+            entries.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                SnapshotEntry entry;
+                entry.key = "key-" + std::to_string(i);
+                entry.value.assign(value_size, 'v');
+                entry.version = i + 1;
+                entries.push_back(std::move(entry));
+            }
+            return entries;
+        }
+
+        // Snapshot write: header + one buffered write per entry (the
+        // single-copy encode path). Entries are built once outside timing.
+        void bmSnapshotWrite(benchmark::State& state) {
+            const auto count = static_cast<size_t>(state.range(0));
+            const auto value_size = static_cast<size_t>(state.range(1));
+            auto entries = makeSnapshotBatch(count, value_size);
+
+            std::filesystem::create_directories("bench-tmp");
+            const std::string path = "bench-tmp/snap-bench.dat";
+            for (auto _ : state) {
+                state.PauseTiming();
+                std::filesystem::remove(path);
+                SnapshotWriter writer(path);
+                state.ResumeTiming();
+
+                auto res = writer.write(1, entries);
+                benchmark::DoNotOptimize(res.has_value());
+            }
+
+            // Timing already stopped: plain cleanup.
+            std::filesystem::remove(path);
+            state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(count));
+            state.SetBytesProcessed(
+                state.iterations() * static_cast<int64_t>(count * (value_size + 64))
+            );
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmSnapshotWrite)->Args({64, 64})->Args({1024, 64})->Args({1024, 1024});
     } // namespace
 } // namespace cinder
