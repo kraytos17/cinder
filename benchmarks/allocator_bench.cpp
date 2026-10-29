@@ -1,8 +1,8 @@
+#include <ankerl/unordered_dense.h>
 #include <benchmark/benchmark.h>
 #include <cstddef>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "cinder/common/slab_allocator.hpp"
@@ -23,8 +23,8 @@ namespace cinder {
         // NOLINTNEXTLINE
         BENCHMARK(bmRawStringAlloc)->Arg(16)->Arg(256)->Arg(1 << 12);
 
-        void bmUnorderedMapChurn(benchmark::State& state) {
-            std::unordered_map<std::string, std::string> map;
+        void bmDenseMapChurn(benchmark::State& state) {
+            ankerl::unordered_dense::map<std::string, std::string> map;
             int i = 0;
             // NOLINTNEXTLINE
             for (auto _ : state) {
@@ -35,7 +35,7 @@ namespace cinder {
         }
 
         // NOLINTNEXTLINE
-        BENCHMARK(bmUnorderedMapChurn)->Arg(16)->Arg(256);
+        BENCHMARK(bmDenseMapChurn)->Arg(16)->Arg(256);
 
         void bmLruStoreChurn(benchmark::State& state) {
             LruStore store(static_cast<size_t>(state.range(0)));

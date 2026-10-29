@@ -1,3 +1,4 @@
+#include <ankerl/unordered_dense.h>
 #include <array>
 #include <atomic>
 #include <deque>
@@ -5,7 +6,6 @@
 #include <memory>
 #include <string>
 #include <thread>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -98,7 +98,7 @@ namespace cinder {
 
             // Nodes in this set complete synchronously inside sendAsync (like a
             // loopback peer); everything else queues until completeSends().
-            std::unordered_set<NodeId> sync_nodes;
+            ankerl::unordered_dense::set<NodeId> sync_nodes;
 
             void sendAsync(const NodeId& to, const net::Request&, SendCallback on_done) override {
                 if (sync_nodes.contains(to)) {

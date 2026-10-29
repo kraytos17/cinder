@@ -92,7 +92,7 @@ namespace cinder {
         // keys are absent. Keys whose owner moved (stale ring view) are followed
         // through redirects like single-key operations.
         auto multiGet(const std::vector<std::string>& keys)
-            -> std::unordered_map<std::string, std::string>;
+            -> ankerl::unordered_dense::map<std::string, std::string>;
 
         // Single-key read with LWW metadata. Version, writer hash and absolute
         // expiry come from the wire GetVersioned response (expires_at absent =

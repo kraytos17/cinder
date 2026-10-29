@@ -1,5 +1,6 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <asio.hpp>
 #include <chrono>
 #include <cstdint>
@@ -13,7 +14,6 @@
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
-#include <unordered_map>
 #include <utility>
 
 #include "cinder/net/protocol.hpp"
@@ -65,7 +65,7 @@ pickEphemeralPort() -> uint16_t {
 // always happen in the same translation unit, so no sharing is needed.
 namespace held_detail {
 inline std::mutex mutex;
-inline std::unordered_map<uint16_t, int> fds;
+inline ankerl::unordered_dense::map<uint16_t, int> fds;
 } // namespace held_detail
 
 [[maybe_unused]] static auto

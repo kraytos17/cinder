@@ -1,12 +1,11 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <chrono>
 #include <cstdint>
 #include <functional>
 #include <queue>
 #include <random>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "cinder/cluster/transport.hpp"
@@ -81,9 +80,9 @@ class SimBus {
     bool reorder_ = false;
 
     std::priority_queue<Event, std::vector<Event>, EventCmp> queue_;
-    std::unordered_map<cinder::NodeId, Handler> handlers_;
-    std::unordered_map<cinder::NodeId, RequestHandler> request_handlers_;
-    std::unordered_set<cinder::NodeId> down_;
+    ankerl::unordered_dense::map<cinder::NodeId, Handler> handlers_;
+    ankerl::unordered_dense::map<cinder::NodeId, RequestHandler> request_handlers_;
+    ankerl::unordered_dense::set<cinder::NodeId> down_;
 
     size_t delivered_ = 0;
     size_t dropped_ = 0;

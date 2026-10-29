@@ -1,9 +1,9 @@
 #include <algorithm>
+#include <ankerl/unordered_dense.h>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 
 #include "cinder/client/cache_client.hpp"
@@ -169,7 +169,7 @@ namespace cinder {
             // Batch path: every key must come back, including the migrated ones the
             // stale ring routes to the wrong node. Same transient-flap rationale:
             // poll until the full map resolves.
-            std::unordered_map<std::string, std::string> found;
+            ankerl::unordered_dense::map<std::string, std::string> found;
             for (int round = 0; round < 600; ++round) {
                 found = client.multiGet(keys);
                 bool complete = found.size() == keys.size();

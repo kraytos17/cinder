@@ -167,15 +167,15 @@ namespace cinder {
     }
 
     auto CacheClient::multiGet(const std::vector<std::string>& keys)
-        -> std::unordered_map<std::string, std::string> {
+        -> ankerl::unordered_dense::map<std::string, std::string> {
         Span span("client.multi_get");
         // Group keys by their ring owner, then pipeline all Gets per node.
-        std::unordered_map<NodeId, std::vector<std::string>> by_owner;
+        ankerl::unordered_dense::map<NodeId, std::vector<std::string>> by_owner;
         for (const auto& key : keys) {
             by_owner[routePrimary(key)].push_back(key);
         }
 
-        std::unordered_map<std::string, std::string> result;
+        ankerl::unordered_dense::map<std::string, std::string> result;
         for (const auto& [node, node_keys] : by_owner) {
             std::vector<net::Request> reqs;
             reqs.reserve(node_keys.size());
@@ -276,7 +276,8 @@ namespace cinder {
         Span span("client.multi_set");
         // Group keys by their ring owner, then pipeline all Sets per node —
         // the same shape as multiGet, but with Set requests.
-        std::unordered_map<NodeId, std::vector<std::pair<std::string, std::string>>> by_owner;
+        ankerl::unordered_dense::map<NodeId, std::vector<std::pair<std::string, std::string>>>
+            by_owner;
         for (const auto& kv : kvs) {
             by_owner[routePrimary(kv.first)].push_back(kv);
         }

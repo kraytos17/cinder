@@ -123,7 +123,7 @@ physical node), built as an immutable snapshot:
 Cluster-scale lookup maps (`MembershipTable::nodes_`,
 `ConnectionPool::node_addrs_`, `TcpTransport::addrs_`) use `std::flat_map` for
 cache-friendly, sorted-key iteration with lower memory overhead than
-`std::unordered_map` at the 3–10 node scale typical of a Cinder cluster.
+`ankerl::unordered_dense::map` at the 3–10 node scale typical of a Cinder cluster.
 
 **Key lookup** — `getNodes(key, replica_factor)` returns the ordered list of
 `replica_factor` successors on the ring; the first is the primary, the rest
