@@ -191,6 +191,7 @@ namespace cinder {
         std::atomic<uint64_t> quorum_writes_ok{0};
         std::atomic<uint64_t> quorum_writes_failed{0};
         std::atomic<uint64_t> quorum_reads{0};
+        std::atomic<uint64_t> reads_coalesced{0};
         std::atomic<uint64_t> read_repairs{0};
         std::atomic<uint64_t> hints_enqueued{0};
         std::atomic<uint64_t> hints_replayed{0};

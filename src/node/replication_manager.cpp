@@ -366,6 +366,33 @@ namespace cinder {
         }, [st] { st->on_done(err(Error(Errc::NotReady, "quorum fan-out failed"))); });
     }
 
+    void ReplicationManager::finishReadFlight(
+        const std::string& key,
+        const std::shared_ptr<ReadFlight>& flight,
+        Result<VersionedEntry> result
+    ) {
+        std::vector<ReadCallback> waiters;
+        {
+            std::scoped_lock lock(read_flights_mutex_);
+            auto it = read_flights_.find(key);
+            if (it != read_flights_.end() && it->second == flight) {
+                read_flights_.erase(it);
+            }
+            waiters = std::move(flight->waiters);
+        }
+
+        // All but the last waiter get a copy; the last takes the move. A
+        // single-waiter flight (the common case) moves with zero copies.
+        // (Structured without a conditional move inside the loop: the
+        // use-after-move check cannot prove a last-iteration-only move safe.)
+        for (size_t i = 0; i + 1 < waiters.size(); ++i) {
+            waiters[i](result);
+        }
+        if (!waiters.empty()) {
+            waiters.back()(std::move(result));
+        }
+    }
+
     void ReplicationManager::readAsync(
         const std::string& key,
         const std::vector<NodeId>& replica_nodes,
@@ -401,6 +428,35 @@ namespace cinder {
             metrics_->replicationMetrics().quorum_reads.fetch_add(1, std::memory_order_relaxed);
         }
 
+        // Duplicate suppression (singleflight): concurrent reads for the same
+        // key share one fan-out. The first caller becomes the leader; later
+        // arrivals attach as waiters and receive the leader's LWW result.
+        // No blocking anywhere — completion is async. Safe against
+        // self-deadlock: replica GetVersioned requests are served from the
+        // local store only, so a flight never re-enters this table for its
+        // own key, and finishReadFlight erases before notifying (a waiter
+        // that synchronously starts a new read begins a fresh flight).
+        std::shared_ptr<ReadFlight> flight;
+        {
+            std::scoped_lock lock(read_flights_mutex_);
+            auto it = read_flights_.find(key);
+            if (it == read_flights_.end()) {
+                flight = std::make_shared<ReadFlight>();
+                flight->waiters.push_back(std::move(on_done));
+                read_flights_.emplace(key, flight);
+            } else {
+                flight = it->second;
+                flight->waiters.push_back(std::move(on_done));
+                if (metrics_) {
+                    metrics_->replicationMetrics().reads_coalesced.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
+                return;
+            }
+        }
+
         // Single-consumer LWW reduce: best_* is a compound maximum updated by
         // one reader at a time, so no mutex is needed. Post-decision arrivals
         // are ignored (as the old early-return did); the loop still drains so
@@ -423,7 +479,13 @@ namespace cinder {
         auto st = std::make_shared<ReadQuorum>();
         st->replicas = replica_nodes;
         st->req = std::move(req);
-        st->on_done = std::move(on_done);
+        // Route the quorum decision through the flight: every waiter (leader
+        // first) receives the LWW result, and the entry is erased before any
+        // waiter runs.
+        st->on_done = [this, st, flight](Result<VersionedEntry> r) mutable {
+            finishReadFlight(st->key, flight, std::move(r));
+        };
+
         st->key = key;
         st->r = R;
         st->acks = local_entry.has_value() ? 1 : 0;

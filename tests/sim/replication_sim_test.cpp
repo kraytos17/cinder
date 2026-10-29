@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <deque>
 #include <gtest/gtest.h>
@@ -871,6 +872,56 @@ namespace cinder {
             EXPECT_EQ(result->value, "v3");
             EXPECT_EQ(result->version(), 3);
             EXPECT_EQ(done_count.load(), 1);
+        }
+
+        // Duplicate suppression: concurrent reads for the same key share one
+        // fan-out (singleflight). The first caller becomes the leader; later
+        // arrivals attach as waiters and receive the leader's LWW result,
+        // while the transport sees a single request.
+        TEST(ReadRepairSimTest, ConcurrentReadsForSameKeyCoalesceIntoOneFanout) {
+            DeferredCluster c;
+
+            constexpr int K_READERS = 4;
+            std::atomic<int> done_count{0};
+            std::array<Result<VersionedEntry>, K_READERS> results;
+            for (auto& r : results) {
+                r = err<VersionedEntry>(Error(Errc::NotFound, "unset"));
+            }
+            for (int i = 0; i < K_READERS; ++i) {
+                c.mgr.readAsync("key1", {"node2"}, 2, [&, i](Result<VersionedEntry> r) {
+                    results[static_cast<size_t>(i)] = std::move(r);
+                    ++done_count;
+                });
+            }
+            // One fan-out total despite four callers; nothing reported yet.
+            EXPECT_EQ(c.transport.pendingRequests(), 1u);
+            EXPECT_EQ(done_count.load(), 0);
+
+            // A read for a different key starts its own flight.
+            std::atomic<int> other_done{0};
+            c.mgr.readAsync("key2", {"node2"}, 2, [&](Result<VersionedEntry>) { ++other_done; });
+            EXPECT_EQ(c.transport.pendingRequests(), 2u);
+
+            // The single replica response completes the coalesced flight:
+            // every waiter gets the leader's result.
+            c.transport.completeRequest(7, 100, "v7");
+            ASSERT_TRUE(awaitDecision(done_count));
+            std::this_thread::sleep_for(milliseconds(100));
+            EXPECT_EQ(done_count.load(), K_READERS);
+            for (const auto& r : results) {
+                ASSERT_TRUE(r.has_value());
+                EXPECT_EQ(r->value, "v7");
+                EXPECT_EQ(r->version(), 7U);
+            }
+
+            // The other key's flight is untouched: still pending, unreported.
+            EXPECT_EQ(c.transport.pendingRequests(), 1u);
+            EXPECT_EQ(other_done.load(), 0);
+
+            // It completes independently when its own replica answers.
+            c.transport.completeRequest(9, 200, "other");
+            ASSERT_TRUE(awaitDecision(other_done));
+            EXPECT_EQ(c.transport.pendingRequests(), 0u);
         }
 
         TEST(ReadRepairSimTest, ReadRepairReturnsBestVersion) {

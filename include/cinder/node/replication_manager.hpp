@@ -1,8 +1,10 @@
 #pragma once
 
+#include <ankerl/unordered_dense.h>
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -74,6 +76,13 @@ namespace cinder {
         // Quorum read: reads from local store + fans out GetVersioned to replicas.
         // Returns the entry with the highest version (LWW). Stale replicas are
         // repaired in the background via a best-effort Replicate write-back.
+        //
+        // Duplicate suppression: concurrent reads for the same key share one
+        // fan-out (singleflight). The first caller becomes the leader and runs
+        // the quorum reduce; later arrivals attach as waiters and receive the
+        // leader's LWW result (copies for all but the last waiter, which is
+        // moved). Waiters never block — completion is async. The leader's
+        // replica set and R win; any quorum answer is a valid LWW result.
         void readAsync(
             const std::string& key,
             const std::vector<NodeId>& replica_nodes,
@@ -104,6 +113,21 @@ namespace cinder {
             const VersionedEntry& winner
         );
 
+        // One in-flight coalesced read. Waiters share the leader's LWW result;
+        // the table holds one entry per distinct in-flight key.
+        struct ReadFlight {
+            std::vector<ReadCallback> waiters;
+        };
+
+        // Complete a coalesced read: erase-then-notify so a waiter that
+        // synchronously starts a new read for the same key begins a fresh
+        // flight instead of deadlocking on itself.
+        void finishReadFlight(
+            const std::string& key,
+            const std::shared_ptr<ReadFlight>& flight,
+            Result<VersionedEntry> result
+        );
+
         CacheStore& local_;
         NodeId self_;
         Clock& clock_;
@@ -112,6 +136,10 @@ namespace cinder {
         // Single-consumer guard for replayHints(): overlapping timer ticks (or
         // pool threads) must not run two replays concurrently.
         std::atomic<bool> replaying_{false};
+        // Coalesced reads: key -> in-flight flight. Leaf-level mutex, held
+        // only for map insert/find/erase — never across I/O or store locks.
+        std::mutex read_flights_mutex_;
+        ankerl::unordered_dense::map<std::string, std::shared_ptr<ReadFlight>> read_flights_;
         MetricsCollector* metrics_ = nullptr;
     };
 } // namespace cinder

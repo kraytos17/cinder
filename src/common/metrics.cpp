@@ -197,6 +197,7 @@ namespace cinder {
         );
 
         appendCounter(os, "replication_quorum_reads_total", repl_.quorum_reads.load());
+        appendCounter(os, "replication_reads_coalesced_total", repl_.reads_coalesced.load());
         appendCounter(os, "replication_read_repairs_total", repl_.read_repairs.load());
         appendCounter(os, "replication_hints_enqueued_total", repl_.hints_enqueued.load());
         appendCounter(os, "replication_hints_replayed_total", repl_.hints_replayed.load());
