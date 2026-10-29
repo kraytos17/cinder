@@ -27,7 +27,8 @@ persistence:
   enabled: false              # WAL + snapshot persistence
   data_dir: /var/lib/cinder   # directory for WAL and snapshot files
   snapshot_interval_s: 60     # periodic compaction interval
-  max_wal_entries: 10000      # auto-compact threshold
+  max_wal_entries: 10000      # auto-compact threshold (WAL entries since last snapshot)
+  wal_fsync: false            # fdatasync on every WAL flush (durability vs throughput)
 
 tls:
   enabled: false

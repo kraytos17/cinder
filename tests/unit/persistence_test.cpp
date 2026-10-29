@@ -674,5 +674,74 @@ namespace cinder {
             auto result = reader.readAll();
             EXPECT_FALSE(result.has_value());
         }
+
+        TEST_F(PersistenceTest, WalNeedsCompactThreshold) {
+            LruStore store(1'000'000);
+            PersistenceManager pm(
+                PersistenceManager::Options{
+                    .data_dir = test_dir_.string(),
+                    .enabled = true,
+                    .snapshot_interval_s = 3600,
+                    .max_wal_entries = 3,
+                },
+                store
+            );
+            ASSERT_TRUE(pm.recover().has_value());
+
+            // Below threshold: no compact requested.
+            auto write = [&](const std::string& k) {
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = k,
+                        .value = "v",
+                        .version = 1,
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+            };
+            write("k1");
+            write("k2");
+            pm.flush();
+            EXPECT_FALSE(pm.walNeedsCompact());
+
+            // At threshold: the server's tick should compact.
+            write("k3");
+            pm.flush();
+            EXPECT_TRUE(pm.walNeedsCompact());
+
+            // Compact truncates the WAL and clears the request.
+            ASSERT_TRUE(pm.compact().has_value());
+            EXPECT_FALSE(pm.walNeedsCompact());
+        }
+
+        TEST_F(PersistenceTest, WalSyncOk) {
+            auto wal_path = (test_dir_ / "wal.log").string();
+            {
+                WalWriter writer(wal_path);
+                ASSERT_TRUE(writer
+                                .append(
+                                    WalEntry{
+                                        .op = WalEntry::Op::Set,
+                                        .key = "k",
+                                        .value = "v",
+                                        .version = 1,
+                                        .writer_node_hash = 0,
+                                        .expires_at_ms = 0,
+                                        .has_ttl = false,
+                                    }
+                                )
+                                .has_value());
+                // Durability barrier: must not fail on a healthy filesystem,
+                // and the record must still decode afterwards.
+                EXPECT_TRUE(writer.sync().has_value());
+            }
+            WalReader reader(wal_path);
+            auto entry = reader.next();
+            ASSERT_TRUE(entry.has_value());
+            EXPECT_EQ(entry->key, "k");
+        }
     } // namespace
 } // namespace cinder

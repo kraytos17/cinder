@@ -89,7 +89,7 @@ namespace cinder {
         loading_ = false;
         auto new_wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
         wal_ = std::make_unique<WalWriter>(new_wal_path.string());
-        wal_entry_count_ = 0;
+        wal_entry_count_.store(0, std::memory_order_relaxed);
         return ok();
     }
 
@@ -107,14 +107,14 @@ namespace cinder {
         pending_wal_.push_back(entry);
     }
 
-    void PersistenceManager::drainQueueLocked() {
+    auto PersistenceManager::drainQueueLocked() -> bool {
         // Caller holds mutex_. Swap the batch out under queue_mutex_, then append
         // without holding queue_mutex_
         std::deque<WalEntry> batch;
         {
             std::scoped_lock lock(queue_mutex_);
             if (pending_wal_.empty()) {
-                return;
+                return false;
             }
             batch.swap(pending_wal_);
         }
@@ -124,16 +124,27 @@ namespace cinder {
                 CINDER_ERROR("WAL append failed", {"reason", result.error().message()});
                 break;
             }
-            ++wal_entry_count_;
+            wal_entry_count_.fetch_add(1, std::memory_order_relaxed);
         }
+        return true;
     }
 
     void PersistenceManager::flush() {
         std::scoped_lock lock(mutex_);
-        if (wal_) {
-            drainQueueLocked();
-            wal_->flush();
+        if (!wal_) {
+            return;
         }
+        if (!drainQueueLocked()) {
+            return; // nothing pending: skip the flush syscall
+        }
+        if (opts_.wal_fsync) {
+            // sync() flushes userspace buffers first, then fdatasyncs.
+            if (auto synced = wal_->sync(); !synced.has_value()) {
+                CINDER_ERROR("WAL fsync failed", {"reason", synced.error().message()});
+            }
+            return;
+        }
+        wal_->flush();
     }
 
     auto PersistenceManager::compact() -> Result<void> {
@@ -169,7 +180,7 @@ namespace cinder {
         std::error_code ec;
         std::filesystem::remove(wal_path, ec);
         wal_ = std::make_unique<WalWriter>(wal_path.string());
-        wal_entry_count_ = 0;
+        wal_entry_count_.store(0, std::memory_order_relaxed);
         CINDER_INFO("compaction complete", {"entries", entry_count});
         return ok();
     }

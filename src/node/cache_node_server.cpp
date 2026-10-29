@@ -228,6 +228,7 @@ namespace cinder {
                 .enabled = options.persistence_enabled,
                 .snapshot_interval_s = options.snapshot_interval_s,
                 .max_wal_entries = options.max_wal_entries,
+                .wal_fsync = options.wal_fsync,
             },
             *store_,
             &clock_
@@ -420,6 +421,16 @@ namespace cinder {
             }
 
             store_->evictExpired();
+            // Steady-state WAL drain (batched, ~1s cadence): bounds the
+            // pending queue (and the crash-loss window) between periodic
+            // compactions. The drain also advances the entry counter behind
+            // the max_wal_entries auto-compact threshold.
+            if (persistence_.enabled()) {
+                persistence_.flush();
+                if (persistence_.walNeedsCompact()) {
+                    scheduleCompactDebounced();
+                }
+            }
             scheduleEvict();
         });
     }
@@ -531,6 +542,24 @@ namespace cinder {
                 CINDER_ERROR("compact failed", {"reason", result.error().message()});
             }
             scheduleCompact();
+        });
+    }
+
+    void CacheNodeServer::scheduleCompactDebounced() {
+        // Coalesce bursts: at most one out-of-cycle compact queued. The flag
+        // clears when it runs. A periodic compact racing it is serialized by
+        // the persistence mutex — a redundant back-to-back snapshot is wasted
+        // work, never incorrect.
+        if (timers_.compact_pending) {
+            return;
+        }
+
+        timers_.compact_pending = true;
+        asio::post(io_, [this] {
+            timers_.compact_pending = false;
+            if (auto result = persistence_.compact(); !result.has_value()) {
+                CINDER_ERROR("compact failed", {"reason", result.error().message()});
+            }
         });
     }
 

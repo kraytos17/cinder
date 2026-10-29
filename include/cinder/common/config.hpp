@@ -55,6 +55,9 @@ namespace cinder {
         std::string data_dir;
         int snapshot_interval_s = 60;
         int max_wal_entries = 10'000;
+        // fdatasync on every WAL flush (durability vs throughput).
+        // Restart-only like the other persistence knobs.
+        bool wal_fsync = false;
 
         // TLS
         TlsConfig tls;

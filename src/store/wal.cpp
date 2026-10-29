@@ -1,5 +1,9 @@
 #include "cinder/store/wal.hpp"
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <xxhash.h>
 
 #include "cinder/common/tracing.hpp"
@@ -123,12 +127,23 @@ namespace cinder {
         out_(path, std::ios::binary | std::ios::trunc) {
         writeU32(out_, K_WAL_MAGIC);
         writeU32(out_, K_WAL_FORMAT_VERSION);
+#ifndef _WIN32
+        sync_fd_ = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+        if (sync_fd_ < 0) {
+            CINDER_ERROR("WAL sync fd open failed; sync() will be a no-op", {"path", path});
+        }
+#endif
     }
 
     WalWriter::~WalWriter() {
         if (out_.is_open()) {
             out_.flush();
         }
+#ifndef _WIN32
+        if (sync_fd_ >= 0) {
+            ::close(sync_fd_);
+        }
+#endif
     }
 
     auto WalWriter::append(const WalEntry& entry) -> Result<void> {
@@ -170,6 +185,21 @@ namespace cinder {
         if (out_.is_open()) {
             out_.flush();
         }
+    }
+
+    auto WalWriter::sync() -> Result<void> {
+        flush();
+#ifdef _WIN32
+        return ok();
+#else
+        if (sync_fd_ < 0) {
+            return err(Error(Errc::InternalError, "WAL sync fd not open"));
+        }
+        if (::fdatasync(sync_fd_) != 0) {
+            return err(Error(Errc::InternalError, "WAL fdatasync failed"));
+        }
+        return ok();
+#endif
     }
 
     WalReader::WalReader(const std::string& path) :

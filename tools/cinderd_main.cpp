@@ -140,6 +140,9 @@ auto main(int argc, char* argv[]) -> int {
     options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
     options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
     options.snapshot_interval_s = snapshot_interval_s;
+    // No CLI override for these: the YAML value (or its default) always wins.
+    options.max_wal_entries = static_cast<size_t>(cfg.max_wal_entries);
+    options.wal_fsync = cfg.wal_fsync;
     options.io_threads = io_threads;
     options.tls_enabled = tls_enabled || cfg.tls.enabled;
     options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;

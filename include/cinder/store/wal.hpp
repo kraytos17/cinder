@@ -43,10 +43,21 @@ namespace cinder {
         auto append(const WalEntry& entry) -> Result<void>;
         void flush();
 
+        // Durability barrier: flushes userspace buffers, then fdatasyncs the
+        // file so acknowledged writes survive an OS crash, not just a process
+        // crash. No-op (ok) where fdatasync is unavailable.
+        auto sync() -> Result<void>;
+
     private:
 
         std::ofstream out_;
         std::vector<std::byte> scratch_; // reused buffer for record encoding
+#ifndef _WIN32
+        // Companion fd for fdatasync: opened O_APPEND on the same path, so it
+        // shares the file offset with the stream. ofstream exposes no portable
+        // file descriptor, hence the second handle. -1 = open failed.
+        int sync_fd_ = -1;
+#endif
     };
 
     class WalReader {

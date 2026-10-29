@@ -24,6 +24,10 @@ namespace cinder {
             bool enabled = false;
             size_t snapshot_interval_s = 60;
             size_t max_wal_entries = 10'000;
+            // fdatasync on every flush: acknowledged writes survive an OS
+            // crash, not just a process crash. Off by default (page-cache
+            // durability); enable when the WAL is the durability story.
+            bool wal_fsync = false;
         };
 
         PersistenceManager(Options opts, CacheStore& store, Clock* clock = nullptr);
@@ -42,6 +46,17 @@ namespace cinder {
 
         // Flush buffered WAL data to disk.
         void flush();
+
+        // True when the WAL has grown past the auto-compact threshold and the
+        // server should schedule a (debounced, async) compact. Lock-free read;
+        // zero when disabled or when max_wal_entries is 0.
+        [[nodiscard]]
+        auto walNeedsCompact() const -> bool {
+            return opts_.max_wal_entries
+                > 0
+                && wal_entry_count_.load(std::memory_order_relaxed)
+                >= opts_.max_wal_entries;
+        }
 
         // Create snapshot and truncate WAL.
         auto compact() -> Result<void>;
@@ -70,7 +85,9 @@ namespace cinder {
         // mutex_; internally takes queue_mutex_ (lock order: mutex_ >
         // queue_mutex_). Store writers call onWrite() while holding their own
         // lock, which only ever takes queue_mutex_
-        void drainQueueLocked();
+        // Returns true when anything was appended (so flush can skip the
+        // syscall when the queue was already empty).
+        auto drainQueueLocked() -> bool;
 
         auto clock() const -> const Clock& {
             return clock_ != nullptr ? *clock_ : static_cast<const Clock&>(real_clock_fallback_);
@@ -86,7 +103,9 @@ namespace cinder {
         std::deque<WalEntry> pending_wal_;
 
         std::unique_ptr<WalWriter> wal_;
-        size_t wal_entry_count_ = 0;
+        // Entries appended since the last truncate; advanced under mutex_,
+        // read lock-free by walNeedsCompact() on the housekeeping path.
+        std::atomic<size_t> wal_entry_count_{0};
         std::mutex mutex_;
         // Set during recover()'s snapshot/WAL load; atomic because onWrite checks
         // it from store call paths on other threads.

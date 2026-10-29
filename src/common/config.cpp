@@ -74,6 +74,7 @@ namespace cinder {
         out += R"("data_dir":")" + escapeJsonString(cfg.data_dir) + "\",";
         out += "\"snapshot_interval_s\":" + std::to_string(cfg.snapshot_interval_s) + ",";
         out += "\"max_wal_entries\":" + std::to_string(cfg.max_wal_entries) + ",";
+        out += "\"wal_fsync\":" + std::string(cfg.wal_fsync ? "true" : "false") + ",";
         out += "\"tls_enabled\":" + std::string(cfg.tls.enabled ? "true" : "false") + ",";
         out += "\"auth_enabled\":"
             + std::string(cfg.auth.shared_secret.empty() ? "false" : "true")
@@ -155,6 +156,9 @@ namespace cinder {
         }
         if (old_cfg.max_wal_entries != new_cfg.max_wal_entries) {
             changed.emplace_back("max_wal_entries");
+        }
+        if (old_cfg.wal_fsync != new_cfg.wal_fsync) {
+            changed.emplace_back("wal_fsync");
         }
         if (old_cfg.tls.enabled != new_cfg.tls.enabled) {
             changed.emplace_back("tls_enabled");
@@ -240,6 +244,7 @@ namespace cinder {
             cfg.data_dir = pers["data_dir"].as<std::string>(cfg.data_dir);
             cfg.snapshot_interval_s = pers["snapshot_interval_s"].as<int>(cfg.snapshot_interval_s);
             cfg.max_wal_entries = pers["max_wal_entries"].as<int>(cfg.max_wal_entries);
+            cfg.wal_fsync = pers["wal_fsync"].as<bool>(cfg.wal_fsync);
         }
         // TLS
         if (auto tls = root["tls"]) {

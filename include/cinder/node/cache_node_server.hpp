@@ -40,48 +40,49 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
-    // Options for constructing a CacheNodeServer.
     struct CacheNodeServerOptions {
-        std::string node_id;
-        uint16_t port = 0;
         size_t capacity = 0;
-        std::vector<ClusterConfig::NodeConfig> peers;
-        int replica_factor = 1;
-        ConsistencyMode mode = ConsistencyMode::Async;
         milliseconds ping_interval{1000};
         milliseconds suspect_timeout{3000};
         milliseconds gossip_interval{1000};
         milliseconds quarantine_interval{10'000};
-        // Persistence
-        std::string data_dir;
-        bool persistence_enabled = false;
         size_t snapshot_interval_s = 60;
         size_t max_wal_entries = 10'000;
-        // Concurrency: worker threads running the io_context. 0 = auto
-        // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
-        int io_threads = 0;
+        // RPC deadline — max time for a single peer RPC before cancellation.
+        milliseconds rpc_timeout{5000};
+        // Anti-entropy: background repair between replica partners (0 = disabled).
+        milliseconds anti_entropy_interval{30'000};
+        std::vector<ClusterConfig::NodeConfig> peers;
+        std::string node_id;
+        // Persistence
+        std::string data_dir;
         // TLS
-        bool tls_enabled = false;
         std::string tls_cert_file;
         std::string tls_key_file;
         std::string tls_ca_file;
         // Node authentication
         std::string shared_secret;
         std::string eviction_policy = "lru";
-        // RPC deadline — max time for a single peer RPC before cancellation.
-        milliseconds rpc_timeout{5000};
-        // Anti-entropy: background repair between replica partners (0 = disabled).
-        milliseconds anti_entropy_interval{30'000};
-        uint32_t anti_entropy_buckets = 256;
-        // Pre-bound listen socket fd (-1 = bind
-        // port_ normally). Consumed by TcpServer at start().
-        int listen_fd = -1;
-        // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
-        uint16_t metrics_port = 0;
         // Path to YAML config file (empty = no hot-reload).
         std::string config_path;
         // Loaded config for runtime reference and hot-reload.
         Config config;
+        int replica_factor = 1;
+        // Concurrency: worker threads running the io_context. 0 = auto
+        // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
+        int io_threads = 0;
+        uint32_t anti_entropy_buckets = 256;
+        // Pre-bound listen socket fd (-1 = bind
+        // port_ normally). Consumed by TcpServer at start().
+        int listen_fd = -1;
+        uint16_t port = 0;
+        // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
+        uint16_t metrics_port = 0;
+        ConsistencyMode mode = ConsistencyMode::Async;
+        bool persistence_enabled = false;
+        // fdatasync on every WAL flush (durability vs throughput).
+        bool wal_fsync = false;
+        bool tls_enabled = false;
     };
 
     // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
@@ -191,6 +192,7 @@ namespace cinder {
             steady_timer migration_retry;
             bool migration_retry_pending = false;
             steady_timer compact;
+            bool compact_pending = false;
             steady_timer config_reload;
             steady_timer anti_entropy;
 
@@ -213,6 +215,9 @@ namespace cinder {
         void scheduleProbe();
         void scheduleEvict();
         void scheduleCompact();
+        // Out-of-cycle compact when the WAL outgrows max_wal_entries between
+        // periodic snapshots. Coalesced like rebalance: at most one queued.
+        void scheduleCompactDebounced();
         void scheduleAntiEntropy();
         void rebuildRing();
         // Membership callbacks can fire in bursts (gossip + probe + refute for
