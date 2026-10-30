@@ -275,7 +275,10 @@ namespace cinder::net {
             auto sid = mustRead<uint64_t>(r);
             if (tid && sid) {
                 req.trace_id = *tid;
-                req.span_id = *sid;
+                // Mirror the encoder (which gates span on trace_id != 0): a
+                // zero trace carries no span, so decode canonicalizes the
+                // same way and decode->encode->decode is a fixed point.
+                req.span_id = *tid == 0 ? 0 : *sid;
             }
         }
         // Auth token — optional trailing data gated by flag 0x08.
@@ -436,20 +439,23 @@ namespace cinder::net {
             size_t trace_size = (flags & K_FLAG_HAS_TRACE) ? (sizeof(uint64_t) * 2) : 0;
             size_t remaining = r.remaining();
             size_t val_len = (remaining > trace_size) ? (remaining - trace_size) : 0;
-            if (val_len > 0) {
-                auto val_view = r.readStringView(val_len);
-                if (!val_view) {
-                    return err<Response>(val_view.error());
-                }
-                res.value = std::string(*val_view);
+            // Materialize even when empty: has_val set with zero bytes means
+            // "present but empty", which must survive as value="" rather
+            // than collapsing to nullopt (missing).
+            auto val_view = r.readStringView(val_len);
+            if (!val_view) {
+                return err<Response>(val_view.error());
             }
+            res.value = std::string(*val_view);
         }
         if ((flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {
             auto tid = mustRead<uint64_t>(r);
             auto sid = mustRead<uint64_t>(r);
             if (tid && sid) {
                 res.trace_id = *tid;
-                res.span_id = *sid;
+                // Mirror the encoder (which gates span on trace_id != 0):
+                // see the request decoder for the fixed-point rationale.
+                res.span_id = *tid == 0 ? 0 : *sid;
             }
         }
         return ok(std::move(res));

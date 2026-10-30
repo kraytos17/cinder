@@ -128,6 +128,23 @@ namespace cinder::net {
             EXPECT_FALSE(decoded.value().value.has_value());
         }
 
+        TEST(ProtocolTest, EncodeDecodeResponseEmptyValueStaysPresent) {
+            // Present-but-empty must survive the wire as value="", not
+            // collapse to nullopt (missing) — quorum readers treat nullopt
+            // as absent.
+            Response res;
+            res.status = Errc::OK;
+            res.value = "";
+
+            auto encoded = encode(res);
+            ASSERT_TRUE(encoded.has_value());
+
+            auto decoded = decodeResponse(encoded.value());
+            ASSERT_TRUE(decoded.has_value());
+            ASSERT_TRUE(decoded.value().value.has_value());
+            EXPECT_TRUE(decoded.value().value->empty());
+        }
+
         TEST(ProtocolTest, EncodeIntoRequestMatchesEncode) {
             Request req;
             req.opcode = Opcode::Set;
