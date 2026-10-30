@@ -715,6 +715,77 @@ def generate_protocol_dict():
 
 
 # ---------------------------------------------------------------------------
+# New-target seed generation (FDP-driven harnesses: seeds are opaque bytes,
+# at least 4 to clear the harness length guard; the fuzzer explores from
+# these plus the empty input)
+# ---------------------------------------------------------------------------
+
+def generate_byte_reader_corpus():
+    d = os.path.join(CORPUS_DIR, "byte_reader")
+    seeds = {
+        # buf_len(8) + 8 bytes, then op stream
+        "zeros": bytes([8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        "short": bytes([2, 0xDE, 0xAD, 1, 2, 0, 2, 16, 0xFF]),
+        "be_u32": bytes([4, 0x01, 0x02, 0x03, 0x04, 2, 4, 0, 0, 0, 0]),
+        "empty_buf": bytes([0, 5, 3, 2, 1]),
+        "max_buf": bytes([255] + list(range(256)) + [0, 1, 2, 3]),
+    }
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} byte_reader seeds in {d}")
+
+
+def generate_ttl_wheel_corpus():
+    d = os.path.join(CORPUS_DIR, "ttl_wheel")
+    seeds = {
+        # op stream: insert(0) with small ttls, remove(1), reschedule(2), tick(3)
+        "insert_only": bytes([3, 0, 5, 0, 10, 0, 300 & 0xFF, 1]),
+        "insert_tick": bytes([0, 3, 0, 3, 0, 3, 0, 3] + [0] * 8),
+        "heap_path": bytes([0, 255, 1, 0, 255, 2, 3, 7] + [0] * 8),
+        "mixed": bytes([0, 1, 2, 3, 0, 100, 1, 0, 2, 50, 3, 5] + [0] * 8),
+    }
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} ttl_wheel seeds in {d}")
+
+
+def generate_hint_queue_corpus():
+    d = os.path.join(CORPUS_DIR, "hint_queue")
+    seeds = {
+        "push_only": bytes([0, 1, 2, 3, 4, 5, 0, 0, 0, 1, 2, 3]),
+        "push_snapshot": bytes([0, 1, 1, 0, 1, 2, 1, 0, 0, 0, 0, 0]),
+        "expiry": bytes([0, 0, 0, 0, 0, 0, 0, 0, 3, 200, 1, 0]),
+        "tuple_remove": bytes([0, 4, 4, 4, 0, 0, 0, 0, 0, 0, 0, 0]),
+    }
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} hint_queue seeds in {d}")
+
+
+def generate_ring_corpus():
+    d = os.path.join(CORPUS_DIR, "ring")
+    seeds = {
+        "add_query": b"\x02node1\x02node2\x02key123",
+        "add_remove": b"\x00nodeA\x01nodeA\x00nodeB\x02k",
+        "multi_get": b"\x00n1\x00n2\x00n3\x03key\x08",
+        "empty_keys": b"\x00n1\x02\x03k\x10",
+    }
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} ring seeds in {d}")
+
+
+def generate_config_corpus():
+    d = os.path.join(CORPUS_DIR, "config")
+    seeds = {
+        "valid_single": b"\x00n1@127.0.0.1:7000",
+        "valid_multi": b"\x01n1@h1:1,n2@h2:2\x01n1@h:1",
+        "invalid": b"\x00no-at-sign\x00:empty",
+        "bad_port": b"\x01n@h:notaport,n@h:99999,n@h:0",
+        "empty": b"\x00\x01\x02tail",
+        "log_levels": b"\x02debug\x02info\x02verbose\x02",
+    }
+    n = write_seeds(d, seeds)
+    print(f"  Generated {n} config seeds in {d}")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -728,6 +799,11 @@ def main():
     generate_anti_entropy_corpus()
     generate_http_corpus()
     generate_redirect_corpus()
+    generate_byte_reader_corpus()
+    generate_ttl_wheel_corpus()
+    generate_hint_queue_corpus()
+    generate_ring_corpus()
+    generate_config_corpus()
     generate_protocol_dict()
     generate_gossip_dict()
     print("Done.")
