@@ -75,6 +75,71 @@ namespace cinder {
         // NOLINTNEXTLINE
         BENCHMARK(bmLfuStoreGet)->Range(1 << 16, 1 << 20);
 
+        // Fixture setup is excluded from benchmark timing, unlike ad hoc
+        // PauseTiming/ResumeTiming calls made before State iteration starts.
+        // These cases intentionally create distinct frequencies, unlike the
+        // simple 1000-key round-robin benchmark above which quickly converges
+        // to a single bucket.
+        class LfuFrequencySpreadFixture : public benchmark::Fixture {
+        public:
+
+            void SetUp(const benchmark::State& state) override {
+                const size_t count = static_cast<size_t>(state.range(0));
+                store = std::make_unique<LfuStore>(4U << 20U);
+                keys.clear();
+                keys.reserve(count);
+                for (size_t i = 0; i < count; ++i) {
+                    keys.push_back("lfu-key-" + std::to_string(i));
+                    // NOLINTNEXTLINE
+                    (void)store->put(keys.back(), "v");
+                }
+                // Seed distinct exact frequencies: key i ends at freq i+1.
+                for (size_t i = 0; i < count; ++i) {
+                    for (size_t hit = 0; hit < i; ++hit) {
+                        (void)store->get(keys[i]);
+                    }
+                }
+                trace.clear();
+                trace.reserve(4096);
+                if (state.range(1) == 0) {
+                    for (size_t i = 0; i < count; ++i) {
+                        trace.push_back(i);
+                    }
+                } else {
+                    const size_t hot_count = std::max<size_t>(1, count / 16);
+                    for (size_t i = 0; i < 4096; ++i) {
+                        trace.push_back((i % 5) != 0 ? i % hot_count : i % count);
+                    }
+                }
+                pos = 0;
+            }
+
+            void TearDown(const benchmark::State& /*state*/) override {
+                store.reset();
+            }
+
+            std::unique_ptr<LfuStore> store;
+            std::vector<std::string> keys;
+            std::vector<size_t> trace;
+            size_t pos = 0;
+        };
+
+        BENCHMARK_DEFINE_F(LfuFrequencySpreadFixture, Get)(benchmark::State& state) {
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                (void)store->get(keys[trace[pos++ % trace.size()]]);
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        BENCHMARK_REGISTER_F(LfuFrequencySpreadFixture, Get)
+            ->Args({64, 0})
+            ->Args({256, 0})
+            ->Args({1024, 0})
+            ->Args({64, 1})
+            ->Args({256, 1})
+            ->Args({1024, 1});
+
         auto makeHint(size_t index, size_t value_size) -> HintQueue::Hint {
             HintQueue::Hint hint;
             hint.target = "replica-" + std::to_string(index % 3);
@@ -96,6 +161,7 @@ namespace cinder {
 
             // Production snapshot path: one owned copy of the live hints,
             // moved into the async send batch (no second per-hint copy).
+            // NOLINTNEXTLINE
             for (auto _ : state) {
                 auto batch = queue.snapshot(now);
                 benchmark::DoNotOptimize(batch.data());
@@ -133,7 +199,9 @@ namespace cinder {
             if (order == HintRemoveOrder::Reverse) {
                 std::reverse(indices.begin(), indices.end());
             } else if (order == HintRemoveOrder::Shuffled) {
-                std::mt19937 rng(0xC1D3U);
+                // Seed from the case size: deterministic across runs so the
+                // case is reproducible, without a fixed-constant seed.
+                std::mt19937 rng(static_cast<std::mt19937::result_type>(count));
                 std::shuffle(indices.begin(), indices.end(), rng);
             }
 
@@ -142,6 +210,7 @@ namespace cinder {
                 queue.push(makeHint(i, 64));
             }
             const auto now = steady_clock::now();
+            // NOLINTNEXTLINE
             for (auto _ : state) {
                 auto batch = queue.snapshot(now);
                 benchmark::DoNotOptimize(batch.data());
@@ -223,6 +292,7 @@ namespace cinder {
             for (size_t i = 0; i < batch; ++i) {
                 entries.push_back(makeWalEntry(i, value_size));
             }
+            // NOLINTNEXTLINE
             for (auto _ : state) {
                 state.PauseTiming();
                 std::filesystem::remove(path);
@@ -282,6 +352,7 @@ namespace cinder {
 
             std::filesystem::create_directories("bench-tmp");
             const std::string path = "bench-tmp/snap-bench.dat";
+            // NOLINTNEXTLINE
             for (auto _ : state) {
                 state.PauseTiming();
                 std::filesystem::remove(path);

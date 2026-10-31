@@ -422,20 +422,20 @@ jobs:
       - name: Lint workflows
         run: actionlint
 
-      - name: Configure (clang-tidy runs inline)
-        run: just preset=ci configure
+      - name: Configure (clang-tidy runs inline; benchmark sources enabled)
+        run: just preset=ci-bench configure
 
       - name: Build
-        run: just preset=ci build
+        run: just preset=ci-bench build
 
-      - name: Check formatting
-        run: just preset=ci check-format
+      - name: Check formatting (including benchmarks)
+        run: just preset=ci-bench check-format
 
-      - name: Configure for cppcheck (GCC)
-        run: just preset=ci-gcc configure
+      - name: Configure for cppcheck (GCC; benchmark sources enabled)
+        run: just preset=ci-gcc-bench configure
 
-      - name: cppcheck
-        run: cmake --build build/ci-gcc --target cppcheck
+      - name: cppcheck (including benchmarks)
+        run: cmake --build build/ci-gcc-bench --target cppcheck
 
   codeql:
     needs: [build-image]

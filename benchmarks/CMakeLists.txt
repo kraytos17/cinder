@@ -2,6 +2,7 @@ set(CINDER_BENCH_SOURCES
     throughput_bench.cpp
     ring_lookup_bench.cpp
     allocator_bench.cpp
+    lfu_bucket_bench.cpp
 )
 
 add_executable(cinder_throughput_bench ${CINDER_BENCH_SOURCES})
@@ -14,9 +15,6 @@ set_target_properties(cinder_throughput_bench PROPERTIES
     CXX_STANDARD 23
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
-)
-target_compile_options(cinder_throughput_bench PRIVATE
-    $<$<NOT:$<CONFIG:Release>>:-O3 -DNDEBUG>
 )
 _cinder_apply_debug_options(cinder_throughput_bench)
 cinder_reuse_pch(cinder_throughput_bench)

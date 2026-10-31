@@ -62,7 +62,6 @@ namespace cinder {
         void bmLruStoreContended(benchmark::State& state) {
             // 4 MiB store stripes over the max 16 shards (see shardCountFor).
             LruStore store(4U << 20U);
-            const int stride = state.threads();
             const int tid = state.thread_index();
             int i = 0;
             // NOLINTNEXTLINE
@@ -127,6 +126,7 @@ namespace cinder {
         // the single global free_head_.
         void bmSlabAllocDealloc(benchmark::State& state) {
             static auto pool = std::make_shared<BenchPool>();
+            // NOLINTNEXTLINE
             for (auto _ : state) {
                 auto* p = pool->allocate();
                 benchmark::DoNotOptimize(p);

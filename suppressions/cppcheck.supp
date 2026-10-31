@@ -31,3 +31,7 @@ knownConditionTrueFalse:*/src/net/tcp_connection.cpp
 knownConditionTrueFalse:*/src/net/tcp_server.cpp
 knownConditionTrueFalse:*/src/net/tcp_transport.cpp
 knownConditionTrueFalse:*/src/client/connection_pool.cpp
+
+// Google Benchmark's BENCHMARK_DEFINE_F expands to a generated subclass
+// wrapped around a function body; cppcheck's macro parser cannot follow it.
+unknownMacro:*/benchmarks/throughput_bench.cpp

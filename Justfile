@@ -37,6 +37,7 @@ configure:
 [group('build')]
 [doc('Build the current preset.')]
 build:
+    cmake --preset {{ preset }}
     cmake --build --preset {{ preset }} -j{{ jobs }}
 
 [group('test')]
@@ -164,13 +165,8 @@ fast:
 
 [group('presets')]
 [doc('Run the full CI lint gate locally (inline clang-tidy + check-format + cppcheck).')]
-ci:
-    cmake --preset ci
-    cmake --build --preset ci -j{{ jobs }}
-    @just preset=ci check-format
-    cmake --preset ci-gcc
-    cmake --build build/ci-gcc --target cppcheck -j{{ jobs }}
-    @echo "CI LINT PASSED: ci tidy build, check-format, cppcheck"
+ci: lint
+    @echo "CI LINT PASSED: benchmark-enabled clang-tidy, check-format, cppcheck"
 
 [group('presets')]
 [doc('Configure every preset (reports failures at the end, exits nonzero).')]
@@ -332,24 +328,32 @@ fuzz-coverage-all: fuzz-coverage-build
     echo "Coverage minimization complete."
 
 [group('lint')]
-[doc('Reformat all source files in place.')]
-format:
+[doc('Reformat all project C++ sources (include, src, tools, tests, and benchmarks).')]
+format: configure
     cmake --build build/{{ preset }} --target format -j{{ jobs }}
 
 [group('lint')]
-[doc('Fail if any source file needs reformatting (CI lint gate uses this).')]
-check-format:
+[doc('Fail if any project C++ source needs formatting, including benchmark sources.')]
+check-format: configure
     cmake --build build/{{ preset }} --target check-format -j{{ jobs }}
 
 [group('lint')]
-[doc('Run cppcheck on the current preset.')]
-cppcheck: build
-    cmake --build build/{{ preset }} --target cppcheck -j{{ jobs }}
+[doc('Run cppcheck with the CI GCC compile database, including benchmarks.')]
+cppcheck:
+    cmake --preset ci-gcc-bench
+    cmake --build build/ci-gcc-bench --target cppcheck -j{{ jobs }}
 
 [group('lint')]
-[doc('check-format + cppcheck for the current preset.')]
-lint: build
-    cmake --build build/{{ preset }} --target lint -j{{ jobs }}
+[doc('Strict lint: benchmark-enabled clang-tidy build, check-format, and benchmark-enabled cppcheck.')]
+lint:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cmake --preset ci-bench
+    cmake --build --preset ci-bench -j{{ jobs }}
+    cmake --build build/ci-bench --target check-format -j{{ jobs }}
+    cmake --preset ci-gcc-bench
+    cmake --build build/ci-gcc-bench --target cppcheck -j{{ jobs }}
+    echo "CI LINT PASSED: benchmark-enabled clang-tidy, check-format, cppcheck"
 
 # Repo-local pre-commit hook (.githooks/pre-commit): clang-format --dry-run on
 # staged C++ files + YAML syntax on staged workflows. Catches the cheap half of
@@ -395,7 +399,7 @@ proto-breaking:
 [group('misc')]
 [doc('Run the throughput benchmark (bench_preset, default: release).')]
 bench:
-    [ -f build/{{ bench_preset }}/CMakeCache.txt ] || cmake --preset {{ bench_preset }}
+    cmake --preset {{ bench_preset }}
     cmake --build --preset {{ bench_preset }} -j{{ jobs }}
     ./build/{{ bench_preset }}/bin/cinder_throughput_bench {{ args }}
 

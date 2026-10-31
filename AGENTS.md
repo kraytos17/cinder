@@ -109,8 +109,9 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
 
 ## Lint gate (this is what CI enforces)
 
-* `just preset=ci configure && just preset=ci build` — clang-tidy runs **inline**
-  during compilation. `.clang-tidy` is `Checks: *` minus ~40 exclusions with
+* `just preset=ci-bench configure && just preset=ci-bench build` — clang-tidy
+  runs **inline** during compilation, now including benchmark translation
+  units (`CINDER_BUILD_BENCHMARKS=ON`). `.clang-tidy` is `Checks: *` minus ~40 exclusions with
   `WarningsAsErrors: bugprone cert clang-analyzer concurrency misc performance
   portability`. Consequence: **`readability-*` are warnings-only; only the
   listed families fail the build.** `HeaderFilterRegex` limits tidy to
@@ -121,8 +122,11 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   redundant `std::string("short")` → `"short"` in `tests/unit/auth_test.cpp`,
   `reason->data()` on a `string_view` → pass `*reason` in
   `src/node/anti_entropy.cpp`.
-* `just preset=ci check-format` (clang-format, LLVM base, 100 col) and
-  `cmake --build build/ci-gcc --target cppcheck` (see `suppressions/cppcheck.supp`).
+* `just preset=ci-bench check-format` (clang-format, LLVM base, 100 col,
+  covers `include/`, `src/`, `tools/`, `tests/`, and `benchmarks/`) and
+  `cmake --build build/ci-gcc-bench --target cppcheck` (see `suppressions/cppcheck.supp`).
+  `just lint` runs the whole gate: benchmark-enabled tidy build + check-format
+  + benchmark-enabled cppcheck; `just ci` delegates to `just lint`.
 * Repo `lint` target = `check-format` + `cppcheck` only. There is **no cpplint**
   target or binary in this repo — do not invent one.
 * Pre-commit hook (catches the cheap half of the lint gate before push):
@@ -139,8 +143,9 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   Bypass with `git commit --no-verify`; CI (toolchain image's clang-format) is
   the source of truth on version skew.
 * `just ci` = the CI "Lint (Clang + cppcheck)" job locally, in order: `cmake
-  --preset ci` + build (inline clang-tidy), `just preset=ci check-format`, then
-  `cmake --preset ci-gcc` + `cppcheck`. This is the **only** local gate that
+  --preset ci-bench` + build (inline clang-tidy, benchmarks included),
+  `check-format` on the `ci-bench` tree, then `cmake --preset ci-gcc-bench` +
+  `cppcheck` (benchmarks included). This is the **only** local gate that
   surfaces `bugprone-*`/`cert-*`/`clang-analyzer-*` errors (they are
   `WarningsAsErrors`; `readability-*` stay warnings-only), and it is
   deliberately **not** in `just verify` because the tidy build is slow. Run it

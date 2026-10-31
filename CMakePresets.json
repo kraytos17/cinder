@@ -168,6 +168,15 @@
       }
     },
     {
+      "name": "ci-bench",
+      "inherits": "ci",
+      "displayName": "CI (Clang + tidy + benchmarks)",
+      "description": "CI lint build including benchmark translation units",
+      "cacheVariables": {
+        "CINDER_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
       "name": "ci-gcc",
       "inherits": "base",
       "displayName": "CI (GCC + sanitizers)",
@@ -179,6 +188,15 @@
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON",
         "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "ci-gcc-bench",
+      "inherits": "ci-gcc",
+      "displayName": "CI (GCC + sanitizers + benchmarks)",
+      "description": "Cppcheck compile database including benchmark translation units",
+      "cacheVariables": {
+        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
@@ -318,7 +336,9 @@
     { "name": "tsan-clang",     "configurePreset": "tsan-clang" },
     { "name": "ubsan",          "configurePreset": "ubsan" },
     { "name": "ci",             "configurePreset": "ci" },
+    { "name": "ci-bench",       "configurePreset": "ci-bench" },
     { "name": "ci-gcc",         "configurePreset": "ci-gcc" },
+    { "name": "ci-gcc-bench",   "configurePreset": "ci-gcc-bench" },
     { "name": "tls-grpc",       "configurePreset": "tls-grpc" },
     { "name": "tls-grpc-clang", "configurePreset": "tls-grpc-clang" },
     { "name": "fast",           "configurePreset": "fast" },
