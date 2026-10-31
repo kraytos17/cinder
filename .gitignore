@@ -78,19 +78,31 @@ Testing/
 # whole run with "file does not exist or is empty" when one is missing — which
 # is what happened on every fresh clone.
 #
-# The four-part dance below is required by gitignore semantics: a `!` rule
+# The dance below is required by gitignore semantics: a `!` rule
 # cannot re-include a file whose PARENT DIRECTORY is excluded, so we must
-# re-include the two subdirectories first, then ignore their contents, then
-# un-ignore the *.dict files inside. Collapsing this to
+# re-include the dictionary-carrying subdirectories first, then ignore their
+# contents, then un-ignore the *.dict files inside. Collapsing this to
 # `tests/fuzz/corpus` + `!..../x.dict` silently fails.
 tests/fuzz/corpus/*/
 tests/fuzz/corpus/*
 !tests/fuzz/corpus/gossip_parse/
 !tests/fuzz/corpus/protocol_decode/
+!tests/fuzz/corpus/wal/
+!tests/fuzz/corpus/snapshot/
+!tests/fuzz/corpus/http_parse/
+!tests/fuzz/corpus/redirect_parse/
 tests/fuzz/corpus/gossip_parse/*
 tests/fuzz/corpus/protocol_decode/*
+tests/fuzz/corpus/wal/*
+tests/fuzz/corpus/snapshot/*
+tests/fuzz/corpus/http_parse/*
+tests/fuzz/corpus/redirect_parse/*
 !tests/fuzz/corpus/gossip_parse/*.dict
 !tests/fuzz/corpus/protocol_decode/*.dict
+!tests/fuzz/corpus/wal/*.dict
+!tests/fuzz/corpus/snapshot/*.dict
+!tests/fuzz/corpus/http_parse/*.dict
+!tests/fuzz/corpus/redirect_parse/*.dict
 .codebase-memory/
 tests/fuzz/coverage
 tests/fuzz/corpus_minimal

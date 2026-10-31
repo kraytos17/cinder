@@ -12,12 +12,12 @@ args := ""
 fuzz_targets := "protocol_decode gossip_parse store_put snapshot wal anti_entropy http_parse redirect_parse byte_reader ttl_wheel hint_queue ring config"
 fuzz_opts_protocol_decode := "-max_len=8192 -dict=tests/fuzz/corpus/protocol_decode/protocol.dict"
 fuzz_opts_gossip_parse := "-max_len=1024 -dict=tests/fuzz/corpus/gossip_parse/gossip.dict"
-fuzz_opts_wal := "-max_len=4096 -rss_limit_mb=512"
-fuzz_opts_snapshot := "-max_len=4096"
+fuzz_opts_wal := "-max_len=4096 -rss_limit_mb=512 -dict=tests/fuzz/corpus/wal/wal.dict"
+fuzz_opts_snapshot := "-max_len=4096 -dict=tests/fuzz/corpus/snapshot/snapshot.dict"
 fuzz_opts_anti_entropy := "-max_len=8192"
 fuzz_opts_store_put := "-max_len=1024"
-fuzz_opts_http_parse := "-max_len=2048"
-fuzz_opts_redirect_parse := "-max_len=256"
+fuzz_opts_http_parse := "-max_len=2048 -dict=tests/fuzz/corpus/http_parse/http.dict"
+fuzz_opts_redirect_parse := "-max_len=256 -dict=tests/fuzz/corpus/redirect_parse/redirect.dict"
 fuzz_opts_byte_reader := "-max_len=512"
 fuzz_opts_ttl_wheel := "-max_len=2048"
 fuzz_opts_hint_queue := "-max_len=2048 -rss_limit_mb=512"
@@ -258,7 +258,7 @@ fuzz-long: (_fuzz-run "300" "5min")
 # Regenerate seed corpora + the tracked libFuzzer dictionaries
 # (protocol_decode/protocol.dict, gossip_parse/gossip.dict). The .dict files
 # ARE committed even though the rest of tests/fuzz/corpus is git-ignored —
-# re-run this after changing the protocol or gossip wire format, and commit
+# re-run this after changing any wire format with a dictionary, and commit
 # the updated dicts.
 [group('fuzz')]
 [doc('Regenerate fuzz seed corpora and the tracked libFuzzer dictionaries.')]
@@ -287,6 +287,16 @@ fuzz-coverage-minimize target:
         --corpus tests/fuzz/corpus/{{ target }} \
         --profdata tests/fuzz/coverage/{{ target }}/merged.profdata \
         --output tests/fuzz/corpus_minimal/{{ target }}
+
+[group('fuzz')]
+[doc('Distill a corpus with libFuzzer -merge (fast path: feature coverage, no coverage build). Merges the live corpus into corpus_minimal/<target>. Prefer this for routine distillation; keep fuzz-coverage-minimize for line-coverage reports.')]
+fuzz-merge target: fuzz-build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p tests/fuzz/corpus_minimal/{{ target }}
+    build/fuzz/tests/{{ target }}_fuzz -merge=1 \
+        tests/fuzz/corpus_minimal/{{ target }} \
+        tests/fuzz/corpus/{{ target }}
 
 [group('fuzz')]
 fuzz-coverage-report target: fuzz-coverage-build

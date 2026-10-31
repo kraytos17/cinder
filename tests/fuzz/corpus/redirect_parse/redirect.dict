@@ -1,0 +1,15 @@
+# Cinder redirect_parse fuzz dictionary
+
+# Prefix
+MovedTo="moved to "
+
+# Separators
+At="@"
+Colon=":"
+
+# Field values
+Node1="node1"
+HostLoopback="127.0.0.1"
+Port7000="7000"
+PortZero="0"
+PortMax="65535"

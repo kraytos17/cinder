@@ -1,0 +1,18 @@
+# Cinder http_parse fuzz dictionary
+
+# Methods
+MethodGET="GET"
+MethodPOST="POST"
+
+# Paths
+PathRoot="/"
+PathMetrics="/metrics"
+
+# Versions
+Http11="HTTP/1.1"
+Http10="HTTP/1.0"
+
+# Separators
+Space=" "
+CRLF="\x0d\x0a"
+Colon=":"

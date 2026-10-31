@@ -1,0 +1,13 @@
+# Cinder snapshot fuzz dictionary
+
+# Magic and version
+MagicCSNP="PNSC"
+Version1="\x01\x00\x00\x00"
+ZeroCount="\x00\x00\x00\x00"
+OneCount="\x01\x00\x00\x00"
+
+# Field values
+KeyK="k"
+ValV="v"
+TtlOn="\x01"
+TtlOff="\x00"

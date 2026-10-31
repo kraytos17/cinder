@@ -1,6 +1,7 @@
 #pragma once
 
 #include <ankerl/unordered_dense.h>
+#include <btree/map.h>
 #include <chrono>
 #include <cstddef>
 #include <list>
@@ -38,8 +39,7 @@ namespace cinder {
 
         // Dense open-addressing index — same invalidation contract as LruStore:
         // never hold it->second across evictIfNeeded()/insertNew; re-derive via
-        // find() after any map mutation. Heterogeneous lookup preserved via
-        // TransparentStringHash (is_transparent).
+        // find() after any map mutation.
         using IndexMap = ankerl::unordered_dense::
             map<std::string, ListIt, TransparentStringHash, std::equal_to<>>;
 
@@ -52,16 +52,11 @@ namespace cinder {
             TtlWheel<LfuNode> wheel;
             size_t current_bytes = 0;
             steady_clock::time_point last_evict = steady_clock::now();
-            // Frequency buckets: tiny (one entry per distinct frequency present).
-            using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
+            // Ordered by frequency so the eviction minimum is structural,
+            // not a separately-maintained scalar that can drift.
+            using FreqMap = btree::map<size_t, std::vector<ListIt>>;
             FreqMap freq_buckets;
-            size_t min_freq = 1;
         };
-
-        // Frequency buckets: tiny (one entry per distinct frequency present), so
-        // a dense map is fine here too; same no-held-iterators-across-mutation
-        // discipline as index_.
-        using FreqMap = ankerl::unordered_dense::map<size_t, std::vector<ListIt>>;
 
         explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
@@ -92,8 +87,6 @@ namespace cinder {
         void incrementFreq(Shard& sh, ListIt it);
         void removeFromFreqBucket(Shard& sh, ListIt it);
         void removeFromFreqBucket(Shard& sh, ListIt it, size_t freq);
-        void advanceMinFreq(Shard& sh);
-
         // Sized from capacity (one shard per 64 KiB, max 16).
         std::vector<Shard> shards_;
     };

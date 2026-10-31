@@ -353,6 +353,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  fuzz:
+    needs: [build-image]
+    if: needs.build-image.outputs.image-pushed == 'true'
+    runs-on: ubuntu-26.04
+    container:
+      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+    name: Fuzz smoke
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-fuzz
+          max-size: 2G
+          save: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore dependency cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/.cache/cinder/deps
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
+          restore-keys: |
+            deps-
+
+      - name: Fuzz smoke (10s per target)
+        run: just fuzz-test
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-crashes
+          path: crash-*
+          if-no-files-found: ignore
+          retention-days: 7
+
   lint:
     needs: [build-image]
     if: needs.build-image.outputs.image-pushed == 'true'
@@ -455,7 +492,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [build-image, fetch-deps, build-test, feature-flags, sanitize, tsan, lint, codeql]
+    needs: [build-image, fetch-deps, build-test, feature-flags, sanitize, tsan, fuzz, lint, codeql]
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:

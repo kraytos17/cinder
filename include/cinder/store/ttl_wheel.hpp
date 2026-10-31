@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -20,10 +21,10 @@ namespace cinder {
         // has wheel_slot == 0 and never looks "scheduled").
         uint16_t wheel_slot = 0;
         bool in_heap = false; // true when scheduled in the min-heap
-        // Generation tag for the long-TTL heap: bumped every time the node
-        // leaves the heap path, so a stale HeapEntry can be detected without
-        // a separate tombstone hash set.
-        uint64_t heap_generation = 0;
+        // Position in the long-TTL heap, or K_NOT_IN_HEAP. Heap entries are
+        // removed before their node is destroyed or its slab slot is reused.
+        static constexpr size_t K_NOT_IN_HEAP = std::numeric_limits<size_t>::max();
+        size_t heap_index = K_NOT_IN_HEAP;
     };
 
     static_assert(sizeof(WheelNode) == 32, "WheelNode should be 32 bytes");
@@ -37,9 +38,8 @@ namespace cinder {
     // Intrusive TTL wheel using a circular doubly-linked list per slot
     // and a min-heap for long TTLs (> K_SLOT_COUNT ticks).
     //
-    // insert/remove are O(1). tick() walks the current slot's intrusive list
-    // and pops matching heap entries — total cost proportional to the number
-    // of entries that actually expire.
+    // Near-term insert/remove are O(1); long-TTL heap insert/remove are
+    // O(log n). tick() walks the current slot and pops expired heap roots.
     template <WheelNodeLike Node> class TtlWheel {
     public:
 
@@ -66,26 +66,19 @@ namespace cinder {
                 node->wheel_slot = static_cast<uint16_t>(slot + 1);
                 linkBefore(node, &wheel_[slot]);
             } else {
-                auto absolute_tick = tick_count_ + ttl_ticks;
-                heap_.push_back({absolute_tick, node, node->heap_generation});
-                node->in_heap = true;
-                std::push_heap(
-                    heap_.begin(),
-                    heap_.end(),
-                    [](const HeapEntry& a, const HeapEntry& b) {
-                    return a.absolute_tick > b.absolute_tick;
-                }
-                );
+                const size_t index = heap_.size();
+                heap_.push_back({tick_count_ + ttl_ticks, node});
+                node->heap_index = index;
+                siftUp(node->heap_index);
             }
         }
 
-        // Remove node from wherever it is scheduled.
+        // Remove node from wherever it is scheduled. Long-TTL heap entries
+        // are eagerly removed, so the heap never retains dead-node pointers.
         void remove(Node* node) {
             unlink(node);
-            // Generation-tag invalidation for the heap path — no hash set.
-            if (node->in_heap) {
-                ++node->heap_generation;
-                node->in_heap = false;
+            if (node->heap_index != WheelNode::K_NOT_IN_HEAP) {
+                removeHeapAt(node->heap_index);
             }
         }
 
@@ -130,6 +123,68 @@ namespace cinder {
             sentinel->wheel_prev = node;
         }
 
+        auto earlier(size_t lhs, size_t rhs) const -> bool {
+            return heap_[lhs].absolute_tick < heap_[rhs].absolute_tick;
+        }
+
+        void swapHeap(size_t lhs, size_t rhs) {
+            std::swap(heap_[lhs], heap_[rhs]);
+            heap_[lhs].node->heap_index = lhs;
+            heap_[rhs].node->heap_index = rhs;
+        }
+
+        void siftUp(size_t index) {
+            while (index > 0) {
+                const size_t parent = (index - 1) / 2;
+                if (!earlier(index, parent)) {
+                    break;
+                }
+
+                swapHeap(index, parent);
+                index = parent;
+            }
+        }
+
+        void siftDown(size_t index) {
+            while (true) {
+                const size_t left = index * 2 + 1;
+                if (left >= heap_.size()) {
+                    return;
+                }
+
+                const size_t right = left + 1;
+                size_t first = left;
+                if (right < heap_.size() && earlier(right, left)) {
+                    first = right;
+                }
+                if (!earlier(first, index)) {
+                    return;
+                }
+
+                swapHeap(index, first);
+                index = first;
+            }
+        }
+
+        void removeHeapAt(size_t index) {
+            const size_t last = heap_.size() - 1;
+            Node* removed = heap_[index].node;
+            if (index != last) {
+                heap_[index] = heap_[last];
+                heap_[index].node->heap_index = index;
+            }
+
+            heap_.pop_back();
+            removed->heap_index = WheelNode::K_NOT_IN_HEAP;
+            if (index < heap_.size()) {
+                if (index > 0 && earlier(index, (index - 1) / 2)) {
+                    siftUp(index);
+                } else {
+                    siftDown(index);
+                }
+            }
+        }
+
         void expireSlot(std::move_only_function<void(Node&)>& on_expired) {
             // Drain the current slot into a local batch first, then invoke the
             // callback per node. The callback may re-insert the node it was
@@ -163,27 +218,12 @@ namespace cinder {
         }
 
         void expireHeap(std::move_only_function<void(Node&)>& on_expired) {
-            // Fire heap entries whose absolute_tick has been reached.
+            // Remove the root before invoking client code. The heap therefore
+            // never retains a stale pointer after the callback destroys node.
             while (!heap_.empty() && heap_.front().absolute_tick <= tick_count_) {
-                auto entry = heap_.front();
-                std::pop_heap(
-                    heap_.begin(),
-                    heap_.end(),
-                    [](const HeapEntry& a, const HeapEntry& b) {
-                    return a.absolute_tick > b.absolute_tick;
-                }
-                );
-
-                heap_.pop_back();
-                // Stale entry: node was removed/reinserted after this entry
-                // was pushed (generation mismatch). Only clear in_heap when
-                // the popped entry is the live one.
-                if (entry.generation != entry.node->heap_generation) {
-                    continue;
-                }
-
-                entry.node->in_heap = false;
-                on_expired(*entry.node);
+                Node* node = heap_.front().node;
+                removeHeapAt(0);
+                on_expired(*node);
             }
         }
 
@@ -198,7 +238,6 @@ namespace cinder {
         struct HeapEntry {
             size_t absolute_tick = 0;
             Node* node = nullptr;
-            uint64_t generation = 0;
         };
 
         std::vector<HeapEntry> heap_;

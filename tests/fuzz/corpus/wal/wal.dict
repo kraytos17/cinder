@@ -1,0 +1,15 @@
+# Cinder wal fuzz dictionary
+
+# Magic and version
+MagicWAL0="WAL0"
+Version1="\x01\x00\x00\x00"
+
+# Opcodes
+OpSet="\x01"
+OpDel="\x02"
+
+# Field values
+KeyK="k"
+ValV="v"
+TtlOn="\x01"
+TtlOff="\x00"

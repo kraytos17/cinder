@@ -786,6 +786,104 @@ def generate_config_corpus():
 
 
 # ---------------------------------------------------------------------------
+# WAL / snapshot / HTTP / redirect dictionaries (for libFuzzer -dict flag)
+# ---------------------------------------------------------------------------
+
+def write_dict(subdir, name, sections):
+    """Write a libFuzzer dictionary file, ASCII-only (see dict_token_value)."""
+    d = os.path.join(CORPUS_DIR, subdir)
+    os.makedirs(d, exist_ok=True)
+    dict_path = os.path.join(d, name)
+    lines = [f"# Cinder {subdir} fuzz dictionary\n"]
+    total = 0
+    for title, tokens in sections:
+        lines.append(f"\n# {title}\n")
+        for tok_name, data in tokens:
+            lines.append(f'{tok_name}="{dict_token_value(data)}"\n')
+            total += 1
+    with open(dict_path, "w", encoding="ascii", newline="\n") as f:
+        f.writelines(lines)
+    print(f"  Generated {subdir} dictionary at {dict_path} ({total} tokens)")
+
+
+def generate_wal_dict():
+    write_dict("wal", "wal.dict", [
+        ("Magic and version", [
+            ("MagicWAL0", b"WAL0"),
+            ("Version1", struct.pack("<I", 1)),
+        ]),
+        ("Opcodes", [
+            ("OpSet", bytes([WAL_OP_SET])),
+            ("OpDel", bytes([WAL_OP_DEL])),
+        ]),
+        ("Field values", [
+            ("KeyK", b"k"),
+            ("ValV", b"v"),
+            ("TtlOn", b"\x01"),
+            ("TtlOff", b"\x00"),
+        ]),
+    ])
+
+
+def generate_snapshot_dict():
+    write_dict("snapshot", "snapshot.dict", [
+        ("Magic and version", [
+            ("MagicCSNP", struct.pack("<I", K_SNAPSHOT_MAGIC)),
+            ("Version1", struct.pack("<I", K_SNAPSHOT_FORMAT_VERSION)),
+            ("ZeroCount", struct.pack("<I", 0)),
+            ("OneCount", struct.pack("<I", 1)),
+        ]),
+        ("Field values", [
+            ("KeyK", b"k"),
+            ("ValV", b"v"),
+            ("TtlOn", b"\x01"),
+            ("TtlOff", b"\x00"),
+        ]),
+    ])
+
+
+def generate_http_dict():
+    write_dict("http_parse", "http.dict", [
+        ("Methods", [
+            ("MethodGET", b"GET"),
+            ("MethodPOST", b"POST"),
+        ]),
+        ("Paths", [
+            ("PathRoot", b"/"),
+            ("PathMetrics", b"/metrics"),
+        ]),
+        ("Versions", [
+            ("Http11", b"HTTP/1.1"),
+            ("Http10", b"HTTP/1.0"),
+        ]),
+        ("Separators", [
+            ("Space", b" "),
+            ("CRLF", b"\r\n"),
+            ("Colon", b":"),
+        ]),
+    ])
+
+
+def generate_redirect_dict():
+    write_dict("redirect_parse", "redirect.dict", [
+        ("Prefix", [
+            ("MovedTo", b"moved to "),
+        ]),
+        ("Separators", [
+            ("At", b"@"),
+            ("Colon", b":"),
+        ]),
+        ("Field values", [
+            ("Node1", b"node1"),
+            ("HostLoopback", b"127.0.0.1"),
+            ("Port7000", b"7000"),
+            ("PortZero", b"0"),
+            ("PortMax", b"65535"),
+        ]),
+    ])
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -806,6 +904,10 @@ def main():
     generate_config_corpus()
     generate_protocol_dict()
     generate_gossip_dict()
+    generate_wal_dict()
+    generate_snapshot_dict()
+    generate_http_dict()
+    generate_redirect_dict()
     print("Done.")
 
 

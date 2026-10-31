@@ -5,6 +5,7 @@
 #include <fuzzer/FuzzedDataProvider.h>
 #include <optional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"

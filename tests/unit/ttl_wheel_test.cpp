@@ -1,4 +1,6 @@
 #include <gtest/gtest.h>
+#include <memory>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -129,6 +131,35 @@ namespace cinder {
                 auto expired = tickCollect(wheel);
                 EXPECT_TRUE(expired.empty()) << "removed key fired at tick " << i;
             }
+        }
+
+        TEST(TtlWheelTest, RemovedHeapEntryCannotFireReusedNodeStorage) {
+            TtlWheel<TestNode> wheel;
+            alignas(TestNode) std::byte storage[sizeof(TestNode)];
+            auto* old_node =
+                std::construct_at(reinterpret_cast<TestNode*>(storage), TestNode{.key = "old"});
+            wheel.insert(old_node, TtlWheel<TestNode>::K_SLOT_COUNT + 144);
+
+            // Store erasure removes the intrusive timer before destroying the
+            // list node. Reusing the same address must not let an old heap
+            // record alias the replacement node.
+            wheel.remove(old_node);
+            std::destroy_at(old_node);
+
+            auto* replacement = std::construct_at(
+                reinterpret_cast<TestNode*>(storage),
+                TestNode{.key = "replacement"}
+            );
+            wheel.insert(replacement, 1);
+            auto expired = tickCollect(wheel);
+            ASSERT_EQ(expired, std::vector<std::string>{"replacement"});
+
+            // Advance past the old heap deadline. The replacement callback
+            // must not fire again from a stale pointer entry.
+            for (size_t i = 0; i < TtlWheel<TestNode>::K_SLOT_COUNT + 144; ++i) {
+                EXPECT_TRUE(tickCollect(wheel).empty());
+            }
+            std::destroy_at(replacement);
         }
 
         TEST(TtlWheelTest, MixedShortAndLongTtl) {
