@@ -86,8 +86,10 @@ namespace cinder {
             for (auto _ : state) {
                 auto key = "key-" + std::to_string(tid) + "-" + std::to_string(i++);
                 std::string value(256, 'x');
-                benchmark::DoNotOptimize(key.data());
-                benchmark::DoNotOptimize(value.data());
+                auto* key_data = key.data();
+                benchmark::DoNotOptimize(key_data);
+                auto* value_data = value.data();
+                benchmark::DoNotOptimize(value_data);
             }
             state.SetItemsProcessed(state.iterations());
         }

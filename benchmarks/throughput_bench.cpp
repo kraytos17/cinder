@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <benchmark/benchmark.h>
 #include <filesystem>
+#include <memory>
 #include <numeric>
 #include <random>
 #include <string>
@@ -75,56 +76,43 @@ namespace cinder {
         // NOLINTNEXTLINE
         BENCHMARK(bmLfuStoreGet)->Range(1 << 16, 1 << 20);
 
-        // Fixture setup is excluded from benchmark timing, unlike ad hoc
-        // PauseTiming/ResumeTiming calls made before State iteration starts.
         // These cases intentionally create distinct frequencies, unlike the
         // simple 1000-key round-robin benchmark above which quickly converges
-        // to a single bucket.
-        class LfuFrequencySpreadFixture : public benchmark::Fixture {
-        public:
-
-            void SetUp(const benchmark::State& state) override {
-                const size_t count = static_cast<size_t>(state.range(0));
-                store = std::make_unique<LfuStore>(4U << 20U);
-                keys.clear();
-                keys.reserve(count);
-                for (size_t i = 0; i < count; ++i) {
-                    keys.push_back("lfu-key-" + std::to_string(i));
-                    // NOLINTNEXTLINE
-                    (void)store->put(keys.back(), "v");
-                }
-                // Seed distinct exact frequencies: key i ends at freq i+1.
-                for (size_t i = 0; i < count; ++i) {
-                    for (size_t hit = 0; hit < i; ++hit) {
-                        (void)store->get(keys[i]);
-                    }
-                }
-                trace.clear();
-                trace.reserve(4096);
-                if (state.range(1) == 0) {
-                    for (size_t i = 0; i < count; ++i) {
-                        trace.push_back(i);
-                    }
-                } else {
-                    const size_t hot_count = std::max<size_t>(1, count / 16);
-                    for (size_t i = 0; i < 4096; ++i) {
-                        trace.push_back((i % 5) != 0 ? i % hot_count : i % count);
-                    }
-                }
-                pos = 0;
-            }
-
-            void TearDown(const benchmark::State& /*state*/) override {
-                store.reset();
-            }
-
-            std::unique_ptr<LfuStore> store;
+        // to a single bucket. Setup runs under PauseTiming so only the timed
+        // get path is measured; a plain function keeps the benchmark
+        // cppcheck-clean (no BENCHMARK_DEFINE_F macro expansion to parse).
+        void bmLfuStoreFrequencySpread(benchmark::State& state) {
+            const size_t count = static_cast<size_t>(state.range(0));
+            const bool skewed = state.range(1) != 0;
+            state.PauseTiming();
+            auto store = std::make_unique<LfuStore>(4U << 20U);
             std::vector<std::string> keys;
+            keys.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                keys.push_back("lfu-key-" + std::to_string(i));
+                // NOLINTNEXTLINE
+                (void)store->put(keys.back(), "v");
+            }
+            // Seed distinct exact frequencies: key i ends at freq i+1.
+            for (size_t i = 0; i < count; ++i) {
+                for (size_t hit = 0; hit < i; ++hit) {
+                    (void)store->get(keys[i]);
+                }
+            }
             std::vector<size_t> trace;
+            trace.reserve(4096);
+            if (!skewed) {
+                for (size_t i = 0; i < count; ++i) {
+                    trace.push_back(i);
+                }
+            } else {
+                const size_t hot_count = std::max<size_t>(1, count / 16);
+                for (size_t i = 0; i < 4096; ++i) {
+                    trace.push_back((i % 5) != 0 ? i % hot_count : i % count);
+                }
+            }
+            state.ResumeTiming();
             size_t pos = 0;
-        };
-
-        BENCHMARK_DEFINE_F(LfuFrequencySpreadFixture, Get)(benchmark::State& state) {
             // NOLINTNEXTLINE
             for (auto _ : state) {
                 (void)store->get(keys[trace[pos++ % trace.size()]]);
@@ -132,7 +120,8 @@ namespace cinder {
             state.SetItemsProcessed(state.iterations());
         }
 
-        BENCHMARK_REGISTER_F(LfuFrequencySpreadFixture, Get)
+        // NOLINTNEXTLINE
+        BENCHMARK(bmLfuStoreFrequencySpread)
             ->Args({64, 0})
             ->Args({256, 0})
             ->Args({1024, 0})
@@ -164,8 +153,10 @@ namespace cinder {
             // NOLINTNEXTLINE
             for (auto _ : state) {
                 auto batch = queue.snapshot(now);
-                benchmark::DoNotOptimize(batch.data());
-                benchmark::DoNotOptimize(batch.size());
+                auto* batch_data = batch.data();
+                benchmark::DoNotOptimize(batch_data);
+                auto batch_size = batch.size();
+                benchmark::DoNotOptimize(batch_size);
             }
 
             state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(count));
@@ -213,7 +204,8 @@ namespace cinder {
             // NOLINTNEXTLINE
             for (auto _ : state) {
                 auto batch = queue.snapshot(now);
-                benchmark::DoNotOptimize(batch.data());
+                auto* batch_data = batch.data();
+                benchmark::DoNotOptimize(batch_data);
                 for (const size_t i : indices) {
                     if (use_handle) {
                         queue.remove(batch[i].handle);
@@ -221,7 +213,8 @@ namespace cinder {
                         queue.remove(batch[i].hint.target, batch[i].hint.req);
                     }
                 }
-                benchmark::DoNotOptimize(queue.size());
+                auto queue_size = queue.size();
+                benchmark::DoNotOptimize(queue_size);
                 state.PauseTiming();
                 for (const auto& entry : batch) {
                     queue.push(entry.hint);
@@ -300,13 +293,15 @@ namespace cinder {
                 state.ResumeTiming();
                 for (const auto& entry : entries) {
                     auto res = writer.append(entry);
-                    benchmark::DoNotOptimize(res.has_value());
+                    bool appended = res.has_value();
+                    benchmark::DoNotOptimize(appended);
                 }
 
                 writer.flush();
                 if (fsync) {
                     auto synced = writer.sync();
-                    benchmark::DoNotOptimize(synced.has_value());
+                    bool synced_ok = synced.has_value();
+                    benchmark::DoNotOptimize(synced_ok);
                 }
             }
             // Timing already stopped: plain cleanup.
@@ -360,7 +355,8 @@ namespace cinder {
                 state.ResumeTiming();
 
                 auto res = writer.write(1, entries);
-                benchmark::DoNotOptimize(res.has_value());
+                bool written = res.has_value();
+                benchmark::DoNotOptimize(written);
             }
 
             // Timing already stopped: plain cleanup.

@@ -26,7 +26,8 @@ namespace {
         // NOLINTNEXTLINE
         for (auto _ : state) {
             auto it = buckets.find(key);
-            benchmark::DoNotOptimize(it != buckets.end());
+            bool found = it != buckets.end();
+            benchmark::DoNotOptimize(found);
             key += 2;
             if (key > count * 2) {
                 key = 2;
@@ -42,7 +43,8 @@ namespace {
         // NOLINTNEXTLINE
         for (auto _ : state) {
             auto it = buckets.find(key);
-            benchmark::DoNotOptimize(it != buckets.end());
+            bool found = it != buckets.end();
+            benchmark::DoNotOptimize(found);
             key += 2;
             if (key > count * 2 + 1'000'000) {
                 key = count * 2 + 1;
@@ -77,7 +79,7 @@ namespace {
     // every source remains valid throughout the pass. Rebuild outside timing.
     template <typename Map> void bmBucketPromotionExisting(benchmark::State& state) {
         const size_t count = static_cast<size_t>(state.range(0));
-        auto makeState = [&]() {
+        auto make_state = [&] {
             Map buckets;
             for (size_t pair = 0; pair < count; ++pair) {
                 const size_t source = pair * 2 + 1;
@@ -85,7 +87,7 @@ namespace {
                     source,
                     std::vector<uint32_t>{
                         static_cast<uint32_t>(source),
-                        static_cast<uint32_t>(source + 1)
+                        static_cast<uint32_t>(source + 1),
                     }
                 );
                 buckets.emplace(
@@ -95,7 +97,7 @@ namespace {
             }
             return buckets;
         };
-        auto buckets = makeState();
+        auto buckets = make_state();
         // NOLINTNEXTLINE
         for (auto _ : state) {
             for (size_t pair = 0; pair < count; ++pair) {
@@ -107,7 +109,7 @@ namespace {
                 dst->second.push_back(value);
             }
             state.PauseTiming();
-            buckets = makeState();
+            buckets = make_state();
             state.ResumeTiming();
         }
         state.SetItemsProcessed(state.iterations() * count);
@@ -134,7 +136,7 @@ namespace {
         // NOLINTNEXTLINE
         for (auto _ : state) {
             auto it = buckets.begin();
-            const size_t minimum = it->first;
+            size_t minimum = it->first;
             auto values = std::move(it->second);
             buckets.erase(it);
             buckets.emplace(next_key++, std::move(values));
@@ -213,7 +215,8 @@ namespace {
                     min = it;
                 }
             }
-            benchmark::DoNotOptimize(min->first);
+            size_t min_key = min->first;
+            benchmark::DoNotOptimize(min_key);
             auto values = std::move(min->second);
             buckets.erase(min);
             buckets.emplace(++next_key, std::move(values));

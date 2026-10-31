@@ -66,7 +66,8 @@ namespace cinder {
             for (auto _ : state) {
                 auto key = "key" + std::to_string(i);
                 i += stride;
-                benchmark::DoNotOptimize(ring.getNode(key));
+                auto node = ring.getNode(key);
+                benchmark::DoNotOptimize(node);
             }
             state.SetItemsProcessed(state.iterations());
         }
@@ -113,7 +114,8 @@ namespace cinder {
             for (auto _ : state) {
                 auto key = "key" + std::to_string(i);
                 i += stride;
-                benchmark::DoNotOptimize(ring.getNodeBounded(key));
+                auto node = ring.getNodeBounded(key);
+                benchmark::DoNotOptimize(node);
             }
             state.SetItemsProcessed(state.iterations());
         }
