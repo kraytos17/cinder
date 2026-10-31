@@ -78,13 +78,15 @@ namespace cinder {
 
         // These cases intentionally create distinct frequencies, unlike the
         // simple 1000-key round-robin benchmark above which quickly converges
-        // to a single bucket. Setup runs under PauseTiming so only the timed
-        // get path is measured; a plain function keeps the benchmark
-        // cppcheck-clean (no BENCHMARK_DEFINE_F macro expansion to parse).
+        // to a single bucket. Setup needs no PauseTiming: the timer starts
+        // lazily on the first KeepRunning, so everything before the loop is
+        // excluded from both time counters. (Pausing before the loop starts
+        // is invalid — see State::StartKeepRunning — and corrupts the run.)
+        // A plain function also keeps the benchmark cppcheck-clean (no
+        // BENCHMARK_DEFINE_F macro expansion to parse).
         void bmLfuStoreFrequencySpread(benchmark::State& state) {
             const size_t count = static_cast<size_t>(state.range(0));
             const bool skewed = state.range(1) != 0;
-            state.PauseTiming();
             auto store = std::make_unique<LfuStore>(4U << 20U);
             std::vector<std::string> keys;
             keys.reserve(count);
@@ -111,7 +113,6 @@ namespace cinder {
                     trace.push_back((i % 5) != 0 ? i % hot_count : i % count);
                 }
             }
-            state.ResumeTiming();
             size_t pos = 0;
             // NOLINTNEXTLINE
             for (auto _ : state) {
