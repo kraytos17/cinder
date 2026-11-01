@@ -83,7 +83,7 @@ namespace cinder {
             -> std::vector<std::byte>;
         static auto parseRecord(std::string_view payload, ParsedRecord& out) -> bool;
 
-        void writeRecord(const std::vector<std::byte>& payload) const;
+        auto writeRecord(const std::vector<std::byte>& payload) const -> bool;
 
         int fd_ = -1;
         std::string path_;

@@ -1,5 +1,6 @@
 #include "cinder/node/hint_journal.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -52,7 +53,13 @@ namespace cinder {
             size_t done = 0;
             while (done < len) {
                 auto n = ::write(fd, in + done, len - done);
-                if (n <= 0) {
+                if (n < 0) {
+                    if (errno == EINTR) {
+                        continue;
+                    }
+                    return false;
+                }
+                if (n == 0) {
                     return false;
                 }
                 done += static_cast<size_t>(n);
@@ -151,7 +158,10 @@ namespace cinder {
             return;
         }
 
-        writeRecord(encodeAdd(hint, sys_expiry_ms));
+        if (!writeRecord(encodeAdd(hint, sys_expiry_ms))) {
+            CINDER_WARN("hint journal append failed", {"path", path_}, {"errno", errno});
+            return;
+        }
         ++records_;
     }
 
@@ -160,13 +170,16 @@ namespace cinder {
             return;
         }
 
-        writeRecord(encodeDel(target, key, version));
+        if (!writeRecord(encodeDel(target, key, version))) {
+            CINDER_WARN("hint journal append failed", {"path", path_}, {"errno", errno});
+            return;
+        }
         ++records_;
     }
 
     void HintJournal::sync() const {
-        if (fd_ >= 0) {
-            ::fsync(fd_);
+        if (fd_ >= 0 && ::fsync(fd_) != 0) {
+            CINDER_WARN("hint journal sync failed", {"path", path_}, {"errno", errno});
         }
     }
 
@@ -387,14 +400,14 @@ namespace cinder {
         return false;
     }
 
-    void HintJournal::writeRecord(const std::vector<std::byte>& payload) const {
+    auto HintJournal::writeRecord(const std::vector<std::byte>& payload) const -> bool {
         uint32_t len = static_cast<uint32_t>(payload.size());
         uint64_t sum = checksum(
             std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size())
         );
 
-        (void)writeAll(fd_, &len, sizeof(len));
-        (void)writeAll(fd_, &sum, sizeof(sum));
-        (void)writeAll(fd_, payload.data(), payload.size());
+        return writeAll(fd_, &len, sizeof(len))
+            && writeAll(fd_, &sum, sizeof(sum))
+            && writeAll(fd_, payload.data(), payload.size());
     }
 } // namespace cinder
