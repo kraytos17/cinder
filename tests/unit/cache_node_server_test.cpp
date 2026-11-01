@@ -1,12 +1,17 @@
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "cinder/client/cache_client.hpp"
 #include "cinder/common/config.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/node/cache_node_server.hpp"
 #include "integration/test_helpers.hpp"
 
@@ -283,6 +288,243 @@ namespace cinder {
 
             server.shutdown();
             runner.join();
+        }
+    } // namespace
+
+    // End-to-end trace propagation: a TCP request carrying (trace_id, span_id)
+    // must be served under that trace, with the request span recorded as a
+    // child of the caller span — not as a fresh unrelated trace.
+    namespace {
+        struct TraceProbe : public Subscriber {
+            std::mutex mutex;
+
+            struct SpanRecord {
+                std::string operation;
+                uint64_t trace_id = 0;
+                uint64_t parent_span_id = 0;
+            };
+
+            std::vector<SpanRecord> spans;
+            std::vector<uint64_t> event_traces;
+
+            auto registerCallsite(const Metadata& /*meta*/) -> Interest override {
+                return Interest::Always;
+            }
+
+            auto newSpan(
+                const Metadata& meta,
+                uint64_t parent_trace_id,
+                uint64_t parent_span_id
+            ) noexcept -> uint64_t override {
+                std::scoped_lock lock(mutex);
+                spans.push_back({std::string(meta.target), parent_trace_id, parent_span_id});
+                return spans.size();
+            }
+
+            void enter(uint64_t /*span_id*/) noexcept override {}
+
+            void exit(uint64_t /*span_id*/) noexcept override {}
+
+            void tryClose(uint64_t /*span_id*/) noexcept override {}
+
+            void event(const EventRecord& record) noexcept override {
+                std::scoped_lock lock(mutex);
+                event_traces.push_back(record.context.trace_id);
+            }
+        };
+
+        TEST(TracePropagationTest, TcpRequestJoinsClientTrace) {
+            const uint16_t port = net::test::pickHeldPort();
+            ASSERT_NE(port, 0);
+
+            CacheNodeServerOptions opts;
+            opts.node_id = "trace-node";
+            opts.port = port;
+            opts.listen_fd = net::test::takeHeldFd(port);
+            ASSERT_GE(opts.listen_fd, 0);
+            opts.capacity = 1U << 20U;
+            opts.replica_factor = 1;
+            opts.mode = ConsistencyMode::Async;
+            opts.io_threads = 1;
+
+            CacheNodeServer server(std::move(opts));
+            ASSERT_TRUE(server.start().has_value());
+            std::thread runner([&] { server.run(); });
+
+            constexpr uint64_t K_TRACE = 0x0BADF00DDEADBEEFULL;
+            constexpr uint64_t K_PARENT = 0x0102030405060708ULL;
+            {
+                auto probe = std::make_shared<TraceProbe>();
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(probe);
+                net::Request req;
+                req.opcode = net::Opcode::Ping;
+                req.trace_id = K_TRACE;
+                req.span_id = K_PARENT;
+                auto res = net::test::rawRequest(port, req);
+                ASSERT_TRUE(res.has_value());
+                EXPECT_EQ(res->status, Errc::OK);
+                // Response echoes the request trace context.
+                EXPECT_EQ(res->trace_id, K_TRACE);
+                setGlobalSubscriber(prev);
+
+                std::scoped_lock lock(probe->mutex);
+                bool joined = false;
+                for (const auto& s : probe->spans) {
+                    if (s.trace_id == K_TRACE && s.parent_span_id == K_PARENT) {
+                        joined = true;
+                    }
+                }
+                EXPECT_TRUE(joined) << "no server span joined the client trace";
+                // Startup and background jobs legitimately mint fresh traces
+                // (node.start, timer roots); every event must still belong to
+                // a known trace — the request's, empty context, or a recorded
+                // span's — never a dangling or mismatched one.
+                std::vector<uint64_t> known_traces{K_TRACE, 0};
+                for (const auto& s : probe->spans) {
+                    known_traces.push_back(s.trace_id);
+                }
+                for (auto trace : probe->event_traces) {
+                    EXPECT_TRUE(
+                        std::find(known_traces.begin(), known_traces.end(), trace)
+                        != known_traces.end()
+                    ) << trace;
+                }
+            }
+
+            server.shutdown();
+            runner.join();
+        }
+
+        TEST(TracePropagationTest, ClientLibraryJoinsServerTrace) {
+            const uint16_t port = net::test::pickHeldPort();
+            ASSERT_NE(port, 0);
+
+            CacheNodeServerOptions opts;
+            opts.node_id = "trace-node";
+            opts.port = port;
+            opts.listen_fd = net::test::takeHeldFd(port);
+            ASSERT_GE(opts.listen_fd, 0);
+            opts.capacity = 1U << 20U;
+            opts.replica_factor = 1;
+            opts.mode = ConsistencyMode::Async;
+            opts.io_threads = 1;
+
+            CacheNodeServer server(std::move(opts));
+            ASSERT_TRUE(server.start().has_value());
+            std::thread runner([&] { server.run(); });
+
+            ClusterConfig ccfg;
+            ccfg.nodes.push_back({"trace-node", "127.0.0.1", port});
+            CacheClient client(std::move(ccfg));
+
+            auto recorder = std::make_shared<RecordingSubscriber>();
+            {
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(recorder);
+                ASSERT_TRUE(client.set("trace-k", "trace-v").has_value());
+                auto got = client.get("trace-k");
+                ASSERT_TRUE(got.has_value());
+                EXPECT_EQ(*got, "trace-v");
+                setGlobalSubscriber(prev);
+            }
+
+            // The client stamps its span context onto every request, so the
+            // server must serve under the same trace, parented at the
+            // request's span id — no fresh server-side root.
+            auto spans = recorder->spans();
+            const RecordingSubscriber::RecordedSpan* set_span = nullptr;
+            const RecordingSubscriber::RecordedSpan* get_span = nullptr;
+            for (const auto& s : spans) {
+                if (s.operation == "client.set") {
+                    set_span = &s;
+                }
+                if (s.operation == "client.get") {
+                    get_span = &s;
+                }
+            }
+            ASSERT_NE(set_span, nullptr);
+            ASSERT_NE(get_span, nullptr);
+
+            bool set_joined = false;
+            bool get_joined = false;
+            for (const auto& s : spans) {
+                if (s.operation
+                    == "tcp.set"
+                    && s.trace_id
+                    == set_span->trace_id
+                    && s.parent_span_id
+                    == set_span->span_id) {
+                    set_joined = true;
+                }
+                if (s.operation
+                    == "tcp.get"
+                    && s.trace_id
+                    == get_span->trace_id
+                    && s.parent_span_id
+                    == get_span->span_id) {
+                    get_joined = true;
+                }
+            }
+            EXPECT_TRUE(set_joined) << "server did not join the client set trace";
+            EXPECT_TRUE(get_joined) << "server did not join the client get trace";
+
+            server.shutdown();
+            runner.join();
+        }
+
+        TEST(TracePropagationTest, ServerLifecycleHasRoots) {
+            const uint16_t port = net::test::pickHeldPort();
+            ASSERT_NE(port, 0);
+
+            CacheNodeServerOptions opts;
+            opts.node_id = "trace-node-lifecycle";
+            opts.port = port;
+            opts.listen_fd = net::test::takeHeldFd(port);
+            ASSERT_GE(opts.listen_fd, 0);
+            opts.capacity = 1U << 20U;
+            opts.replica_factor = 1;
+            opts.mode = ConsistencyMode::Async;
+            opts.io_threads = 1;
+
+            auto recorder = std::make_shared<RecordingSubscriber>();
+            {
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(recorder);
+                CacheNodeServer server(std::move(opts));
+                ASSERT_TRUE(server.start().has_value());
+                std::thread runner([&] { server.run(); });
+                // Evict runs on a ~1s cadence; wait long enough to observe at
+                // least one background pass.
+                std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+                server.shutdown();
+                runner.join();
+                setGlobalSubscriber(prev);
+            }
+
+            auto spans = recorder->spans();
+            const RecordingSubscriber::RecordedSpan* started = nullptr;
+            const RecordingSubscriber::RecordedSpan* evicted = nullptr;
+            const RecordingSubscriber::RecordedSpan* stopped = nullptr;
+            for (const auto& s : spans) {
+                if (s.operation == "node.start") {
+                    started = &s;
+                }
+                if (s.operation == "timer.evict") {
+                    evicted = &s;
+                }
+                if (s.operation == "node.shutdown") {
+                    stopped = &s;
+                }
+            }
+            ASSERT_NE(started, nullptr);
+            EXPECT_EQ(started->status, SpanStatus::Ok);
+            EXPECT_NE(started->trace_id, 0U);
+            ASSERT_NE(evicted, nullptr);
+            EXPECT_EQ(evicted->status, SpanStatus::Ok);
+            ASSERT_NE(stopped, nullptr);
+            EXPECT_EQ(stopped->status, SpanStatus::Ok);
+            EXPECT_TRUE(stopped->closed);
         }
     } // namespace
 } // namespace cinder

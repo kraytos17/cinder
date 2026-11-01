@@ -124,24 +124,53 @@ namespace cinder {
         return ref;
     }
 
-    auto TcpTransport::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
-        -> asio::awaitable<Result<net::Response>> {
-        Span span("transport.rpc");
+    auto TcpTransport::sendCoroutine(
+        NodeConn& conn,
+        std::vector<std::byte> data,
+        SpanContext parent
+    ) -> asio::awaitable<Result<net::Response>> {
+        Span span("transport.rpc", parent);
         std::error_code ec;
         auto ex =
             co_await asio::this_coro::executor; // NOLINT(clang-analyzer-core.CallAndMessage) —
         // false positive in asio awaitable internals
 
+        // Hold the connection gate for the whole exchange: exactly one
+        // coroutine may touch this socket at a time. The strand alone cannot
+        // do this — each co_await suspends, so without the gate the next
+        // queued coroutine would start overlapping async_reads/writes and
+        // split responses across readers (framing desync).
+        co_await conn.gate.async_receive(asio::use_awaitable);
+
+        struct GateReleaser {
+            asio::experimental::concurrent_channel<void(std::error_code)>& gate;
+
+            ~GateReleaser() {
+                (void)gate.try_send(std::error_code{});
+            }
+        };
+
+        GateReleaser releaser{conn.gate};
+
         // Start deadline timer — runs on the same strand as this coroutine.
         // When the deadline expires the timer callback cancels in-flight socket
         // operations, causing any in-progress co_await to complete with
-        // operation_aborted.
+        // operation_aborted. Created after the gate so queueing never burns the
+        // caller's deadline nor cancels another exchange's socket use.
         if (stopping_.load(std::memory_order_acquire)) {
             // Transport is shutting down: fail fast with a retryable error
             // rather than starting an exchange on a dying connection.
+            span.setStatus(SpanStatus::Cancelled);
             co_return err<net::Response>(Error(Errc::NotReady, "transport shutting down"));
         }
+
         bool timed_out = false;
+        // Every error exit below reports exactly one outcome on this
+        // exchange's span; success is reported at the single tail return.
+        auto fail_status = [&span](bool was_timeout) {
+            span.setStatus(was_timeout ? SpanStatus::Timeout : SpanStatus::Error);
+        };
+
         asio::steady_timer timer(
             ex,
             std::chrono::milliseconds(rpc_timeout_ms_.load(std::memory_order_relaxed))
@@ -177,6 +206,7 @@ namespace cinder {
             );
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(rpcError(timed_out, "resolve", ec));
             }
 #ifdef CINDER_ENABLE_TLS
@@ -189,6 +219,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(rpcError(timed_out, "connect", ec));
                 }
 
@@ -198,12 +229,14 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(rpcError(timed_out, "tls handshake", ec));
                 }
             } else {
                 co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(rpcError(timed_out, "connect", ec));
                 }
             }
@@ -211,6 +244,7 @@ namespace cinder {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(rpcError(timed_out, "connect", ec));
             }
 #endif
@@ -234,6 +268,7 @@ namespace cinder {
             } else {
                 CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
             }
+            fail_status(timed_out);
             co_return err<net::Response>(rpcError(timed_out, "write", ec));
         }
 
@@ -249,11 +284,13 @@ namespace cinder {
 #endif
         if (ec) {
             closeConn(conn);
+            fail_status(timed_out);
             co_return err<net::Response>(rpcError(timed_out, "read header", ec));
         }
         if (header[0] != std::byte{net::K_MAGIC}) {
             closeConn(conn);
             // Transient framing desync (see ConnectionPool) — retryable.
+            span.setStatus(SpanStatus::Error);
             co_return err<net::Response>(Error(Errc::NotReady, "bad magic in response"));
         }
 
@@ -262,6 +299,7 @@ namespace cinder {
         payload_len = std::byteswap(payload_len);
         if (payload_len > net::K_MAX_MESSAGE_SIZE) {
             closeConn(conn);
+            span.setStatus(SpanStatus::Error);
             co_return err<net::Response>(Error(Errc::NotReady, "response payload too large"));
         }
 
@@ -291,6 +329,7 @@ namespace cinder {
 #endif
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(rpcError(timed_out, "read payload", ec));
             }
         }
@@ -299,10 +338,15 @@ namespace cinder {
         // Wire desync on a reused connection — transient (see ConnectionPool).
         // transform_error keeps the original decode error as the cause instead
         // of discarding it: same re-map, full provenance.
-        co_return net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
+        auto result = net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
             closeConn(conn);
+            span.setStatus(e.code() == Errc::Timeout ? SpanStatus::Timeout : SpanStatus::Error);
             return asRetryable(e, "response decode failed on reused socket");
         });
+        if (result.has_value()) {
+            span.setStatus(SpanStatus::Ok);
+        }
+        co_return result;
     }
 
     void TcpTransport::sendAsync(const NodeId& to, const net::Request& req, SendCallback on_done) {
@@ -330,9 +374,10 @@ namespace cinder {
         }
 
         auto& conn = getOrCreateConn(to);
+        CINDER_DEBUG("rpc send", {"to", to}, {"opcode", static_cast<int>(req.opcode)});
         asio::co_spawn(
             conn.strand,
-            sendCoroutine(conn, std::move(encoded.value())),
+            sendCoroutine(conn, std::move(encoded.value()), SpanContext{req.trace_id, req.span_id}),
             [cb = std::move(on_done),
              to](std::exception_ptr ep, Result<net::Response> result) mutable {
             Result<void> outcome = ep
@@ -382,9 +427,10 @@ namespace cinder {
         }
 
         auto& conn = getOrCreateConn(to);
+        CINDER_DEBUG("rpc send", {"to", to}, {"opcode", static_cast<int>(req.opcode)});
         asio::co_spawn(
             conn.strand,
-            sendCoroutine(conn, std::move(encoded.value())),
+            sendCoroutine(conn, std::move(encoded.value()), SpanContext{req.trace_id, req.span_id}),
             [cb = std::move(on_done)](std::exception_ptr ep, Result<net::Response> result) mutable {
             cb(ep ? err<net::Response>(Error(Errc::NotReady, "coroutine failed"))
                   : std::move(result));

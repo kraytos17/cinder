@@ -1,8 +1,10 @@
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "cinder/common/tracing.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "cinder/store/persistence.hpp"
 #include "cinder/store/snapshot.hpp"
@@ -742,6 +744,94 @@ namespace cinder {
             auto entry = reader.next();
             ASSERT_TRUE(entry.has_value());
             EXPECT_EQ(entry->key, "k");
+        }
+
+        struct SpanGuard {
+            explicit SpanGuard(std::shared_ptr<RecordingSubscriber> sub) :
+                prev_(globalSubscriber()) {
+                setGlobalSubscriber(std::move(sub));
+            }
+
+            ~SpanGuard() {
+                setGlobalSubscriber(prev_);
+            }
+
+            std::shared_ptr<Subscriber> prev_;
+        };
+
+        // Find a recorded span by operation name.
+        auto findSpanByOp(const RecordingSubscriber& sub, std::string_view operation)
+            -> std::optional<RecordingSubscriber::RecordedSpan> {
+            for (const auto& s : sub.spans()) {
+                if (s.operation == operation) {
+                    return s;
+                }
+            }
+            return std::nullopt;
+        }
+
+        TEST_F(PersistenceTest, StorageSpansReportOutcomes) {
+            auto sub = std::make_shared<RecordingSubscriber>();
+            SpanGuard guard(sub);
+
+            LruStore store(1'000'000);
+            PersistenceManager pm(pmOptions(test_dir_), store);
+            ASSERT_TRUE(store.put("k1", "v1").has_value());
+            ASSERT_TRUE(store.put("k2", "v2").has_value());
+            ASSERT_TRUE(pm.compact().has_value());
+
+            ASSERT_TRUE(store.put("k3", "v3").has_value());
+            pm.onWrite(
+                WalEntry{
+                    .op = WalEntry::Op::Set,
+                    .key = "k3",
+                    .value = "v3",
+                    .version = 3,
+                    .writer_node_hash = 0,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                }
+            );
+            pm.flush();
+
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(pmOptions(test_dir_), store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_EQ(store2.size(), 3U);
+
+            // Every stage of the write → compact → flush → recover cycle
+            // reports Ok on its span.
+            for (const char* op :
+                 {"persistence.compact",
+                  "snapshot.write",
+                  "persistence.flush",
+                  "persistence.recover",
+                  "snapshot.read",
+                  "persistence.replay"}) {
+                auto found = findSpanByOp(*sub, op);
+                ASSERT_TRUE(found.has_value()) << "missing span: " << op;
+                EXPECT_EQ(found->status, SpanStatus::Ok) << op;
+                EXPECT_TRUE(found->closed) << op;
+            }
+        }
+
+        TEST_F(PersistenceTest, CorruptSnapshotReportsErrorSpan) {
+            // Snapshot file with a bad magic: recovery must fail and mark the
+            // span — not silently succeed.
+            {
+                std::ofstream f(test_dir_ / "snapshot_1.dat", std::ios::binary);
+                f << "GARBAGE-NOT-A-SNAPSHOT";
+            }
+            LruStore store(1'000'000);
+            PersistenceManager pm(pmOptions(test_dir_), store);
+            auto sub = std::make_shared<RecordingSubscriber>();
+            {
+                SpanGuard guard(sub);
+                EXPECT_FALSE(pm.recover().has_value());
+            }
+            auto found = findSpanByOp(*sub, "persistence.recover");
+            ASSERT_TRUE(found.has_value());
+            EXPECT_EQ(found->status, SpanStatus::Error);
         }
     } // namespace
 } // namespace cinder

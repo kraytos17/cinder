@@ -45,7 +45,7 @@ namespace cinder {
     }
 
     void MembershipTable::applyRumor(const NodeId& /*from*/, const NodeInfo& rumor) {
-        Span span("membership.apply_rumor");
+        Span span("membership.apply_rumor", captureTraceContext());
         bool changed = false;
         {
             std::scoped_lock lock(mutex_);
@@ -97,7 +97,7 @@ namespace cinder {
     }
 
     void MembershipTable::markSuspect(const NodeId& id) {
-        Span span("membership.mark_suspect");
+        Span span("membership.mark_suspect", captureTraceContext());
         bool changed = false;
         {
             std::scoped_lock lock(mutex_);
@@ -119,7 +119,7 @@ namespace cinder {
     }
 
     void MembershipTable::markDead(const NodeId& id) {
-        Span span("membership.mark_dead");
+        Span span("membership.mark_dead", captureTraceContext());
         bool changed = false;
         {
             std::scoped_lock lock(mutex_);
@@ -138,7 +138,7 @@ namespace cinder {
     }
 
     void MembershipTable::markAlive(const NodeId& id, uint64_t incarnation) {
-        Span span("membership.mark_alive");
+        Span span("membership.mark_alive", captureTraceContext());
         bool changed = false;
         {
             std::scoped_lock lock(mutex_);

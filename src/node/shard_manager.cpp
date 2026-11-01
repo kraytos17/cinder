@@ -30,7 +30,7 @@ namespace cinder {
         quarantine_interval_(quarantine_interval) {}
 
     auto ShardManager::rebalance() -> bool {
-        Span span("shard.rebalance");
+        Span span("shard.rebalance", captureTraceContext());
         CINDER_INFO("rebalance started");
 
         // Collect pending migrations; do not send here — a synchronous transport
@@ -148,7 +148,7 @@ namespace cinder {
         const NodeId& owner,
         const std::vector<NodeId>& replica_peers
     ) {
-        Span span("shard.migrate");
+        Span span("shard.migrate", captureTraceContext());
         auto info = table_.get(owner);
         if (info.has_value() && info->state != NodeState::Alive) {
             CINDER_DEBUG(
@@ -251,7 +251,7 @@ namespace cinder {
         const VersionedEntry& entry,
         const NodeId& owner
     ) {
-        Span span("shard.push");
+        Span span("shard.push", captureTraceContext());
         auto info = table_.get(owner);
         if (info.has_value() && info->state != NodeState::Alive) {
             CINDER_DEBUG(

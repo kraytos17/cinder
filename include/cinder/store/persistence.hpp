@@ -76,6 +76,15 @@ namespace cinder {
 
     private:
 
+        // Outcome of draining the pending WAL queue: Empty (nothing to write),
+        // Complete (whole batch appended), or Partial (an append failed and
+        // the batch was abandoned early).
+        enum class DrainResult : uint8_t {
+            Empty,
+            Complete,
+            Partial,
+        };
+
         auto createSnapshot() -> Result<void>;
         auto replayWal(const std::filesystem::path& path) -> Result<void>;
         auto findLatestSnapshot() const -> std::string;
@@ -85,9 +94,9 @@ namespace cinder {
         // mutex_; internally takes queue_mutex_ (lock order: mutex_ >
         // queue_mutex_). Store writers call onWrite() while holding their own
         // lock, which only ever takes queue_mutex_
-        // Returns true when anything was appended (so flush can skip the
-        // syscall when the queue was already empty).
-        auto drainQueueLocked() -> bool;
+        // Returns whether anything was appended and whether the batch
+        // completed (an append error abandons the rest of the batch).
+        auto drainQueueLocked() -> DrainResult;
 
         auto clock() const -> const Clock& {
             return clock_ != nullptr ? *clock_ : static_cast<const Clock&>(real_clock_fallback_);

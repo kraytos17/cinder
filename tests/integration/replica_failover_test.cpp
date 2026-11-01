@@ -268,17 +268,42 @@ namespace cinder {
                 ASSERT_EQ(::waitpid(node1.pid, &status, 0), node1.pid);
             }
 
-            // Restart with the same data directory: journaled hints recover
-            // before serving, then replay once node2 returns.
+            // Restart with the same data directory (and metrics port — the first
+            // incarnation is SIGKILLed and reaped above, so the port is free):
+            // journaled hints recover before serving, then replay once node2
+            // returns. The replayed counter gives a direct signal with a
+            // generous budget for loaded CI runners.
             {
-                NodeProcGuard node1b{
-                    spawnNode(port1, "node1", peers2, false, 2, 10'000, 3000, 1000, 0, 0, data_dir)
-                };
+                NodeProcGuard node1b{spawnNode(
+                    port1,
+                    "node1",
+                    peers2,
+                    false,
+                    2,
+                    10'000,
+                    3000,
+                    1000,
+                    0,
+                    metrics1,
+                    data_dir
+                )};
                 ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not restart";
                 NodeProcGuard node2{spawnNode(port2, "node2", peers1, false, 2)};
                 ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
+                // Wait for all hints to replay (60 s budget): replay ticks every
+                // second and each attempt can stall behind the 5 s RPC timeout
+                // when the runner is oversubscribed.
+                bool replayed = false;
+                for (int i = 0; i < 600 && !replayed; ++i) {
+                    auto count = scrapeMetric(metrics1, "cinder_replication_hints_replayed_total");
+                    replayed = count.has_value() && *count >= keys.size();
+                    if (!replayed) {
+                        std::this_thread::sleep_for(milliseconds(100));
+                    }
+                }
+                EXPECT_TRUE(replayed) << "hints were not replayed before timeout";
                 for (const auto& k : keys) {
-                    EXPECT_TRUE(waitForValue(port2, k, big)) << "hint for " << k << " lost";
+                    EXPECT_TRUE(waitForValue(port2, k, big, 300)) << "hint for " << k << " lost";
                 }
             }
 

@@ -1,11 +1,14 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <concepts>
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <source_location>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -71,12 +74,74 @@ namespace cinder {
     // true (the direct path relies on spdlog level filtering instead).
     auto isCallsiteEnabled(Callsite& callsite) -> bool;
 
+    // Terminal (or intermediate) outcome of a span's work. Recorded via
+    // Span::setStatus; Unset when the span never reported one. Timeout is a
+    // first-class outcome here because RPC strands report deadline expiry as
+    // Errc::Timeout rather than a generic error.
+    enum class SpanStatus : uint8_t {
+        Unset,
+        Ok,
+        Error,
+        Cancelled,
+        Timeout,
+    };
+
     // Thread-local trace context for structured logging. Set by the innermost
-    // live Span; read by Event::emit to enrich log lines.
+    // live Span or TraceScope. Read by Event::emit to enrich log lines.
     struct TraceContext {
         uint64_t trace_id = 0;
         uint64_t span_id = 0;
         std::string_view operation;
+    };
+
+    // Copyable trace identity for cross-thread propagation. Capture from a
+    // Span (or the current context) on the originating thread, move/copy it
+    // into the async callback, and attach it there with TraceScope. Unlike
+    // Span's parent_span_id parameter, this carries the full parent identity
+    // and never consults the attaching thread's prior thread-local state.
+    struct SpanContext {
+        uint64_t trace_id = 0;
+        uint64_t span_id = 0;
+
+        [[nodiscard]]
+        constexpr auto valid() const noexcept -> bool {
+            return trace_id != 0;
+        }
+
+        constexpr auto operator==(const SpanContext&) const noexcept -> bool = default;
+    };
+
+    static_assert(sizeof(SpanContext) == 16, "SpanContext should be two words");
+
+    // Capture the current thread's trace identity as a portable value.
+    auto captureTraceContext() -> SpanContext;
+
+    // Parse an inbound trace parent from ASCII decimal uint64 strings (e.g.
+    // gRPC metadata values). Both parts must be present, parse cleanly and be
+    // nonzero; anything else yields an invalid context and the caller must
+    // start a fresh trace rather than fail the request. Bounded (20 chars
+    // max) and allocation-free.
+    auto parseSpanContext(std::string_view trace_id_str, std::string_view span_id_str)
+        -> SpanContext;
+
+    // RAII guard that installs a supplied trace context into thread-local
+    // state and restores the exact prior context on destruction. Async
+    // callbacks capture a SpanContext by value and attach it for their
+    // duration; nesting, exceptions and early returns restore correctly.
+    class TraceScope {
+    public:
+
+        explicit TraceScope(SpanContext ctx) noexcept;
+        ~TraceScope();
+
+        TraceScope(const TraceScope&) = delete;
+        auto operator=(const TraceScope&) -> TraceScope& = delete;
+        TraceScope(TraceScope&&) = delete;
+        auto operator=(TraceScope&&) -> TraceScope& = delete;
+
+    private:
+
+        TraceContext prev_;
     };
 
     static_assert(sizeof(TraceContext) == 32, "TraceContext should be half a cache line");
@@ -111,9 +176,26 @@ namespace cinder {
 
         // Create a new span. If parent_span_id == 0, generates a fresh trace-id.
         // Otherwise, inherits the trace-id from the parent.
+        //
+        // NOTE: the trace-id comes from current thread-local state, so this
+        // overload is only correct when the parent span is live on this thread
+        // (nested scopes). For remote parents (wire requests) or callbacks on
+        // other executor threads, use the SpanContext overload below, which
+        // attaches explicitly and never consults ambient thread-local state.
         explicit Span(
             std::string_view operation,
             uint64_t parent_span_id = 0,
+            std::source_location loc = std::source_location::current()
+        );
+
+        // Create a span attached to an explicit parent context (e.g. decoded
+        // from an inbound request, or captured before an async hop). A valid
+        // parent continues its trace; an invalid one starts a fresh trace.
+        // The new span always mints its own span id; the parent's span id is
+        // recorded as the parent for subscribers, never reused as our own.
+        explicit Span(
+            std::string_view operation,
+            SpanContext parent,
             std::source_location loc = std::source_location::current()
         );
         ~Span();
@@ -138,12 +220,44 @@ namespace cinder {
             return operation_;
         }
 
+        // This span's identity for propagation to async continuations.
+        [[nodiscard]]
+        auto context() const noexcept -> SpanContext {
+            return {trace_id_, span_id_};
+        }
+
+        // The parent span id supplied at construction (0 for roots).
+        [[nodiscard]]
+        auto parentSpanId() const noexcept -> uint64_t {
+            return parent_span_id_;
+        }
+
+        // Record this span's outcome. Forwards to the notified subscriber when
+        // one was present at construction; otherwise stored locally only.
+        // Last call before destruction wins; destruction still closes the span
+        // exactly once. Never throws.
+        void setStatus(SpanStatus status) noexcept;
+
+        // Timestamped marker inside this span's lifetime (phase transitions,
+        // retries, async hop boundaries). Prefer CINDER_* events for hot paths
+        // — this is for operation milestones a future exporter should keep.
+        // Dropped silently when no subscriber was notified at construction.
+        void addEvent(std::string_view name) noexcept;
+
+        // Most recently set status (Unset when never reported).
+        [[nodiscard]]
+        auto status() const noexcept -> SpanStatus {
+            return status_;
+        }
+
     private:
 
         uint64_t prev_trace_id_;
         uint64_t prev_span_id_;
         uint64_t trace_id_;
         uint64_t span_id_;
+        uint64_t parent_span_id_ = 0;
+        SpanStatus status_ = SpanStatus::Unset;
         std::string_view operation_;
         // Subscriber notified at construction (null when none installed or when
         // it reported Interest::Never for this callsite).
@@ -275,6 +389,20 @@ namespace cinder {
         // to flush per-span data and compute durations.
         virtual void tryClose(uint64_t span_id) noexcept = 0;
 
+        // A span reported an outcome via Span::setStatus. Default ignores it;
+        // recording layers persist it into the span record. The name borrows
+        // from the caller for the duration of the synchronous call; layers
+        // that retain it must copy.
+        virtual void setSpanStatus(uint64_t /*span_id*/, SpanStatus /*status*/) noexcept {}
+
+        // A span recorded a timestamped milestone via Span::addEvent. Default
+        // ignores it. Same borrowing rule as setSpanStatus: copy to retain.
+        virtual void spanEvent(
+            uint64_t /*span_id*/,
+            std::string_view /*name*/,
+            std::chrono::steady_clock::time_point /*at*/
+        ) noexcept {}
+
         // An event occurred. Must not call Event methods (no reentrancy) —
         // format with the record's fields directly instead.
         virtual void event(const EventRecord& record) noexcept = 0;
@@ -312,6 +440,11 @@ namespace cinder {
     // permissively — Never only when every layer says Never — so each layer
     // still filters for itself. Configure with addLayer before installing
     // globally; mutation afterwards races with dispatch.
+    //
+    // Threading: layers are invoked WITHOUT holding the composition lock (a
+    // snapshot is taken under it). Layers must therefore be thread-safe, but
+    // reentrant use is safe — a layer may emit events (or create spans)
+    // from inside its own callbacks without deadlocking.
     class LayeredSubscriber : public Subscriber {
     public:
 
@@ -332,6 +465,10 @@ namespace cinder {
         void event(const EventRecord& record) noexcept override;
 
     private:
+
+        // Copy of the layer list for lock-free dispatch. Never throws: on
+        // allocation failure returns empty and the notification is dropped.
+        auto layersSnapshot() noexcept -> std::vector<std::shared_ptr<Subscriber>>;
 
         std::mutex mutex_;
         std::vector<std::shared_ptr<Subscriber>> layers_;
@@ -362,6 +499,77 @@ namespace cinder {
 
         LogLevel min_level_;
         std::shared_ptr<Subscriber> inner_;
+    };
+
+    // In-memory recording backend for tests and future exporters. Captures
+    // complete span records — identity, parentage, operation, monotonic
+    // start/end timestamps, status, span events — plus correlated log events,
+    // behind one mutex. Owns copies of all strings, so records stay valid
+    // after caller temporaries die. All fallible work is swallowed internally
+    // (subscriber callbacks are noexcept); on allocation failure the offending
+    // record is dropped and recording continues.
+    class RecordingSubscriber : public Subscriber {
+    public:
+
+        struct RecordedEvent {
+            std::chrono::steady_clock::time_point at{};
+            std::string name;
+        };
+
+        struct RecordedLog {
+            std::string message;
+            uint64_t trace_id = 0;
+            uint64_t span_id = 0;
+        };
+
+        struct RecordedSpan {
+            uint64_t span_id = 0;
+            // The span's own trace id (forwarded as newSpan's parent_trace_id
+            // argument, which always carries the span's trace).
+            uint64_t trace_id = 0;
+            uint64_t parent_span_id = 0;
+            std::string operation;
+            std::chrono::steady_clock::time_point started_at{};
+            std::chrono::steady_clock::time_point ended_at{};
+            SpanStatus status = SpanStatus::Unset;
+            std::vector<RecordedEvent> events;
+            bool closed = false;
+        };
+
+        RecordingSubscriber() = default;
+
+        auto registerCallsite(const Metadata& meta) -> Interest override;
+        auto newSpan(
+            const Metadata& meta,
+            uint64_t parent_trace_id,
+            uint64_t parent_span_id
+        ) noexcept -> uint64_t override;
+        void enter(uint64_t span_id) noexcept override;
+        void exit(uint64_t span_id) noexcept override;
+        void tryClose(uint64_t span_id) noexcept override;
+        void setSpanStatus(uint64_t span_id, SpanStatus status) noexcept override;
+        void spanEvent(
+            uint64_t span_id,
+            std::string_view name,
+            std::chrono::steady_clock::time_point at
+        ) noexcept override;
+        void event(const EventRecord& record) noexcept override;
+
+        // Snapshot of all spans recorded so far (creation order).
+        auto spans() const -> std::vector<RecordedSpan>;
+        // Snapshot of all correlated log events in arrival order.
+        auto logEvents() const -> std::vector<RecordedLog>;
+        // Copy of one span, or nullopt when unknown.
+        auto find(uint64_t span_id) const -> std::optional<RecordedSpan>;
+        // Discard everything recorded so far.
+        void clear();
+
+    private:
+
+        mutable std::mutex mutex_;
+        std::vector<RecordedSpan> spans_;
+        std::vector<RecordedLog> logs_;
+        std::atomic<uint64_t> next_span_id_{1};
     };
 
     // Install (or replace) the process-wide subscriber. Thread-safe; spans and

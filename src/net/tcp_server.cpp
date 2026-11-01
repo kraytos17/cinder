@@ -141,7 +141,7 @@ namespace cinder::net {
 
     void TcpServer::shutdown() {
         asio::post(asio::bind_executor(strand_, [this] {
-            Span span("server.shutdown");
+            Span span("server.shutdown", captureTraceContext());
             stopping_ = true;
             std::error_code ec;
             acceptor_.close(ec);
@@ -271,7 +271,7 @@ namespace cinder::net {
                 asio::bind_executor(
                     strand_,
                     [this, self, buf](std::error_code read_ec, std::size_t /*n*/) {
-                Span span("metrics.request");
+                Span span("metrics.request", captureTraceContext());
                 std::string response;
                 if (!read_ec) {
                     auto req = parseHttpRequest(std::string_view(buf->data(), buf->size()));

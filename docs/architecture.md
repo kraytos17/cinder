@@ -30,7 +30,9 @@ Frames are length-prefixed with a compile-time-validated 7-byte header
 (`consteval` + `static_assert`), big-endian fields, 16 opcodes, 64 MiB max.
 `TcpServer` serializes each connection on its own strand; `TcpTransport` and
 `ConnectionPool` run request-response as `asio::co_spawn` coroutines with
-configurable RPC deadlines. The event loop is a thread pool (`--io-threads`,
+configurable RPC deadlines, one exchange at a time per socket guarded by a
+per-connection gate (a strand alone cannot serialize an exchange because each
+`co_await` suspends). The event loop is a thread pool (`--io-threads`,
 auto `min(4, hardware_concurrency)`).
 
 ## Storage

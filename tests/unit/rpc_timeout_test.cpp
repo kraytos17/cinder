@@ -6,6 +6,7 @@
 
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/net/tcp_transport.hpp"
 
@@ -251,6 +252,266 @@ namespace cinder {
             error_code ec;
             acceptor.close(ec);
             EXPECT_TRUE(callback_called);
+        }
+
+        // Span outcome assertions for the Phase 4 transport/pool coverage.
+        // The recording subscriber observes every exchange span; a black hole
+        // must report Timeout, a fast peer Ok.
+
+        struct StatusGuard {
+            explicit StatusGuard(std::shared_ptr<RecordingSubscriber> sub) :
+                prev_(globalSubscriber()) {
+                setGlobalSubscriber(std::move(sub));
+            }
+
+            ~StatusGuard() {
+                setGlobalSubscriber(prev_);
+            }
+
+            std::shared_ptr<Subscriber> prev_;
+        };
+
+        auto findOp(
+            const std::vector<RecordingSubscriber::RecordedSpan>& spans,
+            std::string_view operation
+        ) -> const RecordingSubscriber::RecordedSpan* {
+            for (const auto& s : spans) {
+                if (s.operation == operation) {
+                    return &s;
+                }
+            }
+            return nullptr;
+        }
+
+        TEST(PoolRpcTimeout, TimeoutMarksSpan) {
+            constexpr uint16_t K_PORT = 17'885;
+            constexpr auto K_TIMEOUT = milliseconds(100);
+
+            io_context io;
+            BlackHoleServer server(io, K_PORT);
+            server.start();
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
+
+            ConnectionPool pool(config, io);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            Request req{.opcode = Opcode::Set, .key = "k", .value = "v"};
+
+            bool callback_called = false;
+            {
+                StatusGuard guard(sub);
+                pool.sendAsync("node1", req, [&](Result<net::Response> res) {
+                    callback_called = true;
+                    EXPECT_FALSE(res.has_value());
+                    io.stop();
+                });
+
+                io.run();
+            }
+            server.stop();
+            EXPECT_TRUE(callback_called);
+
+            auto spans = sub->spans();
+            const auto* span = findOp(spans, "pool.send");
+            ASSERT_NE(span, nullptr);
+            EXPECT_EQ(span->status, SpanStatus::Timeout);
+            EXPECT_TRUE(span->closed);
+        }
+
+        TEST(PoolRpcTimeout, SuccessMarksSpanOk) {
+            constexpr uint16_t K_PORT = 17'886;
+
+            io_context io;
+            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+
+            std::function<void()> do_accept;
+            do_accept = [&] {
+                auto sock = std::make_shared<tcp::socket>(io);
+                acceptor.async_accept(*sock, [&, sock](error_code ec) {
+                    if (ec) {
+                        return;
+                    }
+
+                    auto buf = std::make_shared<std::vector<std::byte>>(4096);
+                    sock->async_read_some(buffer(*buf), [sock, buf](error_code, size_t) {
+                        auto resp = net::Response{.status = Errc::OK, .value = std::nullopt};
+                        auto encoded = net::encode(resp);
+                        if (encoded) {
+                            error_code wec;
+                            asio::write(*sock, buffer(*encoded), wec);
+                        }
+                    });
+                    do_accept();
+                });
+            };
+            do_accept();
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.rpc_timeout_ms = 5000;
+
+            ConnectionPool pool(config, io);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            Request req{.opcode = Opcode::Set, .key = "k", .value = "v"};
+
+            bool callback_called = false;
+            {
+                StatusGuard guard(sub);
+                pool.sendAsync("node1", req, [&](Result<net::Response> res) {
+                    callback_called = true;
+                    EXPECT_TRUE(res.has_value());
+                    io.stop();
+                });
+
+                io.run();
+            }
+            error_code ec;
+            acceptor.close(ec);
+            EXPECT_TRUE(callback_called);
+
+            auto spans = sub->spans();
+            const auto* span = findOp(spans, "pool.send");
+            ASSERT_NE(span, nullptr);
+            EXPECT_EQ(span->status, SpanStatus::Ok);
+        }
+
+        TEST(PoolRpcTimeout, BatchTimeoutMarksSpan) {
+            constexpr uint16_t K_PORT = 17'887;
+            constexpr auto K_TIMEOUT = milliseconds(100);
+
+            io_context io;
+            BlackHoleServer server(io, K_PORT);
+            server.start();
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
+
+            ConnectionPool pool(config, io);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            std::vector<Request> reqs;
+            reqs.push_back({.opcode = Opcode::Get, .key = "k1", .value = {}, .ttl = std::nullopt});
+
+            bool callback_called = false;
+            {
+                StatusGuard guard(sub);
+                pool.sendBatchAsync("node1", reqs, [&](Result<std::vector<net::Response>> res) {
+                    callback_called = true;
+                    EXPECT_FALSE(res.has_value());
+                    io.stop();
+                });
+
+                io.run();
+            }
+            server.stop();
+            EXPECT_TRUE(callback_called);
+
+            auto spans = sub->spans();
+            const auto* span = findOp(spans, "pool.send_batch");
+            ASSERT_NE(span, nullptr);
+            EXPECT_EQ(span->status, SpanStatus::Timeout);
+        }
+
+        TEST(RpcTimeout, TimeoutMarksSpan) {
+            constexpr uint16_t K_PORT = 17'888;
+            constexpr auto K_TIMEOUT = milliseconds(100);
+
+            io_context io;
+            BlackHoleServer server(io, K_PORT);
+            server.start();
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+
+            TcpTransport transport(io);
+            transport.setConfig(config);
+            transport.setRpcTimeout(K_TIMEOUT);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            Request req{.opcode = Opcode::Set, .key = "k", .value = "v"};
+
+            bool callback_called = false;
+            {
+                StatusGuard guard(sub);
+                transport.sendRequestAsync("node1", req, [&](Result<net::Response> res) {
+                    callback_called = true;
+                    EXPECT_FALSE(res.has_value());
+                    io.stop();
+                });
+
+                io.run();
+            }
+            server.stop();
+            EXPECT_TRUE(callback_called);
+
+            auto spans = sub->spans();
+            const auto* span = findOp(spans, "transport.rpc");
+            ASSERT_NE(span, nullptr);
+            EXPECT_EQ(span->status, SpanStatus::Timeout);
+        }
+
+        TEST(RpcTimeout, SuccessMarksSpanOk) {
+            constexpr uint16_t K_PORT = 17'889;
+
+            io_context io;
+            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+
+            std::function<void()> do_accept;
+            do_accept = [&] {
+                auto sock = std::make_shared<tcp::socket>(io);
+                acceptor.async_accept(*sock, [&, sock](error_code ec) {
+                    if (ec) {
+                        return;
+                    }
+
+                    auto buf = std::make_shared<std::vector<std::byte>>(4096);
+                    sock->async_read_some(buffer(*buf), [sock, buf](error_code, size_t) {
+                        auto resp = net::Response{.status = Errc::OK, .value = std::nullopt};
+                        auto encoded = net::encode(resp);
+                        if (encoded) {
+                            error_code wec;
+                            asio::write(*sock, buffer(*encoded), wec);
+                        }
+                    });
+                    do_accept();
+                });
+            };
+            do_accept();
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+
+            TcpTransport transport(io);
+            transport.setConfig(config);
+            transport.setRpcTimeout(milliseconds(5000));
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            Request req{.opcode = Opcode::Set, .key = "k", .value = "v"};
+
+            bool callback_called = false;
+            {
+                StatusGuard guard(sub);
+                transport.sendRequestAsync("node1", req, [&](Result<net::Response> res) {
+                    callback_called = true;
+                    EXPECT_TRUE(res.has_value());
+                    io.stop();
+                });
+
+                io.run();
+            }
+            error_code ec;
+            acceptor.close(ec);
+            EXPECT_TRUE(callback_called);
+
+            auto spans = sub->spans();
+            const auto* span = findOp(spans, "transport.rpc");
+            ASSERT_NE(span, nullptr);
+            EXPECT_EQ(span->status, SpanStatus::Ok);
         }
     } // namespace
 } // namespace cinder

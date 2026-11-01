@@ -36,8 +36,8 @@ namespace cinder::grpc {
     private:
 
         CacheNodeServer::GatewayHandle handle_;
-        std::unique_ptr<grpc::Service> service_;
-        std::unique_ptr<grpc::Server> server_;
+        std::unique_ptr<::grpc::Service> service_;
+        std::unique_ptr<::grpc::Server> server_;
         uint16_t port_;
         std::string client_shared_secret_;
         std::string tls_cert_file_;

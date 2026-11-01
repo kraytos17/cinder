@@ -102,6 +102,13 @@ namespace cinder {
             Fire&& fire,
             Fail&& fail
         ) {
+            // Capture the submitting thread's trace identity: completions that
+            // drain inline already run under it, but the async tail resumes on
+            // system-pool threads with unrelated TLS. The tail re-attaches
+            // this context around every terminal callback (never across a
+            // suspension — a TraceScope spanning a co_await could resume on a
+            // different thread and clobber its TLS on scope exit).
+            SpanContext caller = captureTraceContext();
             auto chan = std::make_shared<FanOutChannel<Result>>(asio::system_executor{}, n);
             auto drain = std::make_shared<FanOutDrain>();
             for (size_t k = 0; k < n; ++k) {
@@ -146,6 +153,7 @@ namespace cinder {
                 [chan,
                  drain,
                  n,
+                 caller,
                  on_each = std::forward<OnEach>(on_each),
                  should_fire = std::forward<ShouldFire>(should_fire),
                  fire = std::forward<Fire>(fire),
@@ -153,6 +161,7 @@ namespace cinder {
                 try {
                     while (drain->seen < n) {
                         auto [idx, res] = co_await chan->async_receive(asio::use_awaitable);
+                        TraceScope scope(caller);
                         ++drain->seen;
                         on_each(idx, std::move(res), !drain->fired);
                         if (!drain->fired && should_fire()) {
@@ -161,6 +170,7 @@ namespace cinder {
                         }
                     }
                 } catch (...) {
+                    TraceScope scope(caller);
                     if (!drain->fired) {
                         drain->fired = true;
                         fail();
@@ -194,7 +204,7 @@ namespace cinder {
         uint64_t trace_id,
         uint64_t span_id
     ) {
-        Span span("replication.write.fanout", span_id);
+        Span span("replication.write.fanout", SpanContext{trace_id, span_id});
         // Version comes from the store — it is the single version authority. The
         // store's counter has advanced past any observed peer versions (Lamport
         // bump) and is seeded from the clock, so a restarted node wins LWW.
@@ -245,7 +255,11 @@ namespace cinder {
             for (const auto& node : replica_nodes) {
                 transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
                     if (!r.has_value()) {
-                        Span fail_span("replication.write.async.fail", req.span_id);
+                        Span fail_span(
+                            "replication.write.async.fail",
+                            SpanContext{req.trace_id, req.span_id}
+                        );
+
                         CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
                         if (metrics_) {
                             metrics_->replicationMetrics().replica_unreachable.fetch_add(
@@ -308,14 +322,21 @@ namespace cinder {
         st->key = key;
         st->pending = st->replicas.size();
         st->w = w;
+        // Child spans below parent to this fanout (not to the originating
+        // request): the fanout span itself is a stack local that dies when the
+        // inline drain returns, so capture its identity by value for the async
+        // tail.
+        SpanContext fanout = span.context();
         fanOutQuorum<Result<void>>(st->replicas.size(), [this, st](auto report) {
             for (size_t i = 0; i < st->replicas.size(); ++i) {
                 transport_.sendAsync(st->replicas[i], st->req, [report, i](Result<void> r) mutable {
                     report(i, std::move(r));
                 });
             }
-        }, [this, st](std::size_t i, Result<void> r, bool active) {
+        }, [this, st, fanout](std::size_t i, Result<void> r, bool active) {
+            Span replica_span("replication.write.replica", fanout);
             if (!r.has_value()) {
+                replica_span.setStatus(SpanStatus::Error);
                 CINDER_WARN("replica unreachable", {"node", st->replicas[i]}, {"key", st->key});
                 if (metrics_) {
                     metrics_->replicationMetrics().replica_unreachable.fetch_add(
@@ -324,8 +345,11 @@ namespace cinder {
                     );
                 }
                 enqueueHint(st->replicas[i], st->req);
-            } else if (active) {
-                ++st->acks;
+            } else {
+                replica_span.setStatus(SpanStatus::Ok);
+                if (active) {
+                    ++st->acks;
+                }
             }
             --st->pending;
             // Fail fast when quorum is unreachable: even if every outstanding
@@ -338,7 +362,12 @@ namespace cinder {
             return st->acks >= st->w || st->pending == 0 || st->acks + st->pending < st->w;
         }, [this, st] {
             if (st->acks >= st->w) {
-                Span ok_span("replication.write.quorum.ok");
+                Span ok_span(
+                    "replication.write.quorum.ok",
+                    SpanContext{st->req.trace_id, st->req.span_id}
+                );
+
+                ok_span.setStatus(SpanStatus::Ok);
                 CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});
                 if (metrics_) {
                     metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
@@ -348,7 +377,12 @@ namespace cinder {
                 }
                 st->on_done(ok());
             } else {
-                Span fail_span("replication.write.quorum.fail");
+                Span fail_span(
+                    "replication.write.quorum.fail",
+                    SpanContext{st->req.trace_id, st->req.span_id}
+                );
+
+                fail_span.setStatus(SpanStatus::Error);
                 CINDER_WARN(
                     "quorum write failed",
                     {"key", st->key},
@@ -401,7 +435,7 @@ namespace cinder {
         uint64_t trace_id,
         uint64_t span_id
     ) {
-        Span span("replication.read.fanout", span_id);
+        Span span("replication.read.fanout", SpanContext{trace_id, span_id});
         // Local read — always attempted first.
         auto local_entry = local_.getVersioned(key);
         if (!local_entry.has_value()) {
@@ -497,6 +531,10 @@ namespace cinder {
             st->best_entry = std::move(*local_entry);
         }
 
+        // Child spans below parent to this fanout (see the write path: the
+        // fanout span is a stack local, so its identity is captured by value
+        // for the async tail).
+        SpanContext fanout = span.context();
         fanOutQuorum<Result<net::Response>>(st->replicas.size(), [this, st](auto report) {
             for (size_t i = 0; i < st->replicas.size(); ++i) {
                 transport_.sendRequestAsync(
@@ -505,9 +543,16 @@ namespace cinder {
                     [report, i](Result<net::Response> r) mutable { report(i, std::move(r)); }
                 );
             }
-        }, [this, st](std::size_t, Result<net::Response> r, bool active) {
+        }, [this, st, fanout](std::size_t, Result<net::Response> r, bool active) {
+            Span replica_span("replication.read.replica", fanout);
             if (!active) {
+                replica_span.setStatus(SpanStatus::Cancelled);
                 return;
+            }
+            if (!r.has_value()) {
+                replica_span.setStatus(SpanStatus::Error);
+            } else {
+                replica_span.setStatus(SpanStatus::Ok);
             }
             if (r.has_value() && r->status == Errc::OK && r->version != 0) {
                 ++st->acks;
@@ -540,7 +585,8 @@ namespace cinder {
                 st->needs_repair = true;
             }
             --st->pending;
-        }, [st] -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st] {
+        }, [st] -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st, fanout] {
+            Span decide_span("replication.read.quorum", fanout);
             std::optional<VersionedEntry> result;
             if (st->best_entry.has_value()) {
                 result = std::move(st->best_entry);
@@ -561,11 +607,15 @@ namespace cinder {
                         std::memory_order_relaxed
                     );
                 }
-                sendRepairFanOut(st->key, st->replicas, *result);
+                sendRepairFanOut(st->key, st->replicas, *result, fanout);
             }
             if (result.has_value()) {
+                decide_span.setStatus(SpanStatus::Ok);
                 st->on_done(std::move(*result));
             } else {
+                // Served miss, not a failure: the quorum answered, the key is
+                // simply absent everywhere.
+                decide_span.setStatus(SpanStatus::Ok);
                 st->on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
             }
         }, [st] {
@@ -620,9 +670,10 @@ namespace cinder {
     void ReplicationManager::sendRepairFanOut(
         const std::string& key,
         const std::vector<NodeId>& targets,
-        const VersionedEntry& winner
+        const VersionedEntry& winner,
+        SpanContext parent
     ) {
-        Span span("replication.repair.fanout");
+        Span span("replication.repair.fanout", parent);
         CINDER_INFO(
             "repair fan-out",
             {"key", key},
@@ -648,7 +699,7 @@ namespace cinder {
     }
 
     void ReplicationManager::replayHints(ReplayCallback on_done) {
-        Span span("replication.hint.replay");
+        Span span("replication.hint.replay", captureTraceContext());
         // Single-consumer: a replay already in flight (overlapping timer ticks or
         // concurrent pool threads) reports zero rather than double-sending hints.
         bool expected = false;
@@ -707,6 +758,7 @@ namespace cinder {
         };
 
         if (batch.empty()) {
+            span.setStatus(SpanStatus::Ok);
             finish(0);
             return;
         }
@@ -740,7 +792,17 @@ namespace cinder {
                 ++st->replayed;
             }
             --st->pending;
-        }, [st] -> bool { return st->pending == 0; }, [st] { st->finish(st->replayed); }, [st] {
+        }, [st] -> bool { return st->pending == 0; }, [st] {
+            // Fresh root: the setup span is long gone (stack local) and the
+            // batch mixes hints from unrelated writes, so no single parent.
+            Span done_span("replication.hint.replay", SpanContext{});
+            done_span.setStatus(
+                !st->batch.empty() && st->replayed == 0 ? SpanStatus::Error : SpanStatus::Ok
+            );
+            st->finish(st->replayed);
+        }, [st] {
+            Span done_span("replication.hint.replay", SpanContext{});
+            done_span.setStatus(SpanStatus::Error);
             st->finish(0);
         });
     }

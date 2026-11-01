@@ -147,15 +147,39 @@ namespace cinder {
         return chosen;
     }
 
-    auto ConnectionPool::sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
-        -> asio::awaitable<Result<net::Response>> {
-        Span span("pool.send");
+    auto ConnectionPool::sendCoroutine(
+        NodeConn& conn,
+        std::vector<std::byte> data,
+        SpanContext parent
+    ) -> asio::awaitable<Result<net::Response>> {
+        Span span("pool.send", parent);
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
 
+        // One exchange at a time per socket (see NodeConn): acquire the gate
+        // before touching the socket.
+        co_await conn.gate.async_receive(asio::use_awaitable);
+
+        struct GateReleaser {
+            asio::experimental::concurrent_channel<void(std::error_code)>& gate;
+
+            ~GateReleaser() {
+                (void)gate.try_send(std::error_code{});
+            }
+        };
+
+        GateReleaser releaser{conn.gate};
+
         // RPC deadline: on expiry cancel the socket so the pending I/O aborts with
         // operation_aborted; poolError() then maps that to Errc::Timeout.
+        // Created after the gate so queueing never burns the caller's deadline
+        // nor cancels another exchange's socket use.
         bool timed_out = false;
+        // Every exit below reports exactly one outcome on this exchange's span.
+        auto fail_status = [&span](bool was_timeout) {
+            span.setStatus(was_timeout ? SpanStatus::Timeout : SpanStatus::Error);
+        };
+
         asio::steady_timer timer(ex);
         if (rpc_timeout_.count() > 0) {
             timer.expires_after(rpc_timeout_);
@@ -184,6 +208,7 @@ namespace cinder {
             );
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(poolError(timed_out, "resolve", ec));
             }
 #ifdef CINDER_ENABLE_TLS
@@ -196,6 +221,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(poolError(timed_out, "connect", ec));
                 }
 
@@ -205,12 +231,14 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(poolError(timed_out, "tls handshake", ec));
                 }
             } else {
                 co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<net::Response>(poolError(timed_out, "connect", ec));
                 }
             }
@@ -218,6 +246,7 @@ namespace cinder {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(poolError(timed_out, "connect", ec));
             }
 #endif
@@ -237,6 +266,7 @@ namespace cinder {
         if (ec) {
             closeConn(conn);
             CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
+            fail_status(timed_out);
             co_return err<net::Response>(poolError(timed_out, "write", ec));
         }
 
@@ -252,6 +282,7 @@ namespace cinder {
 #endif
         if (ec) {
             closeConn(conn);
+            fail_status(timed_out);
             co_return err<net::Response>(poolError(timed_out, "read header", ec));
         }
         if (header[0] != std::byte{net::K_MAGIC}) {
@@ -259,6 +290,7 @@ namespace cinder {
             // Framing desync on a reused connection (stale bytes / half-dead
             // peer) — the socket is already closed so the next RPC reconnects
             // clean. NotReady (not InvalidArgument) so the caller retries.
+            span.setStatus(SpanStatus::Error);
             co_return err<net::Response>(Error(Errc::NotReady, "bad magic in response"));
         }
 
@@ -267,6 +299,7 @@ namespace cinder {
         payload_len = std::byteswap(payload_len);
         if (payload_len > net::K_MAX_MESSAGE_SIZE) {
             closeConn(conn);
+            span.setStatus(SpanStatus::Error);
             co_return err<net::Response>(Error(Errc::NotReady, "response payload too large"));
         }
 
@@ -296,6 +329,7 @@ namespace cinder {
 #endif
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<net::Response>(poolError(timed_out, "read payload", ec));
             }
         }
@@ -307,20 +341,44 @@ namespace cinder {
         // itself keeps returning InvalidArgument (it is a pure function and
         // callers of it directly are validating their own input); the wire
         // path re-maps it while keeping the original as the cause.
-        co_return net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
+        auto result = net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
             closeConn(conn);
+            span.setStatus(e.code() == Errc::Timeout ? SpanStatus::Timeout : SpanStatus::Error);
             return asRetryable(e, "response decode failed on reused socket");
         });
+        if (result.has_value()) {
+            span.setStatus(SpanStatus::Ok);
+        }
+        co_return result;
     }
 
     auto ConnectionPool::sendBatchCoroutine(
         NodeConn& conn,
-        std::vector<std::vector<std::byte>> all_data
+        std::vector<std::vector<std::byte>> all_data,
+        SpanContext parent
     ) -> asio::awaitable<Result<std::vector<net::Response>>> {
-        Span span("pool.send_batch");
+        Span span("pool.send_batch", parent);
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
+        // A batch is one pipelined exchange on this socket: hold the same gate
+        // as single sends so the two can never interleave.
+        co_await conn.gate.async_receive(asio::use_awaitable);
+
+        struct BatchGateReleaser {
+            asio::experimental::concurrent_channel<void(std::error_code)>& gate;
+
+            ~BatchGateReleaser() {
+                (void)gate.try_send(std::error_code{});
+            }
+        };
+
+        BatchGateReleaser releaser{conn.gate};
         bool timed_out = false;
+        // Every exit below reports exactly one outcome on this exchange's span.
+        auto fail_status = [&span](bool was_timeout) {
+            span.setStatus(was_timeout ? SpanStatus::Timeout : SpanStatus::Error);
+        };
+
         asio::steady_timer timer(ex);
         if (rpc_timeout_.count() > 0) {
             timer.expires_after(rpc_timeout_);
@@ -348,6 +406,7 @@ namespace cinder {
             );
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "resolve", ec));
             }
 #ifdef CINDER_ENABLE_TLS
@@ -360,6 +419,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
                 }
 
@@ -369,6 +429,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<std::vector<net::Response>>(
                         poolError(timed_out, "tls handshake", ec)
                     );
@@ -377,6 +438,7 @@ namespace cinder {
                 co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
                 }
             }
@@ -384,6 +446,7 @@ namespace cinder {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
             }
 #endif
@@ -414,6 +477,7 @@ namespace cinder {
 #endif
         if (ec) {
             closeConn(conn);
+            fail_status(timed_out);
             co_return err<std::vector<net::Response>>(poolError(timed_out, "write", ec));
         }
 
@@ -432,10 +496,12 @@ namespace cinder {
 #endif
             if (ec) {
                 closeConn(conn);
+                fail_status(timed_out);
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "read header", ec));
             }
             if (header[0] != std::byte{net::K_MAGIC}) {
                 closeConn(conn);
+                span.setStatus(SpanStatus::Error);
                 co_return err<std::vector<net::Response>>(
                     Error(Errc::NotReady, "bad magic in response")
                 );
@@ -446,6 +512,7 @@ namespace cinder {
             payload_len = std::byteswap(payload_len);
             if (payload_len > net::K_MAX_MESSAGE_SIZE) {
                 closeConn(conn);
+                span.setStatus(SpanStatus::Error);
                 co_return err<std::vector<net::Response>>(
                     Error(Errc::NotReady, "response payload too large")
                 );
@@ -477,6 +544,7 @@ namespace cinder {
 #endif
                 if (ec) {
                     closeConn(conn);
+                    fail_status(timed_out);
                     co_return err<std::vector<net::Response>>(
                         poolError(timed_out, "read payload", ec)
                     );
@@ -493,6 +561,10 @@ namespace cinder {
                 closeConn(conn);
                 // Preserve provenance (see the single-RPC path): keep the original
                 // decode error as the cause while re-mapping to a retryable code.
+                span.setStatus(
+                    decoded.error().code() == Errc::Timeout ? SpanStatus::Timeout
+                                                            : SpanStatus::Error
+                );
                 co_return std::unexpected(
                     asRetryable(decoded.error(), "batch response decode failed")
                 );
@@ -501,6 +573,7 @@ namespace cinder {
         }
 
         timer.cancel();
+        span.setStatus(SpanStatus::Ok);
         co_return ok(std::move(responses));
     }
 
@@ -539,7 +612,11 @@ namespace cinder {
             auto& conn = getOrCreateConn(node_id);
             asio::co_spawn(
                 conn.strand,
-                sendCoroutine(conn, std::move(encoded.value())),
+                sendCoroutine(
+                    conn,
+                    std::move(encoded.value()),
+                    SpanContext{req.trace_id, req.span_id}
+                ),
                 [cb = std::move(
                      on_done
                  )](std::exception_ptr ep, Result<net::Response> result) mutable {
@@ -593,9 +670,16 @@ namespace cinder {
         }
 
         auto& conn = getOrCreateConn(node_id);
+        // The batch shares one trace; parent the exchange to the first
+        // request's context (all sub-requests carry the batch span's ids).
+        const auto& first = reqs.front();
         asio::co_spawn(
             conn.strand,
-            sendBatchCoroutine(conn, std::move(all_data)),
+            sendBatchCoroutine(
+                conn,
+                std::move(all_data),
+                SpanContext{first.trace_id, first.span_id}
+            ),
             [cb = std::move(
                  on_done
              )](std::exception_ptr ep, Result<std::vector<net::Response>> result) mutable {

@@ -24,7 +24,7 @@ namespace cinder {
         clock_(clock) {}
 
     auto PersistenceManager::recover() -> Result<void> {
-        Span span("persistence.recover");
+        Span span("persistence.recover", captureTraceContext());
         if (!opts_.enabled) {
             return ok();
         }
@@ -40,6 +40,7 @@ namespace cinder {
             auto result = reader.readAll();
             if (!result.has_value()) {
                 loading_ = false;
+                span.setStatus(SpanStatus::Error);
                 return err(result.error());
             }
 
@@ -82,6 +83,7 @@ namespace cinder {
             auto wal_result = replayWal(std::filesystem::path(wal_path));
             if (!wal_result.has_value()) {
                 loading_ = false;
+                span.setStatus(SpanStatus::Error);
                 return err(wal_result.error());
             }
         }
@@ -90,6 +92,7 @@ namespace cinder {
         auto new_wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
         wal_ = std::make_unique<WalWriter>(new_wal_path.string());
         wal_entry_count_.store(0, std::memory_order_relaxed);
+        span.setStatus(SpanStatus::Ok);
         return ok();
     }
 
@@ -107,14 +110,14 @@ namespace cinder {
         pending_wal_.push_back(entry);
     }
 
-    auto PersistenceManager::drainQueueLocked() -> bool {
+    auto PersistenceManager::drainQueueLocked() -> DrainResult {
         // Caller holds mutex_. Swap the batch out under queue_mutex_, then append
         // without holding queue_mutex_
         std::deque<WalEntry> batch;
         {
             std::scoped_lock lock(queue_mutex_);
             if (pending_wal_.empty()) {
-                return false;
+                return DrainResult::Empty;
             }
             batch.swap(pending_wal_);
         }
@@ -122,33 +125,41 @@ namespace cinder {
         for (auto& entry : batch) {
             if (auto result = wal_->append(entry); !result.has_value()) {
                 CINDER_ERROR("WAL append failed", {"reason", result.error().message()});
-                break;
+                return DrainResult::Partial;
             }
             wal_entry_count_.fetch_add(1, std::memory_order_relaxed);
         }
-        return true;
+        return DrainResult::Complete;
     }
 
     void PersistenceManager::flush() {
+        Span span("persistence.flush", captureTraceContext());
         std::scoped_lock lock(mutex_);
         if (!wal_) {
+            span.setStatus(SpanStatus::Ok);
             return;
         }
-        if (!drainQueueLocked()) {
+        if (drainQueueLocked() == DrainResult::Empty) {
+            span.setStatus(SpanStatus::Ok);
             return; // nothing pending: skip the flush syscall
         }
         if (opts_.wal_fsync) {
             // sync() flushes userspace buffers first, then fdatasyncs.
             if (auto synced = wal_->sync(); !synced.has_value()) {
                 CINDER_ERROR("WAL fsync failed", {"reason", synced.error().message()});
+                span.setStatus(SpanStatus::Error);
+                return;
             }
+            span.setStatus(SpanStatus::Ok);
             return;
         }
+
         wal_->flush();
+        span.setStatus(SpanStatus::Ok);
     }
 
     auto PersistenceManager::compact() -> Result<void> {
-        Span span("persistence.compact");
+        Span span("persistence.compact", captureTraceContext());
         if (!opts_.enabled) {
             return ok();
         }
@@ -169,6 +180,7 @@ namespace cinder {
         size_t entry_count = store_.liveEntries().size();
         auto result = createSnapshot();
         if (!result.has_value()) {
+            span.setStatus(SpanStatus::Error);
             return err(result.error());
         }
         if (wal_) {
@@ -182,11 +194,14 @@ namespace cinder {
         wal_ = std::make_unique<WalWriter>(wal_path.string());
         wal_entry_count_.store(0, std::memory_order_relaxed);
         CINDER_INFO("compaction complete", {"entries", entry_count});
+        span.setStatus(SpanStatus::Ok);
         return ok();
     }
 
     void PersistenceManager::shutdown() {
+        Span span("persistence.shutdown", captureTraceContext());
         if (!opts_.enabled) {
+            span.setStatus(SpanStatus::Ok);
             return;
         }
 
@@ -197,7 +212,10 @@ namespace cinder {
         }
         if (auto snap_result = createSnapshot(); !snap_result.has_value()) {
             CINDER_ERROR("shutdown snapshot failed", {"reason", snap_result.error().message()});
+            span.setStatus(SpanStatus::Error);
+            return;
         }
+        span.setStatus(SpanStatus::Ok);
     }
 
     auto PersistenceManager::createSnapshot() -> Result<void> {
@@ -243,7 +261,7 @@ namespace cinder {
     }
 
     auto PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<void> {
-        Span span("persistence.replay");
+        Span span("persistence.replay", captureTraceContext());
         WalReader reader(wal_path.string());
 
         size_t replayed = 0;
@@ -287,6 +305,8 @@ namespace cinder {
         if (replayed > 0) {
             CINDER_INFO("replayed WAL entries", {"count", replayed});
         }
+
+        span.setStatus(SpanStatus::Ok);
         return ok();
     }
 

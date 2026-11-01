@@ -317,19 +317,29 @@ namespace cinder {
     }
 
     void CacheNodeServer::run() {
-        // Recover durable hints before serving: replayed once the (possibly
-        // returned) replica is reachable again.
-        if (auto recovered = repl_.recoverHints(); recovered > 0) {
-            CINDER_INFO("recovered hints", {"count", recovered});
-        }
-        // Recover from disk before serving
-        if (persistence_.enabled()) {
-            auto res = persistence_.recover();
-            if (!res.has_value()) {
-                CINDER_ERROR("persistence recovery failed", {"reason", res.error().message()});
-                return;
+        // Startup root: fresh trace for the recovery sequence below (timer
+        // callbacks later start their own runs; nothing here has an inbound
+        // parent). Braced to close before io_.run(): a function-scope span
+        // would linger its thread-local context on the runner thread for the
+        // process lifetime and background callbacks would join it.
+        {
+            Span startup_span("node.start", SpanContext{});
+            // Recover durable hints before serving: replayed once the (possibly
+            // returned) replica is reachable again.
+            if (auto recovered = repl_.recoverHints(); recovered > 0) {
+                CINDER_INFO("recovered hints", {"count", recovered});
             }
-            CINDER_INFO("recovered entries from disk", {"count", store_->size()});
+            // Recover from disk before serving
+            if (persistence_.enabled()) {
+                auto res = persistence_.recover();
+                if (!res.has_value()) {
+                    CINDER_ERROR("persistence recovery failed", {"reason", res.error().message()});
+                    startup_span.setStatus(SpanStatus::Error);
+                    return;
+                }
+                CINDER_INFO("recovered entries from disk", {"count", store_->size()});
+            }
+            startup_span.setStatus(SpanStatus::Ok);
         }
 
         signals_.async_wait([this](std::error_code, int) {
@@ -383,6 +393,8 @@ namespace cinder {
     }
 
     void CacheNodeServer::shutdown() {
+        // Shutdown root: fresh trace for the drain sequence below.
+        Span span("node.shutdown", SpanContext{});
         timers_.cancelAll();
         repl_.syncHints();
         if (persistence_.enabled()) {
@@ -405,6 +417,7 @@ namespace cinder {
 
         transport_.shutdown();
         io_.stop();
+        span.setStatus(SpanStatus::Ok);
     }
 
     void CacheNodeServer::scheduleReplay() {
@@ -455,6 +468,9 @@ namespace cinder {
                 return;
             }
 
+            // Run root: the timer fires on an io thread with unrelated TLS,
+            // so join nothing ambient — mint a fresh trace for this pass.
+            Span span("timer.evict", SpanContext{});
             store_->evictExpired();
             // Steady-state WAL drain (batched, ~1s cadence): bounds the
             // pending queue (and the crash-loss window) between periodic
@@ -466,11 +482,17 @@ namespace cinder {
                     scheduleCompactDebounced();
                 }
             }
+            span.setStatus(SpanStatus::Ok);
             scheduleEvict();
         });
     }
 
     void CacheNodeServer::rebuildRing() {
+        // Child of the triggering mutation (gossip apply, suspect/dead mark):
+        // fireCallbacks runs synchronously on the mutator's thread, so the
+        // ambient context is the cause. Falls back to a fresh trace when
+        // invoked without one.
+        Span span("cluster.rebuild_ring", captureTraceContext());
         size_t alive_count = 0;
         size_t removed_count = 0;
         for (const auto& info : table_.snapshot()) {
@@ -488,6 +510,7 @@ namespace cinder {
             }
         }
         CINDER_INFO("ring rebuilt", {"alive", alive_count}, {"removed", removed_count});
+        span.setStatus(SpanStatus::Ok);
         // Push keys this node no longer owns to their new ring owners. The scan
         // + migration burst is debounced (see scheduleRebalanceDebounced): rapid
         // membership flaps collapse into a single run over the latest ring.
@@ -663,7 +686,7 @@ namespace cinder {
     }
 
     void CacheNodeServer::applyConfig() {
-        Span span("config.reload");
+        Span span("config.reload", captureTraceContext());
         if (config_path_.empty()) {
             return;
         }

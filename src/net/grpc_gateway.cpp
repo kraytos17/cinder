@@ -7,6 +7,7 @@
 #include <string>
 
 #include "cinder/common/tracing.hpp"
+#include "cinder/v1/cache.grpc.pb.h"
 
 namespace cinder::grpc {
     namespace {
@@ -26,7 +27,7 @@ namespace cinder::grpc {
     extern auto createCacheService(
         CacheNodeServer::GatewayHandle handle,
         std::string client_shared_secret = {}
-    ) -> std::unique_ptr<grpc::Service>;
+    ) -> std::unique_ptr<::grpc::Service>;
 
     GrpcGateway::GrpcGateway(
         CacheNodeServer::GatewayHandle handle,
@@ -46,10 +47,10 @@ namespace cinder::grpc {
     }
 
     void GrpcGateway::start() {
-        Span span("grpc.gateway.start");
+        Span span("grpc.gateway.start", captureTraceContext());
         service_ = createCacheService(handle_, client_shared_secret_);
-        grpc::ServerBuilder builder;
-        std::shared_ptr<grpc::ServerCredentials> creds;
+        ::grpc::ServerBuilder builder;
+        std::shared_ptr<::grpc::ServerCredentials> creds;
         if (!client_shared_secret_.empty()) {
             // Client auth is replayable — refuse to serve it over plaintext.
             if (tls_cert_file_.empty() || tls_key_file_.empty()) {
@@ -57,13 +58,13 @@ namespace cinder::grpc {
                 return;
             }
 
-            grpc::SslServerCredentialsOptions opts;
+            ::grpc::SslServerCredentialsOptions opts;
             opts.pem_key_cert_pairs.push_back(
                 {readPemFile(tls_key_file_), readPemFile(tls_cert_file_)}
             );
-            creds = grpc::SslServerCredentials(opts);
+            creds = ::grpc::SslServerCredentials(opts);
         } else {
-            creds = grpc::InsecureServerCredentials();
+            creds = ::grpc::InsecureServerCredentials();
         }
 
         builder.AddListeningPort("0.0.0.0:" + std::to_string(port_), creds);
@@ -73,7 +74,7 @@ namespace cinder::grpc {
     }
 
     void GrpcGateway::shutdown() {
-        Span span("grpc.gateway.shutdown");
+        Span span("grpc.gateway.shutdown", captureTraceContext());
         if (server_) {
             CINDER_INFO("gRPC gateway shutting down");
             server_->Shutdown();

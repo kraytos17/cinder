@@ -8,6 +8,18 @@ using std::chrono::milliseconds;
 
 namespace cinder {
 
+    namespace {
+
+        // Stamp the caller's trace context onto an outbound request so the
+        // server joins this trace instead of minting a fresh root. Callers
+        // pass their own span's context explicitly — never ambient TLS.
+        void stampRequest(net::Request& req, SpanContext ctx) {
+            req.trace_id = ctx.trace_id;
+            req.span_id = ctx.span_id;
+        }
+
+    } // namespace
+
     CacheClient::CacheClient(ClusterConfig config) :
         pool_(config, io_ctx_, {}, {}, config.client_shared_secret),
         max_retries_(config.max_retries),
@@ -95,6 +107,10 @@ namespace cinder {
 
     auto CacheClient::sendToOwner(const std::string& key, const net::Request& req)
         -> Result<net::Response> {
+        // Child of the calling public operation's span (ambient context);
+        // starts a fresh trace only when invoked outside one. Covers routing,
+        // redirects and retries for this key as one unit.
+        Span span("client.route", captureTraceContext());
         Result<net::Response> res = err<net::Response>(Error(Errc::NotReady, "no attempts made"));
         auto node = preferredNode(key);
         // Nodes already visited this call: ring views can disagree mid-rebalance
@@ -121,9 +137,17 @@ namespace cinder {
             if (!res.has_value()) {
                 // Transport failure — a learned owner may be stale (node gone or
                 // unknown); forget it so the next attempt re-resolves via the ring.
+                CINDER_DEBUG(
+                    "route retry",
+                    {"key", key},
+                    {"node", node},
+                    {"attempt", attempt},
+                    {"cause", "unreachable"}
+                );
                 node = refreshAfterFailure(key);
             }
             if (!retryable(res) || attempt == max_retries_) {
+                span.setStatus(res.has_value() ? SpanStatus::Ok : SpanStatus::Error);
                 return res;
             }
             std::this_thread::sleep_for(
@@ -138,37 +162,51 @@ namespace cinder {
         const std::string& value,
         std::optional<milliseconds> ttl
     ) -> Result<void> {
-        Span span("client.set");
+        Span span("client.set", captureTraceContext());
         net::Request req{.opcode = net::Opcode::Set, .key = key, .value = value, .ttl = ttl};
-        return sendToOwner(key, req).and_then([](const net::Response& res) -> Result<void> {
-            if (res.status != Errc::OK) {
-                return err(Error(res.status));
+        stampRequest(req, span.context());
+        auto res = sendToOwner(key, req);
+        span.setStatus(res.has_value() ? SpanStatus::Ok : SpanStatus::Error);
+        return res.and_then([](const net::Response& response) -> Result<void> {
+            if (response.status != Errc::OK) {
+                return err(Error(response.status));
             }
             return ok();
         });
     }
 
     auto CacheClient::get(const std::string& key) -> std::optional<std::string> {
-        Span span("client.get");
+        Span span("client.get", captureTraceContext());
         net::Request req{.opcode = net::Opcode::Get, .key = key, .value = {}};
-        return sendToOwner(key, req)
-            .transform([](net::Response res) {
-            return std::move(res.value);
-        }).value_or(std::nullopt);
+        stampRequest(req, span.context());
+        auto res = sendToOwner(key, req);
+        if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return std::nullopt;
+        }
+
+        span.setStatus(SpanStatus::Ok);
+        return std::move(res.value().value);
     }
 
     auto CacheClient::remove(const std::string& key) -> bool {
-        Span span("client.remove");
+        Span span("client.remove", captureTraceContext());
         net::Request req{.opcode = net::Opcode::Del, .key = key, .value = {}};
-        return sendToOwner(key, req)
-            .and_then([](const net::Response& res) -> Result<bool> {
-            return ok(res.status == Errc::OK);
-        }).value_or(false);
+        stampRequest(req, span.context());
+        auto res = sendToOwner(key, req);
+        if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return false;
+        }
+
+        span.setStatus(SpanStatus::Ok);
+        return res.value().status == Errc::OK;
     }
 
     auto CacheClient::multiGet(const std::vector<std::string>& keys)
         -> ankerl::unordered_dense::map<std::string, std::string> {
-        Span span("client.multi_get");
+        Span span("client.multi_get", captureTraceContext());
+        auto trace = span.context();
         // Group keys by their ring owner, then pipeline all Gets per node.
         ankerl::unordered_dense::map<NodeId, std::vector<std::string>> by_owner;
         for (const auto& key : keys) {
@@ -176,11 +214,14 @@ namespace cinder {
         }
 
         ankerl::unordered_dense::map<std::string, std::string> result;
+        bool failed = false;
         for (const auto& [node, node_keys] : by_owner) {
             std::vector<net::Request> reqs;
             reqs.reserve(node_keys.size());
             for (const auto& key : node_keys) {
-                reqs.push_back({.opcode = net::Opcode::Get, .key = key, .value = {}});
+                net::Request req{.opcode = net::Opcode::Get, .key = key, .value = {}};
+                stampRequest(req, trace);
+                reqs.push_back(std::move(req));
             }
 
             Result<std::vector<net::Response>> res =
@@ -203,6 +244,7 @@ namespace cinder {
                 );
             }
             if (!res.has_value()) {
+                failed = true;
                 continue; // node unreachable — those keys are simply missing
             }
 
@@ -223,6 +265,7 @@ namespace cinder {
             }
             for (const auto& k : redirected) {
                 net::Request single{.opcode = net::Opcode::Get, .key = k, .value = {}};
+                stampRequest(single, trace);
                 auto one = sendToOwner(k, single);
                 if (one.has_value()
                     && one.value().status
@@ -232,17 +275,22 @@ namespace cinder {
                 }
             }
         }
+
+        span.setStatus(failed ? SpanStatus::Error : SpanStatus::Ok);
         return result;
     }
 
     auto CacheClient::getVersioned(const std::string& key) -> std::optional<VersionedValue> {
-        Span span("client.get_versioned");
+        Span span("client.get_versioned", captureTraceContext());
         net::Request req{.opcode = net::Opcode::GetVersioned, .key = key, .value = {}};
+        stampRequest(req, span.context());
         auto res = sendToOwner(key, req);
         if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
             return std::nullopt;
         }
 
+        span.setStatus(SpanStatus::Ok);
         net::Response r = std::move(res.value());
         if (r.status != Errc::OK || !r.value.has_value()) {
             return std::nullopt;
@@ -257,11 +305,15 @@ namespace cinder {
     }
 
     auto CacheClient::ttl(const std::string& key) -> std::optional<milliseconds> {
+        Span span("client.ttl", captureTraceContext());
         auto got = getVersioned(key);
+        // Nullopt conflates miss, timeless key and transport failure — the
+        // child get_versioned span holds the detail, so only record success.
         if (!got.has_value() || !got->expires_at.has_value()) {
             return std::nullopt;
         }
 
+        span.setStatus(SpanStatus::Ok);
         auto remaining = *got->expires_at - std::chrono::system_clock::now();
         if (remaining <= std::chrono::system_clock::duration::zero()) {
             return milliseconds{0};
@@ -273,7 +325,8 @@ namespace cinder {
         const std::vector<std::pair<std::string, std::string>>& kvs,
         std::optional<milliseconds> ttl
     ) -> size_t {
-        Span span("client.multi_set");
+        Span span("client.multi_set", captureTraceContext());
+        auto trace = span.context();
         // Group keys by their ring owner, then pipeline all Sets per node —
         // the same shape as multiGet, but with Set requests.
         ankerl::unordered_dense::map<NodeId, std::vector<std::pair<std::string, std::string>>>
@@ -283,13 +336,20 @@ namespace cinder {
         }
 
         size_t stored = 0;
+        bool failed = false;
         for (const auto& [node, node_kvs] : by_owner) {
             std::vector<net::Request> reqs;
             reqs.reserve(node_kvs.size());
             for (const auto& [key, value] : node_kvs) {
-                reqs.push_back(
-                    {.opcode = net::Opcode::Set, .key = key, .value = value, .ttl = ttl}
-                );
+                net::Request req{
+                    .opcode = net::Opcode::Set,
+                    .key = key,
+                    .value = value,
+                    .ttl = ttl,
+                };
+
+                stampRequest(req, trace);
+                reqs.push_back(std::move(req));
             }
 
             Result<std::vector<net::Response>> res =
@@ -312,6 +372,7 @@ namespace cinder {
                 );
             }
             if (!res.has_value()) {
+                failed = true;
                 continue; // node unreachable — those keys are simply not stored
             }
 
@@ -337,12 +398,17 @@ namespace cinder {
                     .ttl = ttl,
                 };
 
+                stampRequest(single, trace);
                 auto one = sendToOwner(k, single);
                 if (one.has_value() && one.value().status == Errc::OK) {
                     ++stored;
+                } else if (!one.has_value()) {
+                    failed = true;
                 }
             }
         }
+
+        span.setStatus(failed ? SpanStatus::Error : SpanStatus::Ok);
         return stored;
     }
 } // namespace cinder

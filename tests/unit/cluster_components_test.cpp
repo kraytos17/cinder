@@ -17,6 +17,7 @@
 #include <chrono>
 #include <fcntl.h>
 #include <filesystem>
+#include <future>
 #include <gtest/gtest.h>
 #include <random>
 #include <string>
@@ -28,6 +29,7 @@
 #include "cinder/cluster/membership.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/node/replication_manager.hpp"
@@ -921,6 +923,296 @@ namespace cinder {
             EXPECT_GT(after->incarnation, rumor.incarnation)
                 << "refuting incarnation must exceed the claimed one, or the rumor "
                    "re-applies on the next gossip round";
+        }
+
+        // -----------------------------------------------------------------
+        // Async quorum trace propagation (Phase 4)
+        // -----------------------------------------------------------------
+
+        // Transport that captures send callbacks instead of completing inline,
+        // forcing fanOutQuorum's async tail (system-executor thread with
+        // unrelated TLS) to deliver every completion. The test releases the
+        // captured callbacks after the initiating call returns.
+        class DeferredTransport : public Transport {
+        public:
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                SendCallback on_done
+            ) override {
+                std::scoped_lock lock(mutex_);
+                sends_.push_back(std::move(on_done));
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                RequestCallback on_done
+            ) override {
+                std::scoped_lock lock(mutex_);
+                request_sends_.push_back(std::move(on_done));
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+
+            void releaseSends(Result<void> result) {
+                std::vector<SendCallback> pending;
+                {
+                    std::scoped_lock lock(mutex_);
+                    pending = std::move(sends_);
+                    sends_.clear();
+                }
+                for (auto& cb : pending) {
+                    // Fresh Results per waiter: move_only callbacks each fire once.
+                    cb(result.has_value() ? ok() : err<void>(result.error()));
+                }
+            }
+
+            void releaseRequests(Result<net::Response> result) {
+                std::vector<RequestCallback> pending;
+                {
+                    std::scoped_lock lock(mutex_);
+                    pending = std::move(request_sends_);
+                    request_sends_.clear();
+                }
+                for (auto& cb : pending) {
+                    if (result.has_value()) {
+                        cb(ok(std::move(result.value())));
+                    } else {
+                        cb(err<net::Response>(result.error()));
+                    }
+                }
+            }
+
+        private:
+
+            std::mutex mutex_;
+            std::vector<SendCallback> sends_;
+            std::vector<RequestCallback> request_sends_;
+        };
+
+        struct TraceGuard {
+            explicit TraceGuard(std::shared_ptr<Subscriber> sub) :
+                prev_(globalSubscriber()) {
+                setGlobalSubscriber(std::move(sub));
+            }
+
+            ~TraceGuard() {
+                setGlobalSubscriber(prev_);
+            }
+
+            std::shared_ptr<Subscriber> prev_;
+        };
+
+        auto findSpan(
+            const std::vector<RecordingSubscriber::RecordedSpan>& spans,
+            std::string_view operation
+        ) -> const RecordingSubscriber::RecordedSpan* {
+            for (const auto& s : spans) {
+                if (s.operation == operation) {
+                    return &s;
+                }
+            }
+            return nullptr;
+        }
+
+        TEST(ReplicationQuorumTraceTest, AsyncTailKeepsRequestTrace) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            DeferredTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            constexpr uint64_t K_TRACE = 0x0BAD1;
+            constexpr uint64_t K_PARENT = 0x0BAD2;
+            std::promise<Result<void>> done;
+            auto done_future = done.get_future();
+            {
+                TraceGuard guard(sub);
+                repl.writeAsync(
+                    "k",
+                    "v",
+                    std::nullopt,
+                    {"n2"},
+                    ConsistencyMode::Quorum,
+                    [&done](Result<void> r) { done.set_value(std::move(r)); },
+                    K_TRACE,
+                    K_PARENT
+                );
+                // writeAsync returned with the replica outstanding: the inline
+                // drain gave up, so releasing now must go through the tail.
+                // The future is awaited inside the guard: the tail runs on a
+                // system thread after this scope would otherwise end, and the
+                // spans it creates need the subscriber still installed.
+                transport.releaseSends(ok());
+                ASSERT_TRUE(done_future.get().has_value());
+            }
+
+            auto spans = sub->spans();
+            const auto* fanout = findSpan(spans, "replication.write.fanout");
+            const auto* replica = findSpan(spans, "replication.write.replica");
+            const auto* quorum = findSpan(spans, "replication.write.quorum.ok");
+            ASSERT_NE(fanout, nullptr);
+            ASSERT_NE(replica, nullptr);
+            ASSERT_NE(quorum, nullptr);
+            EXPECT_EQ(fanout->trace_id, K_TRACE);
+            EXPECT_EQ(replica->trace_id, K_TRACE);
+            EXPECT_EQ(replica->parent_span_id, fanout->span_id);
+            EXPECT_EQ(replica->status, SpanStatus::Ok);
+            EXPECT_TRUE(replica->closed);
+            EXPECT_EQ(quorum->trace_id, K_TRACE);
+            EXPECT_EQ(quorum->status, SpanStatus::Ok);
+        }
+
+        TEST(ReplicationQuorumTraceTest, FailedReplicaHintEnqueueKeepsTrace) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            DeferredTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            constexpr uint64_t K_TRACE = 0x0BAD3;
+            constexpr uint64_t K_PARENT = 0x0BAD4;
+            std::promise<Result<void>> done;
+            auto done_future = done.get_future();
+            {
+                TraceGuard guard(sub);
+                repl.writeAsync(
+                    "k",
+                    "v",
+                    std::nullopt,
+                    {"n2"},
+                    ConsistencyMode::Quorum,
+                    [&done](Result<void> r) { done.set_value(std::move(r)); },
+                    K_TRACE,
+                    K_PARENT
+                );
+                transport.releaseSends(err<void>(Error(Errc::NotReady, "peer down")));
+                // Awaited under the guard for the same reason as above: the
+                // tail observes the request trace only while installed.
+                EXPECT_FALSE(done_future.get().has_value());
+            }
+            EXPECT_EQ(repl.hintCount(), 1U);
+
+            // The hint-enqueue event fired on the tail thread must still carry
+            // the request trace — not the system pool's ambient TLS.
+            bool hint_logged = false;
+            for (const auto& log : sub->logEvents()) {
+                if (log.message == "hint enqueued" && log.trace_id == K_TRACE) {
+                    hint_logged = true;
+                }
+            }
+            EXPECT_TRUE(hint_logged) << "hint enqueue lost the request trace";
+
+            auto spans = sub->spans();
+            const auto* replica = findSpan(spans, "replication.write.replica");
+            const auto* quorum = findSpan(spans, "replication.write.quorum.fail");
+            ASSERT_NE(replica, nullptr);
+            ASSERT_NE(quorum, nullptr);
+            EXPECT_EQ(replica->trace_id, K_TRACE);
+            EXPECT_EQ(replica->status, SpanStatus::Error);
+            EXPECT_EQ(quorum->trace_id, K_TRACE);
+            EXPECT_EQ(quorum->status, SpanStatus::Error);
+        }
+
+        TEST(ReplicationQuorumTraceTest, ReadMissDecisionIsServedNotFailed) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            DeferredTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            constexpr uint64_t K_TRACE = 0x0BAD5;
+            constexpr uint64_t K_PARENT = 0x0BAD6;
+            std::promise<Result<VersionedEntry>> done;
+            auto done_future = done.get_future();
+            {
+                TraceGuard guard(sub);
+                repl.readAsync("missing", {"n2"}, 2, [&done](Result<VersionedEntry> r) {
+                    done.set_value(std::move(r));
+                }, K_TRACE, K_PARENT);
+                net::Response miss{.status = Errc::NotFound, .value = std::nullopt};
+                transport.releaseRequests(ok(std::move(miss)));
+                // Served miss: quorum answered, key simply absent everywhere.
+                // Awaited under the guard so the tail's decision span lands.
+                EXPECT_FALSE(done_future.get().has_value());
+            }
+
+            auto spans = sub->spans();
+            const auto* quorum = findSpan(spans, "replication.read.quorum");
+            ASSERT_NE(quorum, nullptr);
+            EXPECT_EQ(quorum->trace_id, K_TRACE);
+            EXPECT_EQ(quorum->status, SpanStatus::Ok);
+        }
+
+        // -----------------------------------------------------------------
+        // Hint journal spans (Phase 6)
+        // -----------------------------------------------------------------
+
+        TEST(HintJournalSpanTest, OpenReportsOk) {
+            HintJournalDir paths;
+            auto sub = std::make_shared<RecordingSubscriber>();
+            {
+                TraceGuard guard(sub);
+                HintQueue staging;
+                HintJournal journal;
+                EXPECT_EQ(journal.open(paths.journal, staging), 0U);
+                journal.appendAdd(hjMakeHint("n2", "k", 1), 9'999'999'999'999ULL);
+                journal.sync();
+                HintQueue recovered;
+                HintJournal reader;
+                EXPECT_EQ(reader.open(paths.journal, recovered), 1U);
+            }
+            auto spans = sub->spans();
+            bool opened = false;
+            for (const auto& s : spans) {
+                if (s.operation == "hint.journal.open") {
+                    opened = true;
+                    EXPECT_EQ(s.status, SpanStatus::Ok);
+                    EXPECT_TRUE(s.closed);
+                }
+            }
+            // Two opens (staging + recovery) both report Ok.
+            EXPECT_TRUE(opened);
+        }
+
+        TEST(HintJournalSpanTest, CompactReportsOk) {
+            HintJournalDir paths;
+            // 4100 live adds trip the 4096-record compaction threshold.
+            {
+                HintQueue staging;
+                HintJournal journal;
+                journal.open(paths.journal, staging);
+                const uint64_t far_future =
+                    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch()
+                    )
+                                              .count())
+                    + 600'000ULL;
+                for (int i = 0; i < 4100; ++i) {
+                    journal.appendAdd(hjMakeHint("n2", "ck" + std::to_string(i), 1), far_future);
+                }
+                ASSERT_TRUE(journal.needsCompaction());
+            }
+            auto sub = std::make_shared<RecordingSubscriber>();
+            {
+                TraceGuard guard(sub);
+                HintQueue staging;
+                HintJournal journal;
+                // Recovery replays the 4100 adds (the bounded queue keeps
+                // K_CAPACITY of them); the journal itself is still over the
+                // 4096-record compaction threshold.
+                EXPECT_GT(journal.open(paths.journal, staging), 0U);
+                EXPECT_TRUE(journal.needsCompaction());
+                journal.compact(staging);
+                EXPECT_FALSE(journal.needsCompaction());
+            }
+            auto spans = sub->spans();
+            const auto* compacted = findSpan(spans, "hint.journal.compact");
+            ASSERT_NE(compacted, nullptr);
+            EXPECT_EQ(compacted->status, SpanStatus::Ok);
+            EXPECT_TRUE(compacted->closed);
         }
     } // namespace
 } // namespace cinder

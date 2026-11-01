@@ -53,7 +53,7 @@ namespace cinder {
     }
 
     void FailureDetector::tick() {
-        Span span("failure.probe");
+        Span span("failure.probe", captureTraceContext());
         // Work items deferred outside state_mutex_: membership mutations and the
         // ping send. sendAsync may complete synchronously (sim transport), and its
         // callback re-enters onProbeResult which takes state_mutex_ — so neither
@@ -127,16 +127,25 @@ namespace cinder {
         CINDER_DEBUG("ping sent", {"peer", probe_target});
         net::Request ping;
         ping.opcode = net::Opcode::Ping;
-        transport_.sendAsync(probe_target, ping, [this, probe_target](Result<void> r) {
+        // Join the probe's trace so the peer side and the async result below
+        // correlate with this tick.
+        ping.trace_id = span.context().trace_id;
+        ping.span_id = span.context().span_id;
+        transport_.sendAsync(
+            probe_target,
+            ping,
+            [this, probe_target, probe_ctx = span.context()](Result<void> r) {
+            TraceScope scope(probe_ctx);
             onProbeResult(probe_target, r.has_value());
-        });
+        }
+        );
         if (metrics_) {
             metrics_->clusterMetrics().probe_sent.fetch_add(1, std::memory_order_relaxed);
         }
     }
 
     void FailureDetector::onProbeResult(const NodeId& peer, bool acked) {
-        Span span("failure.on_probe_result");
+        Span span("failure.on_probe_result", captureTraceContext());
         bool known_probe = false;
         int failures = 0;
         {

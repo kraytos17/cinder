@@ -2,6 +2,7 @@
 
 #include <ankerl/unordered_dense.h>
 #include <asio.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
 #include <atomic>
 #include <flat_map>
 #include <memory>
@@ -13,6 +14,7 @@
 
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/cluster/transport.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/net/protocol.hpp"
 
@@ -22,8 +24,13 @@ using asio::ip::tcp;
 namespace cinder {
 
     // Real-network async Transport: sends requests to peer nodes over TCP. Each
-    // target node gets a cached connection protected by a per-node strand — RPCs to
-    // different nodes run concurrently, RPCs to the same node are serialized.
+    // target node gets a cached connection — one socket carrying one
+    // request/response exchange at a time. The per-node strand decides *which*
+    // coroutine runs next, but it cannot serialize the exchange itself: a
+    // coroutine suspends mid-exchange at every co_await, letting the next
+    // coroutine start overlapping async_reads/writes on the same socket and
+    // corrupt framing. The per-connection gate (binary semaphore) closes that
+    // hole: every exchange holds it for the full write/read sequence.
     // On any connection error the cached socket is closed; the next RPC reconnects.
     //
     // Inbound messages are NOT delivered through onMessage — the TcpServer serves
@@ -72,8 +79,9 @@ namespace cinder {
 
     private:
 
-        // Per-node cached connection. Each NodeConn owns a strand that serialises
-        // concurrent RPCs targeting the same peer.
+        // Per-node cached connection. Each NodeConn owns a strand (fair
+        // scheduling across waiters) plus a gate that serialises the actual
+        // socket exchange — see the class comment.
         struct NodeConn {
             asio::strand<asio::io_context::executor_type> strand;
             ClusterConfig::NodeConfig addr{};
@@ -82,11 +90,17 @@ namespace cinder {
 #endif
             tcp::socket socket;
             bool connected = false;
+            asio::experimental::concurrent_channel<void(std::error_code)> gate;
 
             NodeConn(io_context& io, const ClusterConfig::NodeConfig& a) :
                 strand(asio::make_strand(io)),
                 addr(a),
-                socket(io) {}
+                socket(io),
+                gate(strand, 1) {
+                // concurrent_channel starts empty: stock the single token so the
+                // first exchange can proceed.
+                (void)gate.try_send(std::error_code{});
+            }
         };
 
         // Return the cached connection for `id`, creating one if it doesn't exist yet.
@@ -94,8 +108,10 @@ namespace cinder {
 
         // Coroutine running on a NodeConn's strand: check connected, reconnect if
         // needed, write request, read response, decode. On any error closes the
-        // connection so the next RPC reconnects on a clean socket.
-        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
+        // connection so the next RPC reconnects on a clean socket. The exchange
+        // joins the request's trace when it carries one, else starts a fresh
+        // root (background pings/gossip have no inbound parent).
+        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data, SpanContext parent)
             -> asio::awaitable<Result<net::Response>>;
 
         // Mark unusable and release the socket. A failed exchange can leave stale

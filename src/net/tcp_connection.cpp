@@ -129,7 +129,7 @@ namespace cinder::net {
     }
 
     void TcpConnection::close() {
-        Span span("tcp.close");
+        Span span("tcp.close", captureTraceContext());
         auto self = shared_from_this();
         asio::post(strand_, [this, self] {
             closeConnection("server shutdown", asio::error::operation_aborted);
@@ -260,7 +260,7 @@ namespace cinder::net {
     }
 
     void TcpConnection::onHeader(std::error_code ec, size_t /*unused*/) {
-        Span span("tcp.onHeader");
+        Span span("tcp.onHeader", captureTraceContext());
         if (ec) {
             closeConnection("peer closed", ec);
             return;
@@ -430,7 +430,7 @@ namespace cinder::net {
         pending_opcode_ = req.opcode;
         request_start_ = std::chrono::steady_clock::now();
 
-        Span span(getOperationName(req.opcode), req.span_id);
+        Span span(getOperationName(req.opcode), SpanContext{req.trace_id, req.span_id});
         CINDER_DEBUG(
             "request received",
             {"opcode", static_cast<int>(req.opcode)},
@@ -548,7 +548,13 @@ namespace cinder::net {
 
             // Status-only: a value body here would surface as fake data
             // through CacheClient::get(), which returns res.value directly.
-            sendResponse({.status = Errc::PermissionDenied, .value = std::nullopt});
+            // Denials still echo the request trace so the caller can correlate.
+            sendResponse({
+                .status = Errc::PermissionDenied,
+                .value = std::nullopt,
+                .trace_id = req.trace_id,
+                .span_id = req.span_id,
+            });
             maybeRead();
         };
 
@@ -594,7 +600,13 @@ namespace cinder::net {
                     metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
                 }
 
-                sendResponse({.status = Errc::NotReady, .value = redirectValue(owner)});
+                sendResponse({
+                    .status = Errc::NotReady,
+                    .value = redirectValue(owner),
+                    .trace_id = req.trace_id,
+                    .span_id = req.span_id,
+                });
+
                 maybeRead();
                 return;
             }
@@ -627,7 +639,11 @@ namespace cinder::net {
                         asio::post(
                             strand_,
                             [this, self, result = std::move(result), trace_id, span_id] mutable {
-                            Span async_span("replication.read.quorum", span_id);
+                            Span async_span(
+                                "replication.read.quorum",
+                                SpanContext{trace_id, span_id}
+                            );
+
                             Response async_res;
                             if (result.has_value()) {
                                 async_res.status = Errc::OK;
@@ -654,9 +670,13 @@ namespace cinder::net {
                     res.status = Errc::OK;
                     res.value = std::move(val);
                 } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
-                    sendResponse(
-                        {.status = Errc::NotReady, .value = redirectValue(ring_.getNode(req.key))}
-                    );
+                    sendResponse({
+                        .status = Errc::NotReady,
+                        .value = redirectValue(ring_.getNode(req.key)),
+                        .trace_id = req.trace_id,
+                        .span_id = req.span_id,
+                    });
+
                     maybeRead();
                     return;
                 } else {
@@ -675,9 +695,13 @@ namespace cinder::net {
                         res.expires_at = toSystemExpiry(clock_, entry->expires_at);
                     }
                 } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
-                    sendResponse(
-                        {.status = Errc::NotReady, .value = redirectValue(ring_.getNode(req.key))}
-                    );
+                    sendResponse({
+                        .status = Errc::NotReady,
+                        .value = redirectValue(ring_.getNode(req.key)),
+                        .trace_id = req.trace_id,
+                        .span_id = req.span_id,
+                    });
+
                     maybeRead();
                     return;
                 } else {
@@ -710,7 +734,11 @@ namespace cinder::net {
                         // Quorum completion lands on an arbitrary pool thread —
                         // hop back onto this connection's strand.
                         asio::post(strand_, [this, self, result, trace_id, span_id] {
-                            Span async_span("replication.write.quorum", span_id);
+                            Span async_span(
+                                "replication.write.quorum",
+                                SpanContext{trace_id, span_id}
+                            );
+
                             Response async_res{
                                 .status = result.has_value() ? Errc::OK : result.error().code(),
                                 .value = std::nullopt,
@@ -862,7 +890,7 @@ namespace cinder::net {
     }
 
     void TcpConnection::sendResponse(const Response& res) {
-        Span span("tcp.sendResponse");
+        Span span("tcp.sendResponse", captureTraceContext());
         if (pending_opcode_.has_value() && metrics_) {
             auto elapsed_ns =
                 static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -920,7 +948,7 @@ namespace cinder::net {
     }
 
     void TcpConnection::doWrite() {
-        Span span("tcp.doWrite");
+        Span span("tcp.doWrite", captureTraceContext());
         if (write_queue_.empty()) {
             setWriting(false);
             return;

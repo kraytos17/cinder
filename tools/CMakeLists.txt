@@ -3,7 +3,7 @@ set(CINDER_TOOL_SOURCES cinderd_main.cpp cinder_cli.cpp cinder_admin.cpp)
 add_executable(cinderd cinderd_main.cpp)
 target_link_libraries(cinderd PRIVATE cinder::core CLI11::CLI11)
 if(CINDER_ENABLE_GRPC)
-    target_link_libraries(cinderd PRIVATE cinder_grpc)
+    target_link_libraries(cinderd PRIVATE cinder_grpc cinder_proto)
 endif()
 
 add_executable(cinder-cli cinder_cli.cpp)

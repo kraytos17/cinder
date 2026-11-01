@@ -580,5 +580,50 @@ namespace {
             EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
         }
     }
+
+    TEST(GrpcGatewayTest, TraceMetadataJoinedAndMalformedIgnored) {
+        auto [tcp_port, grpc_port] = spawnPorts();
+        NodeProcGuard node{spawnNodeWithGrpc(tcp_port, grpc_port, "grpc-node1")};
+        ASSERT_TRUE(cinder::net::test::waitForNode(tcp_port, "grpc-node1"));
+        ASSERT_TRUE(waitForGrpcPort(grpc_port));
+
+        auto stub = cinder::v1::CinderCacheService::NewStub(makeChannel(grpc_port));
+        // Valid trace parent: the RPC must join it, not fail.
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("cinder-trace-id", "123456789");
+            ctx.AddMetadata("cinder-span-id", "987654321");
+            cinder::v1::SetRequest req;
+            cinder::v1::SetResponse resp;
+            req.set_key("trace-key");
+            req.set_value("trace-value");
+            auto status = stub->Set(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_EQ(resp.status(), cinder::v1::STATUS_CODE_UNSPECIFIED);
+        }
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("cinder-trace-id", "123456789");
+            ctx.AddMetadata("cinder-span-id", "111111111");
+            cinder::v1::GetRequest req;
+            cinder::v1::GetResponse resp;
+            req.set_key("trace-key");
+            auto status = stub->Get(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_EQ(resp.value(), "trace-value");
+        }
+        // Malformed metadata must be ignored (fresh local root), never fail.
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("cinder-trace-id", "not-a-number");
+            ctx.AddMetadata("cinder-span-id", "0");
+            cinder::v1::GetRequest req;
+            cinder::v1::GetResponse resp;
+            req.set_key("trace-key");
+            auto status = stub->Get(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_EQ(resp.value(), "trace-value");
+        }
+    }
 } // namespace
 #endif

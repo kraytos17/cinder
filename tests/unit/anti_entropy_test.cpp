@@ -5,6 +5,7 @@
 
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -399,6 +400,104 @@ namespace cinder {
             // The cap is 1000; some entries may be in different buckets, so the
             // collected count should be <= 1000 (not all 1500).
             EXPECT_LE(count, 1000U);
+        }
+
+        // Deferred scripted peer: captures digest requests and answers them on
+        // demand, so the round's async callback can run after runRound returned
+        // (as with a real transport) instead of inline.
+        class DeferredScriptedTransport : public Transport {
+        public:
+
+            explicit DeferredScriptedTransport(uint32_t buckets) :
+                buckets_(buckets) {}
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                SendCallback on_done
+            ) override {
+                on_done(ok());
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& req,
+                RequestCallback on_done
+            ) override {
+                if (req.opcode == net::Opcode::AntiEntropyDigest) {
+                    seen_digest_trace = req.trace_id;
+                    auto zeros = std::vector<uint64_t>(buckets_, 0);
+                    net::Response resp{
+                        .status = Errc::OK,
+                        .value = AntiEntropyManager::encodeDigest(zeros),
+                    };
+                    pending_digest_ = std::move(on_done);
+                    pending_digest_response_ = std::move(resp);
+                } else {
+                    on_done(ok(net::Response{.status = Errc::OK, .value = std::nullopt}));
+                }
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+
+            void releaseDigest() {
+                pending_digest_(ok(std::move(pending_digest_response_)));
+            }
+
+            uint64_t seen_digest_trace = 0;
+
+        private:
+
+            uint32_t buckets_;
+            RequestCallback pending_digest_;
+            net::Response pending_digest_response_;
+        };
+
+        TEST(AntiEntropyRoundTest, DigestCallbackKeepsRoundTrace) {
+            constexpr uint32_t K_BUCKETS = 8;
+            RealClock clock;
+            LruStore store(1U << 20U);
+            ASSERT_TRUE(store.putVersioned("k1", makeEntry("v1", 1)).has_value());
+            ConsistentHashRing ring;
+            ring.addNode("n1");
+            ring.addNode("n2");
+            DeferredScriptedTransport transport(K_BUCKETS);
+            AntiEntropyManager manager(store, ring, "n1", clock, transport, K_BUCKETS);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            {
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(sub);
+                manager.runRound(2);
+                // Release the digest response under a decoy ambient span: without
+                // the round-context attach in the callback, the "round
+                // completed" event would carry the decoy's trace instead of the
+                // round's — on a real transport the callback runs on an
+                // unrelated I/O thread after runRound returned.
+                Span decoy("decoy");
+                transport.releaseDigest();
+                setGlobalSubscriber(prev);
+
+                auto spans = sub->spans();
+                const RecordingSubscriber::RecordedSpan* round = nullptr;
+                for (const auto& s : spans) {
+                    if (s.operation == "anti_entropy.round") {
+                        round = &s;
+                    }
+                }
+                ASSERT_NE(round, nullptr);
+                EXPECT_NE(round->trace_id, decoy.traceId());
+                // The digest request carried the round's trace to the peer.
+                EXPECT_EQ(transport.seen_digest_trace, round->trace_id);
+                // The async completion still belongs to the round's trace.
+                bool completed_on_round = false;
+                for (const auto& log : sub->logEvents()) {
+                    if (log.message == "round completed" && log.trace_id == round->trace_id) {
+                        completed_on_round = true;
+                    }
+                }
+                EXPECT_TRUE(completed_on_round) << "round completion lost the round trace";
+            }
         }
     } // namespace
 } // namespace cinder

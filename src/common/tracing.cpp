@@ -3,6 +3,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <source_location>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
@@ -23,6 +24,49 @@ namespace cinder {
 
     auto currentTraceContext() -> TraceContext {
         return t_trace_ctx;
+    }
+
+    auto captureTraceContext() -> SpanContext {
+        return {t_trace_ctx.trace_id, t_trace_ctx.span_id};
+    }
+
+    auto parseSpanContext(std::string_view trace_id_str, std::string_view span_id_str)
+        -> SpanContext {
+        // ASCII decimal only, no whitespace/sign handling: strict so a
+        // truncated or binary value can never alias another trace.
+        constexpr size_t K_MAX_DIGITS = 20; // uint64 max is 20 digits
+        auto parse = [](std::string_view s) -> uint64_t {
+            if (s.empty() || s.size() > K_MAX_DIGITS) {
+                return 0;
+            }
+
+            uint64_t value = 0;
+            const char* first = s.data();
+            const char* last = s.data() + s.size();
+            auto [ptr, ec] = std::from_chars(first, last, value);
+            if (ec != std::errc{} || ptr != last) {
+                return 0;
+            }
+            return value;
+        };
+
+        uint64_t trace_id = parse(trace_id_str);
+        uint64_t span_id = parse(span_id_str);
+        if (trace_id == 0 || span_id == 0) {
+            return {};
+        }
+        return {trace_id, span_id};
+    }
+
+    TraceScope::TraceScope(SpanContext ctx) noexcept :
+        prev_(t_trace_ctx) {
+        t_trace_ctx.trace_id = ctx.trace_id;
+        t_trace_ctx.span_id = ctx.span_id;
+        t_trace_ctx.operation = {};
+    }
+
+    TraceScope::~TraceScope() {
+        t_trace_ctx = prev_;
     }
 
     void setGlobalSubscriber(std::shared_ptr<Subscriber> sub) {
@@ -80,49 +124,102 @@ namespace cinder {
         return interest != Interest::Never;
     }
 
+    namespace {
+        // Shared span prologue: mint a span id, install thread-local context
+        // and notify the subscriber, which may assign the authoritative span
+        // id. Returns the subscriber when notified so the caller can stash it
+        // for exit/close; null otherwise.
+        auto beginSpan(
+            std::string_view operation,
+            uint64_t trace_id,
+            uint64_t parent_span_id,
+            const std::source_location& loc,
+            uint64_t& span_id_out
+        ) -> std::shared_ptr<Subscriber> {
+            // Generate a unique span-id via splitmix64.
+            static thread_local uint64_t t_rng_state = 0;
+            if (t_rng_state == 0) {
+                t_rng_state = static_cast<uint64_t>(steady_clock::now().time_since_epoch().count());
+            }
+
+            span_id_out = splitmix64(t_rng_state);
+            // Set thread-local context for all Event calls in this scope.
+            t_trace_ctx.trace_id = trace_id;
+            t_trace_ctx.span_id = span_id_out;
+            t_trace_ctx.operation = operation;
+            // Notify the installed subscriber, if any. It assigns the authoritative
+            // span id, which the context adopts so events correlate with it.
+            if (auto sub = g_subscriber.load(std::memory_order_acquire); sub != nullptr) {
+                Metadata meta{
+                    .target = operation,
+                    .file = loc.file_name(),
+                    .line = loc.line(),
+                    .level = LogLevel::Trace,
+                };
+                if (sub->registerCallsite(meta) != Interest::Never) {
+                    uint64_t sub_id = sub->newSpan(meta, trace_id, parent_span_id);
+                    sub->enter(sub_id);
+                    span_id_out = sub_id;
+                    t_trace_ctx.span_id = span_id_out;
+                    return sub;
+                }
+            }
+            return nullptr;
+        }
+
+        auto freshTraceId() -> uint64_t {
+            static std::atomic<uint64_t> s_next_trace{1};
+            return s_next_trace.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        // Runs fallible recording work; faults are swallowed at the tracing
+        // boundary (subscriber callbacks are noexcept, so an allocation
+        // failure must not escape into instrumented code).
+        template <typename Fn> void recordQuietly(Fn&& fn) noexcept {
+            try {
+                fn();
+            } catch (...) { // NOLINT(bugprone-empty-catch)
+                // Deliberate: the span keeps its id, recording misses one record.
+            }
+        }
+    } // namespace
+
     Span::Span(std::string_view operation, uint64_t parent_span_id, std::source_location loc) :
         prev_trace_id_(t_trace_ctx.trace_id),
         prev_span_id_(t_trace_ctx.span_id),
         span_id_(0),
+        parent_span_id_(parent_span_id),
         operation_(operation) {
         if (parent_span_id == 0) {
             // Fresh trace: generate a unique trace-id from an atomic counter.
-            static std::atomic<uint64_t> s_next_trace{1};
-            trace_id_ = s_next_trace.fetch_add(1, std::memory_order_relaxed);
+            trace_id_ = freshTraceId();
         } else {
-            // Child span: inherit trace-id from parent.
+            // Child span: inherit trace-id from parent. Only valid when the
+            // parent is live on this thread; see the SpanContext overload for
+            // remote/cross-thread parents.
             trace_id_ = t_trace_ctx.trace_id;
         }
 
-        // Generate a unique span-id via splitmix64.
-        static thread_local uint64_t t_rng_state = 0;
-        if (t_rng_state == 0) {
-            t_rng_state = static_cast<uint64_t>(steady_clock::now().time_since_epoch().count());
+        if (auto sub = beginSpan(operation, trace_id_, parent_span_id, loc, span_id_);
+            sub != nullptr) {
+            subscriber_ = std::move(sub);
+            sub_notified_ = true;
+            span_id_ = sub_span_id_ = t_trace_ctx.span_id;
         }
+    }
 
-        span_id_ = splitmix64(t_rng_state);
-        // Set thread-local context for all Event calls in this scope.
-        t_trace_ctx.trace_id = trace_id_;
-        t_trace_ctx.span_id = span_id_;
-        t_trace_ctx.operation = operation_;
-
-        // Notify the installed subscriber, if any. It assigns the authoritative
-        // span id, which the context adopts so events correlate with it.
-        if (auto sub = g_subscriber.load(std::memory_order_acquire); sub != nullptr) {
-            Metadata meta{
-                .target = operation,
-                .file = loc.file_name(),
-                .line = loc.line(),
-                .level = LogLevel::Trace,
-            };
-            if (sub->registerCallsite(meta) != Interest::Never) {
-                sub_span_id_ = sub->newSpan(meta, trace_id_, parent_span_id);
-                sub->enter(sub_span_id_);
-                subscriber_ = std::move(sub);
-                sub_notified_ = true;
-                span_id_ = sub_span_id_;
-                t_trace_ctx.span_id = span_id_;
-            }
+    Span::Span(std::string_view operation, SpanContext parent, std::source_location loc) :
+        prev_trace_id_(t_trace_ctx.trace_id),
+        prev_span_id_(t_trace_ctx.span_id),
+        trace_id_(parent.valid() ? parent.trace_id : freshTraceId()),
+        span_id_(0),
+        parent_span_id_(parent.span_id),
+        operation_(operation) {
+        if (auto sub = beginSpan(operation, trace_id_, parent_span_id_, loc, span_id_);
+            sub != nullptr) {
+            subscriber_ = std::move(sub);
+            sub_notified_ = true;
+            span_id_ = sub_span_id_ = t_trace_ctx.span_id;
         }
     }
 
@@ -130,6 +227,7 @@ namespace cinder {
         if (sub_notified_) {
             subscriber_->exit(sub_span_id_);
         }
+
         // Restore previous context.
         t_trace_ctx.trace_id = prev_trace_id_;
         t_trace_ctx.span_id = prev_span_id_;
@@ -137,6 +235,19 @@ namespace cinder {
         if (sub_notified_) {
             // Guards are not cloneable, so this exit is final.
             subscriber_->tryClose(sub_span_id_);
+        }
+    }
+
+    void Span::setStatus(SpanStatus status) noexcept {
+        status_ = status;
+        if (sub_notified_) {
+            subscriber_->setSpanStatus(sub_span_id_, status);
+        }
+    }
+
+    void Span::addEvent(std::string_view name) noexcept {
+        if (sub_notified_) {
+            subscriber_->spanEvent(sub_span_id_, name, steady_clock::now());
         }
     }
 
@@ -332,13 +443,19 @@ namespace cinder {
     }
 
     auto LayeredSubscriber::registerCallsite(const Metadata& meta) -> Interest {
-        std::lock_guard lock(mutex_);
+        // Snapshot first: a layer consulting configuration may reenter (e.g.
+        // emit events), which must not block on a held composition lock.
+        std::vector<std::shared_ptr<Subscriber>> layers;
+        {
+            std::lock_guard lock(mutex_);
+            layers = layers_;
+        }
         // Permissive combination: skip only when every layer says Never, so
         // each layer still filters for itself in event(). Every layer observes
         // the call (layers may cache per-callsite state), so no early return.
         bool any_always = false;
         bool any_sometimes = false;
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layers) {
             switch (layer->registerCallsite(meta)) {
                 case Interest::Always:
                     any_always = true;
@@ -356,43 +473,47 @@ namespace cinder {
         return any_sometimes ? Interest::Sometimes : Interest::Never;
     }
 
+    auto LayeredSubscriber::layersSnapshot() noexcept -> std::vector<std::shared_ptr<Subscriber>> {
+        try {
+            std::lock_guard lock(mutex_);
+            return layers_;
+        } catch (...) {
+            return {};
+        }
+    }
+
     auto LayeredSubscriber::newSpan(
         const Metadata& meta,
         uint64_t parent_trace_id,
         uint64_t parent_span_id
     ) noexcept -> uint64_t {
-        std::lock_guard lock(mutex_);
         uint64_t id = next_span_id_.fetch_add(1, std::memory_order_relaxed);
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layersSnapshot()) {
             layer->newSpan(meta, parent_trace_id, parent_span_id);
         }
         return id;
     }
 
     void LayeredSubscriber::enter(uint64_t span_id) noexcept {
-        std::lock_guard lock(mutex_);
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layersSnapshot()) {
             layer->enter(span_id);
         }
     }
 
     void LayeredSubscriber::exit(uint64_t span_id) noexcept {
-        std::lock_guard lock(mutex_);
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layersSnapshot()) {
             layer->exit(span_id);
         }
     }
 
     void LayeredSubscriber::tryClose(uint64_t span_id) noexcept {
-        std::lock_guard lock(mutex_);
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layersSnapshot()) {
             layer->tryClose(span_id);
         }
     }
 
     void LayeredSubscriber::event(const EventRecord& record) noexcept {
-        std::lock_guard lock(mutex_);
-        for (const auto& layer : layers_) {
+        for (const auto& layer : layersSnapshot()) {
             layer->event(record);
         }
     }
@@ -434,6 +555,113 @@ namespace cinder {
             return;
         }
         inner_->event(record);
+    }
+
+    auto RecordingSubscriber::registerCallsite(const Metadata& /*meta*/) -> Interest {
+        return Interest::Always;
+    }
+
+    auto RecordingSubscriber::newSpan(
+        const Metadata& meta,
+        uint64_t parent_trace_id,
+        uint64_t parent_span_id
+    ) noexcept -> uint64_t {
+        uint64_t id = next_span_id_.fetch_add(1, std::memory_order_relaxed);
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            RecordedSpan span;
+            span.span_id = id;
+            span.trace_id = parent_trace_id;
+            span.parent_span_id = parent_span_id;
+            span.operation = std::string(meta.target);
+            span.started_at = steady_clock::now();
+            spans_.push_back(std::move(span));
+        });
+        return id;
+    }
+
+    void RecordingSubscriber::enter(uint64_t /*span_id*/) noexcept {
+        // Timing derives from newSpan/tryClose; no per-enter state to track.
+    }
+
+    void RecordingSubscriber::exit(uint64_t /*span_id*/) noexcept {}
+
+    void RecordingSubscriber::tryClose(uint64_t span_id) noexcept {
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            for (auto& span : spans_) {
+                if (span.span_id == span_id && !span.closed) {
+                    span.ended_at = steady_clock::now();
+                    span.closed = true;
+                    return;
+                }
+            }
+        });
+    }
+
+    void RecordingSubscriber::setSpanStatus(uint64_t span_id, SpanStatus status) noexcept {
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            for (auto& span : spans_) {
+                if (span.span_id == span_id) {
+                    span.status = status;
+                    return;
+                }
+            }
+        });
+    }
+
+    void RecordingSubscriber::spanEvent(
+        uint64_t span_id,
+        std::string_view name,
+        std::chrono::steady_clock::time_point at
+    ) noexcept {
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            for (auto& span : spans_) {
+                if (span.span_id == span_id) {
+                    span.events.push_back({at, std::string(name)});
+                    return;
+                }
+            }
+        });
+    }
+
+    void RecordingSubscriber::event(const EventRecord& record) noexcept {
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            RecordedLog log;
+            log.message = std::string(record.message);
+            log.trace_id = record.context.trace_id;
+            log.span_id = record.context.span_id;
+            logs_.push_back(std::move(log));
+        });
+    }
+
+    auto RecordingSubscriber::spans() const -> std::vector<RecordedSpan> {
+        std::scoped_lock lock(mutex_);
+        return spans_;
+    }
+
+    auto RecordingSubscriber::logEvents() const -> std::vector<RecordedLog> {
+        std::scoped_lock lock(mutex_);
+        return logs_;
+    }
+
+    auto RecordingSubscriber::find(uint64_t span_id) const -> std::optional<RecordedSpan> {
+        std::scoped_lock lock(mutex_);
+        for (const auto& span : spans_) {
+            if (span.span_id == span_id) {
+                return span;
+            }
+        }
+        return std::nullopt;
+    }
+
+    void RecordingSubscriber::clear() {
+        std::scoped_lock lock(mutex_);
+        spans_.clear();
+        logs_.clear();
     }
 
     void Event::dispatchEvent(

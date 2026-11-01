@@ -19,16 +19,17 @@
 #include "cinder/store/detail/io_utils.hpp"
 
 namespace cinder {
+    using std::chrono::duration_cast;
+
     namespace {
 
         using std::chrono::milliseconds;
         using std::chrono::steady_clock;
 
         auto sysNowMs() -> uint64_t {
-            return static_cast<uint64_t>(std::chrono::duration_cast<milliseconds>(
-                                             std::chrono::system_clock::now().time_since_epoch()
-            )
-                                             .count());
+            return static_cast<uint64_t>(
+                duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
+            );
         }
 
         auto checksum(std::string_view payload) -> uint64_t {
@@ -75,16 +76,19 @@ namespace cinder {
     }
 
     auto HintJournal::open(const std::string& path, HintQueue& queue) -> uint64_t {
+        Span span("hint.journal.open", captureTraceContext());
         std::error_code ec;
         std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
         if (ec) {
             CINDER_WARN("hint journal dir failed", {"path", path}, {"err", ec.message()});
+            span.setStatus(SpanStatus::Error);
             return 0;
         }
 
         fd_ = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
         if (fd_ < 0) {
             CINDER_WARN("hint journal open failed", {"path", path});
+            span.setStatus(SpanStatus::Error);
             return 0;
         }
 
@@ -143,13 +147,12 @@ namespace cinder {
         // Heal: drop any torn tail so later appends land on valid history.
         auto end = ::lseek(fd_, 0, SEEK_CUR);
         auto size = ::lseek(fd_, 0, SEEK_END);
-        if (end >= 0 && size > end) {
-            if (::ftruncate(fd_, end) != 0) {
-                CINDER_WARN("hint journal truncate failed", {"path", path});
-            }
+        if (end >= 0 && size > end && ::ftruncate(fd_, end) != 0) {
+            CINDER_WARN("hint journal truncate failed", {"path", path});
         }
 
         CINDER_INFO("hint journal recovered", {"path", path}, {"hints", queue.size()});
+        span.setStatus(SpanStatus::Ok);
         return queue.size();
     }
 
@@ -157,7 +160,6 @@ namespace cinder {
         if (fd_ < 0) {
             return;
         }
-
         if (!writeRecord(encodeAdd(hint, sys_expiry_ms))) {
             CINDER_WARN("hint journal append failed", {"path", path_}, {"errno", errno});
             return;
@@ -169,7 +171,6 @@ namespace cinder {
         if (fd_ < 0) {
             return;
         }
-
         if (!writeRecord(encodeDel(target, key, version))) {
             CINDER_WARN("hint journal append failed", {"path", path_}, {"errno", errno});
             return;
@@ -184,7 +185,9 @@ namespace cinder {
     }
 
     void HintJournal::compact(HintQueue& queue) {
+        Span span("hint.journal.compact", captureTraceContext());
         if (fd_ < 0 || path_.empty()) {
+            span.setStatus(SpanStatus::Error);
             return;
         }
 
@@ -193,6 +196,7 @@ namespace cinder {
         int tmp = ::open(tmp_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
         if (tmp < 0) {
             CINDER_WARN("hint journal compact open failed", {"path", tmp_path});
+            span.setStatus(SpanStatus::Error);
             return;
         }
 
@@ -201,11 +205,9 @@ namespace cinder {
         bool ok = true;
         for (const auto& entry : live) {
             // Preserve remaining TTL rather than granting a fresh one.
-            const auto remaining_ms =
-                static_cast<int64_t>(std::chrono::duration_cast<milliseconds>(
-                                         entry.hint.expires_at - steady_clock::now()
-                )
-                                         .count());
+            const auto remaining_ms = static_cast<int64_t>(
+                duration_cast<milliseconds>(entry.hint.expires_at - steady_clock::now()).count()
+            );
             if (remaining_ms <= 0) {
                 continue;
             }
@@ -232,6 +234,7 @@ namespace cinder {
         if (!ok) {
             ::unlink(tmp_path.c_str());
             CINDER_WARN("hint journal compact write failed", {"path", tmp_path});
+            span.setStatus(SpanStatus::Error);
             return;
         }
 
@@ -241,12 +244,14 @@ namespace cinder {
         if (ec) {
             CINDER_WARN("hint journal compact rename failed", {"err", ec.message()});
             fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
+            span.setStatus(SpanStatus::Error);
             return;
         }
 
         fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
         records_ = kept;
         CINDER_INFO("hint journal compacted", {"path", path_}, {"hints", kept});
+        span.setStatus(SpanStatus::Ok);
     }
 
     auto HintJournal::encodeAdd(const HintQueue::Hint& hint, uint64_t sys_expiry_ms)
@@ -292,13 +297,13 @@ namespace cinder {
         }
 
         size_t off = 0;
-        auto read_u8 = [&]() -> std::optional<uint8_t> {
+        auto read_u8 = [&] -> std::optional<uint8_t> {
             if (off >= payload.size()) {
                 return std::nullopt;
             }
             return static_cast<uint8_t>(payload[off++]);
         };
-        auto read_u32 = [&]() -> std::optional<uint32_t> {
+        auto read_u32 = [&] -> std::optional<uint32_t> {
             if (off + 4 > payload.size()) {
                 return std::nullopt;
             }
@@ -308,7 +313,7 @@ namespace cinder {
             off += 4;
             return v;
         };
-        auto read_u64 = [&]() -> std::optional<uint64_t> {
+        auto read_u64 = [&] -> std::optional<uint64_t> {
             if (off + 8 > payload.size()) {
                 return std::nullopt;
             }

@@ -366,11 +366,18 @@ namespace cinder {
         const net::Request& req,
         std::function<void(net::Response)> respond
     ) {
-        Span span("anti_entropy.digest");
+        Span span("anti_entropy.digest", captureTraceContext());
         auto remote = decodeDigest(req.value, num_buckets_);
         if (!remote.has_value()) {
             CINDER_WARN("bad digest", {"from", from});
-            respond(net::Response{.status = Errc::InvalidArgument, .value = std::nullopt});
+            respond(
+                net::Response{
+                    .status = Errc::InvalidArgument,
+                    .value = std::nullopt,
+                    .trace_id = req.trace_id,
+                    .span_id = req.span_id,
+                }
+            );
             return;
         }
 
@@ -393,7 +400,14 @@ namespace cinder {
                 std::memory_order_relaxed
             );
         }
-        respond(net::Response{.status = Errc::OK, .value = std::move(payload)});
+        respond(
+            net::Response{
+                .status = Errc::OK,
+                .value = std::move(payload),
+                .trace_id = req.trace_id,
+                .span_id = req.span_id,
+            }
+        );
     }
 
     void AntiEntropyManager::onSyncRequest(
@@ -401,7 +415,7 @@ namespace cinder {
         const net::Request& req,
         std::function<void(net::Response)> respond
     ) {
-        Span span("anti_entropy.sync");
+        Span span("anti_entropy.sync", captureTraceContext());
         size_t n = applyEntries(req.value);
         CINDER_DEBUG("sync received", {"from", from}, {"entries", n});
         if (metrics_ && n > 0) {
@@ -410,11 +424,18 @@ namespace cinder {
                 std::memory_order_relaxed
             );
         }
-        respond(net::Response{.status = Errc::OK, .value = std::nullopt});
+        respond(
+            net::Response{
+                .status = Errc::OK,
+                .value = std::nullopt,
+                .trace_id = req.trace_id,
+                .span_id = req.span_id,
+            }
+        );
     }
 
     void AntiEntropyManager::runRound(int replica_factor) {
-        Span span("anti_entropy.round");
+        Span span("anti_entropy.round", captureTraceContext());
         auto partner = pickPartner(replica_factor);
         if (!partner.has_value()) {
             CINDER_DEBUG(("no partner available, skipping round"));
@@ -425,12 +446,22 @@ namespace cinder {
         net::Request req;
         req.opcode = net::Opcode::AntiEntropyDigest;
         req.value = encodeDigest(local);
+        req.trace_id = span.traceId();
+        req.span_id = span.spanId();
 
         CINDER_DEBUG("starting round", {"partner", *partner});
+        // The digest callback below runs on a transport completion thread
+        // with unrelated TLS; capture the round identity so its events stay
+        // on this trace. (No TraceScope can span the co_await inside the
+        // transport — attach at callback entry instead.)
+        SpanContext round_ctx = span.context();
         transport_.sendRequestAsync(
             *partner,
             req,
-            [this, local = std::move(local), partner = *partner](Result<net::Response> r) mutable {
+            [this, local = std::move(local), partner = *partner, round_ctx](
+                Result<net::Response> r
+            ) mutable {
+            TraceScope scope(round_ctx);
             if (!r.has_value() || r->status != Errc::OK || !r->value.has_value()) {
                 CINDER_DEBUG("digest round failed", {"partner", partner});
                 return;
@@ -484,6 +515,8 @@ namespace cinder {
             net::Request sync;
             sync.opcode = net::Opcode::AntiEntropySync;
             sync.value = collectEntries(divergent);
+            sync.trace_id = round_ctx.trace_id;
+            sync.span_id = round_ctx.span_id;
             transport_.sendRequestAsync(partner, sync, [partner](Result<net::Response> sr) {
                 if (!sr.has_value() || sr->status != Errc::OK) {
                     CINDER_DEBUG("sync phase failed", {"partner", partner});

@@ -14,6 +14,7 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
@@ -141,10 +142,13 @@ namespace cinder {
         }
 
         void enqueueHint(const NodeId& target, const net::Request& req);
+        // Repair fan-out parented to the caller (the read quorum that found
+        // divergence), so the repair is a child span rather than a fresh root.
         void sendRepairFanOut(
             const std::string& key,
             const std::vector<NodeId>& targets,
-            const VersionedEntry& winner
+            const VersionedEntry& winner,
+            SpanContext parent
         );
 
         // One in-flight coalesced read. Waiters share the leader's LWW result;

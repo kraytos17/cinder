@@ -125,12 +125,27 @@ namespace cinder::grpc {
                 return diff == 0U;
             }
 
-            static auto makeTraceId() -> std::pair<uint64_t, uint64_t> {
-                // One fetch_add mints both IDs (trace takes the even slot,
-                // span the odd) instead of two globally-contended RMWs.
-                static std::atomic<uint64_t> next_id{1};
-                uint64_t base = next_id.fetch_add(2, std::memory_order_relaxed);
-                return {base, base + 1};
+            // Inbound trace metadata contract (see docs/tracing.md): ASCII
+            // decimal uint64 trace/span ids under "cinder-trace-id" and
+            // "cinder-span-id". Absent or malformed values yield an invalid
+            // context and the RPC starts a fresh trace rather than failing.
+            // Metadata keys are lowercase per gRPC convention; only the first
+            // value of each key is honored. Never logs metadata contents.
+            static auto traceParentFromMetadata(const ::grpc::ServerContext* ctx)
+                -> cinder::SpanContext {
+                std::string_view trace_str;
+                std::string_view span_str;
+                const auto& metadata = ctx->client_metadata();
+                if (auto it = metadata.find("cinder-trace-id"); it != metadata.end()) {
+                    trace_str = {it->second.data(), it->second.size()};
+                }
+                if (auto it = metadata.find("cinder-span-id"); it != metadata.end()) {
+                    span_str = {it->second.data(), it->second.size()};
+                }
+                if (trace_str.empty() || span_str.empty()) {
+                    return {};
+                }
+                return cinder::parseSpanContext(trace_str, span_str);
             }
 
             ::grpc::Status Get(
@@ -138,12 +153,11 @@ namespace cinder::grpc {
                 const cinder::v1::GetRequest* req,
                 cinder::v1::GetResponse* resp
             ) override {
+                cinder::Span span("grpc.get", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
-
-                auto [trace_id, span_id] = makeTraceId();
-                cinder::Span span("grpc.get", span_id);
                 if (handle_.replica_factor > 1) {
                     auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
                     std::vector<NodeId> replicas;
@@ -170,10 +184,12 @@ namespace cinder::grpc {
                     if (result.has_value()) {
                         resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
                         resp->set_value(result->value);
+                        span.setStatus(cinder::SpanStatus::Ok);
                     } else {
                         resp->set_status(toProtoStatus(result.error().code()));
+                        span.setStatus(cinder::SpanStatus::Error);
                     }
-                    return grpc::Status::OK;
+                    return ::grpc::Status::OK;
                 }
 
                 auto val = handle_.store.get(req->key());
@@ -183,7 +199,9 @@ namespace cinder::grpc {
                 } else {
                     resp->set_status(cinder::v1::STATUS_CODE_NOT_FOUND);
                 }
-                return grpc::Status::OK;
+
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status Set(
@@ -191,16 +209,17 @@ namespace cinder::grpc {
                 const cinder::v1::SetRequest* req,
                 cinder::v1::SetResponse* resp
             ) override {
+                cinder::Span span("grpc.set", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                auto [trace_id, span_id] = makeTraceId();
-                cinder::Span span("grpc.set", span_id);
                 auto owner = handle_.ring.getNode(req->key());
                 if (owner != handle_.node_id) {
                     resp->set_status(cinder::v1::STATUS_CODE_NOT_READY);
-                    return grpc::Status::OK;
+                    span.setStatus(cinder::SpanStatus::Ok);
+                    return ::grpc::Status::OK;
                 }
 
                 std::optional<milliseconds> ttl;
@@ -234,14 +253,20 @@ namespace cinder::grpc {
                         result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
                                            : toProtoStatus(result.error().code())
                     );
+                    span.setStatus(
+                        result.has_value() ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error
+                    );
                 } else {
                     auto result = handle_.store.put(req->key(), req->value(), ttl);
                     resp->set_status(
                         result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
                                            : toProtoStatus(result.error().code())
                     );
+                    span.setStatus(
+                        result.has_value() ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error
+                    );
                 }
-                return grpc::Status::OK;
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status Delete(
@@ -249,14 +274,16 @@ namespace cinder::grpc {
                 const cinder::v1::DeleteRequest* req,
                 cinder::v1::DeleteResponse* resp
             ) override {
+                cinder::Span span("grpc.delete", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.delete");
                 handle_.store.remove(req->key());
                 resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
-                return grpc::Status::OK;
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status GetVersioned(
@@ -264,7 +291,9 @@ namespace cinder::grpc {
                 const cinder::v1::GetVersionedRequest* req,
                 cinder::v1::GetVersionedResponse* resp
             ) override {
+                cinder::Span span("grpc.get_versioned", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
@@ -272,13 +301,15 @@ namespace cinder::grpc {
                 if (entry.has_value()) {
                     resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
                     resp->set_value(entry->value);
-                    resp->set_version(entry->version);
+                    resp->set_version(entry->version());
                     resp->set_writer_node_hash(entry->writer_node_hash);
                     resp->set_expires_at_ms(0);
                 } else {
                     resp->set_status(cinder::v1::STATUS_CODE_NOT_FOUND);
                 }
-                return grpc::Status::OK;
+
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status Ping(
@@ -286,13 +317,15 @@ namespace cinder::grpc {
                 const cinder::v1::PingRequest* /*req*/,
                 cinder::v1::PingResponse* resp
             ) override {
+                cinder::Span span("grpc.ping", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.ping");
                 resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
-                return grpc::Status::OK;
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status MultiGet(
@@ -300,11 +333,11 @@ namespace cinder::grpc {
                 const cinder::v1::MultiGetRequest* req,
                 cinder::v1::MultiGetResponse* resp
             ) override {
+                cinder::Span span("grpc.multi_get", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
-
-                cinder::Span span("grpc.multi_get");
                 for (const auto& key : req->keys()) {
                     auto* r = resp->add_responses();
                     auto val = handle_.store.get(key);
@@ -315,7 +348,9 @@ namespace cinder::grpc {
                         r->set_status(cinder::v1::STATUS_CODE_NOT_FOUND);
                     }
                 }
-                return grpc::Status::OK;
+
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status MultiSet(
@@ -323,11 +358,13 @@ namespace cinder::grpc {
                 const cinder::v1::MultiSetRequest* req,
                 cinder::v1::MultiSetResponse* resp
             ) override {
+                cinder::Span span("grpc.multi_set", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.multi_set");
+                bool failed = false;
                 for (const auto& set_req : req->requests()) {
                     auto* r = resp->add_responses();
                     std::optional<milliseconds> ttl;
@@ -346,8 +383,11 @@ namespace cinder::grpc {
                         result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
                                            : toProtoStatus(result.error().code())
                     );
+                    failed = failed || !result.has_value();
                 }
-                return grpc::Status::OK;
+
+                span.setStatus(failed ? cinder::SpanStatus::Error : cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status Info(
@@ -355,18 +395,21 @@ namespace cinder::grpc {
                 const cinder::v1::InfoRequest* /*req*/,
                 cinder::v1::InfoResponse* resp
             ) override {
+                cinder::Span span("grpc.info", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.info");
                 resp->set_json(formatNodeInfoJson(
                     handle_.node_id,
                     handle_.config,
                     handle_.metrics.shardMetrics().live.current_bytes.load(),
                     handle_.metrics.shardMetrics().live.current_entries.load()
                 ));
-                return grpc::Status::OK;
+
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status ClusterInfo(
@@ -374,13 +417,15 @@ namespace cinder::grpc {
                 const cinder::v1::ClusterInfoRequest* /*req*/,
                 cinder::v1::ClusterInfoResponse* resp
             ) override {
+                cinder::Span span("grpc.cluster_info", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.cluster_info");
                 resp->set_json(formatClusterJson(handle_.table.snapshot()));
-                return grpc::Status::OK;
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
             ::grpc::Status RingInfo(
@@ -388,13 +433,15 @@ namespace cinder::grpc {
                 const cinder::v1::RingInfoRequest* /*req*/,
                 cinder::v1::RingInfoResponse* resp
             ) override {
+                cinder::Span span("grpc.ring_info", traceParentFromMetadata(ctx));
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
 
-                cinder::Span span("grpc.ring_info");
                 resp->set_json(formatRingJson(handle_.node_id));
-                return grpc::Status::OK;
+                span.setStatus(cinder::SpanStatus::Ok);
+                return ::grpc::Status::OK;
             }
 
         private:
@@ -405,7 +452,7 @@ namespace cinder::grpc {
     } // namespace
 
     auto createCacheService(CacheNodeServer::GatewayHandle handle, std::string client_shared_secret)
-        -> std::unique_ptr<grpc::Service> {
+        -> std::unique_ptr<::grpc::Service> {
         return std::make_unique<CinderCacheServiceImpl>(
             std::move(handle),
             std::move(client_shared_secret)

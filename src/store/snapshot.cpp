@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "cinder/common/tracing.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 
 using namespace cinder::detail;
@@ -14,8 +15,10 @@ namespace cinder {
 
     auto SnapshotWriter::write(Version next_version, std::span<const SnapshotEntry> entries)
         -> Result<void> {
+        Span span("snapshot.write", captureTraceContext());
         std::ofstream out(path_ + ".tmp", std::ios::binary | std::ios::trunc);
         if (!out.is_open()) {
+            span.setStatus(SpanStatus::Error);
             return err(Error(Errc::InternalError, "cannot open snapshot file for writing"));
         }
 
@@ -64,14 +67,18 @@ namespace cinder {
 
         out.flush();
         if (!out.good()) {
+            span.setStatus(SpanStatus::Error);
             return err(Error(Errc::InternalError, "snapshot write failed"));
         }
 
         std::error_code ec;
         std::filesystem::rename(path_ + ".tmp", path_, ec);
         if (ec) {
+            span.setStatus(SpanStatus::Error);
             return err(Error(Errc::InternalError, "snapshot rename failed: " + ec.message()));
         }
+
+        span.setStatus(SpanStatus::Ok);
         return ok();
     }
 
@@ -79,17 +86,21 @@ namespace cinder {
         in_(path, std::ios::binary) {}
 
     auto SnapshotReader::readAll() -> Result<SnapshotData> {
+        Span span("snapshot.read", captureTraceContext());
         if (!in_.is_open()) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::InternalError, "snapshot file not open"));
         }
 
         auto magic = readU32(in_);
         if (!magic.has_value() || magic.value() != K_SNAPSHOT_MAGIC) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::CorruptData, "invalid snapshot magic"));
         }
 
         auto format_ver = readU32(in_);
         if (!format_ver.has_value() || format_ver.value() != K_SNAPSHOT_FORMAT_VERSION) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(
                 Error(Errc::CorruptData, "unsupported snapshot format version")
             );
@@ -97,11 +108,13 @@ namespace cinder {
 
         auto next_ver = readU64(in_);
         if (!next_ver.has_value()) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot header"));
         }
 
         auto entry_count = readU32(in_);
         if (!entry_count.has_value()) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot entry count"));
         }
 
@@ -116,6 +129,7 @@ namespace cinder {
         in_.seekg(pos);
         auto remaining = static_cast<uint64_t>(file_size - pos);
         if (static_cast<uint64_t>(entry_count.value()) > remaining / K_MIN_ENTRY_BYTES) {
+            span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::InvalidArgument, "entry_count exceeds file size"));
         }
 
@@ -125,31 +139,37 @@ namespace cinder {
         for (uint32_t i = 0; i < entry_count.value(); ++i) {
             auto key_len = readU32(in_);
             if (!key_len.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key"));
             }
 
             auto key = readString(in_, key_len.value());
             if (!key.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key data"));
             }
 
             auto val_len = readU32(in_);
             if (!val_len.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value"));
             }
 
             auto value = readString(in_, val_len.value());
             if (!value.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value data"));
             }
 
             auto version = readU64(in_);
             if (!version.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot version"));
             }
 
             auto writer_hash = readU64(in_);
             if (!writer_hash.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(
                     Error(Errc::CorruptData, "truncated snapshot writer_hash")
                 );
@@ -157,6 +177,7 @@ namespace cinder {
 
             auto expires_ms = readU64(in_);
             if (!expires_ms.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(
                     Error(Errc::CorruptData, "truncated snapshot expires_at_ms")
                 );
@@ -164,11 +185,13 @@ namespace cinder {
 
             auto has_ttl = readU8(in_);
             if (!has_ttl.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
             }
 
             auto freq = readU64(in_);
             if (!freq.has_value()) {
+                span.setStatus(SpanStatus::Error);
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot freq"));
             }
 
@@ -184,6 +207,8 @@ namespace cinder {
                 }
             );
         }
+
+        span.setStatus(SpanStatus::Ok);
         return data;
     }
 } // namespace cinder

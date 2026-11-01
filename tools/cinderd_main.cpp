@@ -191,6 +191,13 @@ auto main(int argc, char* argv[]) -> int {
         options.peers = std::move(cfg.peers);
     }
 
+    // Snapshot the gateway's TLS inputs before options is moved into the
+    // server below; reading them afterwards would be use-after-move. Only
+    // needed when the gRPC gateway exists (its only consumer is #ifdef'd).
+#ifdef CINDER_ENABLE_GRPC
+    const std::string grpc_tls_cert_file = options.tls_cert_file;
+    const std::string grpc_tls_key_file = options.tls_key_file;
+#endif
     cinder::CacheNodeServer server(std::move(options));
     auto result = server.start();
     if (!result.has_value()) {
@@ -206,7 +213,7 @@ auto main(int argc, char* argv[]) -> int {
             // The gateway enforces the same client bearer over gRPC metadata
             // and requires TLS for it; without certificates startup already
             // failed in server.start(), this is the defense-in-depth check.
-            if (options.tls_cert_file.empty() || options.tls_key_file.empty()) {
+            if (grpc_tls_cert_file.empty() || grpc_tls_key_file.empty()) {
                 CINDER_ERROR("client auth with gRPC requires TLS certificate and key");
                 return 1;
             }
@@ -217,8 +224,8 @@ auto main(int argc, char* argv[]) -> int {
             std::move(handle),
             actual_grpc_port,
             server.clientAuthSecret(),
-            options.tls_cert_file,
-            options.tls_key_file
+            grpc_tls_cert_file,
+            grpc_tls_key_file
         );
         grpc_gateway->start();
     }

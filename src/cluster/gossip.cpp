@@ -29,7 +29,7 @@ namespace cinder {
         gossip_interval_(gossip_interval) {}
 
     void GossipManager::leave() {
-        Span span("gossip.leave");
+        Span span("gossip.leave", captureTraceContext());
         // Bump incarnation so the Dead rumor about self overrides any stale Alive
         // rumor held by peers.
         table_.markDead(self_);
@@ -67,7 +67,7 @@ namespace cinder {
     }
 
     void GossipManager::tick() {
-        Span span("gossip.tick");
+        Span span("gossip.tick", captureTraceContext());
         NodeId target;
         {
             std::scoped_lock lk(peers_mutex_);
@@ -91,7 +91,7 @@ namespace cinder {
     }
 
     void GossipManager::handleMessage(const NodeId& from, const net::Request& req) {
-        Span span("gossip.handle");
+        Span span("gossip.handle", captureTraceContext());
         auto rumors = decodeView(req.value);
         CINDER_DEBUG("state disseminated", {"from", from}, {"entries", rumors.size()});
         for (const auto& rumor : rumors) {
@@ -113,6 +113,10 @@ namespace cinder {
         net::Request req;
         req.opcode = net::Opcode::Gossip;
         req.value = encodeView(table_.snapshot());
+        // Join the tick's trace so the peer's gossip.handle nests below it.
+        auto ctx = captureTraceContext();
+        req.trace_id = ctx.trace_id;
+        req.span_id = ctx.span_id;
         transport_.sendAsync(to, req, [](Result<void> /*r*/) {});
     }
 

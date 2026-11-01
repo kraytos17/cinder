@@ -2,6 +2,7 @@
 
 #include <ankerl/unordered_dense.h>
 #include <asio.hpp>
+#include <asio/experimental/concurrent_channel.hpp>
 #include <chrono>
 #include <flat_map>
 #include <functional>
@@ -15,6 +16,7 @@
 
 #include "cinder/common/cluster_config.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
 using asio::io_context;
@@ -78,8 +80,14 @@ namespace cinder {
         using stream_type = asio::ssl::stream<tcp::socket>;
 #endif
 
-        // Per-node cached connection. Each NodeConn owns a strand that serialises
-        // concurrent RPCs targeting the same peer.
+        // Per-node cached connection. Each NodeConn owns a strand (fair
+        // scheduling across waiters) plus a gate that serialises the actual
+        // socket exchange: the Cinder protocol is not multiplexed, and a
+        // strand alone cannot serialize an exchange because every co_await
+        // suspends — without the gate the next queued coroutine would start
+        // overlapping async_reads/writes on the same socket and corrupt
+        // framing. Distinct pool entries have distinct gates, so RPCs on
+        // different entries genuinely overlap.
         struct NodeConn {
             asio::strand<io_context::executor_type> strand;
             ClusterConfig::NodeConfig addr{};
@@ -88,20 +96,24 @@ namespace cinder {
 #endif
             tcp::socket socket;
             bool connected = false;
+            asio::experimental::concurrent_channel<void(std::error_code)> gate;
 
             NodeConn(io_context& io, const ClusterConfig::NodeConfig& a) :
                 strand(asio::make_strand(io)),
                 addr(a),
-                socket(io) {}
+                socket(io),
+                gate(strand, 1) {
+                (void)gate.try_send(std::error_code{});
+            }
         };
 
         // Round-robin pool of connections to ONE peer.
         //
         // Why more than one: the protocol is not multiplexed — a single socket
-        // carries one request/response at a time, and NodeConn's strand
+        // carries one request/response at a time, and NodeConn's gate
         // enforces that. With one connection per peer, every concurrent caller
         // to that peer queues behind the one in flight, so each pays a full RTT
-        // of head-of-line blocking. Distinct connections have distinct strands,
+        // of head-of-line blocking. Distinct connections have distinct gates,
         // so RPCs on different entries genuinely overlap; requests sharing an
         // entry still serialise, which is required for correctness.
         //
@@ -131,7 +143,7 @@ namespace cinder {
         // Coroutine running on a NodeConn's strand: check connected, reconnect if
         // needed, write request(s), read response(s), decode. On any error closes
         // the connection so the next RPC reconnects on a clean socket.
-        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data)
+        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data, SpanContext parent)
             -> asio::awaitable<Result<net::Response>>;
 
         // Mark unusable and release the socket. A failed exchange can leave stale
@@ -140,8 +152,11 @@ namespace cinder {
         static void closeConn(NodeConn& conn);
 
         // Batch coroutine: write all requests, read all responses.
-        auto sendBatchCoroutine(NodeConn& conn, std::vector<std::vector<std::byte>> all_data)
-            -> asio::awaitable<Result<std::vector<net::Response>>>;
+        auto sendBatchCoroutine(
+            NodeConn& conn,
+            std::vector<std::vector<std::byte>> all_data,
+            SpanContext parent
+        ) -> asio::awaitable<Result<std::vector<net::Response>>>;
 
         io_context& io_;
         std::string node_id_;

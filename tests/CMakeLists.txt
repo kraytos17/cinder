@@ -81,6 +81,9 @@ target_compile_definitions(cinder_integration_tests PRIVATE
 if(CINDER_ENABLE_GRPC)
     target_sources(cinder_integration_tests PRIVATE integration/grpc_test.cpp)
     target_link_libraries(cinder_integration_tests PRIVATE cinder_proto grpc++)
+    # The test TU is guarded by #ifdef CINDER_ENABLE_GRPC like the gateway
+    # sources (see the cinder_grpc compile definition in the root CMakeLists).
+    target_compile_definitions(cinder_integration_tests PRIVATE CINDER_ENABLE_GRPC)
 endif()
 gtest_discover_tests(cinder_integration_tests
     PROPERTIES LABELS "integration" TIMEOUT "300"
