@@ -1,14 +1,17 @@
+#include <algorithm>
 #include <benchmark/benchmark.h>
+#include <filesystem>
+#include <memory>
+#include <numeric>
+#include <random>
+#include <string>
+#include <vector>
 
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "cinder/store/snapshot.hpp"
 #include "cinder/store/wal.hpp"
-
-// All textual includes precede the import; everything standard comes from
-// import std below.
-import std;
 
 namespace cinder {
     namespace {

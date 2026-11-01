@@ -1,10 +1,5 @@
 cmake_minimum_required(VERSION 4.4)
 
-# Experimental import std support (gate UUID is CMake-version-specific;
-# re-check on CMake upgrades — a wrong value fails configure naming the
-# expected one). Must precede project(): it gates C++ toolchain discovery.
-set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
-
 project(cinder VERSION 0.1.0
         DESCRIPTION
         "Cinder — a distributed, consistent-hash-sharded in-memory cache"
@@ -453,11 +448,8 @@ _cinder_find_package_args(_cli11_args CLI11)
 cinder_use_cached_dep(cli11 PACKAGE CLI11)
 # Precompiled static library instead of header-only: function bodies compile
 # once into the lib rather than into every tool TU. Header-only mode is
-# untouched; CLI11_MODULES (Phase 2) builds on top of this.
+# untouched.
 set(CLI11_PRECOMPILED ON CACHE BOOL "" FORCE)
-# Named module (import cli11): builds on the precompiled lib to avoid
-# duplicate implementations; floor is C++20, we build at C++23.
-set(CLI11_MODULES ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY ${CINDER_DEP_cli11_REPO}
@@ -659,12 +651,7 @@ endif()
 if(CINDER_ENABLE_CLANG_TIDY)
     find_program(CLANG_TIDY_PROGRAM clang-tidy)
     if(CLANG_TIDY_PROGRAM)
-        # Route through a launcher that skips CMake's synthetic import-std
-        # BMI builds (@cmake_cxx_std), which clang-tidy cannot process.
-        # Everything else is checked unchanged.
-        set(CMAKE_CXX_CLANG_TIDY
-            "${CMAKE_SOURCE_DIR}/cmake/cinder-clang-tidy" "${CLANG_TIDY_PROGRAM}"
-        )
+        set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_PROGRAM}")
         message(STATUS "Cinder: clang-tidy enabled (${CLANG_TIDY_PROGRAM})")
     else()
         message(WARNING "CINDER_ENABLE_CLANG_TIDY is ON but clang-tidy not found")

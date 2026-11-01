@@ -1,4 +1,8 @@
 #include <asio.hpp>
+#include <CLI/CLI.hpp>
+#include <print>
+#include <string>
+#include <thread>
 
 #ifdef CINDER_ENABLE_TLS
 #include <asio/ssl.hpp>
@@ -8,12 +12,6 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
-
-// All textual includes precede the imports: GCC rejects includes after an
-// import whose global module fragment overlaps them. No textual std headers
-// here — everything standard comes from import std below.
-import cli11;
-import std;
 
 using asio::io_context;
 using std::chrono::milliseconds;
@@ -40,12 +38,7 @@ auto main(int argc, char* argv[]) -> int {
     std::string cmd;
     app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
 
-    // CLI11_PARSE is a macro and macros do not cross the module boundary.
-    try {
-        app.parse(argc, argv);
-    } catch (const CLI::ParseError& e) {
-        return app.exit(e);
-    }
+    CLI11_PARSE(app, argc, argv);
     cinder::initLogger(
         "cinder-admin",
         verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,

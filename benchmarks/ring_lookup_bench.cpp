@@ -1,10 +1,7 @@
 #include <benchmark/benchmark.h>
+#include <string>
 
 #include "cinder/hashing/consistent_hash_ring.hpp"
-
-// All textual includes precede the import; everything standard comes from
-// import std below.
-import std;
 
 namespace cinder {
     namespace {

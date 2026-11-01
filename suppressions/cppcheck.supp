@@ -31,10 +31,3 @@ knownConditionTrueFalse:*/src/net/tcp_connection.cpp
 knownConditionTrueFalse:*/src/net/tcp_server.cpp
 knownConditionTrueFalse:*/src/net/tcp_transport.cpp
 knownConditionTrueFalse:*/src/client/connection_pool.cpp
-
-// The compiler's own standard-library module sources (import std BMI
-// builds, via CMake's synthetic @cmake_cxx_std target) use syntax
-// cppcheck cannot parse (e.g. using-declarations for literal operators).
-// Not project code — never analyze it.
-syntaxError:*/bits/std.cc
-syntaxError:*/bits/std.compat.cc

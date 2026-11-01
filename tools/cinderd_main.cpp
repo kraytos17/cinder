@@ -1,16 +1,17 @@
+#include <CLI/CLI.hpp>
+#include <cstdint>
+#include <string>
+#include <vector>
+
 #include "cinder/common/config.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/node/cache_node_server.hpp"
 
 #ifdef CINDER_ENABLE_GRPC
+#include <memory>
+
 #include "cinder/net/grpc_gateway.hpp"
 #endif
-
-// All textual includes precede the imports: GCC rejects includes after an
-// import whose global module fragment overlaps them. No textual std headers
-// here — everything standard comes from import std below.
-import cli11;
-import std;
 
 using std::chrono::milliseconds;
 
@@ -107,12 +108,7 @@ auto main(int argc, char* argv[]) -> int {
         "Anti-entropy hash bucket count"
     );
 
-    // CLI11_PARSE is a macro and macros do not cross the module boundary.
-    try {
-        app.parse(argc, argv);
-    } catch (const CLI::ParseError& e) {
-        return app.exit(e);
-    }
+    CLI11_PARSE(app, argc, argv);
 
     cinder::Config cfg;
     if (!config_path.empty()) {
