@@ -446,6 +446,10 @@ FetchContent_MakeAvailable(spdlog)
 
 _cinder_find_package_args(_cli11_args CLI11)
 cinder_use_cached_dep(cli11 PACKAGE CLI11)
+# Precompiled static library instead of header-only: function bodies compile
+# once into the lib rather than into every tool TU. Header-only mode is
+# untouched; CLI11_MODULES (Phase 2) builds on top of this.
+set(CLI11_PRECOMPILED ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY ${CINDER_DEP_cli11_REPO}
