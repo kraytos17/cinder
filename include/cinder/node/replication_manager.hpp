@@ -99,6 +99,11 @@ namespace cinder {
 
         void setMetrics(MetricsCollector* m) {
             metrics_ = m;
+            hints_.setMetrics(
+                m == nullptr ? nullptr : &m->replicationMetrics().hint_queue_entries,
+                m == nullptr ? nullptr : &m->replicationMetrics().hint_queue_estimated_bytes,
+                m == nullptr ? nullptr : &m->replicationMetrics().hint_queue_estimated_bytes_peak
+            );
         }
 
     private:

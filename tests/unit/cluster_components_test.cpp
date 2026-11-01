@@ -133,6 +133,68 @@ namespace cinder {
             EXPECT_EQ(q.size(), 1U);
         }
 
+        TEST(HintQueueTest, EstimatedPayloadBytesTrackQueueRetention) {
+            HintQueue q;
+            std::atomic<uint64_t> entries{0};
+            std::atomic<uint64_t> bytes{0};
+            std::atomic<uint64_t> peak{0};
+            q.setMetrics(&entries, &bytes, &peak);
+
+            auto first = cctMakeHint("replica-1", "key-a");
+            first.req.value = "value-a";
+            auto second = cctMakeHint("replica-2", "key-b");
+            second.req.value = "value-bb";
+            const uint64_t first_bytes = HintQueue::estimatedPayloadBytes(first);
+            const uint64_t second_bytes = HintQueue::estimatedPayloadBytes(second);
+
+            q.push(std::move(first));
+            EXPECT_EQ(entries.load(), 1U);
+            EXPECT_EQ(bytes.load(), first_bytes);
+            EXPECT_EQ(peak.load(), first_bytes);
+
+            q.push(std::move(second));
+            EXPECT_EQ(entries.load(), 2U);
+            EXPECT_EQ(bytes.load(), first_bytes + second_bytes);
+            EXPECT_EQ(peak.load(), first_bytes + second_bytes);
+
+            // Snapshot prunes expired hints and updates the current gauges.
+            const auto now = steady_clock::now();
+            auto live = cctMakeHint("replica-3", "key-live");
+            live.req.value = "live";
+            live.expires_at = now + milliseconds(1000);
+            const uint64_t live_bytes = HintQueue::estimatedPayloadBytes(live);
+            auto expired = cctMakeHint("replica-4", "key-expired");
+            expired.req.value = "expired";
+            expired.expires_at = now - milliseconds(1);
+            const uint64_t expired_bytes = HintQueue::estimatedPayloadBytes(expired);
+            q.push(std::move(live));
+            q.push(std::move(expired));
+            auto snapshot = q.snapshot(now);
+            ASSERT_EQ(snapshot.size(), 3U);
+            EXPECT_EQ(entries.load(), 3U);
+            EXPECT_EQ(bytes.load(), first_bytes + second_bytes + live_bytes);
+
+            q.remove(snapshot.back().handle);
+            EXPECT_EQ(entries.load(), 2U);
+            EXPECT_EQ(bytes.load(), first_bytes + second_bytes);
+            EXPECT_EQ(peak.load(), first_bytes + second_bytes + live_bytes + expired_bytes);
+
+            // Filling past capacity drops the oldest retained payload and
+            // adds the replacement, keeping count and bytes aligned.
+            auto filler = cctMakeHint("replica", "filler");
+            const uint64_t filler_bytes = HintQueue::estimatedPayloadBytes(filler);
+            const uint64_t bytes_at_capacity =
+                first_bytes + second_bytes + (HintQueue::K_CAPACITY - 2) * filler_bytes;
+            for (size_t i = 0; i < HintQueue::K_CAPACITY - 2; ++i) {
+                q.push(cctMakeHint("replica", "filler"));
+            }
+            ASSERT_EQ(entries.load(), HintQueue::K_CAPACITY);
+            EXPECT_EQ(bytes.load(), bytes_at_capacity);
+            q.push(cctMakeHint("replica", "filler"));
+            EXPECT_EQ(entries.load(), HintQueue::K_CAPACITY);
+            EXPECT_EQ(bytes.load(), bytes_at_capacity - first_bytes + filler_bytes);
+        }
+
         TEST(HintQueueTest, StaleHandleCannotRemoveReusedSlot) {
             HintQueue q;
             q.push(cctMakeHint("n2", "old"));

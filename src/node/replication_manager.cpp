@@ -627,13 +627,45 @@ namespace cinder {
 
         auto now = clock_.now();
         auto batch = hints_.snapshot(now);
+        uint64_t snapshot_bytes = 0;
+        for (const auto& entry : batch) {
+            snapshot_bytes += HintQueue::estimatedPayloadBytes(entry.hint);
+        }
+        auto* replication_metrics = metrics_ == nullptr ? nullptr : &metrics_->replicationMetrics();
+        if (replication_metrics != nullptr) {
+            const uint64_t current_snapshot_bytes =
+                replication_metrics->hint_replay_snapshot_bytes.fetch_add(
+                    snapshot_bytes,
+                    std::memory_order_relaxed
+                )
+                + snapshot_bytes;
+            auto peak = replication_metrics->hint_replay_snapshot_bytes_peak.load(
+                std::memory_order_relaxed
+            );
+            while (peak
+                   < current_snapshot_bytes
+                   && !replication_metrics->hint_replay_snapshot_bytes_peak.compare_exchange_weak(
+                       peak,
+                       current_snapshot_bytes,
+                       std::memory_order_relaxed
+                   )) {
+            }
+        }
         // Wrap the user callback: report metrics, release the single-consumer
         // guard, then deliver. Used for both the empty fast path and fan-out.
-        auto finish = [this, done = std::move(on_done)](size_t n) mutable {
+        auto finish = [this, done = std::move(on_done), replication_metrics, snapshot_bytes](
+                          size_t n
+                      ) mutable {
             CINDER_INFO("replay completed", {"replayed", n});
             if (metrics_ && n > 0) {
                 metrics_->replicationMetrics().hints_replayed.fetch_add(
                     n,
+                    std::memory_order_relaxed
+                );
+            }
+            if (replication_metrics != nullptr) {
+                replication_metrics->hint_replay_snapshot_bytes.fetch_sub(
+                    snapshot_bytes,
                     std::memory_order_relaxed
                 );
             }

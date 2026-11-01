@@ -55,6 +55,11 @@ TEST(MetricsTest, ReplicationCounters) {
     m.replicationMetrics().read_repairs.fetch_add(5);
     m.replicationMetrics().hints_enqueued.fetch_add(3);
     m.replicationMetrics().hints_replayed.fetch_add(2);
+    m.replicationMetrics().hint_queue_entries.store(7);
+    m.replicationMetrics().hint_queue_estimated_bytes.store(1234);
+    m.replicationMetrics().hint_queue_estimated_bytes_peak.store(5678);
+    m.replicationMetrics().hint_replay_snapshot_bytes.store(4321);
+    m.replicationMetrics().hint_replay_snapshot_bytes_peak.store(8765);
     auto text = m.formatPrometheus();
 
     EXPECT_NE(text.find("cinder_replication_async_writes_total 4"), std::string::npos);
@@ -63,6 +68,17 @@ TEST(MetricsTest, ReplicationCounters) {
     EXPECT_NE(text.find("cinder_replication_read_repairs_total 5"), std::string::npos);
     EXPECT_NE(text.find("cinder_replication_hints_enqueued_total 3"), std::string::npos);
     EXPECT_NE(text.find("cinder_replication_hints_replayed_total 2"), std::string::npos);
+    EXPECT_NE(text.find("cinder_replication_hint_queue_entries 7"), std::string::npos);
+    EXPECT_NE(text.find("cinder_replication_hint_queue_estimated_bytes 1234"), std::string::npos);
+    EXPECT_NE(
+        text.find("cinder_replication_hint_queue_estimated_bytes_peak 5678"),
+        std::string::npos
+    );
+    EXPECT_NE(text.find("cinder_replication_hint_replay_snapshot_bytes 4321"), std::string::npos);
+    EXPECT_NE(
+        text.find("cinder_replication_hint_replay_snapshot_bytes_peak 8765"),
+        std::string::npos
+    );
 }
 
 TEST(MetricsTest, ClusterCounters) {

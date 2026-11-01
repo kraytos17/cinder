@@ -169,7 +169,7 @@ namespace cinder {
             }
             size_t get_pos = 0;
             size_t put_pos = 0;
-            auto mix_op = [&]() {
+            auto mix_op = [&] {
                 for (int g = 0; g < 7; ++g) {
                     (void)store->get(keys[get_trace[get_pos++ % get_trace.size()]]);
                 }

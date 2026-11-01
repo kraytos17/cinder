@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -54,6 +56,20 @@ namespace cinder {
         HintQueue(const HintQueue&) = delete;
         auto operator=(const HintQueue&) -> HintQueue& = delete;
 
+        // Optional observability sinks. ReplicationManager owns the metrics
+        // lifetime and wires these before the node begins serving requests.
+        void setMetrics(
+            std::atomic<uint64_t>* entries,
+            std::atomic<uint64_t>* bytes,
+            std::atomic<uint64_t>* bytes_peak
+        ) {
+            std::scoped_lock lock(mutex_);
+            entries_metric_ = entries;
+            bytes_metric_ = bytes;
+            bytes_peak_metric_ = bytes_peak;
+            publishMetrics();
+        }
+
         // Enqueue a hint. If full, discard the oldest queued hint. The array
         // itself never grows after construction.
         auto push(Hint hint) -> bool {
@@ -65,11 +81,13 @@ namespace cinder {
             const size_t index = acquireSlot();
             Slot& slot = (*slots_)[index];
             ++slot.generation;
+            current_bytes_ += estimatedBytes(hint);
             slot.hint.emplace(std::move(hint));
             slot.active = true;
 
             linkAtTail(index);
             ++size_;
+            publishMetrics();
             return true;
         }
 
@@ -98,6 +116,7 @@ namespace cinder {
                     }
                     index = next;
                 }
+                publishMetrics();
             }
             return live;
         }
@@ -125,7 +144,9 @@ namespace cinder {
             if (!slot.active || slot.generation != handle.generation) {
                 return;
             }
+
             unlinkAndRelease(handle.index);
+            publishMetrics();
         }
 
         // Compatibility removal for callers that identify a hint by its
@@ -143,6 +164,7 @@ namespace cinder {
                     && slot.hint->req.version
                     == req.version) {
                     unlinkAndRelease(index);
+                    publishMetrics();
                     return;
                 }
                 index = next;
@@ -155,6 +177,25 @@ namespace cinder {
             return size_;
         }
 
+        [[nodiscard]]
+        auto estimatedBytes() const -> uint64_t {
+            std::scoped_lock lock(mutex_);
+            return static_cast<uint64_t>(current_bytes_);
+        }
+
+        [[nodiscard]]
+        auto peakEstimatedBytes() const -> uint64_t {
+            std::scoped_lock lock(mutex_);
+            return static_cast<uint64_t>(peak_bytes_);
+        }
+
+        [[nodiscard]]
+        static auto estimatedPayloadBytes(const Hint& hint) -> uint64_t {
+            return static_cast<uint64_t>(
+                sizeof(Hint) + hint.target.size() + hint.req.key.size() + hint.req.value.size()
+            );
+        }
+
     private:
 
         struct Slot {
@@ -165,6 +206,35 @@ namespace cinder {
             uint64_t generation = 0;
             bool active = false;
         };
+
+        static auto estimatedBytes(const Hint& hint) -> size_t {
+            return static_cast<size_t>(estimatedPayloadBytes(hint));
+        }
+
+        void publishMetrics() {
+            if (entries_metric_ != nullptr) {
+                entries_metric_->store(static_cast<uint64_t>(size_), std::memory_order_relaxed);
+            }
+            if (bytes_metric_ != nullptr) {
+                bytes_metric_->store(
+                    static_cast<uint64_t>(current_bytes_),
+                    std::memory_order_relaxed
+                );
+            }
+
+            peak_bytes_ = std::max(peak_bytes_, current_bytes_);
+            if (bytes_peak_metric_ != nullptr) {
+                auto peak = bytes_peak_metric_->load(std::memory_order_relaxed);
+                while (peak
+                       < peak_bytes_
+                       && !bytes_peak_metric_->compare_exchange_weak(
+                           peak,
+                           static_cast<uint64_t>(peak_bytes_),
+                           std::memory_order_relaxed
+                       )) {
+                }
+            }
+        }
 
         auto acquireSlot() -> size_t {
             if (free_head_ != K_NONE) {
@@ -190,6 +260,7 @@ namespace cinder {
 
         void unlinkAndRelease(size_t index) {
             Slot& slot = (*slots_)[index];
+            current_bytes_ -= estimatedBytes(*slot.hint);
             if (slot.prev != K_NONE) {
                 (*slots_)[slot.prev].next = slot.next;
             } else {
@@ -217,5 +288,10 @@ namespace cinder {
         size_t tail_ = K_NONE;
         size_t size_ = 0;
         mutable std::mutex mutex_;
+        size_t current_bytes_ = 0;
+        size_t peak_bytes_ = 0;
+        std::atomic<uint64_t>* entries_metric_ = nullptr;
+        std::atomic<uint64_t>* bytes_metric_ = nullptr;
+        std::atomic<uint64_t>* bytes_peak_metric_ = nullptr;
     };
 } // namespace cinder
