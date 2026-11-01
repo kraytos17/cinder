@@ -12,6 +12,7 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
+#include "common_args.hpp"
 
 using asio::io_context;
 using std::chrono::milliseconds;
@@ -26,6 +27,7 @@ auto main(int argc, char* argv[]) -> int {
     std::string tls_cert_file;
     std::string tls_key_file;
     std::string tls_ca_file;
+    std::string client_secret;
 
     app.add_option("--host", host, "Server host");
     app.add_option("-p,--port", port, "Server port");
@@ -34,6 +36,11 @@ auto main(int argc, char* argv[]) -> int {
     app.add_option("--tls-cert", tls_cert_file, "TLS cert chain (PEM)");
     app.add_option("--tls-key", tls_key_file, "TLS private key (PEM)");
     app.add_option("--tls-ca", tls_ca_file, "CA cert for verification (PEM)");
+    app.add_option(
+        "--client-secret",
+        client_secret,
+        "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"
+    );
 
     std::string cmd;
     app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
@@ -47,6 +54,7 @@ auto main(int argc, char* argv[]) -> int {
 
     cinder::ClusterConfig config;
     config.nodes.push_back({"server", host, port});
+    config.client_shared_secret = cinder::tools::resolveClientSecret(client_secret);
 
 #ifdef CINDER_ENABLE_TLS
     std::optional<asio::ssl::context> ssl_ctx;
@@ -113,6 +121,11 @@ auto main(int argc, char* argv[]) -> int {
     if (!res.has_value()) {
         CINDER_ERROR("request failed", {"reason", res.error().message()});
         std::println(stderr, "error: {}", res.error().message());
+        return 1;
+    }
+    if (res->status == cinder::Errc::PermissionDenied) {
+        CINDER_ERROR("permission denied", {"cmd", cmd});
+        std::println(stderr, "error: permission denied");
         return 1;
     }
     if (res->value.has_value()) {

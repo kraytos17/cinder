@@ -100,7 +100,8 @@ namespace cinder::net {
             GossipManager* gossip = nullptr,
             ConnectionCountGuard conn_counter = {},
             AntiEntropyManager* anti_entropy = nullptr,
-            std::string shared_secret = {}
+            std::string shared_secret = {},
+            std::string client_shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
             ,
             asio::ssl::context* ssl_ctx = nullptr
@@ -269,6 +270,7 @@ namespace cinder::net {
         ConsistencyMode mode_;
 
         std::string shared_secret_;
+        std::string client_shared_secret_;
         ConnectionCountGuard conn_counter_;
         MetricsCollector* metrics_ = nullptr;
         // Admin opcode callbacks, populated by TcpServer after construction.

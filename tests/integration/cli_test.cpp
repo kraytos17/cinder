@@ -1,5 +1,6 @@
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <gtest/gtest.h>
 #include <string>
 #include <sys/wait.h>
@@ -16,8 +17,14 @@ using cinder::net::test::waitForNode;
 
 namespace {
 
-    auto runCli(uint16_t port, const std::vector<std::string>& args)
-        -> std::pair<std::string, std::string> {
+    // Extra env vars are set in the forked child before exec. When exit_code
+    // is non-null it receives the child's exit status (or -1).
+    auto runCli(
+        uint16_t port,
+        const std::vector<std::string>& args,
+        const std::vector<std::pair<std::string, std::string>>& env = {},
+        int* exit_code = nullptr
+    ) -> std::pair<std::string, std::string> {
         std::array<int, 2> out_pipe{};
         std::array<int, 2> err_pipe{};
         if (pipe(out_pipe.data()) != 0 || pipe(err_pipe.data()) != 0) {
@@ -29,6 +36,11 @@ namespace {
             return {};
         }
         if (pid == 0) {
+            for (const auto& [k, v] : env) {
+                // NOLINTNEXTLINE(concurrency-mt-unsafe): forked child before exec.
+                (void)setenv(k.c_str(), v.c_str(), 1);
+            }
+
             close(out_pipe[0]);
             close(err_pipe[0]);
             dup2(out_pipe[1], STDOUT_FILENO);
@@ -67,6 +79,10 @@ namespace {
 
         int status = 0;
         waitpid(pid, &status, 0);
+        if (exit_code != nullptr) {
+            *exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+        }
+
         return {out, err};
     }
 
@@ -190,7 +206,7 @@ namespace {
         ASSERT_NE(port, 0);
         NodeProcGuard node{spawnNode(port, "node1", "")};
         ASSERT_TRUE(waitForNode(port, "node1"));
-        auto getVersion = [&](const std::string& key) {
+        auto get_version = [&](const std::string& key) {
             auto [out, err] = runCli(port, {"get-versioned", key});
             EXPECT_TRUE(err.empty());
             const auto pos = out.find("version: ");
@@ -207,7 +223,7 @@ namespace {
         unsigned long long v1 = 0;
         unsigned long long v2 = 0;
         {
-            auto [out, ver] = getVersion("k");
+            auto [out, ver] = get_version("k");
             EXPECT_TRUE(out.contains("v\n"));
             EXPECT_TRUE(out.contains("writer: "));
             v1 = ver;
@@ -217,7 +233,7 @@ namespace {
             EXPECT_EQ(out, "OK\n");
         }
         {
-            auto [out, ver] = getVersion("k");
+            auto [out, ver] = get_version("k");
             EXPECT_TRUE(out.contains("v2\n"));
             EXPECT_GT(ver, v1);
             v2 = ver;
@@ -234,7 +250,7 @@ namespace {
             EXPECT_EQ(out, "OK\n");
         }
         {
-            auto [out, ver] = getVersion("t");
+            auto [out, ver] = get_version("t");
             EXPECT_TRUE(out.contains("x\n"));
             EXPECT_TRUE(out.contains("expires_at: "));
             // Distinct keys mint distinct versions (global counter).
@@ -272,3 +288,183 @@ namespace {
         EXPECT_TRUE(err.empty());
     }
 } // namespace
+
+#ifdef CINDER_ENABLE_TLS
+namespace {
+
+    // Test certificates (see tests/fixtures). CMAKE_CURRENT_SOURCE_DIR for
+    // this TU is tests/, matching the tls integration suite's layout.
+    std::string cliFixturePath(const std::string& name) {
+        auto src = std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "fixtures" / name;
+        if (std::filesystem::exists(src)) {
+            return src.string();
+        }
+        return std::filesystem::path(CMAKE_CURRENT_BINARY_DIR) / "fixtures" / name;
+    }
+
+    // TLS daemon with client auth enabled. Mirrors tls_test's spawner plus
+    // --client-shared-secret.
+    pid_t spawnTlsAuthDaemon(int port, const std::string& client_secret) {
+        auto port_str = std::to_string(port);
+        auto cert = cliFixturePath("server.pem");
+        auto key = cliFixturePath("server-key.pem");
+        auto ca = cliFixturePath("ca.pem");
+        int held_fd = cinder::net::test::takeHeldFd(static_cast<uint16_t>(port));
+        auto fd_str = std::to_string(held_fd);
+        pid_t pid = fork();
+        if (pid == 0) {
+            // NOLINTNEXTLINE
+            execl(
+                CINDER_TEST_CINDERD_PATH,
+                "cinderd",
+                "--port",
+                port_str.c_str(),
+                "--tls",
+                "--tls-cert",
+                cert.c_str(),
+                "--tls-key",
+                key.c_str(),
+                "--tls-ca",
+                ca.c_str(),
+                "--client-shared-secret",
+                client_secret.c_str(),
+                "--listen-fd",
+                fd_str.c_str(),
+                nullptr
+            );
+            _exit(1);
+        }
+        if (held_fd >= 0) {
+            ::close(held_fd);
+        }
+        return pid;
+    }
+
+    void stopTlsAuthDaemon(pid_t pid) {
+        if (pid <= 0) {
+            return;
+        }
+
+        (void)kill(pid, SIGTERM);
+        int status = 0;
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < deadline) {
+            pid_t r = waitpid(pid, &status, WNOHANG);
+            if (r == pid) {
+                return;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        (void)kill(pid, SIGKILL);
+        (void)waitpid(pid, &status, 0);
+    }
+
+    // cinder-cli against a TLS + client-auth daemon. Extra CLI args and env
+    // are forwarded to runCli; returns the child exit code.
+    int runTlsCli(
+        uint16_t port,
+        const std::vector<std::string>& cmd,
+        std::string& out,
+        const std::string& client_secret = {},
+        const std::vector<std::pair<std::string, std::string>>& env = {}
+    ) {
+        std::vector<std::string> args{
+            "--tls",
+            "--tls-ca",
+            cliFixturePath("ca.pem"),
+        };
+        if (!client_secret.empty()) {
+            args.push_back("--client-secret");
+            args.push_back(client_secret);
+        }
+
+        args.insert(args.end(), cmd.begin(), cmd.end());
+        int rc = -1;
+        auto [o, e] = runCli(port, args, env, &rc);
+        out = std::move(o);
+        return rc;
+    }
+
+    bool waitForTlsAuthNode(uint16_t port, const std::string& client_secret) {
+        for (int i = 0; i < 50; i++) {
+            std::string out;
+            int rc = runTlsCli(port, {"ping"}, out, client_secret);
+            if (rc == 0 && out == "pong\n") {
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        return false;
+    }
+
+    TEST(CliAuthTest, SetGetWithSecretOverTls) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t daemon = spawnTlsAuthDaemon(port, "test-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, "test-client-secret"));
+
+        std::string out;
+        EXPECT_EQ(runTlsCli(port, {"set", "ck", "cv"}, out, "test-client-secret"), 0);
+        EXPECT_EQ(out, "OK\n");
+        EXPECT_EQ(runTlsCli(port, {"get", "ck"}, out, "test-client-secret"), 0);
+        EXPECT_EQ(out, "cv\n");
+        stopTlsAuthDaemon(daemon);
+    }
+
+    TEST(CliAuthTest, MissingSecretDenied) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t daemon = spawnTlsAuthDaemon(port, "test-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, "test-client-secret"));
+
+        std::string out;
+        int rc = runTlsCli(port, {"get", "ck"}, out);
+        EXPECT_NE(rc, 0);
+        EXPECT_TRUE(out.contains("permission denied"));
+        stopTlsAuthDaemon(daemon);
+    }
+
+    TEST(CliAuthTest, WrongSecretDenied) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t daemon = spawnTlsAuthDaemon(port, "test-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, "test-client-secret"));
+
+        std::string out;
+        int rc = runTlsCli(port, {"ping"}, out, "wrong-secret");
+        EXPECT_NE(rc, 0);
+        stopTlsAuthDaemon(daemon);
+    }
+
+    TEST(CliAuthTest, SecretFromEnvironment) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t daemon = spawnTlsAuthDaemon(port, "env-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, "env-client-secret"));
+
+        std::string out;
+        int rc =
+            runTlsCli(port, {"ping"}, out, {}, {{"CINDER_CLIENT_SECRET", "env-client-secret"}});
+
+        EXPECT_EQ(rc, 0);
+        EXPECT_EQ(out, "pong\n");
+        stopTlsAuthDaemon(daemon);
+    }
+
+    TEST(CliAuthTest, AdminInfoRequiresClientSecret) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t daemon = spawnTlsAuthDaemon(port, "test-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, "test-client-secret"));
+
+        std::string out;
+        EXPECT_EQ(runTlsCli(port, {"info"}, out, "test-client-secret"), 0);
+        EXPECT_TRUE(out.contains("\"node_id\""));
+
+        std::string denied;
+        EXPECT_NE(runTlsCli(port, {"info"}, denied), 0);
+        stopTlsAuthDaemon(daemon);
+    }
+} // namespace
+#endif // CINDER_ENABLE_TLS

@@ -54,6 +54,7 @@ cinder_add_test(cinder_unit_node_tests
     unit/status_test.cpp
     unit/config_test.cpp
     unit/auth_test.cpp
+    unit/client_auth_test.cpp
     unit/error_provenance_test.cpp
 )
 gtest_discover_tests(cinder_unit_node_tests PROPERTIES LABELS "unit")
@@ -103,6 +104,8 @@ add_dependencies(cinder_cli_tests cinderd cinder-cli)
 target_compile_definitions(cinder_cli_tests PRIVATE
     CINDER_TEST_CINDERD_PATH="${CMAKE_BINARY_DIR}/bin/cinderd"
     CINDER_TEST_CLI_PATH="${CMAKE_BINARY_DIR}/bin/cinder-cli"
+    CMAKE_CURRENT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    CMAKE_CURRENT_BINARY_DIR="${CMAKE_CURRENT_BINARY_DIR}"
 )
 gtest_discover_tests(cinder_cli_tests
     PROPERTIES LABELS "cli"

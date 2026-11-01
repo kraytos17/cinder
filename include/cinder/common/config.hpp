@@ -20,10 +20,15 @@ namespace cinder {
     };
 
     // Node authentication. A non-empty shared secret requires an HMAC-SHA256
-    // auth token on internal opcodes (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*,
-    // ADMIN_*). Client opcodes are unaffected. Empty disables authentication.
+    // auth token on internal opcodes (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*).
+    // ADMIN_* requires the node token only when client auth is disabled; when
+    // client auth is enabled the client token authorizes admin ops instead.
+    // Client opcodes are unaffected unless client_shared_secret is set.
     struct AuthConfig {
         std::string shared_secret;
+        // Optional client credential: domain-separated static HMAC-SHA256 over
+        // "cinder-client-v1". Requires TLS + crypto build; empty = disabled.
+        std::string client_shared_secret;
     };
 
     struct Config {

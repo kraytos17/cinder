@@ -2,13 +2,17 @@
 
 #include <chrono>
 #include <csignal>
+#include <filesystem>
+#include <fstream>
 #include <grpcpp/grpcpp.h>
 #include <gtest/gtest.h>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <utility>
 
+#include "cinder/common/hmac.hpp"
 #include "cinder/v1/cache.grpc.pb.h"
 #include "integration/test_helpers.hpp"
 
@@ -349,6 +353,231 @@ namespace {
             stub->Get(&ctx, req, &resp);
             EXPECT_EQ(resp.status(), cinder::v1::STATUS_CODE_UNSPECIFIED);
             EXPECT_EQ(resp.value(), "ttl-val");
+        }
+    }
+
+    // --- Client-auth gateway tests (TLS + bearer metadata) ---
+
+    std::string grpcFixturePath(const std::string& name) {
+        auto src = std::filesystem::path(CMAKE_CURRENT_SOURCE_DIR) / "fixtures" / name;
+        if (std::filesystem::exists(src)) {
+            return src.string();
+        }
+
+        return std::filesystem::path(CMAKE_CURRENT_BINARY_DIR) / "fixtures" / name;
+    }
+
+    std::string readPemForGrpc(const std::string& path) {
+        std::ifstream file(path);
+        if (!file.is_open()) {
+            return {};
+        }
+
+        std::ostringstream out;
+        out << file.rdbuf();
+        return out.str();
+    }
+
+    std::string bearerForGrpc(const std::string& client_secret) {
+        auto token = cinder::generateClientAuthToken(client_secret);
+        constexpr char k_digits[] = "0123456789abcdef";
+        std::string hex;
+        hex.reserve(token.size() * 2);
+        for (char c : token) {
+            const auto v = static_cast<unsigned int>(static_cast<unsigned char>(c));
+            hex.push_back(k_digits[(v >> 4U) & 0xFU]);
+            hex.push_back(k_digits[v & 0xFU]);
+        }
+
+        return "Bearer " + hex;
+    }
+
+    auto makeTlsChannel(int port, const std::string& ca_pem) -> std::shared_ptr<grpc::Channel> {
+        grpc::SslCredentialsOptions opts;
+        opts.pem_root_certs = ca_pem;
+        return grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::SslCredentials(opts));
+    }
+
+    auto spawnNodeWithGrpcAuth(
+        int tcp_port,
+        int grpc_port,
+        const std::string& id,
+        const std::string& client_secret
+    ) -> NodeProc {
+        auto tcp_str = std::to_string(tcp_port);
+        auto grpc_str = std::to_string(grpc_port);
+        auto cert = grpcFixturePath("server.pem");
+        auto key = grpcFixturePath("server-key.pem");
+        auto ca = grpcFixturePath("ca.pem");
+        int held_fd = cinder::net::test::takeHeldFd(static_cast<uint16_t>(tcp_port));
+        auto fd_str = std::to_string(held_fd);
+        pid_t pid = fork();
+        if (pid == -1) {
+            ADD_FAILURE() << "fork failed";
+            return {};
+        }
+        if (pid == 0) {
+            // NOLINTNEXTLINE
+            execl(
+                CINDER_TEST_CINDERD_PATH,
+                "cinderd",
+                "--port",
+                tcp_str.c_str(),
+                "--node-id",
+                id.c_str(),
+                "--grpc-port",
+                grpc_str.c_str(),
+                "--tls",
+                "--tls-cert",
+                cert.c_str(),
+                "--tls-key",
+                key.c_str(),
+                "--tls-ca",
+                ca.c_str(),
+                "--client-shared-secret",
+                client_secret.c_str(),
+                "--listen-fd",
+                fd_str.c_str(),
+                nullptr
+            );
+            _exit(1);
+        }
+        if (held_fd >= 0) {
+            ::close(held_fd);
+        }
+
+        return {pid, tcp_port, id};
+    }
+
+    bool waitForGrpcAuthPort(
+        int port,
+        const std::string& ca_pem,
+        const std::string& bearer,
+        int max_retries = 50
+    ) {
+        for (int i = 0; i < max_retries; ++i) {
+            auto stub = cinder::v1::CinderCacheService::NewStub(makeTlsChannel(port, ca_pem));
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("authorization", bearer);
+            cinder::v1::PingRequest req;
+            cinder::v1::PingResponse resp;
+            if (stub->Ping(&ctx, req, &resp).ok()) {
+                return true;
+            }
+
+            std::this_thread::sleep_for(milliseconds(100));
+        }
+
+        return false;
+    }
+
+    TEST(GrpcAuthTest, MissingCredentialsDenied) {
+        auto [tcp_port, grpc_port] = spawnPorts();
+        NodeProcGuard node{
+            spawnNodeWithGrpcAuth(tcp_port, grpc_port, "grpc-auth1", "grpc-client-secret")
+        };
+        auto ca_pem = readPemForGrpc(grpcFixturePath("ca.pem"));
+        ASSERT_TRUE(waitForGrpcAuthPort(grpc_port, ca_pem, bearerForGrpc("grpc-client-secret")));
+
+        auto stub = cinder::v1::CinderCacheService::NewStub(makeTlsChannel(grpc_port, ca_pem));
+        grpc::ClientContext ctx;
+        cinder::v1::PingRequest req;
+        cinder::v1::PingResponse resp;
+        auto status = stub->Ping(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST(GrpcAuthTest, WrongSecretDenied) {
+        auto [tcp_port, grpc_port] = spawnPorts();
+        NodeProcGuard node{
+            spawnNodeWithGrpcAuth(tcp_port, grpc_port, "grpc-auth1", "grpc-client-secret")
+        };
+        auto ca_pem = readPemForGrpc(grpcFixturePath("ca.pem"));
+        ASSERT_TRUE(waitForGrpcAuthPort(grpc_port, ca_pem, bearerForGrpc("grpc-client-secret")));
+
+        auto stub = cinder::v1::CinderCacheService::NewStub(makeTlsChannel(grpc_port, ca_pem));
+        grpc::ClientContext ctx;
+        ctx.AddMetadata("authorization", bearerForGrpc("wrong-secret"));
+        cinder::v1::GetRequest req;
+        cinder::v1::GetResponse resp;
+        req.set_key("k");
+        auto status = stub->Get(&ctx, req, &resp);
+        EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
+    }
+
+    TEST(GrpcAuthTest, SetGetWithBearer) {
+        auto [tcp_port, grpc_port] = spawnPorts();
+        NodeProcGuard node{
+            spawnNodeWithGrpcAuth(tcp_port, grpc_port, "grpc-auth1", "grpc-client-secret")
+        };
+        auto ca_pem = readPemForGrpc(grpcFixturePath("ca.pem"));
+        auto bearer = bearerForGrpc("grpc-client-secret");
+        ASSERT_TRUE(waitForGrpcAuthPort(grpc_port, ca_pem, bearer));
+
+        auto stub = cinder::v1::CinderCacheService::NewStub(makeTlsChannel(grpc_port, ca_pem));
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("authorization", bearer);
+            cinder::v1::SetRequest req;
+            cinder::v1::SetResponse resp;
+            req.set_key("auth-key");
+            req.set_value("auth-value");
+            auto status = stub->Set(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_EQ(resp.status(), cinder::v1::STATUS_CODE_UNSPECIFIED);
+        }
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("authorization", bearer);
+            cinder::v1::GetRequest req;
+            cinder::v1::GetResponse resp;
+            req.set_key("auth-key");
+            auto status = stub->Get(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_EQ(resp.status(), cinder::v1::STATUS_CODE_UNSPECIFIED);
+            EXPECT_EQ(resp.value(), "auth-value");
+        }
+    }
+
+    TEST(GrpcAuthTest, MultiSetAndInfoWithBearer) {
+        auto [tcp_port, grpc_port] = spawnPorts();
+        NodeProcGuard node{
+            spawnNodeWithGrpcAuth(tcp_port, grpc_port, "grpc-auth1", "grpc-client-secret")
+        };
+        auto ca_pem = readPemForGrpc(grpcFixturePath("ca.pem"));
+        auto bearer = bearerForGrpc("grpc-client-secret");
+        ASSERT_TRUE(waitForGrpcAuthPort(grpc_port, ca_pem, bearer));
+
+        auto stub = cinder::v1::CinderCacheService::NewStub(makeTlsChannel(grpc_port, ca_pem));
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("authorization", bearer);
+            cinder::v1::MultiSetRequest req;
+            cinder::v1::MultiSetResponse resp;
+            auto* s = req.add_requests();
+            s->set_key("ga");
+            s->set_value("va");
+            auto status = stub->MultiSet(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            ASSERT_EQ(resp.responses_size(), 1);
+            EXPECT_EQ(resp.responses(0).status(), cinder::v1::STATUS_CODE_UNSPECIFIED);
+        }
+        {
+            grpc::ClientContext ctx;
+            ctx.AddMetadata("authorization", bearer);
+            cinder::v1::InfoRequest req;
+            cinder::v1::InfoResponse resp;
+            auto status = stub->Info(&ctx, req, &resp);
+            ASSERT_TRUE(status.ok()) << status.error_message();
+            EXPECT_TRUE(resp.json().contains("node_id"));
+        }
+        {
+            // Same bearer must not work without metadata on admin RPCs either.
+            grpc::ClientContext ctx;
+            cinder::v1::RingInfoRequest req;
+            cinder::v1::RingInfoResponse resp;
+            auto status = stub->RingInfo(&ctx, req, &resp);
+            EXPECT_EQ(status.error_code(), grpc::StatusCode::UNAUTHENTICATED);
         }
     }
 } // namespace

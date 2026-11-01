@@ -16,7 +16,13 @@ namespace cinder::grpc {
     class GrpcGateway {
     public:
 
-        GrpcGateway(CacheNodeServer::GatewayHandle handle, uint16_t port);
+        GrpcGateway(
+            CacheNodeServer::GatewayHandle handle,
+            uint16_t port,
+            std::string client_shared_secret = {},
+            std::string tls_cert_file = {},
+            std::string tls_key_file = {}
+        );
         ~GrpcGateway();
 
         GrpcGateway(const GrpcGateway&) = delete;
@@ -33,6 +39,9 @@ namespace cinder::grpc {
         std::unique_ptr<grpc::Service> service_;
         std::unique_ptr<grpc::Server> server_;
         uint16_t port_;
+        std::string client_shared_secret_;
+        std::string tls_cert_file_;
+        std::string tls_key_file_;
     };
 
 } // namespace cinder::grpc

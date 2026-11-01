@@ -44,6 +44,7 @@ auto main(int argc, char* argv[]) -> int {
     std::string tls_ca_file;
     std::string eviction_policy = "lru";
     std::string shared_secret;
+    std::string client_shared_secret;
     int rpc_timeout_ms = 5000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
@@ -92,6 +93,11 @@ auto main(int argc, char* argv[]) -> int {
         ->check(CLI::IsMember({"lru", "lfu"}));
 
     app.add_option("--shared-secret", shared_secret, "Shared secret for node authentication");
+    app.add_option(
+        "--client-shared-secret",
+        client_shared_secret,
+        "Shared secret for client authentication (requires TLS)"
+    );
     app.add_option(
         "--rpc-timeout",
         rpc_timeout_ms,
@@ -149,6 +155,8 @@ auto main(int argc, char* argv[]) -> int {
     options.tls_key_file = tls_key_file.empty() ? cfg.tls.key_file : tls_key_file;
     options.tls_ca_file = tls_ca_file.empty() ? cfg.tls.ca_file : tls_ca_file;
     options.shared_secret = shared_secret.empty() ? cfg.auth.shared_secret : shared_secret;
+    options.client_shared_secret =
+        client_shared_secret.empty() ? cfg.auth.client_shared_secret : client_shared_secret;
     options.eviction_policy = eviction_policy;
     options.rpc_timeout = app.count("--rpc-timeout") == 0 ? milliseconds(cfg.rpc_timeout_ms)
                                                           : milliseconds(rpc_timeout_ms);
@@ -177,7 +185,7 @@ auto main(int argc, char* argv[]) -> int {
     cinder::CacheNodeServer server(std::move(options));
     auto result = server.start();
     if (!result.has_value()) {
-        CINDER_ERROR("failed to start server");
+        CINDER_ERROR("failed to start server", {"reason", result.error().message()});
         return 1;
     }
 
@@ -185,9 +193,24 @@ auto main(int argc, char* argv[]) -> int {
     std::unique_ptr<cinder::grpc::GrpcGateway> grpc_gateway;
     auto actual_grpc_port = grpc_port > 0 ? grpc_port : cfg.grpc_port;
     if (actual_grpc_port > 0) {
+        if (!server.clientAuthSecret().empty()) {
+            // The gateway enforces the same client bearer over gRPC metadata
+            // and requires TLS for it; without certificates startup already
+            // failed in server.start(), this is the defense-in-depth check.
+            if (options.tls_cert_file.empty() || options.tls_key_file.empty()) {
+                CINDER_ERROR("client auth with gRPC requires TLS certificate and key");
+                return 1;
+            }
+        }
+
         auto handle = server.gatewayHandle();
-        grpc_gateway =
-            std::make_unique<cinder::grpc::GrpcGateway>(std::move(handle), actual_grpc_port);
+        grpc_gateway = std::make_unique<cinder::grpc::GrpcGateway>(
+            std::move(handle),
+            actual_grpc_port,
+            server.clientAuthSecret(),
+            options.tls_cert_file,
+            options.tls_key_file
+        );
         grpc_gateway->start();
     }
 #endif

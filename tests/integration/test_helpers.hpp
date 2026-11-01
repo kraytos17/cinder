@@ -253,7 +253,8 @@ class NodeProcGuard {
 };
 
 [[maybe_unused]] static auto
-rawRequest(int port, const Request& req) -> cinder::Result<Response> {
+rawRequest(int port, const Request& req, std::string_view auth_token = {})
+    -> cinder::Result<Response> {
     io_context io;
     tcp::socket socket(io);
     error_code ec;
@@ -266,7 +267,7 @@ rawRequest(int port, const Request& req) -> cinder::Result<Response> {
     tv.tv_sec = 5;
     setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    auto encoded = cinder::net::encode(req);
+    auto encoded = cinder::net::encode(req, auth_token);
     if (!encoded.has_value()) {
         return cinder::err<Response>(encoded.error());
     }

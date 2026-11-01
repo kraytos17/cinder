@@ -256,7 +256,8 @@ namespace cinder {
                 return formatConfigJson(snapshot);
             },
             &anti_entropy_,
-            options.shared_secret
+            options.shared_secret,
+            options.client_shared_secret
 #ifdef CINDER_ENABLE_TLS
             ,
             ssl_ctx_ ? &*ssl_ctx_ : nullptr
@@ -266,7 +267,9 @@ namespace cinder {
         replica_factor_(options.replica_factor),
         port_(options.port),
         metrics_port_(options.metrics_port),
-        mode_(options.mode) {
+        mode_(options.mode),
+        client_shared_secret_(options.client_shared_secret),
+        tls_enabled_(options.tls_enabled) {
         seedCluster(options);
         wireMetrics();
         installAdminCallbacks();
@@ -284,6 +287,25 @@ namespace cinder {
     }
 
     auto CacheNodeServer::start() -> Result<void> {
+        if (!client_shared_secret_.empty()) {
+#ifndef CINDER_ENABLE_CRYPTO
+            return err(Error(Errc::InvalidArgument, "client auth requires a crypto-enabled build"));
+#else
+            if (!tls_enabled_) {
+                return err(Error(
+                    Errc::InvalidArgument,
+                    "client auth requires TLS (replayable bearer token)"
+                ));
+            }
+#ifdef CINDER_ENABLE_TLS
+            if (!ssl_ctx_.has_value()) {
+                return err(
+                    Error(Errc::InvalidArgument, "client auth requires TLS certificate and key")
+                );
+            }
+#endif
+#endif
+        }
         return server_.start();
     }
 

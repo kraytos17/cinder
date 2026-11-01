@@ -38,6 +38,7 @@ tls:
 
 auth:
   shared_secret: ""                 # shared secret for node authentication (empty = disabled)
+  client_shared_secret: ""         # shared secret for client auth (empty = disabled, requires TLS)
 
 logging:
   level: info                # trace | debug | info | warn | error

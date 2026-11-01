@@ -68,6 +68,40 @@ TEST(HmacTest, VerifyAuthTokenTooLong) {
     EXPECT_FALSE(verifyAuthToken("secret", "node1", long_token));
 }
 
+TEST(HmacTest, GenerateClientAuthToken) {
+    auto token = generateClientAuthToken("client-secret");
+    EXPECT_EQ(token.size(), 32U);
+    auto token2 = generateClientAuthToken("client-secret");
+    EXPECT_EQ(token, token2);
+}
+
+TEST(HmacTest, GenerateClientAuthTokenEmptySecret) {
+    EXPECT_TRUE(generateClientAuthToken("").empty());
+}
+
+TEST(HmacTest, VerifyClientAuthToken) {
+    auto token = generateClientAuthToken("client-secret");
+    EXPECT_TRUE(verifyClientAuthToken("client-secret", token));
+}
+
+TEST(HmacTest, VerifyClientAuthTokenWrongSecret) {
+    auto token = generateClientAuthToken("secret-a");
+    EXPECT_FALSE(verifyClientAuthToken("secret-b", token));
+}
+
+TEST(HmacTest, VerifyClientAuthTokenMalformed) {
+    EXPECT_FALSE(verifyClientAuthToken("secret", ""));
+    EXPECT_FALSE(verifyClientAuthToken("secret", "short"));
+    EXPECT_FALSE(verifyClientAuthToken("", generateClientAuthToken("secret")));
+}
+
+TEST(HmacTest, ClientTokenNotInterchangeableWithNodeToken) {
+    auto client_token = generateClientAuthToken("same-secret");
+    EXPECT_FALSE(verifyAuthToken("same-secret", "node1", client_token));
+    auto node_token = generateAuthToken("same-secret", "node1");
+    EXPECT_FALSE(verifyClientAuthToken("same-secret", node_token));
+}
+
 TEST(ProtocolAuthTest, RequestEncodeDecodeWithAuth) {
     Request req;
     req.opcode = Opcode::Replicate;

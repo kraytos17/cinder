@@ -29,7 +29,8 @@ namespace cinder {
             const ClusterConfig& config,
             io_context& io,
             std::string node_id = {},
-            std::string shared_secret = {}
+            std::string shared_secret = {},
+            std::string client_shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
             ,
             asio::ssl::context* ssl_ctx = nullptr
@@ -145,6 +146,7 @@ namespace cinder {
         io_context& io_;
         std::string node_id_;
         std::string shared_secret_;
+        std::string client_shared_secret_;
 #ifdef CINDER_ENABLE_TLS
         asio::ssl::context* ssl_ctx_ = nullptr;
 #endif

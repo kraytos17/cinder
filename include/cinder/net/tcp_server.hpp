@@ -57,7 +57,8 @@ namespace cinder::net {
             MetricsCollector* metrics = nullptr,
             std::function<std::string()> config_getter = nullptr,
             AntiEntropyManager* anti_entropy = nullptr,
-            std::string shared_secret = {}
+            std::string shared_secret = {},
+            std::string client_shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
             ,
             asio::ssl::context* ssl_ctx = nullptr
@@ -123,6 +124,7 @@ namespace cinder::net {
         std::vector<std::shared_ptr<TcpConnection>> connections_;
         std::unique_ptr<tcp::acceptor> metrics_acceptor_;
         std::string shared_secret_;
+        std::string client_shared_secret_;
         asio::steady_timer emfile_timer_;
         std::function<std::string()> config_getter_;
         std::atomic<size_t> active_connections_{0};

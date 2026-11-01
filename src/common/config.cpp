@@ -79,6 +79,9 @@ namespace cinder {
         out += "\"auth_enabled\":"
             + std::string(cfg.auth.shared_secret.empty() ? "false" : "true")
             + ",";
+        out += "\"client_auth_enabled\":"
+            + std::string(cfg.auth.client_shared_secret.empty() ? "false" : "true")
+            + ",";
 
         out += "\"metrics_port\":" + std::to_string(cfg.metrics_port) + ",";
         out += "\"grpc_port\":" + std::to_string(cfg.grpc_port) + ",";
@@ -175,6 +178,9 @@ namespace cinder {
         if (old_cfg.auth.shared_secret != new_cfg.auth.shared_secret) {
             changed.emplace_back("auth_shared_secret");
         }
+        if (old_cfg.auth.client_shared_secret != new_cfg.auth.client_shared_secret) {
+            changed.emplace_back("auth_client_shared_secret");
+        }
         if (old_cfg.log_level != new_cfg.log_level) {
             changed.emplace_back("log_level");
         }
@@ -256,6 +262,8 @@ namespace cinder {
         // Auth
         if (auto auth = root["auth"]) {
             cfg.auth.shared_secret = auth["shared_secret"].as<std::string>(cfg.auth.shared_secret);
+            cfg.auth.client_shared_secret =
+                auth["client_shared_secret"].as<std::string>(cfg.auth.client_shared_secret);
         }
         // Logging
         if (auto log = root["logging"]) {
@@ -340,6 +348,9 @@ namespace cinder {
         out += "\"tls_enabled\":" + std::string(config.tls.enabled ? "true" : "false") + ",";
         out += "\"auth_enabled\":"
             + std::string(config.auth.shared_secret.empty() ? "false" : "true")
+            + ",";
+        out += "\"client_auth_enabled\":"
+            + std::string(config.auth.client_shared_secret.empty() ? "false" : "true")
             + ",";
 
         out += R"("log_level":")" + escapeJsonString(config.log_level) + "\",";

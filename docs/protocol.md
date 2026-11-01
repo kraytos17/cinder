@@ -64,13 +64,17 @@ depending on which flags are set.
   flag ignores the trailing 16 bytes (backward-compatible: old nodes treat the
   extra bytes as part of the value field and reject via `InvalidArgument`,
   but forward-compatible nodes skip over unknown trailing data).
-- **`auth_token`** (32 bytes) — HMAC-SHA256 node authentication token. When
-  `shared_secret` is configured on the server, internal opcodes (REPLICATE,
-  HINT, GOSSIP, ANTI_ENTROPY_*, ADMIN_*) must include this field. The token
-  is `HMAC-SHA256(shared_secret, node_id + ":" + unix_seconds/10)`, truncated
-  to 10-second windows for clock-skew tolerance. Client opcodes (GET, SET,
-  DEL, PING) skip auth. When `shared_secret` is empty, the field is omitted
-  and no authentication is performed.
+- **`auth_token`** (32 bytes) — HMAC-SHA256 authentication token. When
+  `shared_secret` is configured on the server, internal replication opcodes
+  (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*) must include a node token:
+  `HMAC-SHA256(shared_secret, node_id + ":" + unix_seconds/10)`, truncated
+  to 10-second windows for clock-skew tolerance. When `client_shared_secret`
+  is configured, client opcodes (GET, GET_VERSIONED, SET, DEL, PING) and
+  ADMIN_* must instead include a client token:
+  `HMAC-SHA256(client_shared_secret, "cinder-client-v1")`. The wire field
+  carries exactly one token; the opcode class selects which secret is
+  verified. When both secrets are empty, the field is omitted and no
+  authentication is performed.
 - **`version`** (`uint64`) — monotonic LWW version. Meaningful on
   `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
 - **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
@@ -266,30 +270,50 @@ an HMAC-SHA256 digest) are appended at the end of the payload, after trace
 context when present. Old nodes validate the fixed-layout prefix and reject
 frames with unknown trailing data.
 
-Authentication is enforced on **internal opcodes only** (REPLICATE, HINT,
-GOSSIP, ANTI_ENTROPY_DIGEST, ANTI_ENTROPY_SYNC, and ADMIN_*). Client opcodes
-(GET, SET, DEL, PING) are not authenticated — they are protected by the
-ring-ownership redirect mechanism instead.
+Authentication is enforced per opcode class (see the `auth_token` field
+description). Internal replication opcodes (REPLICATE, HINT, GOSSIP,
+ANTI_ENTROPY_DIGEST, ANTI_ENTROPY_SYNC) require the node token when
+`shared_secret` is configured. Client opcodes (GET, GET_VERSIONED, SET, DEL,
+PING) require the client token when `client_shared_secret` is configured.
+ADMIN_* requires the client token when client auth is enabled, otherwise the
+node token when node auth is configured. Auth is checked before ring-ownership
+redirects or any side effects; failures return `PermissionDenied` (9)
+without revealing which check failed.
 
-The token is computed as:
+The node token is computed as:
 ```
-auth_token = HMAC-SHA256(shared_secret, node_id + ":" + (unix_seconds / 10))
+node_token = HMAC-SHA256(shared_secret, node_id + ":" + (unix_seconds / 10))
 ```
 
 The timestamp is truncated to 10-second windows so nodes with slight clock
 skew (up to ~30 seconds) can still authenticate. The server checks the
 current window and the two preceding windows.
 
-When `shared_secret` is empty or not configured, no authentication is performed
-and the `auth_token` field is omitted from requests.
+The client token is static and domain-separated:
+```
+client_token = HMAC-SHA256(client_shared_secret, "cinder-client-v1")
+```
+
+The raw secret never goes on the wire. The token is replayable by design,
+so the server refuses to enable client auth without a crypto build and TLS
+(`cinderd` startup fails otherwise), and the gRPC gateway serves it only
+over TLS with the same bearer presented as hex in the `authorization`
+metadata (`Bearer <hex>`), verified at every RPC entry point.
+
+When a secret is empty or not configured, no authentication is performed
+for its opcode class and the `auth_token` field is omitted from those
+requests. Rotation in v1 requires a coordinated restart; there are no
+per-user identities, ACLs, or revocation.
 
 Configuration:
 ```yaml
 auth:
-  shared_secret: "my-cluster-secret"
+  shared_secret: "my-cluster-secret"          # node auth (empty = disabled)
+  client_shared_secret: "my-client-secret"    # client auth (empty = disabled, requires TLS)
 ```
 
-Or via CLI: `cinderd --shared-secret "my-cluster-secret"`
+Or via CLI: `cinderd --shared-secret "my-cluster-secret" --client-shared-secret "my-client-secret"`
+(`cinder-cli`/`cinder-admin` take `--client-secret`, or `CINDER_CLIENT_SECRET`).
 
 A node with `shared_secret` configured will reject any internal request that
 is missing a valid `auth_token` with status code `PermissionDenied` (9).

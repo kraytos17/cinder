@@ -62,6 +62,8 @@ namespace cinder {
         std::string tls_ca_file;
         // Node authentication
         std::string shared_secret;
+        // Optional client authentication (static bearer over TLS). Empty = disabled.
+        std::string client_shared_secret;
         std::string eviction_policy = "lru";
         // Path to YAML config file (empty = no hot-reload).
         std::string config_path;
@@ -150,6 +152,10 @@ namespace cinder {
             FailureDetector& failure_detector;
             GossipManager& gossip;
         };
+
+        auto clientAuthSecret() const -> const std::string& {
+            return client_shared_secret_;
+        }
 
         auto gatewayHandle() -> GatewayHandle {
             return {
@@ -273,5 +279,7 @@ namespace cinder {
         uint16_t port_ = 0;
         uint16_t metrics_port_ = 0;
         ConsistencyMode mode_ = ConsistencyMode::Async;
+        std::string client_shared_secret_;
+        bool tls_enabled_ = false;
     };
 } // namespace cinder

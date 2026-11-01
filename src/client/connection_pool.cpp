@@ -45,7 +45,8 @@ namespace cinder {
         const ClusterConfig& config,
         io_context& io,
         std::string node_id,
-        std::string shared_secret
+        std::string shared_secret,
+        std::string client_shared_secret
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx
@@ -53,13 +54,17 @@ namespace cinder {
     ) :
         io_(io),
         node_id_(std::move(node_id)),
-        shared_secret_(std::move(shared_secret))
+        shared_secret_(std::move(shared_secret)),
+        client_shared_secret_(std::move(client_shared_secret))
 #ifdef CINDER_ENABLE_TLS
         ,
         ssl_ctx_(ssl_ctx)
 #endif
         ,
         rpc_timeout_(milliseconds(config.rpc_timeout_ms)) {
+        if (client_shared_secret_.empty()) {
+            client_shared_secret_ = config.client_shared_secret;
+        }
         for (const auto& n : config.nodes) {
             node_addrs_.insert_or_assign(n.id, n);
         }
@@ -521,9 +526,12 @@ namespace cinder {
         }
 
         std::string auth_token;
-        if (!shared_secret_.empty() && !node_id_.empty()) {
+        if (!client_shared_secret_.empty()) {
+            auth_token = generateClientAuthToken(client_shared_secret_);
+        } else if (!shared_secret_.empty() && !node_id_.empty()) {
             auth_token = generateAuthToken(shared_secret_, node_id_);
         }
+
         if (auto encoded = net::encode(req, auth_token); !encoded.has_value()) {
             on_done(err<net::Response>(encoded.error()));
             return;
@@ -569,9 +577,12 @@ namespace cinder {
         std::vector<std::vector<std::byte>> all_data;
         all_data.reserve(reqs.size());
         std::string auth_token;
-        if (!shared_secret_.empty() && !node_id_.empty()) {
+        if (!client_shared_secret_.empty()) {
+            auth_token = generateClientAuthToken(client_shared_secret_);
+        } else if (!shared_secret_.empty() && !node_id_.empty()) {
             auth_token = generateAuthToken(shared_secret_, node_id_);
         }
+
         for (const auto& req : reqs) {
             auto encoded = net::encode(req, auth_token);
             if (!encoded.has_value()) {

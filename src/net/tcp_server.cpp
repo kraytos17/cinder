@@ -30,7 +30,8 @@ namespace cinder::net {
         MetricsCollector* metrics,
         std::function<std::string()> config_getter,
         AntiEntropyManager* anti_entropy,
-        std::string shared_secret
+        std::string shared_secret,
+        std::string client_shared_secret
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx
@@ -54,6 +55,7 @@ namespace cinder::net {
         ssl_ctx_(ssl_ctx),
 #endif
         shared_secret_(std::move(shared_secret)),
+        client_shared_secret_(std::move(client_shared_secret)),
         emfile_timer_(io),
         config_getter_(std::move(config_getter)) {
         // Binds happen in start() so failures return errors instead of throwing.
@@ -193,7 +195,8 @@ namespace cinder::net {
                         gossip_,
                         std::move(counter),
                         anti_entropy_,
-                        shared_secret_
+                        shared_secret_,
+                        client_shared_secret_
 #ifdef CINDER_ENABLE_TLS
                         ,
                         ssl_ctx_

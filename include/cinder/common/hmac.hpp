@@ -18,6 +18,16 @@ namespace cinder {
     // The timestamp is truncated to 10-second windows to allow clock skew.
     auto generateAuthToken(std::string_view secret, const std::string& node_id) -> std::string;
 
+    // Domain-separated static token for client authentication.
+    // Token = HMAC-SHA256(client_shared_secret, "cinder-client-v1").
+    // The raw secret never goes on the wire. Replayable by design — callers
+    // must only use it over TLS (enforced at server startup).
+    auto generateClientAuthToken(std::string_view secret) -> std::string;
+
+    // Verify a client auth token with constant-time comparison.
+    // Returns false for empty secret, malformed length, or crypto-disabled builds.
+    auto verifyClientAuthToken(std::string_view secret, std::string_view token) -> bool;
+
     // Verify an auth token against the shared secret.
     // Accepts tokens generated within the last `window_seconds` (default 30s).
     auto verifyAuthToken(

@@ -31,7 +31,8 @@ namespace cinder::net {
         GossipManager* gossip,
         ConnectionCountGuard conn_counter,
         AntiEntropyManager* anti_entropy,
-        std::string shared_secret
+        std::string shared_secret,
+        std::string client_shared_secret
 #ifdef CINDER_ENABLE_TLS
         ,
         asio::ssl::context* ssl_ctx
@@ -52,6 +53,7 @@ namespace cinder::net {
         replica_factor_(replica_factor),
         mode_(mode),
         shared_secret_(std::move(shared_secret)),
+        client_shared_secret_(std::move(client_shared_secret)),
         conn_counter_(std::move(conn_counter)) {
 #ifdef CINDER_ENABLE_TLS
         if (ssl_ctx) {
@@ -507,7 +509,7 @@ namespace cinder::net {
 
         // Replicate/Hint/Gossip/AntiEntropy*/Admin* are inter-node or admin messages
         // addressed to this node directly — skip the ring ownership check.
-        bool is_internal = req.opcode
+        bool is_replication = req.opcode
             == Opcode::Replicate
             || req.opcode
             == Opcode::Hint
@@ -516,8 +518,8 @@ namespace cinder::net {
             || req.opcode
             == Opcode::AntiEntropyDigest
             || req.opcode
-            == Opcode::AntiEntropySync
-            || req.opcode
+            == Opcode::AntiEntropySync;
+        bool is_admin = req.opcode
             == Opcode::AdminInfo
             || req.opcode
             == Opcode::AdminCluster
@@ -529,26 +531,52 @@ namespace cinder::net {
             == Opcode::AdminConfigReload
             || req.opcode
             == Opcode::AdminShutdown;
+        bool is_internal = is_replication || is_admin;
 
-        // Node authentication — validate auth token on internal opcodes when a
-        // shared_secret is configured. Client opcodes (Get/Set/Del/Ping) skip
-        // auth since they go through the normal ring-ownership path.
-        if (is_internal && !shared_secret_.empty()) {
-            if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
-                CINDER_WARN(
-                    "auth failed",
-                    {"opcode", static_cast<int>(req.opcode)},
-                    {"node", node_id_}
+        auto deny = [this, &req] {
+            CINDER_WARN(
+                "auth failed",
+                {"opcode", static_cast<int>(req.opcode)},
+                {"node", node_id_}
+            );
+            if (metrics_) {
+                metrics_->connectionMetrics().connections_closed.fetch_add(
+                    1,
+                    std::memory_order_relaxed
                 );
-                if (metrics_) {
-                    metrics_->connectionMetrics().connections_closed.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                }
+            }
 
-                sendResponse({.status = Errc::PermissionDenied, .value = "auth failed"});
-                maybeRead();
+            // Status-only: a value body here would surface as fake data
+            // through CacheClient::get(), which returns res.value directly.
+            sendResponse({.status = Errc::PermissionDenied, .value = std::nullopt});
+            maybeRead();
+        };
+
+        const bool client_auth_enabled = !client_shared_secret_.empty();
+        // Node authentication — validate auth token on internal opcodes when a
+        // shared_secret is configured. Client opcodes (Get/Set/Del/Ping)
+        // require the client credential only when client auth is enabled.
+        if (is_replication && !shared_secret_.empty()) {
+            if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
+                deny();
+                return;
+            }
+        } else if (is_admin) {
+            if (client_auth_enabled) {
+                if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
+                    deny();
+                    return;
+                }
+            } else if (!shared_secret_.empty()) {
+                if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
+                    deny();
+                    return;
+                }
+            }
+        } else if (client_auth_enabled) {
+            // All remaining opcodes are client-facing (Get/GetVersioned/Set/Del/Ping).
+            if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
+                deny();
                 return;
             }
         }

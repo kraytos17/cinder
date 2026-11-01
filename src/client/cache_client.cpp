@@ -9,7 +9,7 @@ using std::chrono::milliseconds;
 namespace cinder {
 
     CacheClient::CacheClient(ClusterConfig config) :
-        pool_(config, io_ctx_),
+        pool_(config, io_ctx_, {}, {}, config.client_shared_secret),
         max_retries_(config.max_retries),
         base_backoff_ms_(config.base_backoff_ms) {
         for (const auto& n : config.nodes) {
