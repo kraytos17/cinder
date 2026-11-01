@@ -16,6 +16,11 @@ set_target_properties(cinder_throughput_bench PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
 )
+# Module consumers must opt back into scanning (project disables it globally)
+# and into import std (per-target, never global). Includes-first ordering in
+# each TU; see tools/CMakeLists.txt for the rationale.
+set_target_properties(cinder_throughput_bench PROPERTIES CXX_SCAN_FOR_MODULES ON)
+set_target_properties(cinder_throughput_bench PROPERTIES CXX_MODULE_STD 1)
 _cinder_apply_debug_options(cinder_throughput_bench)
 cinder_reuse_pch(cinder_throughput_bench)
 

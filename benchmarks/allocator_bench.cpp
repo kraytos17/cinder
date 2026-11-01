@@ -1,12 +1,12 @@
 #include <ankerl/unordered_dense.h>
 #include <benchmark/benchmark.h>
-#include <cstddef>
-#include <memory>
-#include <string>
-#include <vector>
 
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/store/lru_store.hpp"
+
+// All textual includes precede the import; everything standard comes from
+// import std below.
+import std;
 
 namespace cinder {
     namespace {

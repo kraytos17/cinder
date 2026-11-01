@@ -1,11 +1,10 @@
-#include <algorithm>
 #include <ankerl/unordered_dense.h>
 #include <benchmark/benchmark.h>
 #include <btree/map.h>
-#include <cstddef>
-#include <cstdint>
-#include <map>
-#include <vector>
+
+// All textual includes precede the import; everything standard comes from
+// import std below.
+import std;
 
 namespace {
     template <typename Map> auto makeBuckets(size_t count, size_t occupants = 1) -> Map {
