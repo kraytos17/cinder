@@ -14,7 +14,7 @@ set(CINDER_DEP_asio_REPO       https://github.com/chriskohlhoff/asio.git)
 set(CINDER_DEP_asio_TAG        asio-1-38-2)
 
 set(CINDER_DEP_xxhash_REPO     https://github.com/Cyan4973/xxHash.git)
-set(CINDER_DEP_xxhash_TAG      v0.8.3)
+set(CINDER_DEP_xxhash_TAG      v0.8.4)
 
 # Pinned v2.x (v2.0.0 unreleased).
 set(CINDER_DEP_spdlog_REPO     https://github.com/gabime/spdlog.git)
@@ -27,7 +27,7 @@ set(CINDER_DEP_yaml-cpp_REPO   https://github.com/jbeder/yaml-cpp.git)
 set(CINDER_DEP_yaml-cpp_TAG    yaml-cpp-0.9.0)
 
 set(CINDER_DEP_mimalloc_REPO   https://github.com/microsoft/mimalloc.git)
-set(CINDER_DEP_mimalloc_TAG    v3.5.0)
+set(CINDER_DEP_mimalloc_TAG    v3.6.1)
 
 set(CINDER_DEP_googletest_REPO https://github.com/google/googletest.git)
 set(CINDER_DEP_googletest_TAG  v1.18.0)

@@ -415,7 +415,7 @@ FetchContent_Declare(
     xxhash
     GIT_REPOSITORY ${CINDER_DEP_xxhash_REPO}
     GIT_TAG        ${CINDER_DEP_xxhash_TAG}
-    SOURCE_SUBDIR  cmake_unofficial
+    SOURCE_SUBDIR  build/cmake
     GIT_SHALLOW    TRUE
     GIT_SUBMODULES ""
     BINARY_DIR     ${CMAKE_BINARY_DIR}/_deps/xxhash-build
@@ -436,7 +436,7 @@ FetchContent_Declare(
     ${_spdlog_args}
 )
 # NOTE: SPDLOG_BUILD_SHARED is deliberately NOT forced here. xxHash's
-# cmake_unofficial declares option(BUILD_SHARED_LIBS ON), which seeds the
+# build/cmake declares option(BUILD_SHARED_LIBS ON), which seeds the
 # cache before spdlog configures, so spdlog v2.x (which follows
 # BUILD_SHARED_LIBS and offers no force-static switch) builds shared — as do
 # grpc/abseil. Forcing static would additionally require
