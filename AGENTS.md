@@ -150,6 +150,13 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   `WarningsAsErrors`; `readability-*` stay warnings-only), and it is
   deliberately **not** in `just verify` because the tidy build is slow. Run it
   before pushing anything that touches `src/` or `include/`.
+* Module notes (tools use `import cli11;` + `import std;`): tidy runs through
+  `cmake/cinder-clang-tidy`, which skips only CMake's synthetic
+  `@cmake_cxx_std` BMI builds (tidy cannot process them); cppcheck has
+  file-scoped `syntaxError` suppressions for the compiler's own
+  `bits/std*.cc`. The `import std` gate UUID lives before `project()` in the
+  root `CMakeLists.txt` and only takes effect on fresh configures — wipe the
+  build dir (not just reconfigure) after touching it.
 * CI jobs (`.github/workflows/ci.yml`): `build-image` → `fetch-deps` (×2: union
   dep seed per family — the **sole writer** per `fetchcontent-<family>-*` key) +
   `build-test` (7 presets: debug, debug-tls, release, debug-clang,
