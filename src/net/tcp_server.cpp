@@ -259,16 +259,18 @@ namespace cinder::net {
                 return;
             }
 
+            // NB: the accepted socket is moved into `self` first so the
+            // coroutine-free handler chain owns its lifetime; the read must
+            // go through *self, not the moved-from local.
+            auto self = std::make_shared<tcp::socket>(std::move(socket));
             auto buf = std::make_shared<std::array<char, 4096>>();
             asio::async_read(
-                socket,
+                *self,
                 asio::buffer(*buf),
                 asio::transfer_at_least(1),
                 asio::bind_executor(
                     strand_,
-                    [this,
-                     self = std::make_shared<tcp::socket>(std::move(socket)),
-                     buf](std::error_code read_ec, std::size_t /*n*/) {
+                    [this, self, buf](std::error_code read_ec, std::size_t /*n*/) {
                 Span span("metrics.request");
                 std::string response;
                 if (!read_ec) {

@@ -23,11 +23,18 @@ namespace cinder {
     // A mutex protects all queue state. Entries live in a fixed-capacity heap
     // slot array and are linked in FIFO order, so completion callbacks can
     // remove a replayed hint in O(1) using its generation-tagged handle.
+    //
+    // Two bounds apply: a fixed slot count (K_CAPACITY) and a configurable
+    // estimated-byte budget (default K_DEFAULT_MAX_BYTES). When either bound
+    // would be exceeded, the oldest hints are evicted first; a single hint
+    // larger than the whole budget is rejected. Every eviction and rejection
+    // counts toward dropped().
     class HintQueue {
     public:
 
         static constexpr size_t K_CAPACITY = 1024;
         static constexpr size_t K_NONE = K_CAPACITY;
+        static constexpr size_t K_DEFAULT_MAX_BYTES = 67'108'864; // 64 MiB
 
         struct Hint {
             NodeId target;
@@ -74,8 +81,16 @@ namespace cinder {
         // itself never grows after construction.
         auto push(Hint hint) -> bool {
             std::scoped_lock lock(mutex_);
-            if (size_ == K_CAPACITY) {
+            const size_t incoming = estimatedBytes(hint);
+            if (incoming > max_bytes_) {
+                // Can never fit, even in an empty queue.
+                ++dropped_;
+                publishMetrics();
+                return false;
+            }
+            while (size_ == K_CAPACITY || current_bytes_ + incoming > max_bytes_) {
                 unlinkAndRelease(head_);
+                ++dropped_;
             }
 
             const size_t index = acquireSlot();
@@ -189,6 +204,19 @@ namespace cinder {
             return static_cast<uint64_t>(peak_bytes_);
         }
 
+        // Cumulative count of hints evicted for bounds plus single hints
+        // rejected as larger than the whole budget.
+        [[nodiscard]]
+        auto dropped() const -> uint64_t {
+            std::scoped_lock lock(mutex_);
+            return dropped_;
+        }
+
+        void setMaxBytes(size_t max_bytes) {
+            std::scoped_lock lock(mutex_);
+            max_bytes_ = max_bytes;
+        }
+
         [[nodiscard]]
         static auto estimatedPayloadBytes(const Hint& hint) -> uint64_t {
             return static_cast<uint64_t>(
@@ -290,6 +318,8 @@ namespace cinder {
         mutable std::mutex mutex_;
         size_t current_bytes_ = 0;
         size_t peak_bytes_ = 0;
+        size_t max_bytes_ = K_DEFAULT_MAX_BYTES;
+        uint64_t dropped_ = 0;
         std::atomic<uint64_t>* entries_metric_ = nullptr;
         std::atomic<uint64_t>* bytes_metric_ = nullptr;
         std::atomic<uint64_t>* bytes_peak_metric_ = nullptr;

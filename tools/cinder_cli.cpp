@@ -148,7 +148,8 @@ auto main(int argc, char* argv[]) -> int {
         config,
         io,
         {},
-        {}
+        {},
+        config.client_shared_secret
 #ifdef CINDER_ENABLE_TLS
         ,
         ssl_ctx ? &*ssl_ctx : nullptr

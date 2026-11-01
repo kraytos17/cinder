@@ -97,6 +97,16 @@ namespace cinder {
         void replayHints(ReplayCallback on_done);
         auto hintCount() const -> size_t;
 
+        // Cap on HintQueue estimated bytes (drop-oldest past it). Applied
+        // before serving; restart-only.
+        void setMaxHintBytes(size_t max_bytes) {
+            hints_.setMaxBytes(max_bytes);
+        }
+
+        auto hintsDropped() const -> uint64_t {
+            return hints_.dropped();
+        }
+
         void setMetrics(MetricsCollector* m) {
             metrics_ = m;
             hints_.setMetrics(

@@ -36,6 +36,9 @@ namespace cinder {
         std::string node_id = "node1";
         uint16_t port = 7000;
         size_t capacity = 67'108'864;
+        // Hinted handoff: estimated-bytes budget for queued hints
+        // (drop-oldest past it). Mirrors HintQueue::K_DEFAULT_MAX_BYTES.
+        size_t max_hint_bytes = 67'108'864;
         int replica_factor = 1;
         std::string consistency = "async";
 

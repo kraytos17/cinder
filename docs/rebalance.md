@@ -241,8 +241,13 @@ When a write (async or quorum) fails to reach a replica, a hint is enqueued
 in the local `HintQueue` for later replay, preventing data loss while the
 replica is unreachable.
 
-- **Queue**: bounded FIFO, capacity 1,024; the oldest hint is dropped when
-  full.
+- **Queue**: bounded FIFO, capacity 1,024 entries **and** a configurable
+  estimated-bytes budget (`replication.max_hint_bytes`, default 64 MiB,
+  `--max-hint-bytes`, hot-reloadable). When either bound would be exceeded,
+  the oldest hints are evicted first; a single hint larger than the whole
+  budget is rejected. Evictions and rejections count toward
+  `cinder_replication_hints_dropped_total`, with live/peak gauges at
+  `cinder_replication_hint_queue_estimated_bytes[_peak]`.
 - **TTL**: 30 s (`K_HINT_TTL`); expired hints are dropped during replay.
 - **Thread safety**: all operations take an internal mutex.
 

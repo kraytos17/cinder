@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 #include <mutex>
 #include <netinet/in.h>
+#include <optional>
 #include <span>
 #include <string>
 #include <sys/socket.h>
@@ -148,12 +149,14 @@ struct NodeProc {
 [[maybe_unused]] static auto
 spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum = false,
     int replica_factor = 1, int quarantine_interval_ms = 10'000, int suspect_timeout_ms = 3'000,
-    int ping_interval_ms = 1'000) -> NodeProc {
+    int ping_interval_ms = 1'000, size_t max_hint_bytes = 0, uint16_t metrics_port = 0) -> NodeProc {
     auto port_str = std::to_string(port);
     auto factor_str = std::to_string(replica_factor);
     auto quarantine_str = std::to_string(quarantine_interval_ms);
     auto suspect_str = std::to_string(suspect_timeout_ms);
     auto ping_str = std::to_string(ping_interval_ms);
+    auto hint_bytes_str = std::to_string(max_hint_bytes);
+    auto metrics_str = std::to_string(metrics_port);
     // Adopt the held socket when this port was picked via pickHeldPort, so
     // the daemon never binds a port another process could have stolen.
     // Looked up before fork: the child only execs, never touches the map.
@@ -165,28 +168,43 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
         return {};
     }
     if (pid == 0) {
-        // NOLINTNEXTLINE
-        execl(CINDER_TEST_CINDERD_PATH,
+        std::vector<std::string> args{
             "cinderd",
             "--port",
-            port_str.c_str(),
+            port_str,
             "--node-id",
-            id.c_str(),
+            id,
             "--replication-factor",
-            factor_str.c_str(),
+            factor_str,
             "--consistency",
             quorum ? "quorum" : "async",
             "--peers",
-            peer_list.c_str(),
+            peer_list,
             "--quarantine-interval",
-            quarantine_str.c_str(),
+            quarantine_str,
             "--suspect-timeout",
-            suspect_str.c_str(),
+            suspect_str,
             "--ping-interval",
-            ping_str.c_str(),
+            ping_str,
             "--listen-fd",
-            fd_str.c_str(),
-            nullptr);
+            fd_str,
+        };
+        if (max_hint_bytes > 0) {
+            args.emplace_back("--max-hint-bytes");
+            args.emplace_back(hint_bytes_str);
+        }
+        if (metrics_port > 0) {
+            args.emplace_back("--metrics-port");
+            args.emplace_back(metrics_str);
+        }
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 1);
+        for (auto& a : args) {
+            argv.push_back(a.data());
+        }
+        argv.push_back(nullptr);
+        // NOLINTNEXTLINE
+        execv(CINDER_TEST_CINDERD_PATH, argv.data());
         _exit(1);
     }
     if (held_fd >= 0) {
@@ -292,6 +310,54 @@ setKey(int port, const std::string& key, const std::string& value) -> cinder::Re
 getKey(int port, const std::string& key) -> cinder::Result<Response> {
     Request req{.opcode = Opcode::Get, .key = key, .value = {}, .ttl = std::nullopt};
     return rawRequest(port, req);
+}
+
+// Scrape a single integer gauge/counter from the Prometheus /metrics
+// endpoint. Returns nullopt when the endpoint or metric is unavailable.
+[[maybe_unused]] static auto
+scrapeMetric(int metrics_port, const std::string& name) -> std::optional<uint64_t> {
+    io_context io;
+    tcp::socket socket(io);
+    error_code ec;
+    socket.connect(tcp::endpoint(address_v4::loopback(), static_cast<uint16_t>(metrics_port)), ec);
+    if (ec) {
+        return std::nullopt;
+    }
+
+    struct timeval tv{};
+    tv.tv_sec = 5;
+    setsockopt(socket.native_handle(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    const std::string req = "GET /metrics HTTP/1.0\r\n\r\n";
+    (void)write(socket, buffer(req), ec);
+    if (ec) {
+        return std::nullopt;
+    }
+
+    std::string body;
+    std::array<char, 4096> buf{};
+    while (true) {
+        size_t n = read(socket, buffer(buf), ec);
+        if (n > 0) {
+            body.append(buf.data(), n);
+        }
+        if (ec) {
+            break;
+        }
+    }
+
+    auto pos = body.find(name);
+    if (pos == std::string::npos) {
+        return std::nullopt;
+    }
+
+    auto num_start = body.find_first_of("0123456789", pos + name.size());
+    if (num_start == std::string::npos) {
+        return std::nullopt;
+    }
+
+    auto num_end = body.find_first_not_of("0123456789", num_start);
+    return std::stoull(body.substr(num_start, num_end - num_start));
 }
 
 // Poll a node until it returns the expected value (async fan-out/replay is not

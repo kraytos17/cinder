@@ -579,9 +579,17 @@ namespace cinder {
 
     void ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
         CINDER_DEBUG("hint enqueued", {"target", target}, {"key", req.key});
+        const uint64_t dropped_before = hints_.dropped();
         hints_.push({target, req, clock_.now() + K_HINT_TTL});
         if (metrics_) {
             metrics_->replicationMetrics().hints_enqueued.fetch_add(1, std::memory_order_relaxed);
+            const uint64_t dropped = hints_.dropped() - dropped_before;
+            if (dropped > 0) {
+                metrics_->replicationMetrics().hints_dropped.fetch_add(
+                    dropped,
+                    std::memory_order_relaxed
+                );
+            }
         }
     }
 

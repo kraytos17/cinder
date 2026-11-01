@@ -201,6 +201,7 @@ namespace cinder {
         appendCounter(os, "replication_read_repairs_total", repl_.read_repairs.load());
         appendCounter(os, "replication_hints_enqueued_total", repl_.hints_enqueued.load());
         appendCounter(os, "replication_hints_replayed_total", repl_.hints_replayed.load());
+        appendCounter(os, "replication_hints_dropped_total", repl_.hints_dropped.load());
         appendGauge(os, "replication_hint_queue_entries", repl_.hint_queue_entries.load());
         appendGauge(
             os,

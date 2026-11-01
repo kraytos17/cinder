@@ -74,6 +74,8 @@ namespace cinder {
         // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
         int io_threads = 0;
         uint32_t anti_entropy_buckets = 256;
+        // Hinted-handoff byte budget (drop-oldest past it). 0 = queue default.
+        size_t max_hint_bytes = 0;
         // Pre-bound listen socket fd (-1 = bind
         // port_ normally). Consumed by TcpServer at start().
         int listen_fd = -1;

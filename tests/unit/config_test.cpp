@@ -224,6 +224,42 @@ server:
             EXPECT_EQ(changed[0], "peers");
         }
 
+        TEST(ConfigTest, LoadReplicationMaxHintBytes) {
+            const char* path = "/tmp/cinder_test_hint_bytes.yaml";
+            {
+                std::ofstream f(path);
+                f << R"(
+replication:
+  max_hint_bytes: 1048576
+)";
+            }
+
+            auto result = loadConfig(path);
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->max_hint_bytes, 1'048'576U);
+            EXPECT_TRUE(formatConfigJson(*result).contains("\"max_hint_bytes\":1048576"));
+
+            Config modified = *result;
+            modified.max_hint_bytes = 2'097'152;
+            auto changed = diffConfig(*result, modified);
+            ASSERT_EQ(changed.size(), 1);
+            EXPECT_EQ(changed[0], "max_hint_bytes");
+
+            // Absent section keeps the compiled default.
+            const char* empty_path = "/tmp/cinder_test_hint_bytes_empty.yaml";
+            {
+                std::ofstream f(empty_path);
+                f << "";
+            }
+
+            auto empty_result = loadConfig(empty_path);
+            ASSERT_TRUE(empty_result.has_value());
+            EXPECT_EQ(empty_result->max_hint_bytes, 67'108'864U);
+
+            (void)std::remove(path);
+            (void)std::remove(empty_path);
+        }
+
         TEST(ConfigTest, DiffConfigTlsFields) {
             Config a;
             a.tls.enabled = false;

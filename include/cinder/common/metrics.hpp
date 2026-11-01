@@ -195,6 +195,7 @@ namespace cinder {
         std::atomic<uint64_t> read_repairs{0};
         std::atomic<uint64_t> hints_enqueued{0};
         std::atomic<uint64_t> hints_replayed{0};
+        std::atomic<uint64_t> hints_dropped{0};
         std::atomic<uint64_t> hint_queue_entries{0};
         std::atomic<uint64_t> hint_queue_estimated_bytes{0};
         std::atomic<uint64_t> hint_queue_estimated_bytes_peak{0};

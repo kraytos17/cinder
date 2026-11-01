@@ -48,6 +48,8 @@ auto main(int argc, char* argv[]) -> int {
     int rpc_timeout_ms = 5000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
+    size_t max_hint_bytes = 0;
+    uint16_t metrics_port = 0;
 
 #ifdef CINDER_ENABLE_GRPC
     uint16_t grpc_port = 0;
@@ -55,6 +57,7 @@ auto main(int argc, char* argv[]) -> int {
 #endif
 
     app.add_option("-p,--port", port, "Port to listen on");
+    app.add_option("--metrics-port", metrics_port, "Prometheus metrics port (0 = disabled)");
     app.add_option(
         "--listen-fd",
         listen_fd,
@@ -113,6 +116,11 @@ auto main(int argc, char* argv[]) -> int {
         anti_entropy_buckets,
         "Anti-entropy hash bucket count"
     );
+    app.add_option(
+        "--max-hint-bytes",
+        max_hint_bytes,
+        "Hinted-handoff byte budget (0 = config/default)"
+    );
 
     CLI11_PARSE(app, argc, argv);
 
@@ -162,6 +170,7 @@ auto main(int argc, char* argv[]) -> int {
                                                           : milliseconds(rpc_timeout_ms);
     options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
     options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
+    options.max_hint_bytes = max_hint_bytes == 0 ? cfg.max_hint_bytes : max_hint_bytes;
     if (!config_path.empty()) {
         if (app.count("--anti-entropy-interval") == 0) {
             options.anti_entropy_interval = milliseconds(cfg.anti_entropy_interval_ms);
@@ -173,7 +182,7 @@ auto main(int argc, char* argv[]) -> int {
 
     options.config = cfg;
     options.config_path = config_path;
-    options.metrics_port = cfg.metrics_port;
+    options.metrics_port = metrics_port > 0 ? metrics_port : cfg.metrics_port;
     if (!peers.empty()) {
         cinder::Config peer_cfg;
         cinder::parsePeersString(peers, peer_cfg);

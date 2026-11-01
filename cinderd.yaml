@@ -23,6 +23,9 @@ failure_detector:
   gossip_interval_ms: 1000
   quarantine_interval_ms: 10000
 
+replication:
+  max_hint_bytes: 67108864      # hinted-handoff byte budget (drop-oldest past it)
+
 persistence:
   enabled: false              # WAL + snapshot persistence
   data_dir: /var/lib/cinder   # directory for WAL and snapshot files

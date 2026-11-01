@@ -279,6 +279,10 @@ namespace cinder {
         }
 
         CINDER_INFO("eviction policy", {"policy", options.eviction_policy});
+        if (options.max_hint_bytes > 0) {
+            repl_.setMaxHintBytes(options.max_hint_bytes);
+            CINDER_INFO("max hint bytes", {"bytes", options.max_hint_bytes});
+        }
         CINDER_INFO(
             "anti-entropy",
             {"interval_ms", options.anti_entropy_interval.count()},
@@ -635,6 +639,8 @@ namespace cinder {
             current_config_.capacity = cfg.capacity;
         } else if (field == "quarantine_interval_ms") {
             quarantine_interval_ = milliseconds(cfg.quarantine_interval_ms);
+        } else if (field == "max_hint_bytes") {
+            repl_.setMaxHintBytes(cfg.max_hint_bytes);
         } else if (field == "anti_entropy_interval_ms") {
             bool was_disabled = anti_entropy_interval_.load().count() <= 0;
             anti_entropy_interval_ = milliseconds(cfg.anti_entropy_interval_ms);

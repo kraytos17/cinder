@@ -23,7 +23,11 @@
 #include <vector>
 
 #include "cinder/cluster/membership.hpp"
+#include "cinder/cluster/transport.hpp"
+#include "cinder/common/metrics.hpp"
 #include "cinder/node/hint_queue.hpp"
+#include "cinder/node/replication_manager.hpp"
+#include "cinder/store/lru_store.hpp"
 
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -93,6 +97,53 @@ namespace cinder {
             EXPECT_EQ(keys.front(), "k1") << "k0 was oldest and should have been dropped";
             EXPECT_EQ(keys.back(), "newest");
             EXPECT_EQ(std::count(keys.begin(), keys.end(), "k0"), 0);
+        }
+
+        TEST(HintQueueTest, ByteBudgetEvictsOldestFirst) {
+            auto sized = cctMakeHint("n2", "k");
+            sized.req.value = std::string(1000, 'x');
+            const auto per_hint = HintQueue::estimatedPayloadBytes(sized);
+            // Room for two hints but not three.
+            auto make = [](const std::string& key) {
+                auto h = cctMakeHint("n2", key);
+                h.req.value = std::string(1000, 'x');
+                return h;
+            };
+
+            HintQueue q;
+            q.setMaxBytes(2 * per_hint + per_hint / 2);
+            EXPECT_TRUE(q.push(make("old1")));
+            EXPECT_TRUE(q.push(make("old2")));
+            EXPECT_EQ(q.dropped(), 0U);
+            EXPECT_TRUE(q.push(make("newest")));
+            EXPECT_EQ(q.dropped(), 1U);
+            EXPECT_LE(q.estimatedBytes(), 2 * per_hint + per_hint / 2);
+
+            std::vector<std::string> keys;
+            q.replay([&](const HintQueue::Hint& h) {
+                keys.push_back(h.req.key);
+            }, steady_clock::now());
+            EXPECT_EQ(keys, (std::vector<std::string>{"old2", "newest"}));
+        }
+
+        TEST(HintQueueTest, OversizedSingleHintRejected) {
+            HintQueue q;
+            q.setMaxBytes(100);
+            auto big = cctMakeHint("n2", "big");
+            big.req.value = std::string(10'000, 'x');
+            ASSERT_GT(HintQueue::estimatedPayloadBytes(big), 100U);
+
+            EXPECT_FALSE(q.push(std::move(big)));
+            EXPECT_EQ(q.size(), 0U);
+            EXPECT_EQ(q.dropped(), 1U);
+            EXPECT_EQ(q.estimatedBytes(), 0U);
+        }
+
+        TEST(HintQueueTest, DefaultBudgetMatchesDocumentedValue) {
+            EXPECT_EQ(HintQueue::K_DEFAULT_MAX_BYTES, 67'108'864U);
+            HintQueue q;
+            EXPECT_EQ(q.estimatedBytes(), 0U);
+            EXPECT_EQ(q.dropped(), 0U);
         }
 
         TEST(HintQueueTest, ReplayDropsExpiredHintsWithoutVisitingThem) {
@@ -492,6 +543,69 @@ namespace cinder {
         // ---------------------------------------------------------------------
         // MembershipTable — the one refutation case membership_test.cpp misses
         // ---------------------------------------------------------------------
+
+        // -----------------------------------------------------------------
+        // ReplicationManager hint budget
+        // -----------------------------------------------------------------
+
+        class FailingTransport : public Transport {
+        public:
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                SendCallback on_done
+            ) override {
+                on_done(err<void>(Error(Errc::NotReady, "peer down")));
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                RequestCallback on_done
+            ) override {
+                on_done(err<net::Response>(Error(Errc::NotReady, "peer down")));
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+        };
+
+        TEST(ReplicationHintBoundTest, ByteBudgetBoundsQueueAndCountsDrops) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            FailingTransport transport;
+            MetricsCollector metrics;
+            ReplicationManager repl(store, "n1", clock, transport);
+            repl.setMetrics(&metrics);
+            // ~4KB budget; each hint carries a 1KB value.
+            repl.setMaxHintBytes(4096);
+
+            const std::string big(1024, 'v');
+            for (int i = 0; i < 20; ++i) {
+                bool done = false;
+                repl.writeAsync(
+                    "k" + std::to_string(i),
+                    big,
+                    std::nullopt,
+                    {"n2"},
+                    ConsistencyMode::Async,
+                    [&](Result<void> r) {
+                    EXPECT_TRUE(r.has_value());
+                    done = true;
+                }
+                );
+                EXPECT_TRUE(done);
+            }
+
+            // Async writes succeed locally even as hints drop.
+            EXPECT_LT(repl.hintCount(), 20U);
+            EXPECT_GT(repl.hintsDropped(), 0U);
+            EXPECT_EQ(
+                metrics.replicationMetrics().hints_enqueued.load(),
+                static_cast<uint64_t>(20)
+            );
+            EXPECT_EQ(metrics.replicationMetrics().hints_dropped.load(), repl.hintsDropped());
+        }
 
         TEST(ClusterComponentsTest, SelfRumorWithHigherIncarnationIsStillRefuted) {
             // membership_test.cpp covers a plain self-rumor refutation. The

@@ -65,6 +65,7 @@ namespace cinder {
         out += "\"gossip_interval_ms\":" + std::to_string(cfg.gossip_interval_ms) + ",";
         out += "\"quarantine_interval_ms\":" + std::to_string(cfg.quarantine_interval_ms) + ",";
         out += "\"rpc_timeout_ms\":" + std::to_string(cfg.rpc_timeout_ms) + ",";
+        out += "\"max_hint_bytes\":" + std::to_string(cfg.max_hint_bytes) + ",";
         out += "\"anti_entropy_interval_ms\":" + std::to_string(cfg.anti_entropy_interval_ms) + ",";
         out += "\"anti_entropy_buckets\":" + std::to_string(cfg.anti_entropy_buckets) + ",";
         out += "\"persistence_enabled\":"
@@ -141,6 +142,9 @@ namespace cinder {
         }
         if (old_cfg.rpc_timeout_ms != new_cfg.rpc_timeout_ms) {
             changed.emplace_back("rpc_timeout_ms");
+        }
+        if (old_cfg.max_hint_bytes != new_cfg.max_hint_bytes) {
+            changed.emplace_back("max_hint_bytes");
         }
         if (old_cfg.anti_entropy_interval_ms != new_cfg.anti_entropy_interval_ms) {
             changed.emplace_back("anti_entropy_interval_ms");
@@ -243,6 +247,10 @@ namespace cinder {
         if (auto ae = root["anti_entropy"]) {
             cfg.anti_entropy_interval_ms = ae["interval_ms"].as<int>(cfg.anti_entropy_interval_ms);
             cfg.anti_entropy_buckets = ae["buckets"].as<int>(cfg.anti_entropy_buckets);
+        }
+        // Hinted handoff
+        if (auto repl = root["replication"]) {
+            cfg.max_hint_bytes = repl["max_hint_bytes"].as<size_t>(cfg.max_hint_bytes);
         }
         // Persistence
         if (auto pers = root["persistence"]) {

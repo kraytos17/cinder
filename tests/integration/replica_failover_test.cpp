@@ -13,8 +13,10 @@ using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::getKey;
 using cinder::net::test::NodeProcGuard;
+using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::pickHeldPort;
 using cinder::net::test::rawRequest;
+using cinder::net::test::scrapeMetric;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
 using cinder::net::test::stopNode;
@@ -131,6 +133,71 @@ namespace cinder {
             ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
 
             EXPECT_TRUE(waitForValue(port2, "hkey-5", "v4")) << "hinted write was not replayed";
+        }
+
+        TEST(ReplicaFailoverTest, HintedHandoffBoundedUnderOutage) {
+            const uint16_t port1 = pickHeldPort();
+            ASSERT_NE(port1, 0);
+            const uint16_t metrics1 = pickEphemeralPort();
+            ASSERT_NE(metrics1, 0);
+            const uint16_t port2 = pickHeldPort();
+            ASSERT_NE(port2, 0);
+            // 8KB hint budget on node1; node2 starts down so every write hints.
+            NodeProcGuard node1{spawnNode(
+                port1,
+                "node1",
+                "node2@127.0.0.1:" + std::to_string(port2),
+                false,
+                2,
+                10'000,
+                3000,
+                1000,
+                8192,
+                metrics1
+            )};
+            ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not start";
+
+            // Keys primary-owned by node1 with node2 as replica.
+            std::vector<std::string> keys;
+            for (int i = 0; keys.size() < 10 && i < 1000; ++i) {
+                auto k = "hb-" + std::to_string(i);
+                auto [primary_id, replica_id] = ownersOf(k);
+                if (primary_id == "node1" && replica_id == "node2") {
+                    keys.push_back(k);
+                }
+            }
+            ASSERT_EQ(keys.size(), 10U);
+
+            const std::string big(1024, 'x');
+            for (const auto& k : keys) {
+                auto res = setKey(port1, k, big);
+                ASSERT_TRUE(res.has_value());
+                EXPECT_EQ(res.value().status, Errc::OK);
+            }
+
+            // ~1.3KB per hint vs 8KB budget: the oldest hints must drop and
+            // the reported queue must stay under budget. Enqueue is async,
+            // so poll for the counters to settle.
+            bool bounded = false;
+            for (int i = 0; i < 50 && !bounded; ++i) {
+                auto dropped = scrapeMetric(metrics1, "cinder_replication_hints_dropped_total");
+                auto bytes =
+                    scrapeMetric(metrics1, "cinder_replication_hint_queue_estimated_bytes");
+                if (dropped.has_value() && bytes.has_value() && *dropped > 0 && *bytes <= 8192U) {
+                    bounded = true;
+                } else {
+                    std::this_thread::sleep_for(milliseconds(100));
+                }
+            }
+            EXPECT_TRUE(bounded) << "hint queue did not stay bounded under outage";
+
+            // The surviving (newest) hints still replay once node2 returns.
+            NodeProcGuard node2{
+                spawnNode(port2, "node2", "node1@127.0.0.1:" + std::to_string(port1), false, 2)
+            };
+            ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
+            EXPECT_TRUE(waitForValue(port2, keys.back(), big))
+                << "newest hinted write was not replayed";
         }
 
         TEST(ReplicaFailoverTest, FanoutToThreeNodes) {
