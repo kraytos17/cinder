@@ -201,9 +201,11 @@ namespace {
             auto [out, err] = runCli(port, {"set", "k", "v"});
             EXPECT_EQ(out, "OK\n");
         }
-        // Same value as get, plus LWW metadata. Store versions are
-        // clock-seeded Lamport clocks, so only ordering is asserted.
+        // Same value as get, plus LWW metadata. Store versions come from a
+        // global clock-seeded Lamport counter, so ordering and distinctness
+        // are asserted, not literal values.
         unsigned long long v1 = 0;
+        unsigned long long v2 = 0;
         {
             auto [out, ver] = getVersion("k");
             EXPECT_TRUE(out.contains("v\n"));
@@ -218,6 +220,7 @@ namespace {
             auto [out, ver] = getVersion("k");
             EXPECT_TRUE(out.contains("v2\n"));
             EXPECT_GT(ver, v1);
+            v2 = ver;
         }
         {
             // Miss behaves exactly like get miss.
@@ -231,10 +234,11 @@ namespace {
             EXPECT_EQ(out, "OK\n");
         }
         {
-            auto [out, err] = runCli(port, {"get-versioned", "t"});
+            auto [out, ver] = getVersion("t");
             EXPECT_TRUE(out.contains("x\n"));
             EXPECT_TRUE(out.contains("expires_at: "));
-            EXPECT_TRUE(err.empty());
+            // Distinct keys mint distinct versions (global counter).
+            EXPECT_NE(ver, v2);
         }
     }
 
