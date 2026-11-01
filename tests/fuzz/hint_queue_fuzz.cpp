@@ -71,10 +71,28 @@ namespace {
         for (size_t i = 0; i < n_ops; ++i) {
             const uint8_t op = fdp.ConsumeIntegralInRange<uint8_t>(0, 4);
             if (op == 0) {
-                // Push: bounded at K_CAPACITY with drop-oldest FIFO eviction.
+                // Push: bounded at K_CAPACITY with drop-oldest FIFO eviction,
+                // plus (target, key) coalescing — mirror the queue: a newer
+                // write moves to the tail, an older one is ignored.
                 auto hint = makeHint(fdp, now);
                 (void)queue.push(hint); // copy: model keeps the original
-                model.push_back(std::move(hint));
+                auto same = model.end();
+                for (auto it = model.begin(); it != model.end(); ++it) {
+                    if (it->target == hint.target && it->req.key == hint.req.key) {
+                        same = it;
+                        break;
+                    }
+                }
+                if (same == model.end()) {
+                    model.push_back(std::move(hint));
+                } else if (
+                    hint.req.version != same->req.version
+                        ? hint.req.version > same->req.version
+                        : hint.req.writer_node_hash >= same->req.writer_node_hash
+                ) {
+                    model.erase(same);
+                    model.push_back(std::move(hint));
+                }
                 if (model.size() > cinder::HintQueue::K_CAPACITY) {
                     model.pop_front();
                 }

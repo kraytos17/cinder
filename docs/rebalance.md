@@ -248,6 +248,14 @@ replica is unreachable.
   budget is rejected. Evictions and rejections count toward
   `cinder_replication_hints_dropped_total`, with live/peak gauges at
   `cinder_replication_hint_queue_estimated_bytes[_peak]`.
+- **Coalescing**: at most one live hint per (replica, key). A newer write
+  for an already-queued key replaces it (TTL refreshed, moved to the tail
+  as fresh data); an older-or-equal write is ignored. LWW order decides:
+  higher version wins, ties break toward the larger writer hash, and an
+  identical stamp counts as newer so retries refresh the TTL. Replacement
+  bumps the slot generation, so a stale replay completion cannot delete
+  the newer hint. Coalescing preserves budget for distinct keys during an
+  outage instead of spending it on superseded versions.
 - **TTL**: 30 s (`K_HINT_TTL`); expired hints are dropped during replay.
 - **Thread safety**: all operations take an internal mutex.
 

@@ -126,6 +126,125 @@ namespace cinder {
             EXPECT_EQ(keys, (std::vector<std::string>{"old2", "newest"}));
         }
 
+        TEST(HintQueueTest, CoalesceNewerReplacesSameKey) {
+            HintQueue q;
+            auto old_hint = cctMakeHint("n2", "k", 1);
+            old_hint.req.value = "v1";
+            auto new_hint = cctMakeHint("n2", "k", 2);
+            new_hint.req.value = "v2";
+            EXPECT_TRUE(q.push(std::move(old_hint)));
+            EXPECT_TRUE(q.push(std::move(new_hint)));
+            EXPECT_EQ(q.size(), 1U);
+            EXPECT_EQ(q.dropped(), 0U);
+
+            std::vector<std::string> values;
+            q.replay([&](const HintQueue::Hint& h) {
+                values.push_back(h.req.value);
+            }, steady_clock::now());
+            EXPECT_EQ(values, (std::vector<std::string>{"v2"}));
+        }
+
+        TEST(HintQueueTest, OlderWriteIgnored) {
+            HintQueue q;
+            auto newer = cctMakeHint("n2", "k", 2);
+            newer.req.value = "v2";
+            auto older = cctMakeHint("n2", "k", 1);
+            older.req.value = "v1";
+            EXPECT_TRUE(q.push(std::move(newer)));
+            EXPECT_FALSE(q.push(std::move(older)));
+            EXPECT_EQ(q.size(), 1U);
+            EXPECT_EQ(q.dropped(), 0U);
+
+            std::vector<std::string> values;
+            q.replay([&](const HintQueue::Hint& h) {
+                values.push_back(h.req.value);
+            }, steady_clock::now());
+            EXPECT_EQ(values, (std::vector<std::string>{"v2"}));
+        }
+
+        TEST(HintQueueTest, CoalesceTieBreaksOnWriterHash) {
+            HintQueue q;
+            auto low = cctMakeHint("n2", "k", 1);
+            low.req.writer_node_hash = 7;
+            low.req.value = "low";
+            auto high = cctMakeHint("n2", "k", 1);
+            high.req.writer_node_hash = 9;
+            high.req.value = "high";
+            EXPECT_TRUE(q.push(std::move(low)));
+            EXPECT_TRUE(q.push(std::move(high)));
+            EXPECT_EQ(q.size(), 1U);
+
+            std::vector<std::string> values;
+            q.replay([&](const HintQueue::Hint& h) {
+                values.push_back(h.req.value);
+            }, steady_clock::now());
+            EXPECT_EQ(values, (std::vector<std::string>{"high"}));
+        }
+
+        TEST(HintQueueTest, ReplacementMovesToTail) {
+            HintQueue q;
+            auto make = [](const std::string& key, uint64_t version) {
+                auto h = cctMakeHint("n2", key, version);
+                h.req.value = key + "-v" + std::to_string(version);
+                return h;
+            };
+
+            EXPECT_TRUE(q.push(make("a", 1)));
+            EXPECT_TRUE(q.push(make("b", 1)));
+            EXPECT_TRUE(q.push(make("a", 2)));
+
+            std::vector<std::string> keys;
+            q.replay([&](const HintQueue::Hint& h) {
+                keys.push_back(h.req.key);
+            }, steady_clock::now());
+            EXPECT_EQ(keys, (std::vector<std::string>{"b", "a"}));
+            EXPECT_EQ(q.size(), 2U);
+        }
+
+        TEST(HintQueueTest, StaleReplayHandleCannotRemoveReplacement) {
+            HintQueue q;
+            auto first = cctMakeHint("n2", "k", 1);
+            first.req.value = "v1";
+            EXPECT_TRUE(q.push(std::move(first)));
+
+            auto snapshot = q.snapshot(steady_clock::now());
+            ASSERT_EQ(snapshot.size(), 1U);
+
+            auto second = cctMakeHint("n2", "k", 2);
+            second.req.value = "v2";
+            EXPECT_TRUE(q.push(std::move(second)));
+
+            // The pre-replacement handle is stale: removing by it must not
+            // delete the newer hint.
+            q.remove(snapshot.front().handle);
+            EXPECT_EQ(q.size(), 1U);
+            std::vector<std::string> values;
+            q.replay([&](const HintQueue::Hint& h) {
+                values.push_back(h.req.value);
+            }, steady_clock::now());
+            EXPECT_EQ(values, (std::vector<std::string>{"v2"}));
+        }
+
+        TEST(HintQueueTest, CoalescingAvoidsBudgetEviction) {
+            auto sized = cctMakeHint("n2", "k", 1);
+            sized.req.value = std::string(1000, 'x');
+            const auto per_hint = HintQueue::estimatedPayloadBytes(sized);
+            auto make = [](const std::string& key, uint64_t version) {
+                auto h = cctMakeHint("n2", key, version);
+                h.req.value = std::string(1000, 'x');
+                return h;
+            };
+
+            HintQueue q;
+            q.setMaxBytes(2 * per_hint + per_hint / 2);
+            EXPECT_TRUE(q.push(make("k1", 1)));
+            EXPECT_TRUE(q.push(make("k2", 1)));
+            // Replacement frees the old entry first: no eviction needed.
+            EXPECT_TRUE(q.push(make("k1", 2)));
+            EXPECT_EQ(q.size(), 2U);
+            EXPECT_EQ(q.dropped(), 0U);
+        }
+
         TEST(HintQueueTest, OversizedSingleHintRejected) {
             HintQueue q;
             q.setMaxBytes(100);
@@ -232,16 +351,22 @@ namespace cinder {
 
             // Filling past capacity drops the oldest retained payload and
             // adds the replacement, keeping count and bytes aligned.
-            auto filler = cctMakeHint("replica", "filler");
-            const uint64_t filler_bytes = HintQueue::estimatedPayloadBytes(filler);
+            // Distinct keys: same-key writes coalesce instead of filling.
+            // Fixed-width suffixes keep every filler hint the same size.
+            auto makeFillerKey = [](size_t i) {
+                auto num = std::to_string(i);
+                return "filler-" + std::string(4 - num.size(), '0') + num;
+            };
+            const uint64_t filler_bytes =
+                HintQueue::estimatedPayloadBytes(cctMakeHint("replica", makeFillerKey(0)));
             const uint64_t bytes_at_capacity =
                 first_bytes + second_bytes + (HintQueue::K_CAPACITY - 2) * filler_bytes;
             for (size_t i = 0; i < HintQueue::K_CAPACITY - 2; ++i) {
-                q.push(cctMakeHint("replica", "filler"));
+                q.push(cctMakeHint("replica", makeFillerKey(i)));
             }
             ASSERT_EQ(entries.load(), HintQueue::K_CAPACITY);
             EXPECT_EQ(bytes.load(), bytes_at_capacity);
-            q.push(cctMakeHint("replica", "filler"));
+            q.push(cctMakeHint("replica", makeFillerKey(HintQueue::K_CAPACITY)));
             EXPECT_EQ(entries.load(), HintQueue::K_CAPACITY);
             EXPECT_EQ(bytes.load(), bytes_at_capacity - first_bytes + filler_bytes);
         }
@@ -333,25 +458,25 @@ namespace cinder {
         TEST(HintQueueTest, RemoveMatchesOnTargetKeyAndVersionTogether) {
             HintQueue q;
             q.push(cctMakeHint("n2", "key", /*version=*/7));
+            // Same (target, key) coalesces: only the newest survives.
             q.push(cctMakeHint("n2", "key", /*version=*/8));
+            // Same key on a different target stays distinct.
             q.push(cctMakeHint("n3", "key", /*version=*/7));
-            ASSERT_EQ(q.size(), 3U);
+            ASSERT_EQ(q.size(), 2U);
 
-            // Same key+version on a different target, and same target+key at a
-            // different version, are DISTINCT hints and must both survive.
             net::Request probe;
             probe.key = "key";
-            probe.version = 7;
+            probe.version = 8;
             q.remove("n2", probe);
 
-            EXPECT_EQ(q.size(), 2U);
+            EXPECT_EQ(q.size(), 1U);
             std::vector<std::pair<std::string, uint64_t>> remaining;
             q.replay([&](const HintQueue::Hint& h) {
                 remaining.emplace_back(h.target, h.req.version);
             }, steady_clock::now());
-            for (const auto& [target, version] : remaining) {
-                EXPECT_FALSE(target == "n2" && version == 7) << "removed hint still present";
-            }
+            ASSERT_EQ(remaining.size(), 1U);
+            EXPECT_EQ(remaining.front().first, "n3");
+            EXPECT_EQ(remaining.front().second, 7U);
         }
 
         TEST(HintQueueTest, RemoveOnAbsentHintIsANoop) {

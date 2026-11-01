@@ -19,7 +19,9 @@ namespace cinder {
 
     using std::chrono::steady_clock;
 
-    // Bounded FIFO of pending replication hints for unreachable replicas.
+    // Bounded FIFO of pending replication hints for unreachable replicas,
+    // coalesced to one live hint per (target, key): a newer write for an
+    // already-queued key replaces it instead of consuming another slot.
     // A mutex protects all queue state. Entries live in a fixed-capacity heap
     // slot array and are linked in FIFO order, so completion callbacks can
     // remove a replayed hint in O(1) using its generation-tagged handle.
@@ -79,6 +81,13 @@ namespace cinder {
 
         // Enqueue a hint. If full, discard the oldest queued hint. The array
         // itself never grows after construction.
+        //
+        // Coalescing: at most one live hint per (target, key). A newer write
+        // for an already-queued key replaces it (TTL refreshed, moved to the
+        // tail as fresh data); an older-or-equal write is ignored. The
+        // replacement invalidates outstanding snapshot handles via the
+        // generation tag, so a stale replay completion cannot delete the
+        // newer hint. Replacements are not drops.
         auto push(Hint hint) -> bool {
             std::scoped_lock lock(mutex_);
             const size_t incoming = estimatedBytes(hint);
@@ -87,6 +96,23 @@ namespace cinder {
                 ++dropped_;
                 publishMetrics();
                 return false;
+            }
+
+            if (size_ > 0) {
+                size_t index = head_;
+                while (index != K_NONE) {
+                    Slot& slot = (*slots_)[index];
+                    const size_t next = slot.next;
+                    if (slot.hint->target == hint.target && slot.hint->req.key == hint.req.key) {
+                        if (!isNewerThan(hint.req, slot.hint->req)) {
+                            return false;
+                        }
+
+                        unlinkAndRelease(index);
+                        break;
+                    }
+                    index = next;
+                }
             }
             while (size_ == K_CAPACITY || current_bytes_ + incoming > max_bytes_) {
                 unlinkAndRelease(head_);
@@ -237,6 +263,16 @@ namespace cinder {
 
         static auto estimatedBytes(const Hint& hint) -> size_t {
             return static_cast<size_t>(estimatedPayloadBytes(hint));
+        }
+
+        // LWW order on replicate payloads: higher version wins; ties break
+        // toward the larger writer hash (same rule replicas apply), and an
+        // identical stamp counts as newer so a retried write refreshes TTL.
+        static auto isNewerThan(const net::Request& a, const net::Request& b) -> bool {
+            if (a.version != b.version) {
+                return a.version > b.version;
+            }
+            return a.writer_node_hash >= b.writer_node_hash;
         }
 
         void publishMetrics() {
