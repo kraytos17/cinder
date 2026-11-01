@@ -149,6 +149,41 @@ namespace {
         }
     }
 
+    TEST(CliTest, Mset) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        {
+            auto [out, err] = runCli(port, {"mset", "a", "1", "b", "2"});
+            EXPECT_TRUE(out.contains("a: OK\n"));
+            EXPECT_TRUE(out.contains("b: OK\n"));
+            EXPECT_TRUE(err.empty());
+        }
+        {
+            auto [out, err] = runCli(port, {"mget", "a", "b"});
+            EXPECT_TRUE(out.contains("a: 1\n"));
+            EXPECT_TRUE(out.contains("b: 2\n"));
+            EXPECT_TRUE(err.empty());
+        }
+        {
+            // Odd arg count is rejected.
+            auto [out, err] = runCli(port, {"mset", "a"});
+            EXPECT_TRUE(out.empty());
+            EXPECT_TRUE(err.contains("mset requires key/value pairs"));
+        }
+        {
+            // TTL applies to every pair.
+            auto [out, err] = runCli(port, {"mset", "c", "3", "--ttl", "60000"});
+            EXPECT_TRUE(out.contains("c: OK\n"));
+            EXPECT_TRUE(err.empty());
+        }
+        {
+            auto [out, err] = runCli(port, {"get", "c"});
+            EXPECT_TRUE(out.contains("3\n"));
+        }
+    }
+
     TEST(CliTest, Info) {
         const uint16_t port = pickHeldPort();
         ASSERT_NE(port, 0);

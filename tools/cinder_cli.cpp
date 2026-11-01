@@ -39,6 +39,39 @@ static auto runMultiGet(cinder::ConnectionPool& pool, const std::vector<std::str
     return failed ? 1 : 0;
 }
 
+// Batch set: one Set per key/value pair over the shared pool. Prints
+// `key: OK` per pair (or `key: <status>` on failure) and exits nonzero if
+// any pair failed, so `mset` is usable in scripts.
+static auto runMultiSet(
+    cinder::ConnectionPool& pool,
+    const std::vector<std::string>& keys,
+    const std::vector<std::string>& values,
+    int ttl_ms
+) -> int {
+    bool failed = false;
+    for (size_t i = 0; i < keys.size(); ++i) {
+        cinder::net::Request req;
+        req.opcode = cinder::net::Opcode::Set;
+        req.key = keys[i];
+        req.value = values[i];
+        if (ttl_ms > 0) {
+            req.ttl = milliseconds(ttl_ms);
+        }
+
+        auto res = pool.send("server", req);
+        if (!res.has_value()) {
+            std::println("{}: {}", keys[i], res.error().message());
+            failed = true;
+        } else if (res.value().status == cinder::Errc::OK) {
+            std::println("{}: OK", keys[i]);
+        } else {
+            std::println("{}: {}", keys[i], cinder::toString(res.value().status));
+            failed = true;
+        }
+    }
+    return failed ? 1 : 0;
+}
+
 auto main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder cache client"};
 
@@ -64,11 +97,12 @@ auto main(int argc, char* argv[]) -> int {
     std::vector<std::string> extra_keys;
     int ttl_ms = 0;
 
-    app.add_option("command", cmd, "get|set|del|ping|info|cluster|ring|mget")->required();
-    app.add_option("key", key, "Key (first key for mget)");
-    app.add_option("value", value, "Value (set only)");
-    app.add_option("extra_keys", extra_keys, "Additional keys (mget only)")->take_all();
-    app.add_option("--ttl", ttl_ms, "TTL in ms (set only)");
+    app.add_option("command", cmd, "get|set|del|ping|info|cluster|ring|mget|mset")->required();
+    app.add_option("key", key, "Key (first key for mget, k1 for mset)");
+    app.add_option("value", value, "Value (set only, v1 for mset)");
+    app.add_option("extra_keys", extra_keys, "Additional keys (mget) or k2/v2/... (mset)")
+        ->take_all();
+    app.add_option("--ttl", ttl_ms, "TTL in ms (set/mset only)");
 
     CLI11_PARSE(app, argc, argv);
     cinder::initLogger(
@@ -160,6 +194,35 @@ auto main(int argc, char* argv[]) -> int {
         int rc = runMultiGet(pool, keys);
         io.stop();
         return rc;
+    } else if (cmd == "mset") {
+        // Pairs arrive through every positional slot: `key` (k1), then
+        // `value` (v1), then the take_all `extra_keys` (k2, v2, ...).
+        // Single-key commands are unaffected.
+        std::vector<std::string> args;
+        if (!key.empty()) {
+            args.push_back(key);
+        }
+        if (!value.empty()) {
+            args.push_back(value);
+        }
+
+        args.insert(args.end(), extra_keys.begin(), extra_keys.end());
+        if (args.empty() || args.size() % 2 != 0) {
+            CINDER_ERROR("mset requires key/value pairs");
+            io.stop();
+            return 1;
+        }
+
+        std::vector<std::string> mset_keys;
+        std::vector<std::string> mset_values;
+        for (size_t i = 0; i < args.size(); i += 2) {
+            mset_keys.push_back(args[i]);
+            mset_values.push_back(args[i + 1]);
+        }
+
+        int mset_rc = runMultiSet(pool, mset_keys, mset_values, ttl_ms);
+        io.stop();
+        return mset_rc;
     } else {
         CINDER_ERROR("unknown command", {"cmd", cmd});
         return 1;
