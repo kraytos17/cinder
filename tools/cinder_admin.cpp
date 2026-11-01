@@ -1,5 +1,4 @@
 #include <asio.hpp>
-#include <CLI/CLI.hpp>
 #include <print>
 #include <string>
 #include <thread>
@@ -12,6 +11,10 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
+
+// All textual includes precede the import: GCC rejects includes after an
+// import whose global module fragment overlaps them.
+import cli11;
 
 using asio::io_context;
 using std::chrono::milliseconds;
@@ -38,7 +41,12 @@ auto main(int argc, char* argv[]) -> int {
     std::string cmd;
     app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
 
-    CLI11_PARSE(app, argc, argv);
+    // CLI11_PARSE is a macro and macros do not cross the module boundary.
+    try {
+        app.parse(argc, argv);
+    } catch (const CLI::ParseError& e) {
+        return app.exit(e);
+    }
     cinder::initLogger(
         "cinder-admin",
         verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,

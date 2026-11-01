@@ -10,7 +10,11 @@ add_executable(cinder-cli cinder_cli.cpp)
 target_link_libraries(cinder-cli PRIVATE cinder::core CLI11::CLI11)
 
 add_executable(cinder-admin cinder_admin.cpp)
-target_link_libraries(cinder-admin PRIVATE cinder::core CLI11::CLI11)
+target_link_libraries(cinder-admin PRIVATE cinder::core CLI11::Module)
+# The project disables C++ scanning globally (CMAKE_CXX_SCAN_FOR_MODULES
+# OFF); module consumers must opt back in so CMake wires the BMI deps,
+# the module map, and -fmodules-ts for GCC.
+set_target_properties(cinder-admin PROPERTIES CXX_SCAN_FOR_MODULES ON)
 
 set_target_properties(cinderd cinder-cli cinder-admin PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

@@ -450,6 +450,9 @@ cinder_use_cached_dep(cli11 PACKAGE CLI11)
 # once into the lib rather than into every tool TU. Header-only mode is
 # untouched; CLI11_MODULES (Phase 2) builds on top of this.
 set(CLI11_PRECOMPILED ON CACHE BOOL "" FORCE)
+# Named module (import cli11): builds on the precompiled lib to avoid
+# duplicate implementations; floor is C++20, we build at C++23.
+set(CLI11_MODULES ON CACHE BOOL "" FORCE)
 FetchContent_Declare(
     CLI11
     GIT_REPOSITORY ${CINDER_DEP_cli11_REPO}
