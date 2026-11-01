@@ -659,7 +659,12 @@ endif()
 if(CINDER_ENABLE_CLANG_TIDY)
     find_program(CLANG_TIDY_PROGRAM clang-tidy)
     if(CLANG_TIDY_PROGRAM)
-        set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_PROGRAM}")
+        # Route through a launcher that skips CMake's synthetic import-std
+        # BMI builds (@cmake_cxx_std), which clang-tidy cannot process.
+        # Everything else is checked unchanged.
+        set(CMAKE_CXX_CLANG_TIDY
+            "${CMAKE_SOURCE_DIR}/cmake/cinder-clang-tidy" "${CLANG_TIDY_PROGRAM}"
+        )
         message(STATUS "Cinder: clang-tidy enabled (${CLANG_TIDY_PROGRAM})")
     else()
         message(WARNING "CINDER_ENABLE_CLANG_TIDY is ON but clang-tidy not found")

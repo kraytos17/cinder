@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# clang-tidy launcher for Cinder (see CMAKE_CXX_CLANG_TIDY).
+#
+# Usage: cinder-clang-tidy <real-tidy> [tidy-args...] <source> -- <compile...>
+# (invoked by CMake's __run_co_compile wrapper).
+#
+# Skips analysis (exit 0) for CMake's synthetic import-std BMI builds: their
+# object dir contains "@cmake_cxx_std" and clang-tidy cannot process those
+# invocations, failing the whole build. Everything else delegates to the
+# real clang-tidy unchanged, so project TUs — including module consumers —
+# are still fully checked.
+set -euo pipefail
+real_tidy="$1"
+shift
+for arg in "$@"; do
+    case "$arg" in
+        *@cmake_cxx_std*) exit 0 ;;
+    esac
+done
+exec "$real_tidy" "$@"
