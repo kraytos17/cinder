@@ -7,11 +7,14 @@
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <string>
+#include <string_view>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
+#include <vector>
 
 #include "cinder/client/connection_pool.hpp"
+#include "cinder/common/hmac.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
 #include "integration/test_helpers.hpp"
@@ -78,8 +81,12 @@ namespace {
     }
 
     [[maybe_unused]]
-    auto rawTlsRequest(int port, const cinder::net::Request& req, context& ssl_ctx)
-        -> cinder::Result<cinder::net::Response> {
+    auto rawTlsRequest(
+        int port,
+        const cinder::net::Request& req,
+        context& ssl_ctx,
+        std::string_view auth_token = {}
+    ) -> cinder::Result<cinder::net::Response> {
         io_context io;
         stream<tcp::socket> socket(io, ssl_ctx);
         error_code ec;
@@ -97,7 +104,7 @@ namespace {
             );
         }
 
-        auto encoded = cinder::net::encode(req);
+        auto encoded = cinder::net::encode(req, auth_token);
         if (!encoded.has_value()) {
             return cinder::err<cinder::net::Response>(encoded.error());
         }
@@ -137,37 +144,65 @@ namespace {
         return false;
     }
 
-    auto spawnTlsDaemon(int port) -> pid_t {
+    [[maybe_unused]]
+    auto waitForTlsAuthNode(int port, context& ssl_ctx, std::string_view token) -> bool {
+        for (int i = 0; i < 50; i++) {
+            cinder::net::Request req{
+                .opcode = cinder::net::Opcode::Ping,
+                .key = {},
+                .value = {},
+            };
+            auto res = rawTlsRequest(port, req, ssl_ctx, token);
+            if (res.has_value() && res.value().status == cinder::Errc::OK) {
+                return true;
+            }
+            std::this_thread::sleep_for(milliseconds(100));
+        }
+        return false;
+    }
+
+    auto spawnTlsDaemon(int port, const std::string& client_secret = {}) -> pid_t {
         auto port_str = std::to_string(port);
         auto cert = fixturePath("server.pem");
         auto key = fixturePath("server-key.pem");
         auto ca = fixturePath("ca.pem");
         int held_fd = cinder::net::test::takeHeldFd(static_cast<uint16_t>(port));
         auto fd_str = std::to_string(held_fd);
+        std::vector<std::string> args{
+            "cinderd",
+            "--port",
+            port_str,
+            "--tls",
+            "--tls-cert",
+            cert,
+            "--tls-key",
+            key,
+            "--tls-ca",
+            ca,
+            "--listen-fd",
+            fd_str,
+        };
+        if (!client_secret.empty()) {
+            args.emplace_back("--client-shared-secret");
+            args.emplace_back(client_secret);
+        }
+
+        std::vector<char*> argv;
+        argv.reserve(args.size() + 1);
+        for (auto& a : args) {
+            argv.push_back(a.data());
+        }
+        argv.push_back(nullptr);
         pid_t pid = fork();
         if (pid == 0) {
             // NOLINTNEXTLINE
-            execl(
-                CINDER_TEST_CINDERD_PATH,
-                "cinderd",
-                "--port",
-                port_str.c_str(),
-                "--tls",
-                "--tls-cert",
-                cert.c_str(),
-                "--tls-key",
-                key.c_str(),
-                "--tls-ca",
-                ca.c_str(),
-                "--listen-fd",
-                fd_str.c_str(),
-                nullptr
-            );
+            execv(CINDER_TEST_CINDERD_PATH, argv.data());
             _exit(1);
         }
         if (held_fd >= 0) {
             ::close(held_fd);
         }
+
         return pid;
     }
 
@@ -281,6 +316,91 @@ namespace {
         EXPECT_TRUE(ec || buf[0] != std::byte{cinder::net::K_MAGIC});
 
         socket.close();
+        stopDaemon(dpid);
+    }
+
+    // Client-auth matrix over real TLS. The daemon enforces the client
+    // bearer on data, ping and admin opcodes; the node token (or none)
+    // is denied on client paths.
+    TEST_F(TlsIntegrationTest, ClientAuthSetGetRoundtrip) {
+        const uint16_t port = cinder::net::test::pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t dpid = spawnTlsDaemon(port, "tls-client-secret");
+        auto token = cinder::generateClientAuthToken("tls-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, *ssl_ctx_, token));
+
+        cinder::net::Request set_req{
+            .opcode = cinder::net::Opcode::Set,
+            .key = "auth-key",
+            .value = "auth-value",
+        };
+        auto set_res = rawTlsRequest(port, set_req, *ssl_ctx_, token);
+        ASSERT_TRUE(set_res.has_value()) << set_res.error().message();
+        EXPECT_EQ(set_res.value().status, cinder::Errc::OK);
+
+        cinder::net::Request get_req{
+            .opcode = cinder::net::Opcode::Get,
+            .key = "auth-key",
+        };
+        auto get_res = rawTlsRequest(port, get_req, *ssl_ctx_, token);
+        ASSERT_TRUE(get_res.has_value()) << get_res.error().message();
+        EXPECT_EQ(get_res.value().status, cinder::Errc::OK);
+        ASSERT_TRUE(get_res.value().value.has_value());
+        EXPECT_EQ(*get_res.value().value, "auth-value");
+
+        stopDaemon(dpid);
+    }
+
+    TEST_F(TlsIntegrationTest, ClientAuthDeniesUnauthenticated) {
+        const uint16_t port = cinder::net::test::pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t dpid = spawnTlsDaemon(port, "tls-client-secret");
+        auto token = cinder::generateClientAuthToken("tls-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, *ssl_ctx_, token));
+
+        for (auto op :
+             {cinder::net::Opcode::Get,
+              cinder::net::Opcode::Set,
+              cinder::net::Opcode::Ping,
+              cinder::net::Opcode::AdminInfo}) {
+            cinder::net::Request req{
+                .opcode = op,
+                .key = "k",
+                .value = "v",
+            };
+            auto res = rawTlsRequest(port, req, *ssl_ctx_);
+            ASSERT_TRUE(res.has_value()) << static_cast<int>(op);
+            EXPECT_EQ(res.value().status, cinder::Errc::PermissionDenied) << static_cast<int>(op);
+        }
+
+        // Wrong secret and node token are equally denied on client paths.
+        cinder::net::Request req{
+            .opcode = cinder::net::Opcode::Ping,
+        };
+        auto wrong = cinder::generateClientAuthToken("wrong-secret");
+        auto wrong_res = rawTlsRequest(port, req, *ssl_ctx_, wrong);
+        ASSERT_TRUE(wrong_res.has_value());
+        EXPECT_EQ(wrong_res.value().status, cinder::Errc::PermissionDenied);
+
+        stopDaemon(dpid);
+    }
+
+    TEST_F(TlsIntegrationTest, ClientAuthAdminUsesClientToken) {
+        const uint16_t port = cinder::net::test::pickHeldPort();
+        ASSERT_NE(port, 0);
+        pid_t dpid = spawnTlsDaemon(port, "tls-client-secret");
+        auto token = cinder::generateClientAuthToken("tls-client-secret");
+        ASSERT_TRUE(waitForTlsAuthNode(port, *ssl_ctx_, token));
+
+        cinder::net::Request req{
+            .opcode = cinder::net::Opcode::AdminInfo,
+        };
+        auto res = rawTlsRequest(port, req, *ssl_ctx_, token);
+        ASSERT_TRUE(res.has_value()) << res.error().message();
+        EXPECT_EQ(res.value().status, cinder::Errc::OK);
+        ASSERT_TRUE(res.value().value.has_value());
+        EXPECT_TRUE(res.value().value->contains("\"node_id\""));
+
         stopDaemon(dpid);
     }
 } // namespace

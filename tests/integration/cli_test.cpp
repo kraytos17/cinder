@@ -1,9 +1,13 @@
 #include <array>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <gtest/gtest.h>
 #include <string>
 #include <sys/wait.h>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -361,11 +365,13 @@ namespace {
     }
 
     // cinder-cli against a TLS + client-auth daemon. Extra CLI args and env
-    // are forwarded to runCli; returns the child exit code.
+    // are forwarded to runCli; returns the child exit code. Both streams are
+    // returned: denials print to stderr, data to stdout.
     int runTlsCli(
         uint16_t port,
         const std::vector<std::string>& cmd,
         std::string& out,
+        std::string& err,
         const std::string& client_secret = {},
         const std::vector<std::pair<std::string, std::string>>& env = {}
     ) {
@@ -383,7 +389,19 @@ namespace {
         int rc = -1;
         auto [o, e] = runCli(port, args, env, &rc);
         out = std::move(o);
+        err = std::move(e);
         return rc;
+    }
+
+    int runTlsCli(
+        uint16_t port,
+        const std::vector<std::string>& cmd,
+        std::string& out,
+        const std::string& client_secret = {},
+        const std::vector<std::pair<std::string, std::string>>& env = {}
+    ) {
+        std::string err;
+        return runTlsCli(port, cmd, out, err, client_secret, env);
     }
 
     bool waitForTlsAuthNode(uint16_t port, const std::string& client_secret) {
@@ -419,9 +437,10 @@ namespace {
         ASSERT_TRUE(waitForTlsAuthNode(port, "test-client-secret"));
 
         std::string out;
-        int rc = runTlsCli(port, {"get", "ck"}, out);
+        std::string err;
+        int rc = runTlsCli(port, {"get", "ck"}, out, err);
         EXPECT_NE(rc, 0);
-        EXPECT_TRUE(out.contains("permission denied"));
+        EXPECT_TRUE(err.contains("permission denied"));
         stopTlsAuthDaemon(daemon);
     }
 

@@ -78,6 +78,10 @@ namespace cinder {
             }
         };
 
+        // Plaintext harnesses below: the in-process server speaks plaintext
+        // (no certificates) and CacheClient/rawRequest have no TLS mode.
+        // TLS-build coverage lives in tls_test.cpp against real daemons.
+#ifndef CINDER_ENABLE_TLS
         TEST(ClientAuthMatrixTest, ClientOpsRequireClientToken) {
             AuthServer srv("auth-node", "node-secret", "client-secret", true);
             ASSERT_TRUE(srv.start().has_value());
@@ -171,6 +175,7 @@ namespace cinder {
             ASSERT_TRUE(anon_res.has_value());
             EXPECT_EQ(anon_res->status, Errc::PermissionDenied);
         }
+#endif // !CINDER_ENABLE_TLS (plaintext harnesses; see tls_test.cpp)
 
         TEST(ClientAuthMatrixTest, NodeOnlyDeploymentUnchanged) {
             // Only the node secret configured: client ops stay open, internal
@@ -215,6 +220,8 @@ namespace cinder {
         }
 #endif
 
+        // CacheClient has no TLS mode: signing covered here on plaintext.
+#ifndef CINDER_ENABLE_TLS
         TEST(ClientAuthClientTest, LibraryRoundtripWithSecret) {
             AuthServer srv("auth-node", "node-secret", "client-secret", true);
             ASSERT_TRUE(srv.start().has_value());
@@ -256,6 +263,7 @@ namespace cinder {
             EXPECT_EQ(set_res.error().code(), Errc::PermissionDenied);
             EXPECT_FALSE(anon.get("ck").has_value());
         }
+#endif
 
     } // namespace
 } // namespace cinder
