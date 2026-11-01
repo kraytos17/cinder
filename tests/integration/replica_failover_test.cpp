@@ -1,6 +1,9 @@
 #include <chrono>
+#include <csignal>
+#include <filesystem>
 #include <gtest/gtest.h>
 #include <string>
+#include <sys/wait.h>
 #include <thread>
 
 #include "cinder/hashing/consistent_hash_ring.hpp"
@@ -12,6 +15,7 @@ using std::chrono::milliseconds;
 using cinder::net::Opcode;
 using cinder::net::Request;
 using cinder::net::test::getKey;
+using cinder::net::test::NodeProc;
 using cinder::net::test::NodeProcGuard;
 using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::pickHeldPort;
@@ -198,6 +202,88 @@ namespace cinder {
             ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
             EXPECT_TRUE(waitForValue(port2, keys.back(), big))
                 << "newest hinted write was not replayed";
+        }
+
+        TEST(ReplicaFailoverTest, HintedHandoffSurvivesNodeRestart) {
+            const uint16_t port1 = pickHeldPort();
+            ASSERT_NE(port1, 0);
+            const uint16_t metrics1 = pickEphemeralPort();
+            ASSERT_NE(metrics1, 0);
+            const uint16_t port2 = pickHeldPort();
+            ASSERT_NE(port2, 0);
+            const std::string data_dir = "/tmp/cinder_hint_restart_" + std::to_string(port1);
+            const auto peers2 = "node2@127.0.0.1:" + std::to_string(port2);
+            const auto peers1 = "node1@127.0.0.1:" + std::to_string(port1);
+
+            std::vector<std::string> keys;
+            for (int i = 0; keys.size() < 3 && i < 1000; ++i) {
+                auto k = "hr-" + std::to_string(i);
+                auto [primary_id, replica_id] = ownersOf(k);
+                if (primary_id == "node1" && replica_id == "node2") {
+                    keys.push_back(k);
+                }
+            }
+            ASSERT_EQ(keys.size(), 3U);
+
+            const std::string big(1024, 'y');
+            {
+                // Raw proc (no guard): it is SIGKILLed below, and a guard
+                // would SIGTERM a possibly-reused pid on its way out.
+                NodeProc node1 = spawnNode(
+                    port1,
+                    "node1",
+                    peers2,
+                    false,
+                    2,
+                    10'000,
+                    3000,
+                    1000,
+                    0,
+                    metrics1,
+                    data_dir
+                );
+                ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not start";
+                for (const auto& k : keys) {
+                    auto res = setKey(port1, k, big);
+                    ASSERT_TRUE(res.has_value());
+                    EXPECT_EQ(res.value().status, Errc::OK);
+                }
+
+                // Deterministic kill gate: every write must have fanned out
+                // (and hinted) before SIGKILL, or the last hint is still in
+                // flight and legitimately lost.
+                bool hinted = false;
+                for (int i = 0; i < 50 && !hinted; ++i) {
+                    auto enqueued =
+                        scrapeMetric(metrics1, "cinder_replication_hints_enqueued_total");
+                    hinted = enqueued.has_value() && *enqueued == keys.size();
+                    if (!hinted) {
+                        std::this_thread::sleep_for(milliseconds(100));
+                    }
+                }
+                ASSERT_TRUE(hinted) << "hints were not all enqueued before kill";
+
+                ASSERT_EQ(::kill(node1.pid, SIGKILL), 0);
+                int status = 0;
+                ASSERT_EQ(::waitpid(node1.pid, &status, 0), node1.pid);
+            }
+
+            // Restart with the same data directory: journaled hints recover
+            // before serving, then replay once node2 returns.
+            {
+                NodeProcGuard node1b{
+                    spawnNode(port1, "node1", peers2, false, 2, 10'000, 3000, 1000, 0, 0, data_dir)
+                };
+                ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not restart";
+                NodeProcGuard node2{spawnNode(port2, "node2", peers1, false, 2)};
+                ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
+                for (const auto& k : keys) {
+                    EXPECT_TRUE(waitForValue(port2, k, big)) << "hint for " << k << " lost";
+                }
+            }
+
+            std::error_code ec;
+            std::filesystem::remove_all(data_dir, ec);
         }
 
         TEST(ReplicaFailoverTest, FanoutToThreeNodes) {

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
+#include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/store/cache_store.hpp"
 
@@ -107,6 +109,15 @@ namespace cinder {
             return hints_.dropped();
         }
 
+        // Durable hints: journal path is set at startup (data directory);
+        // recovery runs explicitly before serving. No-op when unset.
+        void setHintJournal(std::string path) {
+            hint_journal_path_ = std::move(path);
+        }
+
+        auto recoverHints() -> uint64_t;
+        void syncHints();
+
         void setMetrics(MetricsCollector* m) {
             metrics_ = m;
             hints_.setMetrics(
@@ -120,6 +131,14 @@ namespace cinder {
 
         static constexpr size_t K_MAX_HINTS = 1024;
         static constexpr milliseconds K_HINT_TTL{30'000};
+
+        static auto sysHintExpiryMs() -> uint64_t {
+            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                             std::chrono::system_clock::now().time_since_epoch()
+                   )
+                                             .count())
+                + static_cast<uint64_t>(K_HINT_TTL.count());
+        }
 
         void enqueueHint(const NodeId& target, const net::Request& req);
         void sendRepairFanOut(
@@ -148,6 +167,8 @@ namespace cinder {
         Clock& clock_;
         Transport& transport_;
         HintQueue hints_;
+        std::string hint_journal_path_;
+        std::unique_ptr<HintJournal> journal_;
         // Single-consumer guard for replayHints(): overlapping timer ticks (or
         // pool threads) must not run two replays concurrently.
         std::atomic<bool> replaying_{false};

@@ -149,7 +149,8 @@ struct NodeProc {
 [[maybe_unused]] static auto
 spawnNode(int port, const std::string& id, const std::string& peer_list, bool quorum = false,
     int replica_factor = 1, int quarantine_interval_ms = 10'000, int suspect_timeout_ms = 3'000,
-    int ping_interval_ms = 1'000, size_t max_hint_bytes = 0, uint16_t metrics_port = 0) -> NodeProc {
+    int ping_interval_ms = 1'000, size_t max_hint_bytes = 0, uint16_t metrics_port = 0,
+    const std::string& data_dir = {}) -> NodeProc {
     auto port_str = std::to_string(port);
     auto factor_str = std::to_string(replica_factor);
     auto quarantine_str = std::to_string(quarantine_interval_ms);
@@ -196,6 +197,11 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
         if (metrics_port > 0) {
             args.emplace_back("--metrics-port");
             args.emplace_back(metrics_str);
+        }
+        if (!data_dir.empty()) {
+            args.emplace_back("--enable-persistence");
+            args.emplace_back("--data-dir");
+            args.emplace_back(data_dir);
         }
         std::vector<char*> argv;
         argv.reserve(args.size() + 1);

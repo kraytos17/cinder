@@ -577,8 +577,32 @@ namespace cinder {
         return hints_.size();
     }
 
+    auto ReplicationManager::recoverHints() -> uint64_t {
+        if (hint_journal_path_.empty()) {
+            return 0;
+        }
+
+        journal_ = std::make_unique<HintJournal>();
+        return journal_->open(hint_journal_path_, hints_);
+    }
+
+    void ReplicationManager::syncHints() {
+        if (journal_ != nullptr) {
+            journal_->sync();
+        }
+    }
+
     void ReplicationManager::enqueueHint(const NodeId& target, const net::Request& req) {
         CINDER_DEBUG("hint enqueued", {"target", target}, {"key", req.key});
+        if (journal_) {
+            // Journal the intent before queueing: recovery replays intents
+            // through the same push, so oversize rejection and eviction come
+            // out identically. Only successful replays need tombstones.
+            journal_->appendAdd({target, req, clock_.now() + K_HINT_TTL}, sysHintExpiryMs());
+            if (journal_->needsCompaction()) {
+                journal_->compact(hints_);
+            }
+        }
         const uint64_t dropped_before = hints_.dropped();
         hints_.push({target, req, clock_.now() + K_HINT_TTL});
         if (metrics_) {
@@ -709,6 +733,10 @@ namespace cinder {
         }, [this, st](std::size_t i, Result<void> r, bool) {
             if (r.has_value()) {
                 hints_.remove(st->batch[i].handle);
+                if (journal_ != nullptr) {
+                    const auto& hint = st->batch[i].hint;
+                    journal_->appendDel(hint.target, hint.req.key, hint.req.version);
+                }
                 ++st->replayed;
             }
             --st->pending;

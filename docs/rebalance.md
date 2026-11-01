@@ -276,6 +276,22 @@ silently.
 Hints are enqueued whenever a replica is unreachable during an async or
 quorum write.
 
+## Hint Durability
+
+With persistence enabled, hints are journaled to
+`<data_dir>/hints.journal` so they survive a node crash or restart (a plain
+in-memory queue would lose them). Recovery replays the journal through the
+same push/remove path, so coalescing, LWW ordering and both bounds come out
+identically; only successfully replayed hints need tombstones, and expired
+records are skipped.
+
+- **Crash window**: appends are page-cache writes; only compaction and
+  shutdown fsync. A torn tail record is truncated on open.
+- **Compaction**: past 4,096 records the journal is rewritten from the live
+  snapshot, keeping long outages from growing the file without bound.
+- **Recovery order**: hint recovery runs before serving, so replayed hints
+  join the normal ~1 s replay cycle once the replica returns.
+
 ## Anti-Entropy
 
 Periodic background repair between replica partners, using range-hash

@@ -277,6 +277,9 @@ namespace cinder {
         if (options.listen_fd >= 0) {
             server_.setListenFd(options.listen_fd);
         }
+        if (options.persistence_enabled && !options.data_dir.empty()) {
+            repl_.setHintJournal(options.data_dir + "/hints.journal");
+        }
 
         CINDER_INFO("eviction policy", {"policy", options.eviction_policy});
         if (options.max_hint_bytes > 0) {
@@ -314,6 +317,11 @@ namespace cinder {
     }
 
     void CacheNodeServer::run() {
+        // Recover durable hints before serving: replayed once the (possibly
+        // returned) replica is reachable again.
+        if (auto recovered = repl_.recoverHints(); recovered > 0) {
+            CINDER_INFO("recovered hints", {"count", recovered});
+        }
         // Recover from disk before serving
         if (persistence_.enabled()) {
             auto res = persistence_.recover();
@@ -376,6 +384,7 @@ namespace cinder {
 
     void CacheNodeServer::shutdown() {
         timers_.cancelAll();
+        repl_.syncHints();
         if (persistence_.enabled()) {
             persistence_.shutdown();
         }

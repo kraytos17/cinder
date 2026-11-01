@@ -12,6 +12,7 @@ set(CINDER_CORE_SOURCES
     node/cache_node_server.cpp
     node/shard_manager.cpp
     node/replication_manager.cpp
+    node/hint_journal.cpp
     node/anti_entropy.cpp
     cluster/membership.cpp
     cluster/gossip.cpp
