@@ -161,6 +161,9 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   restore it **read-only** with a `deps-` prefix `restore-keys` fallback
   (a new pins-file hash reuses previous sources); parallel jobs sharing one
   save key raced (`Unable to reserve cache`), hence the single writer.
+  Bumping a dep TAG in `cmake/CinderDepVersions.cmake` self-heals locally:
+  `cinder_use_cached_dep` drops stale auto-pinned `FETCHCONTENT_SOURCE_DIR_*`
+  entries on the next configure (`just deps-refresh` forces it immediately).
   ccache (preferred; sccache fallback) is restored per-preset via
   `hendrikmuhs/ccache-action` — entries are content-hashed (compiler binary
   included via `CCACHE_COMPILERCHECK=content`), so presets share hits safely.

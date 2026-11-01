@@ -446,6 +446,25 @@ clean-deps:
     dir="$(cmake -DCINDER_PRINT_DIR=ON -P cmake/FetchDeps.cmake)"
     [ -n "$dir" ] && [ "$dir" != "/" ] && rm -rf "$dir" && echo "removed $dir"
 
+# Dep bumps (cmake/CinderDepVersions.cmake) self-heal on the next configure:
+# cinder_use_cached_dep drops stale auto-pinned source dirs. This recipe is
+# the manual override — it forgets every pinned source dir so the next
+# configure re-derives them from the current tags (also drops a deliberate
+# per-preset FETCHCONTENT_SOURCE_DIR_<DEP> pin; use an exported env var for
+# a persistent override).
+[group('deps')]
+[doc('Forget pinned FetchContent source dirs; next configure re-derives them from current tags.')]
+deps-refresh:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for p in {{ presets }}; do
+        [ "$p" = "base" ] && continue   # hidden inheritance stub, not configurable
+        [ -f build/"$p"/CMakeCache.txt ] || continue   # never configured: nothing to forget
+        echo "==> refreshing $p..."
+        cmake --preset "$p" -U 'FETCHCONTENT_SOURCE_DIR_*' > /dev/null
+    done
+    echo "done — every configured preset re-derived its source dirs from the current tags"
+
 [group('deps')]
 [doc('Show compiler-cache (ccache) statistics.')]
 ccache-stats:

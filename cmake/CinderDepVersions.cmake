@@ -7,6 +7,9 @@
 # KEY is the lower-case FetchContent name. To bump a dependency, change its TAG
 # here only: the shared cache directory is named "<key>-<tag>", so a new tag
 # gets a fresh checkout and an old checkout can never be silently reused.
+# Existing build dirs self-heal on their next configure
+# (cinder_use_cached_dep drops stale auto-pinned source dirs); use
+# `just deps-refresh` to force re-derivation immediately.
 
 set(CINDER_DEP_KEYS asio xxhash spdlog cli11 yaml-cpp mimalloc googletest benchmark grpc)
 

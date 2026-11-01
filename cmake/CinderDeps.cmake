@@ -163,8 +163,39 @@ function(cinder_use_cached_dep key)
     cmake_parse_arguments(PARSE_ARGV 1 _A "" "PACKAGE;VERSION" "")
     string(TOUPPER "${key}" _u)
 
-    if(NOT CINDER_USE_DEPS_CACHE OR DEFINED FETCHCONTENT_SOURCE_DIR_${_u})
+    if(NOT CINDER_USE_DEPS_CACHE)
         return()
+    endif()
+
+    # An exported FETCHCONTENT_SOURCE_DIR_<KEY> env var is a deliberate
+    # per-invocation override: respect it (FetchContent reads the env itself
+    # when no CMake variable is set).
+    if(DEFINED ENV{FETCHCONTENT_SOURCE_DIR_${_u}})
+        return()
+    endif()
+
+    cinder_deps_cache_dir(_dep_cache)
+    set(_pinned "${_dep_cache}/${key}-${CINDER_DEP_${key}_TAG}")
+
+    if(DEFINED FETCHCONTENT_SOURCE_DIR_${_u})
+        # A persisted value that still matches the pinned checkout is valid.
+        if("${FETCHCONTENT_SOURCE_DIR_${_u}}" STREQUAL "${_pinned}")
+            return()
+        endif()
+        # A value inside our own <key>-<tag> namespace for a different tag is
+        # stale automation from a previous pins revision
+        # (cmake/CinderDepVersions.cmake), not a deliberate override: drop it
+        # so the pinned checkout below takes effect. Anything else is a
+        # deliberate user override: respect it (a missing custom dir still
+        # fails loudly in FetchContent, as before).
+        file(TO_CMAKE_PATH "${FETCHCONTENT_SOURCE_DIR_${_u}}" _cur_pin)
+        file(TO_CMAKE_PATH "${_dep_cache}/${key}-" _auto_ns)
+        string(FIND "${_cur_pin}" "${_auto_ns}" _ns_pos)
+        if(_ns_pos EQUAL 0)
+            unset(FETCHCONTENT_SOURCE_DIR_${_u} CACHE)
+        else()
+            return()
+        endif()
     endif()
 
     if(_A_PACKAGE AND CINDER_PREFER_SYSTEM_DEPS AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -175,8 +206,7 @@ function(cinder_use_cached_dep key)
         endif()
     endif()
 
-    cinder_deps_cache_dir(_cache)
-    set(_dir "${_cache}/${key}-${CINDER_DEP_${key}_TAG}")
+    set(_dir "${_pinned}")
     _cinder_cache_valid(
         "${_dir}" "${CINDER_DEP_${key}_REPO}" "${CINDER_DEP_${key}_TAG}" _valid
     )
