@@ -97,7 +97,9 @@ auto main(int argc, char* argv[]) -> int {
     std::vector<std::string> extra_keys;
     int ttl_ms = 0;
 
-    app.add_option("command", cmd, "get|set|del|ping|info|cluster|ring|mget|mset")->required();
+    app.add_option("command", cmd, "get|set|del|ping|info|cluster|ring|mget|mset|get-versioned")
+        ->required();
+
     app.add_option("key", key, "Key (first key for mget, k1 for mset)");
     app.add_option("value", value, "Value (set only, v1 for mset)");
     app.add_option("extra_keys", extra_keys, "Additional keys (mget) or k2/v2/... (mset)")
@@ -153,6 +155,9 @@ auto main(int argc, char* argv[]) -> int {
     cinder::net::Request req;
     if (cmd == "get") {
         req.opcode = cinder::net::Opcode::Get;
+        req.key = key;
+    } else if (cmd == "get-versioned") {
+        req.opcode = cinder::net::Opcode::GetVersioned;
         req.key = key;
     } else if (cmd == "set") {
         req.opcode = cinder::net::Opcode::Set;
@@ -241,6 +246,19 @@ auto main(int argc, char* argv[]) -> int {
         std::println("pong");
     } else if (response.value.has_value()) {
         std::println("{}", response.value.value());
+        if (cmd == "get-versioned") {
+            // LWW metadata rides on GetVersioned responses only. Writer is
+            // the node hash in decimal; expiry (when set) as epoch seconds.
+            std::println("version: {}", response.version);
+            std::println("writer: {}", response.writer_node_hash);
+            if (response.expires_at.has_value()) {
+                const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                                      response.expires_at->time_since_epoch()
+                )
+                                      .count();
+                std::println("expires_at: {}", secs);
+            }
+        }
     } else {
         std::println("{}", cinder::toString(response.status));
     }

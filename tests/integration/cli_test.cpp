@@ -4,6 +4,7 @@
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 #include "integration/test_helpers.hpp"
@@ -181,6 +182,59 @@ namespace {
         {
             auto [out, err] = runCli(port, {"get", "c"});
             EXPECT_TRUE(out.contains("3\n"));
+        }
+    }
+
+    TEST(CliTest, GetVersioned) {
+        const uint16_t port = pickHeldPort();
+        ASSERT_NE(port, 0);
+        NodeProcGuard node{spawnNode(port, "node1", "")};
+        ASSERT_TRUE(waitForNode(port, "node1"));
+        auto getVersion = [&](const std::string& key) {
+            auto [out, err] = runCli(port, {"get-versioned", key});
+            EXPECT_TRUE(err.empty());
+            const auto pos = out.find("version: ");
+            EXPECT_NE(pos, std::string::npos);
+            return std::make_pair(out, std::stoull(out.substr(pos + 9)));
+        };
+        {
+            auto [out, err] = runCli(port, {"set", "k", "v"});
+            EXPECT_EQ(out, "OK\n");
+        }
+        // Same value as get, plus LWW metadata. Store versions are
+        // clock-seeded Lamport clocks, so only ordering is asserted.
+        unsigned long long v1 = 0;
+        {
+            auto [out, ver] = getVersion("k");
+            EXPECT_TRUE(out.contains("v\n"));
+            EXPECT_TRUE(out.contains("writer: "));
+            v1 = ver;
+        }
+        {
+            auto [out, err] = runCli(port, {"set", "k", "v2"});
+            EXPECT_EQ(out, "OK\n");
+        }
+        {
+            auto [out, ver] = getVersion("k");
+            EXPECT_TRUE(out.contains("v2\n"));
+            EXPECT_GT(ver, v1);
+        }
+        {
+            // Miss behaves exactly like get miss.
+            auto [out, err] = runCli(port, {"get-versioned", "nope"});
+            EXPECT_TRUE(out.contains("not found"));
+            EXPECT_TRUE(err.empty());
+        }
+        {
+            // TTL-set keys report their expiry.
+            auto [out, err] = runCli(port, {"set", "t", "x", "--ttl", "60000"});
+            EXPECT_EQ(out, "OK\n");
+        }
+        {
+            auto [out, err] = runCli(port, {"get-versioned", "t"});
+            EXPECT_TRUE(out.contains("x\n"));
+            EXPECT_TRUE(out.contains("expires_at: "));
+            EXPECT_TRUE(err.empty());
         }
     }
 
