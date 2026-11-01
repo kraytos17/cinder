@@ -130,6 +130,69 @@ namespace cinder {
             ->Args({256, 1})
             ->Args({1024, 1});
 
+        // Eviction-pressure variant: capacity holds roughly a quarter of the
+        // key pool, so the timed loop continuously evicts through the
+        // ordered-minimum path — the operation the B-tree bucket map exists
+        // to serve. The pure-get benchmark above never reaches evictOne.
+        // Round-robin puts over the oversize pool are insert-evicts in steady
+        // state (each key is evicted long before its turn returns); gets
+        // mostly hit. Warmup runs the same mix before the loop so the timed
+        // region measures steady state, not fill transient.
+        void bmLfuStoreEvictionPressure(benchmark::State& state) {
+            const size_t count = static_cast<size_t>(state.range(0));
+            const size_t value_size = static_cast<size_t>(state.range(1));
+            const std::string value(value_size, 'x');
+            // Entry ≈ key + value + node overhead; hold ~1/4 of the pool.
+            const size_t capacity = count * (value_size + 160) / 4;
+            auto store = std::make_unique<LfuStore>(capacity);
+            std::vector<std::string> keys;
+            keys.reserve(count);
+            for (size_t i = 0; i < count; ++i) {
+                keys.push_back("lfu-key-" + std::to_string(i));
+                // NOLINTNEXTLINE
+                (void)store->put(keys.back(), value);
+            }
+            // Seed distinct exact frequencies: key i ends at freq i+1.
+            for (size_t i = 0; i < count; ++i) {
+                for (size_t hit = 0; hit < i; ++hit) {
+                    (void)store->get(keys[i]);
+                }
+            }
+            size_t pos = 0;
+            // Hot-skewed get trace (80% hot 1/16) so gets mostly hit while
+            // round-robin puts churn the cold tail through eviction.
+            const size_t hot_count = std::max<size_t>(1, count / 16);
+            std::vector<size_t> get_trace;
+            get_trace.reserve(4096);
+            for (size_t i = 0; i < 4096; ++i) {
+                get_trace.push_back((i % 5) != 0 ? i % hot_count : i % count);
+            }
+            size_t get_pos = 0;
+            size_t put_pos = 0;
+            auto mix_op = [&]() {
+                for (int g = 0; g < 7; ++g) {
+                    (void)store->get(keys[get_trace[get_pos++ % get_trace.size()]]);
+                }
+                // NOLINTNEXTLINE
+                (void)store->put(keys[put_pos++ % count], value);
+            };
+            for (size_t w = 0; w < count * 2; ++w) {
+                mix_op();
+            }
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                mix_op();
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmLfuStoreEvictionPressure)
+            ->Args({256, 64})
+            ->Args({1024, 64})
+            ->Args({256, 256})
+            ->Args({1024, 256});
+
         auto makeHint(size_t index, size_t value_size) -> HintQueue::Hint {
             HintQueue::Hint hint;
             hint.target = "replica-" + std::to_string(index % 3);
