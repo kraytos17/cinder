@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 4.4)
 
+# Experimental import std support (gate UUID is CMake-version-specific;
+# re-check on CMake upgrades — a wrong value fails configure naming the
+# expected one). Must precede project(): it gates C++ toolchain discovery.
+set(CMAKE_EXPERIMENTAL_CXX_IMPORT_STD "f35a9ac6-8463-4d38-8eec-5d6008153e7d")
+
 project(cinder VERSION 0.1.0
         DESCRIPTION
         "Cinder — a distributed, consistent-hash-sharded in-memory cache"

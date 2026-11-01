@@ -15,6 +15,14 @@ target_link_libraries(cinder-admin PRIVATE cinder::core CLI11::Module)
 # OFF); module consumers must opt back in so CMake wires the BMI deps,
 # the module map, and -fmodules-ts for GCC.
 set_target_properties(cinder-admin PROPERTIES CXX_SCAN_FOR_MODULES ON)
+# import std needs a per-target opt-in (never global: it would also tag
+# FetchContent deps) and C++23 (already the project default). Support is
+# implied by the top-level compiler floors (GCC >= 16, Clang >= 22 need
+# GCC >= 15 / Clang >= 18.1.2 for import std); do NOT probe
+# CMAKE_CXX_COMPILER_IMPORT_STD here — it is only populated during compiler
+# detection, so it reads empty on reconfigured (cached-compiler) build dirs
+# and would false-positive the gate.
+set_target_properties(cinder-admin PROPERTIES CXX_MODULE_STD 1)
 
 set_target_properties(cinderd cinder-cli cinder-admin PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

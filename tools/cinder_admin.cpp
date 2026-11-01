@@ -1,7 +1,4 @@
 #include <asio.hpp>
-#include <print>
-#include <string>
-#include <thread>
 
 #ifdef CINDER_ENABLE_TLS
 #include <asio/ssl.hpp>
@@ -12,9 +9,11 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
-// All textual includes precede the import: GCC rejects includes after an
-// import whose global module fragment overlaps them.
+// All textual includes precede the imports: GCC rejects includes after an
+// import whose global module fragment overlaps them. No textual std headers
+// here — everything standard comes from import std below.
 import cli11;
+import std;
 
 using asio::io_context;
 using std::chrono::milliseconds;
