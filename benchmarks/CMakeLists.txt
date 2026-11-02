@@ -3,6 +3,7 @@ set(CINDER_BENCH_SOURCES
     ring_lookup_bench.cpp
     allocator_bench.cpp
     lfu_bucket_bench.cpp
+    tracing_bench.cpp
 )
 
 add_executable(cinder_throughput_bench ${CINDER_BENCH_SOURCES})

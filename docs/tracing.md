@@ -116,6 +116,17 @@ and `hint.journal.open/compact` report `Ok`/`Error` outcomes. WAL appends
 happen only in batched drains covered by the flush span; per-hint journal
 appends ride the calling span instead of minting their own.
 
+## Performance
+
+Measured with `benchmarks/tracing_bench.cpp` (release, `cinder_throughput_bench
+--benchmark_filter=bmSpan`): a bare span costs ~24ns with no subscriber, and
+adding status + 3 attributes + a field-carrying event keeps it at ~25ns — the
+unobserved path does no allocation. The opted-in `RecordingSubscriber` path
+costs ~81µs/span (µs, not ns: mutex + string copies + linear lookup), rising
+with attributes/events; acceptable for tests and debugging, not for
+always-on production use. No exporter exists yet, so there is no always-on
+overhead to budget.
+
 ## Privacy
 
 Never record values, keys, secrets, bearer material, or TLS state. Node IDs,
