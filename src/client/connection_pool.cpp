@@ -3,6 +3,7 @@
 #include <array>
 #include <exception>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -27,18 +28,18 @@ namespace {
 
 namespace cinder {
 
-    void ConnectionPool::closeConn(NodeConn& conn) {
-        conn.connected = false;
+    void ConnectionPool::closeConn(const std::shared_ptr<NodeConn>& conn) {
+        conn->connected = false;
         std::error_code ec;
 #ifdef CINDER_ENABLE_TLS
-        if (conn.stream) {
-            conn.stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
-            conn.stream->lowest_layer().close(ec);
-            conn.stream.reset();
+        if (conn->stream) {
+            conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
+            conn->stream->lowest_layer().close(ec);
+            conn->stream.reset();
         }
 #endif
-        conn.socket.shutdown(tcp::socket::shutdown_both, ec);
-        conn.socket.close(ec);
+        conn->socket.shutdown(tcp::socket::shutdown_both, ec);
+        conn->socket.close(ec);
     }
 
     ConnectionPool::ConnectionPool(
@@ -86,7 +87,14 @@ namespace cinder {
                 continue;
             }
             for (auto& conn : pool->conns) {
-                if (!conn || !conn->connected) {
+                if (!conn) {
+                    continue;
+                }
+                // Wake coroutines queued on the gate: they hold a shared_ptr,
+                // so the channel stays alive and the releaser's try_send stays
+                // safe. A woken waiter fails fast instead of hanging.
+                conn->gate.close();
+                if (!conn->connected) {
                     continue;
                 }
 
@@ -128,7 +136,7 @@ namespace cinder {
         }
     }
 
-    auto ConnectionPool::getOrCreateConn(const NodeId& node_id) -> NodeConn& {
+    auto ConnectionPool::getOrCreateConn(const NodeId& node_id) -> std::shared_ptr<NodeConn> {
         std::scoped_lock lock(mu_);
         auto it = pools_.find(node_id);
         if (it == pools_.end() || !it->second) {
@@ -142,26 +150,33 @@ namespace cinder {
         auto& pool = *it->second;
         // Round-robin so consecutive callers land on different strands and
         // overlap; wrap with modulo so the cursor cannot run away.
-        NodeConn& chosen = *pool.conns[pool.next % pool.conns.size()];
+        std::shared_ptr<NodeConn> chosen = pool.conns[pool.next % pool.conns.size()];
         pool.next = (pool.next + 1) % pool.conns.size();
         return chosen;
     }
 
     auto ConnectionPool::sendCoroutine(
-        NodeConn& conn,
+        std::shared_ptr<NodeConn> conn,
         std::vector<std::byte> data,
         SpanContext parent
     ) -> asio::awaitable<Result<net::Response>> {
         Span span("pool.send", parent);
-        span.setAttribute({"peer", conn.addr.host});
-        span.setAttribute({"reused", conn.connected});
+        span.setAttribute({"peer", conn->addr.host});
+        span.setAttribute({"reused", conn->connected});
         span.setAttribute({"bytes_out", data.size()});
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
 
         // One exchange at a time per socket (see NodeConn): acquire the gate
-        // before touching the socket.
-        co_await conn.gate.async_receive(asio::use_awaitable);
+        // before touching the socket. Shutdown closes the gate, which
+        // completes a queued receive with an error: fail fast rather than
+        // letting the exception escape into the co_spawn handler.
+        try {
+            co_await conn->gate.async_receive(asio::use_awaitable);
+        } catch (const std::system_error&) {
+            span.setStatus(SpanStatus::Cancelled);
+            co_return err<net::Response>(Error(Errc::NotReady, "pool shutting down"));
+        }
 
         struct GateReleaser {
             asio::experimental::concurrent_channel<void(std::error_code)>& gate;
@@ -171,7 +186,9 @@ namespace cinder {
             }
         };
 
-        GateReleaser releaser{conn.gate};
+        // Safe: the `conn` parameter keeps the NodeConn (and its gate) alive
+        // until the coroutine frame is destroyed, which is after this local.
+        GateReleaser releaser{conn->gate};
 
         // RPC deadline: on expiry cancel the socket so the pending I/O aborts with
         // operation_aborted; poolError() then maps that to Errc::Timeout.
@@ -193,23 +210,23 @@ namespace cinder {
                 if (!timer_ec) {
                     timed_out = true;
 #ifdef CINDER_ENABLE_TLS
-                    if (conn.stream) {
-                        conn.stream->lowest_layer().cancel();
+                    if (conn->stream) {
+                        conn->stream->lowest_layer().cancel();
                     } else {
-                        conn.socket.cancel();
+                        conn->socket.cancel();
                     }
 #else
-                    conn.socket.cancel();
+                    conn->socket.cancel();
 #endif
                 }
             });
         }
-        if (!conn.connected) {
-            CINDER_DEBUG("reconnecting node", {"node", conn.addr.host});
+        if (!conn->connected) {
+            CINDER_DEBUG("reconnecting node", {"node", conn->addr.host});
             tcp::resolver resolver(ex);
             auto endpoints = co_await resolver.async_resolve(
-                conn.addr.host,
-                std::to_string(conn.addr.port),
+                conn->addr.host,
+                std::to_string(conn->addr.port),
                 asio::redirect_error(ec)
             );
             if (ec) {
@@ -219,9 +236,9 @@ namespace cinder {
             }
 #ifdef CINDER_ENABLE_TLS
             if (ssl_ctx_) {
-                conn.stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
+                conn->stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
                 co_await async_connect(
-                    conn.stream->lowest_layer(),
+                    conn->stream->lowest_layer(),
                     endpoints,
                     asio::redirect_error(ec)
                 );
@@ -231,7 +248,7 @@ namespace cinder {
                     co_return err<net::Response>(poolError(timed_out, "connect", ec));
                 }
 
-                co_await conn.stream->async_handshake(
+                co_await conn->stream->async_handshake(
                     asio::ssl::stream_base::client,
                     asio::redirect_error(ec)
                 );
@@ -241,7 +258,7 @@ namespace cinder {
                     co_return err<net::Response>(poolError(timed_out, "tls handshake", ec));
                 }
             } else {
-                co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
+                co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
                     fail_status(timed_out, "connect");
@@ -249,42 +266,42 @@ namespace cinder {
                 }
             }
 #else
-            co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
+            co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
                 fail_status(timed_out, "connect");
                 co_return err<net::Response>(poolError(timed_out, "connect", ec));
             }
 #endif
-            conn.connected = true;
-            CINDER_DEBUG("connected to node", {"node", conn.addr.host});
+            conn->connected = true;
+            CINDER_DEBUG("connected to node", {"node", conn->addr.host});
         }
 
 #ifdef CINDER_ENABLE_TLS
-        if (conn.stream) {
-            co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));
+        if (conn->stream) {
+            co_await async_write(*conn->stream, buffer(data), asio::redirect_error(ec));
         } else {
-            co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
+            co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
         }
 #else
-        co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
+        co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
 #endif
         if (ec) {
             closeConn(conn);
-            CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
+            CINDER_WARN("send failed", {"node", conn->addr.host}, {"phase", "write"});
             fail_status(timed_out, "write");
             co_return err<net::Response>(poolError(timed_out, "write", ec));
         }
 
         std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
 #ifdef CINDER_ENABLE_TLS
-        if (conn.stream) {
-            co_await async_read(*conn.stream, buffer(header), asio::redirect_error(ec));
+        if (conn->stream) {
+            co_await async_read(*conn->stream, buffer(header), asio::redirect_error(ec));
         } else {
-            co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+            co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
         }
 #else
-        co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+        co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
 #endif
         if (ec) {
             closeConn(conn);
@@ -315,22 +332,22 @@ namespace cinder {
         std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
         if (payload_len > 0) {
 #ifdef CINDER_ENABLE_TLS
-            if (conn.stream) {
+            if (conn->stream) {
                 co_await async_read(
-                    *conn.stream,
+                    *conn->stream,
                     buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                     asio::redirect_error(ec)
                 );
             } else {
                 co_await async_read(
-                    conn.socket,
+                    conn->socket,
                     buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                     asio::redirect_error(ec)
                 );
             }
 #else
             co_await async_read(
-                conn.socket,
+                conn->socket,
                 buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                 asio::redirect_error(ec)
             );
@@ -363,13 +380,13 @@ namespace cinder {
     }
 
     auto ConnectionPool::sendBatchCoroutine(
-        NodeConn& conn,
+        std::shared_ptr<NodeConn> conn,
         std::vector<std::vector<std::byte>> all_data,
         SpanContext parent
     ) -> asio::awaitable<Result<std::vector<net::Response>>> {
         Span span("pool.send_batch", parent);
-        span.setAttribute({"peer", conn.addr.host});
-        span.setAttribute({"reused", conn.connected});
+        span.setAttribute({"peer", conn->addr.host});
+        span.setAttribute({"reused", conn->connected});
         span.setAttribute({"count", all_data.size()});
         size_t bytes_out = 0;
         for (const auto& data : all_data) {
@@ -380,8 +397,14 @@ namespace cinder {
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
         // A batch is one pipelined exchange on this socket: hold the same gate
-        // as single sends so the two can never interleave.
-        co_await conn.gate.async_receive(asio::use_awaitable);
+        // as single sends so the two can never interleave. Shutdown closes
+        // the gate: fail fast on the resulting error.
+        try {
+            co_await conn->gate.async_receive(asio::use_awaitable);
+        } catch (const std::system_error&) {
+            span.setStatus(SpanStatus::Cancelled);
+            co_return err<std::vector<net::Response>>(Error(Errc::NotReady, "pool shutting down"));
+        }
 
         struct BatchGateReleaser {
             asio::experimental::concurrent_channel<void(std::error_code)>& gate;
@@ -391,7 +414,8 @@ namespace cinder {
             }
         };
 
-        BatchGateReleaser releaser{conn.gate};
+        // Safe: see GateReleaser in sendCoroutine — `conn` outlives this local.
+        BatchGateReleaser releaser{conn->gate};
         bool timed_out = false;
         // Every exit below reports exactly one outcome on this exchange's span.
         // The phase attribute names the failing step so traces group by
@@ -408,22 +432,22 @@ namespace cinder {
                 if (!timer_ec) {
                     timed_out = true;
 #ifdef CINDER_ENABLE_TLS
-                    if (conn.stream) {
-                        conn.stream->lowest_layer().cancel();
+                    if (conn->stream) {
+                        conn->stream->lowest_layer().cancel();
                     } else {
-                        conn.socket.cancel();
+                        conn->socket.cancel();
                     }
 #else
-                    conn.socket.cancel();
+                    conn->socket.cancel();
 #endif
                 }
             });
         }
-        if (!conn.connected) {
+        if (!conn->connected) {
             tcp::resolver resolver(ex);
             auto endpoints = co_await resolver.async_resolve(
-                conn.addr.host,
-                std::to_string(conn.addr.port),
+                conn->addr.host,
+                std::to_string(conn->addr.port),
                 asio::redirect_error(ec)
             );
             if (ec) {
@@ -433,9 +457,9 @@ namespace cinder {
             }
 #ifdef CINDER_ENABLE_TLS
             if (ssl_ctx_) {
-                conn.stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
+                conn->stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
                 co_await async_connect(
-                    conn.stream->lowest_layer(),
+                    conn->stream->lowest_layer(),
                     endpoints,
                     asio::redirect_error(ec)
                 );
@@ -445,7 +469,7 @@ namespace cinder {
                     co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
                 }
 
-                co_await conn.stream->async_handshake(
+                co_await conn->stream->async_handshake(
                     asio::ssl::stream_base::client,
                     asio::redirect_error(ec)
                 );
@@ -457,7 +481,7 @@ namespace cinder {
                     );
                 }
             } else {
-                co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
+                co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
                     fail_status(timed_out, "connect");
@@ -465,23 +489,23 @@ namespace cinder {
                 }
             }
 #else
-            co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
+            co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
                 fail_status(timed_out, "connect");
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
             }
 #endif
-            conn.connected = true;
+            conn->connected = true;
         }
 
 #ifdef CINDER_ENABLE_TLS
         auto write_all = [&] -> asio::awaitable<void> {
             for (auto& data : all_data) {
-                if (conn.stream) {
-                    co_await async_write(*conn.stream, buffer(data), asio::redirect_error(ec));
+                if (conn->stream) {
+                    co_await async_write(*conn->stream, buffer(data), asio::redirect_error(ec));
                 } else {
-                    co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
+                    co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
                 }
                 if (ec) {
                     co_return;
@@ -491,7 +515,7 @@ namespace cinder {
         co_await write_all();
 #else
         for (auto& data : all_data) {
-            co_await async_write(conn.socket, buffer(data), asio::redirect_error(ec));
+            co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
             if (ec) {
                 break;
             }
@@ -509,13 +533,13 @@ namespace cinder {
         for (size_t i = 0; i < all_data.size(); ++i) {
             std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
 #ifdef CINDER_ENABLE_TLS
-            if (conn.stream) {
-                co_await async_read(*conn.stream, buffer(header), asio::redirect_error(ec));
+            if (conn->stream) {
+                co_await async_read(*conn->stream, buffer(header), asio::redirect_error(ec));
             } else {
-                co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+                co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
             }
 #else
-            co_await async_read(conn.socket, buffer(header), asio::redirect_error(ec));
+            co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
 #endif
             if (ec) {
                 closeConn(conn);
@@ -547,22 +571,22 @@ namespace cinder {
             std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
             if (payload_len > 0) {
 #ifdef CINDER_ENABLE_TLS
-                if (conn.stream) {
+                if (conn->stream) {
                     co_await async_read(
-                        *conn.stream,
+                        *conn->stream,
                         buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                         asio::redirect_error(ec)
                     );
                 } else {
                     co_await async_read(
-                        conn.socket,
+                        conn->socket,
                         buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                         asio::redirect_error(ec)
                     );
                 }
 #else
                 co_await async_read(
-                    conn.socket,
+                    conn->socket,
                     buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
                     asio::redirect_error(ec)
                 );
@@ -638,9 +662,9 @@ namespace cinder {
             on_done(err<net::Response>(encoded.error()));
             return;
         } else {
-            auto& conn = getOrCreateConn(node_id);
+            auto conn = getOrCreateConn(node_id);
             asio::co_spawn(
-                conn.strand,
+                conn->strand,
                 sendCoroutine(
                     conn,
                     std::move(encoded.value()),
@@ -698,12 +722,12 @@ namespace cinder {
             all_data.push_back(std::move(encoded.value()));
         }
 
-        auto& conn = getOrCreateConn(node_id);
+        auto conn = getOrCreateConn(node_id);
         // The batch shares one trace; parent the exchange to the first
         // request's context (all sub-requests carry the batch span's ids).
         const auto& first = reqs.front();
         asio::co_spawn(
-            conn.strand,
+            conn->strand,
             sendBatchCoroutine(
                 conn,
                 std::move(all_data),

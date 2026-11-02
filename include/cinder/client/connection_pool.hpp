@@ -125,35 +125,41 @@ namespace cinder {
         static constexpr size_t K_POOL_SIZE = 4;
 
         struct NodePool {
-            std::vector<std::unique_ptr<NodeConn>> conns;
+            std::vector<std::shared_ptr<NodeConn>> conns;
             size_t next = 0; // round-robin cursor
 
             explicit NodePool(io_context& io, const ClusterConfig::NodeConfig& addr) {
                 conns.reserve(K_POOL_SIZE);
                 for (size_t i = 0; i < K_POOL_SIZE; ++i) {
-                    conns.push_back(std::make_unique<NodeConn>(io, addr));
+                    conns.push_back(std::make_shared<NodeConn>(io, addr));
                 }
             }
         };
 
         // Return the next connection for `node_id` (round-robin across the
-        // per-node pool), creating the pool if needed. Caller must not hold mu_.
-        auto getOrCreateConn(const NodeId& node_id) -> NodeConn&;
+        // per-node pool), creating the pool if needed. Shared ownership: send
+        // coroutines hold a copy, so a NodeConn (and its gate) outlives
+        // shutdown() even if the pool entry is cleared while in flight.
+        // Caller must not hold mu_.
+        auto getOrCreateConn(const NodeId& node_id) -> std::shared_ptr<NodeConn>;
 
         // Coroutine running on a NodeConn's strand: check connected, reconnect if
         // needed, write request(s), read response(s), decode. On any error closes
         // the connection so the next RPC reconnects on a clean socket.
-        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data, SpanContext parent)
-            -> asio::awaitable<Result<net::Response>>;
+        auto sendCoroutine(
+            std::shared_ptr<NodeConn> conn,
+            std::vector<std::byte> data,
+            SpanContext parent
+        ) -> asio::awaitable<Result<net::Response>>;
 
         // Mark unusable and release the socket. A failed exchange can leave stale
         // bytes or a half-dead connection behind; reusing it corrupts the next
         // response, so every error path goes through here.
-        static void closeConn(NodeConn& conn);
+        static void closeConn(const std::shared_ptr<NodeConn>& conn);
 
         // Batch coroutine: write all requests, read all responses.
         auto sendBatchCoroutine(
-            NodeConn& conn,
+            std::shared_ptr<NodeConn> conn,
             std::vector<std::vector<std::byte>> all_data,
             SpanContext parent
         ) -> asio::awaitable<Result<std::vector<net::Response>>>;

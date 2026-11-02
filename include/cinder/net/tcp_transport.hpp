@@ -104,20 +104,26 @@ namespace cinder {
         };
 
         // Return the cached connection for `id`, creating one if it doesn't exist yet.
-        auto getOrCreateConn(const NodeId& id) -> NodeConn&;
+        // Shared ownership: send coroutines hold a copy, so a NodeConn (and
+        // its gate) outlives shutdown() even if the map entry is destroyed
+        // while an exchange is in flight.
+        auto getOrCreateConn(const NodeId& id) -> std::shared_ptr<NodeConn>;
 
         // Coroutine running on a NodeConn's strand: check connected, reconnect if
         // needed, write request, read response, decode. On any error closes the
         // connection so the next RPC reconnects on a clean socket. The exchange
         // joins the request's trace when it carries one, else starts a fresh
         // root (background pings/gossip have no inbound parent).
-        auto sendCoroutine(NodeConn& conn, std::vector<std::byte> data, SpanContext parent)
-            -> asio::awaitable<Result<net::Response>>;
+        auto sendCoroutine(
+            std::shared_ptr<NodeConn> conn,
+            std::vector<std::byte> data,
+            SpanContext parent
+        ) -> asio::awaitable<Result<net::Response>>;
 
         // Mark unusable and release the socket. A failed exchange can leave stale
         // bytes or a half-dead connection behind; reusing it corrupts the next
         // response, so every error path goes through here.
-        static void closeConn(NodeConn& conn);
+        static void closeConn(const std::shared_ptr<NodeConn>& conn);
 
         io_context& io_;
         std::string node_id_;
@@ -133,7 +139,7 @@ namespace cinder {
         // Set once by shutdown(); observed by in-flight coroutines. Atomic so
         // the check needs no lock on the send path.
         std::atomic<bool> stopping_{false};
-        ankerl::unordered_dense::map<NodeId, std::unique_ptr<NodeConn>> conns_;
+        ankerl::unordered_dense::map<NodeId, std::shared_ptr<NodeConn>> conns_;
         std::flat_map<NodeId, ClusterConfig::NodeConfig> addrs_;
         MessageHandler handler_;
     };
