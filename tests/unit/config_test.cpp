@@ -1,16 +1,17 @@
-#include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <string>
 
 #include "cinder/common/config.hpp"
+#include "test_scratch.hpp"
 
 namespace cinder {
     namespace {
 
         TEST(ConfigTest, LoadValidConfig) {
             // Write a temporary YAML file.
-            const char* path = "/tmp/cinder_test_config.yaml";
+            test::ScratchFile path_file("cinder_test_config", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << R"(
@@ -62,12 +63,11 @@ logging:
             EXPECT_EQ(cfg.gossip_interval_ms, 500);
             EXPECT_EQ(cfg.quarantine_interval_ms, 5000);
             EXPECT_EQ(cfg.log_level, "debug");
-
-            (void)std::remove(path);
         }
 
         TEST(ConfigTest, MissingFieldsUseDefaults) {
-            const char* path = "/tmp/cinder_test_defaults.yaml";
+            test::ScratchFile path_file("cinder_test_defaults", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << R"(
@@ -88,12 +88,11 @@ server:
             EXPECT_TRUE(cfg.peers.empty()); // default
             EXPECT_EQ(cfg.ping_interval_ms, 1000); // default
             EXPECT_EQ(cfg.log_level, "info"); // default
-
-            (void)std::remove(path);
         }
 
         TEST(ConfigTest, EmptyFileUsesAllDefaults) {
-            const char* path = "/tmp/cinder_test_empty.yaml";
+            test::ScratchFile path_file("cinder_test_empty", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << "";
@@ -105,12 +104,11 @@ server:
             EXPECT_EQ(cfg.node_id, "node1");
             EXPECT_EQ(cfg.port, 7000);
             EXPECT_EQ(cfg.log_level, "info");
-
-            (void)std::remove(path);
         }
 
         TEST(ConfigTest, InvalidYamlReturnsError) {
-            const char* path = "/tmp/cinder_test_invalid.yaml";
+            test::ScratchFile path_file("cinder_test_invalid", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << "server:\n  port: [invalid yaml\n";
@@ -119,8 +117,6 @@ server:
             auto result = loadConfig(path);
             EXPECT_FALSE(result.has_value());
             EXPECT_EQ(result.error().code(), Errc::InvalidArgument);
-
-            (void)std::remove(path);
         }
 
         TEST(ConfigTest, MissingFileReturnsError) {
@@ -225,7 +221,8 @@ server:
         }
 
         TEST(ConfigTest, LoadReplicationMaxHintBytes) {
-            const char* path = "/tmp/cinder_test_hint_bytes.yaml";
+            test::ScratchFile path_file("cinder_test_hint_bytes", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << R"(
@@ -246,7 +243,8 @@ replication:
             EXPECT_EQ(changed[0], "max_hint_bytes");
 
             // Absent section keeps the compiled default.
-            const char* empty_path = "/tmp/cinder_test_hint_bytes_empty.yaml";
+            test::ScratchFile empty_path_file("cinder_test_hint_bytes_empty", ".yaml");
+            const std::string empty_path = empty_path_file.string();
             {
                 std::ofstream f(empty_path);
                 f << "";
@@ -255,9 +253,6 @@ replication:
             auto empty_result = loadConfig(empty_path);
             ASSERT_TRUE(empty_result.has_value());
             EXPECT_EQ(empty_result->max_hint_bytes, 67'108'864U);
-
-            (void)std::remove(path);
-            (void)std::remove(empty_path);
         }
 
         TEST(ConfigTest, DiffConfigTlsFields) {
@@ -274,7 +269,8 @@ replication:
         }
 
         TEST(ConfigTest, FormatConfigJsonRoundTrip) {
-            const char* path = "/tmp/cinder_test_format.yaml";
+            test::ScratchFile path_file("cinder_test_format", ".yaml");
+            const std::string path = path_file.string();
             {
                 std::ofstream f(path);
                 f << R"(
@@ -312,8 +308,6 @@ logging:
             EXPECT_TRUE(json.contains(R"("log_level":"debug")"));
             EXPECT_TRUE(json.contains(R"("id":"n2")"));
             EXPECT_TRUE(json.contains(R"("host":"10.0.0.2")"));
-
-            (void)std::remove(path);
         }
 
         TEST(ConfigTest, FormatConfigJsonEscapesSpecialChars) {

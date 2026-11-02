@@ -11,6 +11,7 @@
 #include "cinder/store/wal.hpp"
 #include "gtest/gtest.h"
 #include "sim/sim_clock.hpp"
+#include "test_scratch.hpp"
 
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
@@ -31,22 +32,19 @@ namespace cinder {
         protected:
 
             void SetUp() override {
-                test_dir_ = std::filesystem::temp_directory_path()
-                    / ("cinder_persistence_test_"
-                       + std::to_string(reinterpret_cast<uintptr_t>(this)));
-                std::filesystem::create_directories(test_dir_);
+                // Fallible by design (see test_scratch.hpp): a failed
+                // create must not masquerade as an empty dir.
+                ASSERT_TRUE(scratch_);
             }
 
-            void TearDown() override {
-                std::error_code ec;
-                std::filesystem::remove_all(test_dir_, ec);
-            }
-
-            std::filesystem::path test_dir_;
+            // Unique per process and per case (see test_scratch.hpp): CTest
+            // runs every case in its own process, so address- or fixed-name
+            // dirs collide across parallel workers.
+            test::ScratchDir scratch_;
         };
 
         TEST_F(PersistenceTest, WalAppendAndRead) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
             {
                 WalWriter writer(wal_path);
                 ASSERT_TRUE(writer
@@ -118,7 +116,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, WalTruncate) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
             {
                 WalWriter writer(wal_path);
                 ASSERT_TRUE(writer
@@ -149,7 +147,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, WalEmptyFile) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
             {
                 std::ofstream(wal_path, std::ios::binary | std::ios::trunc);
             }
@@ -159,7 +157,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, WalChecksumDetectsCorruption) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
             {
                 WalWriter writer(wal_path);
                 ASSERT_TRUE(writer
@@ -224,7 +222,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, WalOldFormatBackwardCompat) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
 
             // Write a WAL in the old format (no header, no checksum) using raw I/O.
             {
@@ -282,7 +280,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, SnapshotWriteAndRead) {
-            auto snap_path = (test_dir_ / "snapshot.dat").string();
+            auto snap_path = (scratch_.path() / "snapshot.dat").string();
             std::vector<SnapshotEntry> entries;
             entries.push_back(
                 SnapshotEntry{
@@ -332,7 +330,7 @@ namespace cinder {
             LruStore store(1'000'000);
             PersistenceManager pm(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = true,
                     .snapshot_interval_s = 60,
                     .max_wal_entries = 100,
@@ -368,7 +366,7 @@ namespace cinder {
             LruStore store2(1'000'000);
             PersistenceManager pm2(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = true,
                     .snapshot_interval_s = 60,
                     .max_wal_entries = 100,
@@ -388,7 +386,7 @@ namespace cinder {
 
         TEST_F(PersistenceTest, RecoverSkipsExpiredEntries) {
             // Pre-populate a snapshot with an expired entry
-            auto snap_path = test_dir_ / "snapshot_1000.dat";
+            auto snap_path = scratch_.path() / "snapshot_1000.dat";
             std::vector<SnapshotEntry> entries;
             entries.push_back(
                 SnapshotEntry{
@@ -420,7 +418,7 @@ namespace cinder {
             LruStore store(1'000'000);
             PersistenceManager pm(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = true,
                     .snapshot_interval_s = 60,
                     .max_wal_entries = 100,
@@ -437,7 +435,7 @@ namespace cinder {
             LruStore store(1'000'000);
             PersistenceManager pm(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = true,
                     .snapshot_interval_s = 60,
                     .max_wal_entries = 100,
@@ -461,13 +459,13 @@ namespace cinder {
             ASSERT_TRUE(pm.compact().has_value());
 
             // WAL should be empty after compact
-            auto wal_path = test_dir_ / "wal.log";
+            auto wal_path = scratch_.path() / "wal.log";
             WalReader reader(wal_path.string());
             EXPECT_FALSE(reader.hasMore());
 
             // Snapshot should exist
             bool found_snapshot = false;
-            for (const auto& entry : std::filesystem::directory_iterator(test_dir_)) {
+            for (const auto& entry : std::filesystem::directory_iterator(scratch_.path())) {
                 auto name = entry.path().filename().string();
                 if (name.starts_with("snapshot_") && name.substr(name.size() - 4) == ".dat") {
                     found_snapshot = true;
@@ -481,7 +479,7 @@ namespace cinder {
             LruStore store(1'000'000);
             PersistenceManager pm(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = false,
                 },
                 store
@@ -509,14 +507,14 @@ namespace cinder {
         TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromSnapshot) {
             SimClock sim;
             LruStore store(1'000'000, &sim);
-            PersistenceManager pm(pmOptions(test_dir_), store, &sim);
+            PersistenceManager pm(pmOptions(scratch_.path()), store, &sim);
 
             ASSERT_TRUE(store.put("ttl", "v", milliseconds{10'000}).has_value());
             ASSERT_TRUE(pm.compact().has_value()); // snapshot written, WAL truncated
 
             // Fresh "process": same simulated time, new store + manager.
             LruStore store2(1'000'000, &sim);
-            PersistenceManager pm2(pmOptions(test_dir_), store2, &sim);
+            PersistenceManager pm2(pmOptions(scratch_.path()), store2, &sim);
             ASSERT_TRUE(pm2.recover().has_value());
 
             auto ve = store2.getVersioned("ttl");
@@ -536,7 +534,7 @@ namespace cinder {
         TEST_F(PersistenceTest, RecoverPreservesRemainingTtlFromWal) {
             SimClock sim;
             LruStore store(1'000'000, &sim);
-            PersistenceManager pm(pmOptions(test_dir_), store, &sim);
+            PersistenceManager pm(pmOptions(scratch_.path()), store, &sim);
             store.setPersistence(&pm); // put() now appends through the real write path
 
             // Production boots with recover() before serving; it opens the WAL writer.
@@ -545,7 +543,7 @@ namespace cinder {
             pm.flush(); // WAL only — no snapshot in this dir
 
             LruStore store2(1'000'000, &sim);
-            PersistenceManager pm2(pmOptions(test_dir_), store2, &sim);
+            PersistenceManager pm2(pmOptions(scratch_.path()), store2, &sim);
             ASSERT_TRUE(pm2.recover().has_value());
 
             auto ve = store2.getVersioned("ttl");
@@ -562,13 +560,13 @@ namespace cinder {
             LruStore store(1'000'000);
             ASSERT_TRUE(store.put("key1", "value1").has_value());
 
-            PersistenceManager::Options opts = pmOptions(test_dir_);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
             PersistenceManager pm(opts, store);
             ASSERT_TRUE(pm.recover().has_value());
             ASSERT_TRUE(pm.compact().has_value());
 
             // Find the snapshot file and corrupt it
-            for (const auto& entry : std::filesystem::directory_iterator(test_dir_)) {
+            for (const auto& entry : std::filesystem::directory_iterator(scratch_.path())) {
                 if (entry.path().extension() == ".dat") {
                     // Corrupt the file by overwriting bytes
                     std::fstream f(entry.path(), std::ios::in | std::ios::out | std::ios::binary);
@@ -593,7 +591,7 @@ namespace cinder {
 
         TEST_F(PersistenceTest, WalPartialEntry) {
             // Write a valid WAL, then truncate it mid-entry
-            auto wal_path = test_dir_ / "wal.log";
+            auto wal_path = scratch_.path() / "wal.log";
             {
                 WalWriter writer(wal_path.string());
                 WalEntry entry;
@@ -629,7 +627,7 @@ namespace cinder {
         TEST_F(PersistenceTest, MultipleSnapshotCompactions) {
             // Compact twice — second snapshot should contain all current entries
             LruStore store(1'000'000);
-            PersistenceManager::Options opts = pmOptions(test_dir_);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
             PersistenceManager pm(opts, store);
 
             // Write two keys and compact
@@ -654,7 +652,7 @@ namespace cinder {
         TEST_F(PersistenceTest, SnapshotEntryCountExceedsFileSize) {
             // Craft a snapshot file with a fake entry_count of 0xFFFFFFFF.
             // The reader must reject it instead of trying to allocate ~16GB.
-            auto snap_path = test_dir_ / "snapshot.dat";
+            auto snap_path = scratch_.path() / "snapshot.dat";
             {
                 std::ofstream out(snap_path, std::ios::binary | std::ios::trunc);
                 uint32_t magic = 0x43534E50; // "CSNP"
@@ -681,7 +679,7 @@ namespace cinder {
             LruStore store(1'000'000);
             PersistenceManager pm(
                 PersistenceManager::Options{
-                    .data_dir = test_dir_.string(),
+                    .data_dir = scratch_.path().string(),
                     .enabled = true,
                     .snapshot_interval_s = 3600,
                     .max_wal_entries = 3,
@@ -720,7 +718,7 @@ namespace cinder {
         }
 
         TEST_F(PersistenceTest, WalSyncOk) {
-            auto wal_path = (test_dir_ / "wal.log").string();
+            auto wal_path = (scratch_.path() / "wal.log").string();
             {
                 WalWriter writer(wal_path);
                 ASSERT_TRUE(writer
@@ -775,7 +773,7 @@ namespace cinder {
             SpanGuard guard(sub);
 
             LruStore store(1'000'000);
-            PersistenceManager pm(pmOptions(test_dir_), store);
+            PersistenceManager pm(pmOptions(scratch_.path()), store);
             ASSERT_TRUE(store.put("k1", "v1").has_value());
             ASSERT_TRUE(store.put("k2", "v2").has_value());
             ASSERT_TRUE(pm.compact().has_value());
@@ -795,7 +793,7 @@ namespace cinder {
             pm.flush();
 
             LruStore store2(1'000'000);
-            PersistenceManager pm2(pmOptions(test_dir_), store2);
+            PersistenceManager pm2(pmOptions(scratch_.path()), store2);
             ASSERT_TRUE(pm2.recover().has_value());
             EXPECT_EQ(store2.size(), 3U);
 
@@ -846,11 +844,11 @@ namespace cinder {
             // Snapshot file with a bad magic: recovery must fail and mark the
             // span — not silently succeed.
             {
-                std::ofstream f(test_dir_ / "snapshot_1.dat", std::ios::binary);
+                std::ofstream f(scratch_.path() / "snapshot_1.dat", std::ios::binary);
                 f << "GARBAGE-NOT-A-SNAPSHOT";
             }
             LruStore store(1'000'000);
-            PersistenceManager pm(pmOptions(test_dir_), store);
+            PersistenceManager pm(pmOptions(scratch_.path()), store);
             auto sub = std::make_shared<RecordingSubscriber>();
             {
                 SpanGuard guard(sub);

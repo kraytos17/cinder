@@ -16,17 +16,16 @@
 #include <chrono>
 #include <cstddef>
 #include <gtest/gtest.h>
-#include <netinet/in.h>
 #include <thread>
 #include <vector>
 
 #include "cinder/client/connection_pool.hpp"
 #include "cinder/net/protocol.hpp"
+#include "test_ports.hpp"
 
 using asio::buffer;
 using asio::error_code;
 using asio::io_context;
-using asio::ip::address_v4;
 using asio::ip::tcp;
 using std::chrono::milliseconds;
 
@@ -35,14 +34,22 @@ namespace cinder {
 
         // Stub server: accept many concurrent connections; for each request
         // read the frame, wait `delay`, then reply OK. Delay is what makes the
-        // serialisation observable.
+        // serialisation observable. Binds a kernel-assigned ephemeral port
+        // (see test_ports.hpp) so parallel workers can never collide on it.
         class DelayingServer {
         public:
 
-            DelayingServer(io_context& io, uint16_t port, milliseconds delay) :
+            DelayingServer(io_context& io, milliseconds delay) :
                 io_(io),
-                acceptor_(io, tcp::endpoint(address_v4::loopback(), port)),
-                delay_(delay) {}
+                acceptor_(io),
+                delay_(delay) {
+                port_ = net::test::bindEphemeral(acceptor_);
+            }
+
+            [[nodiscard]]
+            auto port() const -> uint16_t {
+                return port_;
+            }
 
             void start() {
                 acceptNext();
@@ -125,17 +132,19 @@ namespace cinder {
 
             io_context& io_;
             tcp::acceptor acceptor_;
+            uint16_t port_ = 0;
             milliseconds delay_;
             std::atomic<size_t> accepted_{0};
         };
 
         TEST(ConnectionPoolConcurrencyTest, ConcurrentSendsToSamePeerOverlap) {
-            constexpr uint16_t K_PORT = 17'899;
             constexpr milliseconds K_DELAY{400};
             constexpr size_t K_CALLERS = 4;
 
             io_context io;
-            DelayingServer server(io, K_PORT, K_DELAY);
+            DelayingServer server(io, K_DELAY);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             // The pool's io_context needs its own thread while the test thread

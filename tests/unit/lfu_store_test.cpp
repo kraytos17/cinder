@@ -3,6 +3,7 @@
 #include <thread>
 
 #include "cinder/store/lfu_store.hpp"
+#include "sim/sim_clock.hpp"
 
 using std::chrono::milliseconds;
 
@@ -83,10 +84,12 @@ namespace cinder {
         }
 
         TEST(LfuStoreTest, TtlExpiry) {
-            LfuStore store(1024);
+            // Deterministic via SimClock: see LruStoreTest.TtlExpiry.
+            SimClock clock;
+            LfuStore store(1024, &clock);
             EXPECT_TRUE(store.put("key", "value", milliseconds(10)).has_value());
             EXPECT_TRUE(store.get("key").has_value());
-            std::this_thread::sleep_for(milliseconds(20));
+            clock.advance(milliseconds(20));
             EXPECT_FALSE(store.get("key").has_value());
         }
 
@@ -98,11 +101,12 @@ namespace cinder {
         }
 
         TEST(LfuStoreTest, EvictExpired) {
-            LfuStore store(1024);
+            SimClock clock;
+            LfuStore store(1024, &clock);
             EXPECT_TRUE(store.put("a", "1", milliseconds(10)).has_value());
             EXPECT_TRUE(store.put("b", "2").has_value());
 
-            std::this_thread::sleep_for(milliseconds(20));
+            clock.advance(milliseconds(20));
             EXPECT_EQ(store.evictExpired(), 1);
             EXPECT_EQ(store.size(), 1);
             EXPECT_FALSE(store.get("a").has_value());

@@ -1,23 +1,20 @@
 #pragma once
 
-#include <ankerl/unordered_dense.h>
 #include <asio.hpp>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <gtest/gtest.h>
-#include <mutex>
-#include <netinet/in.h>
 #include <optional>
 #include <span>
 #include <string>
-#include <sys/socket.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
 #include <utility>
 
 #include "cinder/net/protocol.hpp"
+#include "test_ports.hpp"
 
 using asio::buffer;
 using asio::error_code;
@@ -55,59 +52,6 @@ pickEphemeralPort() -> uint16_t {
         return 0;
     }
     return ep.port();
-}
-
-// Sockets held for imminently-spawning daemons, keyed by port. pickHeldPort
-// binds+holds; the spawner for that port consumes the fd via takeHeldFd and
-// passes it as --listen-fd. Mutex-guarded. Entries live until consumed: a
-// test that picks without spawning leaks one bound socket until process
-// exit — bounded and harmless, and every call site spawns what it picks.
-// Per-TU instances (header statics): pick and spawn for any given daemon
-// always happen in the same translation unit, so no sharing is needed.
-namespace held_detail {
-inline std::mutex mutex;
-inline ankerl::unordered_dense::map<uint16_t, int> fds;
-} // namespace held_detail
-
-[[maybe_unused]] static auto
-pickHeldPort() -> uint16_t {
-    // Raw POSIX socket on purpose: asio sets CLOEXEC, which would close the
-    // fd across exec before the daemon can adopt it.
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        return 0;
-    }
-
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = 0;
-    socklen_t len = sizeof(addr);
-    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0
-        || ::getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) {
-        ::close(fd);
-        return 0;
-    }
-
-    uint16_t port = ntohs(addr.sin_port);
-    std::scoped_lock lock(held_detail::mutex);
-    held_detail::fds.insert_or_assign(port, fd);
-    return port;
-}
-
-// Take the held socket for a picked port (unregisters it). Returns -1 when
-// the port was not picked — the spawner then binds normally.
-[[maybe_unused]] static auto
-takeHeldFd(uint16_t port) -> int {
-    std::scoped_lock lock(held_detail::mutex);
-    auto it = held_detail::fds.find(port);
-    if (it == held_detail::fds.end()) {
-        return -1;
-    }
-
-    int fd = it->second;
-    held_detail::fds.erase(it);
-    return fd;
 }
 
 [[maybe_unused]] static auto

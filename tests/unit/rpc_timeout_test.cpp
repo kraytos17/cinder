@@ -9,11 +9,11 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/net/tcp_transport.hpp"
+#include "test_ports.hpp"
 
 using asio::buffer;
 using asio::error_code;
 using asio::io_context;
-using asio::ip::address_v4;
 using asio::ip::tcp;
 using cinder::net::Opcode;
 using cinder::net::Request;
@@ -23,12 +23,20 @@ namespace cinder {
     namespace {
 
         // A TCP server that accepts connections but never responds — used to trigger
-        // the RPC deadline timer.
+        // the RPC deadline timer. Binds a kernel-assigned ephemeral port (see
+        // test_ports.hpp) so parallel workers can never collide on it.
         class BlackHoleServer {
         public:
 
-            BlackHoleServer(io_context& io, uint16_t port) :
-                acceptor_(io, tcp::endpoint(address_v4::loopback(), port)) {}
+            explicit BlackHoleServer(io_context& io) :
+                acceptor_(io) {
+                port_ = net::test::bindEphemeral(acceptor_);
+            }
+
+            [[nodiscard]]
+            auto port() const -> uint16_t {
+                return port_;
+            }
 
             void start() {
                 doAccept();
@@ -55,15 +63,17 @@ namespace cinder {
             }
 
             tcp::acceptor acceptor_;
+            uint16_t port_ = 0;
             std::vector<tcp::socket> sockets_;
         };
 
         TEST(RpcTimeout, RequestTimesOutWhenServerDoesNotRespond) {
-            constexpr uint16_t K_PORT = 17'880;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -90,11 +100,12 @@ namespace cinder {
 
         TEST(RpcTimeout, FastRpcCompletesBeforeDeadline) {
             // A fast server that responds immediately — the deadline must NOT fire.
-            constexpr uint16_t K_PORT = 17'881;
             constexpr auto K_TIMEOUT = milliseconds(5000);
 
             io_context io;
-            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+            tcp::acceptor acceptor(io);
+            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(K_PORT, 0);
 
             // Server loop: accept, read request, send a valid response.
             std::function<void()> do_accept;
@@ -144,11 +155,12 @@ namespace cinder {
         }
 
         TEST(PoolRpcTimeout, SingleRequestTimesOutAgainstBlackHole) {
-            constexpr uint16_t K_PORT = 17'882;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -173,11 +185,12 @@ namespace cinder {
         }
 
         TEST(PoolRpcTimeout, BatchRequestTimesOutAgainstBlackHole) {
-            constexpr uint16_t K_PORT = 17'883;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -205,10 +218,11 @@ namespace cinder {
 
         TEST(PoolRpcTimeout, NoDeadlineWhenZero) {
             // rpc_timeout_ms = 0 means disabled — should NOT time out.
-            constexpr uint16_t K_PORT = 17'884;
 
             io_context io;
-            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+            tcp::acceptor acceptor(io);
+            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(K_PORT, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {
@@ -294,11 +308,12 @@ namespace cinder {
         }
 
         TEST(PoolRpcTimeout, TimeoutMarksSpan) {
-            constexpr uint16_t K_PORT = 17'885;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -346,10 +361,10 @@ namespace cinder {
         }
 
         TEST(PoolRpcTimeout, SuccessMarksSpanOk) {
-            constexpr uint16_t K_PORT = 17'886;
-
             io_context io;
-            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+            tcp::acceptor acceptor(io);
+            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(K_PORT, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {
@@ -412,11 +427,12 @@ namespace cinder {
         }
 
         TEST(PoolRpcTimeout, BatchTimeoutMarksSpan) {
-            constexpr uint16_t K_PORT = 17'887;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -450,11 +466,12 @@ namespace cinder {
         }
 
         TEST(RpcTimeout, TimeoutMarksSpan) {
-            constexpr uint16_t K_PORT = 17'888;
             constexpr auto K_TIMEOUT = milliseconds(100);
 
             io_context io;
-            BlackHoleServer server(io, K_PORT);
+            BlackHoleServer server(io);
+            ASSERT_NE(server.port(), 0);
+            const uint16_t K_PORT = server.port();
             server.start();
 
             ClusterConfig config;
@@ -488,10 +505,10 @@ namespace cinder {
         }
 
         TEST(RpcTimeout, SuccessMarksSpanOk) {
-            constexpr uint16_t K_PORT = 17'889;
-
             io_context io;
-            tcp::acceptor acceptor(io, tcp::endpoint(address_v4::loopback(), K_PORT));
+            tcp::acceptor acceptor(io);
+            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(K_PORT, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {

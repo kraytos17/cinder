@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <mutex>
@@ -14,6 +13,7 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/node/cache_node_server.hpp"
 #include "integration/test_helpers.hpp"
+#include "test_scratch.hpp"
 
 namespace cinder {
     namespace {
@@ -61,21 +61,11 @@ namespace cinder {
             const uint16_t dead_peer_port = net::test::pickHeldPort();
             ASSERT_NE(dead_peer_port, 0);
 
-            const std::string cfg_path =
-                "/tmp/cinder_reload_test_" + std::to_string(port) + ".yaml";
-
-            struct TempFile {
-                std::string path;
-
-                explicit TempFile(std::string p) :
-                    path(std::move(p)) {}
-
-                ~TempFile() {
-                    (void)std::remove(path.c_str());
-                }
-            };
-
-            TempFile cfg_file(cfg_path);
+            // Unique per process and per case (see test_scratch.hpp); the
+            // port-derived name this replaces was unique too, but the pool
+            // keeps every temp path in one place.
+            test::ScratchFile cfg_file("cinder_reload_test", ".yaml");
+            const std::string cfg_path = cfg_file.string();
 
             auto write_config = [&](int suspect_ms, int gossip_ms, int rpc_ms, size_t capacity) {
                 std::ofstream out(cfg_path, std::ios::trunc);

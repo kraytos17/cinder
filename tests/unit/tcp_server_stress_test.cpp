@@ -10,6 +10,7 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/net/tcp_server.hpp"
 #include "cinder/store/lru_store.hpp"
+#include "test_ports.hpp"
 
 using asio::buffer;
 using asio::error_code;
@@ -23,8 +24,11 @@ using std::chrono::milliseconds;
 namespace cinder {
     namespace {
 
-        // Port range for stress tests — avoids overlap with integration/CLI suites.
-        constexpr uint16_t K_STRESS_BASE = 17'860;
+        // Server ports are kernel-assigned held ports (see test_ports.hpp):
+        // CTest runs every case as its own process, so parallel workers
+        // share the loopback namespace and fixed ports collide (EADDRINUSE).
+        // Each iteration picks a fresh port and hands the bound socket to the
+        // server via setListenFd — no bind, no race.
         constexpr int K_ITERATIONS = 50;
         constexpr int K_CONCURRENT_CONNS = 4;
 
@@ -51,12 +55,22 @@ namespace cinder {
             int errors = 0;
 
             for (int i = 0; i < K_ITERATIONS; ++i) {
-                uint16_t port = K_STRESS_BASE + static_cast<uint16_t>(i % 20);
+                const uint16_t port = net::test::pickHeldPort();
+                ASSERT_NE(port, 0);
                 cinder::LruStore store{1024, &clock};
                 cinder::net::TcpServer server(io, port, store, ring, "node1", clock);
+                const int listen_fd = net::test::takeHeldFd(port);
+                ASSERT_GE(listen_fd, 0);
+                server.setListenFd(listen_fd);
 
                 auto start_res = server.start();
-                ASSERT_TRUE(start_res.has_value()) << "iteration " << i;
+                ASSERT_TRUE(start_res.has_value())
+                    << "iteration "
+                    << i
+                    << " port "
+                    << port
+                    << ": "
+                    << (start_res.has_value() ? "" : start_res.error().message());
 
                 // Fire concurrent connections that send SET then immediately close.
                 std::vector<std::thread> clients;
@@ -101,11 +115,21 @@ namespace cinder {
             io_context io(4);
 
             for (int i = 0; i < K_ITERATIONS; ++i) {
-                uint16_t port = K_STRESS_BASE + 20 + static_cast<uint16_t>(i % 20);
+                const uint16_t port = net::test::pickHeldPort();
+                ASSERT_NE(port, 0);
                 cinder::LruStore store{1024, &clock};
                 cinder::net::TcpServer server(io, port, store, ring, "node1", clock);
+                const int listen_fd = net::test::takeHeldFd(port);
+                ASSERT_GE(listen_fd, 0);
+                server.setListenFd(listen_fd);
                 auto start_res = server.start();
-                ASSERT_TRUE(start_res.has_value());
+                ASSERT_TRUE(start_res.has_value())
+                    << "iteration "
+                    << i
+                    << " port "
+                    << port
+                    << ": "
+                    << (start_res.has_value() ? "" : start_res.error().message());
 
                 // Open a connection but write only a partial frame, then shut down.
                 std::thread client([&io, port] {
@@ -152,10 +176,12 @@ namespace cinder {
 
                 std::vector<std::unique_ptr<cinder::LruStore>> stores;
                 std::vector<std::unique_ptr<cinder::net::TcpServer>> servers;
+                std::vector<uint16_t> ports;
+                ports.reserve(K_SERVERS);
 
                 for (int s = 0; s < K_SERVERS; ++s) {
-                    uint16_t port =
-                        K_STRESS_BASE + 60 + static_cast<uint16_t>((round * K_SERVERS + s) % 40);
+                    const uint16_t port = net::test::pickHeldPort();
+                    ASSERT_NE(port, 0);
                     auto store = std::make_unique<cinder::LruStore>(1024, &clock);
                     auto server = std::make_unique<cinder::net::TcpServer>(
                         io,
@@ -165,16 +191,19 @@ namespace cinder {
                         "node1",
                         clock
                     );
+                    const int listen_fd = net::test::takeHeldFd(port);
+                    ASSERT_GE(listen_fd, 0);
+                    server->setListenFd(listen_fd);
                     stores.push_back(std::move(store));
                     servers.push_back(std::move(server));
+                    ports.push_back(port);
                     ASSERT_TRUE(servers.back()->start().has_value());
                 }
 
                 // Fire one connection per server.
                 std::vector<std::thread> clients;
                 for (int s = 0; s < K_SERVERS; ++s) {
-                    uint16_t port =
-                        K_STRESS_BASE + 60 + static_cast<uint16_t>((round * K_SERVERS + s) % 40);
+                    const uint16_t port = ports[static_cast<size_t>(s)];
                     clients.emplace_back([&io, port, round, s] {
                         error_code ec;
                         tcp::socket sock(io);

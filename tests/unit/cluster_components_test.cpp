@@ -34,6 +34,7 @@
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/store/lru_store.hpp"
+#include "test_scratch.hpp"
 
 using std::chrono::milliseconds;
 using std::chrono::steady_clock;
@@ -706,25 +707,14 @@ namespace cinder {
         // -----------------------------------------------------------------
 
         struct HintJournalDir {
+            // Unique per process and per case (see test_scratch.hpp).
+            test::ScratchDir scratch;
             std::string dir;
             std::string journal;
 
-            HintJournalDir() {
-                dir = "/tmp/cinder_hint_journal_"
-                    + std::to_string(::getpid())
-                    + "_"
-                    + std::to_string(
-                          static_cast<uint64_t>(
-                              std::chrono::steady_clock::now().time_since_epoch().count()
-                          )
-                    );
-                journal = dir + "/hints.journal";
-            }
-
-            ~HintJournalDir() {
-                std::error_code ec;
-                std::filesystem::remove_all(dir, ec);
-            }
+            HintJournalDir() :
+                dir(scratch.path().string()),
+                journal((scratch.path() / "hints.journal").string()) {}
         };
 
         auto hjMakeHint(const std::string& target, const std::string& key, uint64_t version)
