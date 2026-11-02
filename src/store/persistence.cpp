@@ -193,7 +193,9 @@ namespace cinder {
         std::filesystem::remove(wal_path, ec);
         wal_ = std::make_unique<WalWriter>(wal_path.string());
         wal_entry_count_.store(0, std::memory_order_relaxed);
+
         CINDER_INFO("compaction complete", {"entries", entry_count});
+        span.setAttribute({"entries", entry_count});
         span.setStatus(SpanStatus::Ok);
         return ok();
     }
@@ -306,6 +308,7 @@ namespace cinder {
             CINDER_INFO("replayed WAL entries", {"count", replayed});
         }
 
+        span.setAttribute({"entries", replayed});
         span.setStatus(SpanStatus::Ok);
         return ok();
     }

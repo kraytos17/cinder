@@ -726,6 +726,202 @@ namespace cinder {
             EXPECT_LE(found->events[1].at, found->ended_at);
         }
 
+        TEST(SpanAttributeTest, TypedValuesRecorded) {
+            auto sub = std::make_shared<RecordingSubscriber>();
+            uint64_t id = 0;
+            {
+                SubscriberGuard guard(sub);
+                Span span("op");
+                id = span.spanId();
+                span.setAttribute({"opcode", "GET"});
+                span.setAttribute({"acks", 3});
+                span.setAttribute({"needed", static_cast<size_t>(2)});
+                span.setAttribute({"hit", true});
+                span.setAttribute({"attempt", -1});
+            }
+            auto found = sub->find(id);
+            ASSERT_TRUE(found.has_value());
+            ASSERT_EQ(found->attributes.size(), 5);
+            auto byKey = [&](std::string_view key) -> const RecordingSubscriber::RecordedField* {
+                for (const auto& a : found->attributes) {
+                    if (a.key == key) {
+                        return &a;
+                    }
+                }
+                return nullptr;
+            };
+            const auto* op = byKey("opcode");
+            ASSERT_NE(op, nullptr);
+            EXPECT_EQ(op->type, FieldValue::Type::Str);
+            EXPECT_EQ(op->str_val, "GET");
+            const auto* acks = byKey("acks");
+            ASSERT_NE(acks, nullptr);
+            EXPECT_EQ(acks->type, FieldValue::Type::Int);
+            EXPECT_EQ(acks->int_val, 3);
+            const auto* needed = byKey("needed");
+            ASSERT_NE(needed, nullptr);
+            EXPECT_EQ(needed->type, FieldValue::Type::UInt);
+            EXPECT_EQ(needed->uint_val, 2U);
+            const auto* hit = byKey("hit");
+            ASSERT_NE(hit, nullptr);
+            EXPECT_EQ(hit->type, FieldValue::Type::Bool);
+            EXPECT_TRUE(hit->bool_val);
+        }
+
+        TEST(SpanAttributeTest, LastWriteWinsPerKey) {
+            auto sub = std::make_shared<RecordingSubscriber>();
+            uint64_t id = 0;
+            {
+                SubscriberGuard guard(sub);
+                Span span("op");
+                id = span.spanId();
+                span.setAttribute({"phase", "resolve"});
+                span.setAttribute({"phase", "write"});
+            }
+            auto found = sub->find(id);
+            ASSERT_TRUE(found.has_value());
+            ASSERT_EQ(found->attributes.size(), 1);
+            EXPECT_EQ(found->attributes[0].key, "phase");
+            EXPECT_EQ(found->attributes[0].str_val, "write");
+        }
+
+        TEST(SpanAttributeTest, OwnsBorrowedStrings) {
+            // Attribute strings borrow caller temporaries; the recorder must
+            // copy synchronously so records stay valid afterwards.
+            auto sub = std::make_shared<RecordingSubscriber>();
+            uint64_t id = 0;
+            {
+                SubscriberGuard guard(sub);
+                Span span("op");
+                id = span.spanId();
+                std::string key = "peer";
+                std::string value = "node-7";
+                span.setAttribute({key, std::string_view(value)});
+            }
+            auto found = sub->find(id);
+            ASSERT_TRUE(found.has_value());
+            ASSERT_EQ(found->attributes.size(), 1);
+            EXPECT_EQ(found->attributes[0].key, "peer");
+            EXPECT_EQ(found->attributes[0].str_val, "node-7");
+        }
+
+        TEST(SpanAttributeTest, DroppedWithoutSubscriber) {
+            Span span("op");
+            span.setAttribute({"acks", 1});
+            span.addEvent("phase", {{"bytes", 64}});
+            SUCCEED();
+        }
+
+        TEST(SpanEventTest, FieldsRecorded) {
+            auto sub = std::make_shared<RecordingSubscriber>();
+            uint64_t id = 0;
+            {
+                SubscriberGuard guard(sub);
+                Span span("op");
+                id = span.spanId();
+                span.addEvent("send", {{"bytes", 64}, {"attempt", 2}});
+                span.addEvent("bare");
+            }
+            auto found = sub->find(id);
+            ASSERT_TRUE(found.has_value());
+            ASSERT_EQ(found->events.size(), 2);
+            EXPECT_EQ(found->events[0].name, "send");
+            ASSERT_EQ(found->events[0].fields.size(), 2);
+            EXPECT_EQ(found->events[0].fields[0].key, "bytes");
+            EXPECT_EQ(found->events[0].fields[0].int_val, 64);
+            EXPECT_EQ(found->events[0].fields[1].key, "attempt");
+            EXPECT_TRUE(found->events[1].fields.empty());
+        }
+
+        TEST(LayeredTest, StatusAttributesAndEventsFanOut) {
+            // Status, attributes and events must reach every layer — the
+            // previous LayeredSubscriber dropped all three. A probe layer
+            // records the ids it is called with; all three calls must carry
+            // the span's canonical id.
+            struct ProbeLayer : public Subscriber {
+                auto registerCallsite(const Metadata& /*meta*/) -> Interest override {
+                    return Interest::Always;
+                }
+
+                auto newSpan(
+                    const Metadata& /*meta*/,
+                    uint64_t /*parent_trace_id*/,
+                    uint64_t /*parent_span_id*/
+                ) noexcept -> uint64_t override {
+                    return 1;
+                }
+
+                void enter(uint64_t /*span_id*/) noexcept override {}
+
+                void exit(uint64_t /*span_id*/) noexcept override {}
+
+                void tryClose(uint64_t /*span_id*/) noexcept override {}
+
+                void setSpanStatus(uint64_t id, SpanStatus status) noexcept override {
+                    status_calls.emplace_back(id, status);
+                }
+
+                void spanAttribute(uint64_t id, const FieldValue& attr) noexcept override {
+                    attr_calls.emplace_back(id, std::string(attr.key));
+                }
+
+                void spanEvent(
+                    uint64_t id,
+                    std::string_view name,
+                    std::chrono::steady_clock::time_point /*at*/,
+                    std::initializer_list<FieldValue> /*fields*/
+                ) noexcept override {
+                    event_calls.emplace_back(id, std::string(name));
+                }
+
+                void event(const EventRecord& /*record*/) noexcept override {}
+
+                std::vector<std::pair<uint64_t, SpanStatus>> status_calls;
+                std::vector<std::pair<uint64_t, std::string>> attr_calls;
+                std::vector<std::pair<uint64_t, std::string>> event_calls;
+            };
+
+            auto probe = std::make_shared<ProbeLayer>();
+            auto layered = std::make_shared<LayeredSubscriber>();
+            layered->addLayer(probe);
+            uint64_t canonical = 0;
+            {
+                SubscriberGuard guard(layered);
+                Span span("op");
+                canonical = span.spanId();
+                span.setAttribute({"acks", 2});
+                span.addEvent("phase", {{"bytes", 8}});
+                span.setStatus(SpanStatus::Ok);
+            }
+            ASSERT_EQ(probe->status_calls.size(), 1);
+            EXPECT_EQ(probe->status_calls[0].first, canonical);
+            EXPECT_EQ(probe->status_calls[0].second, SpanStatus::Ok);
+            ASSERT_EQ(probe->attr_calls.size(), 1);
+            EXPECT_EQ(probe->attr_calls[0].first, canonical);
+            EXPECT_EQ(probe->attr_calls[0].second, "acks");
+            ASSERT_EQ(probe->event_calls.size(), 1);
+            EXPECT_EQ(probe->event_calls[0].first, canonical);
+            EXPECT_EQ(probe->event_calls[0].second, "phase");
+        }
+
+        TEST(LevelFilterTest, AttributesPassThrough) {
+            auto inner = std::make_shared<RecordingSubscriber>();
+            auto filter = std::make_shared<LevelFilter>(LogLevel::Trace, inner);
+            uint64_t id = 0;
+            {
+                SubscriberGuard guard(filter);
+                Span span("op");
+                id = span.spanId();
+                span.setAttribute({"acks", 2});
+                span.setStatus(SpanStatus::Ok);
+            }
+            auto found = inner->find(id);
+            ASSERT_TRUE(found.has_value());
+            ASSERT_EQ(found->attributes.size(), 1);
+            EXPECT_EQ(found->attributes[0].key, "acks");
+            EXPECT_EQ(found->status, SpanStatus::Ok);
+        }
+
         TEST(RecorderTest, ParentLinkage) {
             auto sub = std::make_shared<RecordingSubscriber>();
             {

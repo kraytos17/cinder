@@ -52,6 +52,19 @@ auto main(int argc, char* argv[]) -> int {
         cinder::LogSink::Stderr
     );
 
+    // Same per-invocation root as cinder-cli (see cinder_cli.cpp):
+    // command/host/port attributes, exit outcome at every return.
+    cinder::Span admin_span("cli.command");
+    admin_span.setAttribute({"tool", "cinder-admin"});
+    admin_span.setAttribute({"cmd", cmd});
+    admin_span.setAttribute({"host", host});
+    admin_span.setAttribute({"port", port});
+    auto finish = [&](cinder::SpanStatus status, int code) {
+        admin_span.setStatus(status);
+        admin_span.setAttribute({"exit_code", code});
+        return code;
+    };
+
     cinder::ClusterConfig config;
     config.nodes.push_back({"server", host, port});
     config.client_shared_secret = cinder::tools::resolveClientSecret(client_secret);
@@ -95,7 +108,7 @@ auto main(int argc, char* argv[]) -> int {
             stderr,
             "available commands: info, cluster, ring, compact, config-reload, shutdown"
         );
-        return 1;
+        return finish(cinder::SpanStatus::Error, 1);
     }
 
     io_context io;
@@ -122,12 +135,12 @@ auto main(int argc, char* argv[]) -> int {
     if (!res.has_value()) {
         CINDER_ERROR("request failed", {"reason", res.error().message()});
         std::println(stderr, "error: {}", res.error().message());
-        return 1;
+        return finish(cinder::SpanStatus::Error, 1);
     }
     if (res->status == cinder::Errc::PermissionDenied) {
         CINDER_ERROR("permission denied", {"cmd", cmd});
         std::println(stderr, "error: permission denied");
-        return 1;
+        return finish(cinder::SpanStatus::Error, 1);
     }
     if (res->value.has_value()) {
         std::println("{}", res->value.value());
@@ -136,5 +149,5 @@ auto main(int argc, char* argv[]) -> int {
     } else {
         std::println("{}", cinder::toString(res->status));
     }
-    return 0;
+    return finish(cinder::SpanStatus::Ok, 0);
 }

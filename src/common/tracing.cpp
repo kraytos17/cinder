@@ -245,9 +245,15 @@ namespace cinder {
         }
     }
 
-    void Span::addEvent(std::string_view name) noexcept {
+    void Span::addEvent(std::string_view name, std::initializer_list<FieldValue> fields) noexcept {
         if (sub_notified_) {
-            subscriber_->spanEvent(sub_span_id_, name, steady_clock::now());
+            subscriber_->spanEvent(sub_span_id_, name, steady_clock::now(), fields);
+        }
+    }
+
+    void Span::setAttribute(const FieldValue& attr) noexcept {
+        if (sub_notified_) {
+            subscriber_->spanAttribute(sub_span_id_, attr);
         }
     }
 
@@ -512,6 +518,29 @@ namespace cinder {
         }
     }
 
+    void LayeredSubscriber::setSpanStatus(uint64_t span_id, SpanStatus status) noexcept {
+        for (const auto& layer : layersSnapshot()) {
+            layer->setSpanStatus(span_id, status);
+        }
+    }
+
+    void LayeredSubscriber::spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept {
+        for (const auto& layer : layersSnapshot()) {
+            layer->spanAttribute(span_id, attr);
+        }
+    }
+
+    void LayeredSubscriber::spanEvent(
+        uint64_t span_id,
+        std::string_view name,
+        std::chrono::steady_clock::time_point at,
+        std::initializer_list<FieldValue> fields
+    ) noexcept {
+        for (const auto& layer : layersSnapshot()) {
+            layer->spanEvent(span_id, name, at, fields);
+        }
+    }
+
     void LayeredSubscriber::event(const EventRecord& record) noexcept {
         for (const auto& layer : layersSnapshot()) {
             layer->event(record);
@@ -547,6 +576,23 @@ namespace cinder {
 
     void LevelFilter::tryClose(uint64_t span_id) noexcept {
         inner_->tryClose(span_id);
+    }
+
+    void LevelFilter::setSpanStatus(uint64_t span_id, SpanStatus status) noexcept {
+        inner_->setSpanStatus(span_id, status);
+    }
+
+    void LevelFilter::spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept {
+        inner_->spanAttribute(span_id, attr);
+    }
+
+    void LevelFilter::spanEvent(
+        uint64_t span_id,
+        std::string_view name,
+        std::chrono::steady_clock::time_point at,
+        std::initializer_list<FieldValue> fields
+    ) noexcept {
+        inner_->spanEvent(span_id, name, at, fields);
     }
 
     void LevelFilter::event(const EventRecord& record) noexcept {
@@ -599,6 +645,50 @@ namespace cinder {
         });
     }
 
+    namespace {
+        // Owned copy of a borrowed FieldValue. String data (key and value)
+        // is copied; scalars by value. Callers wrap in recordQuietly.
+        auto copyField(const FieldValue& f) -> RecordingSubscriber::RecordedField {
+            RecordingSubscriber::RecordedField out;
+            out.key = std::string(f.key);
+            out.type = f.type;
+            switch (f.type) {
+                case FieldValue::Type::Str:
+                    out.str_val = std::string(f.strView());
+                    break;
+                case FieldValue::Type::Int:
+                    out.int_val = f.int_val;
+                    break;
+                case FieldValue::Type::UInt:
+                    out.uint_val = f.uint_val;
+                    break;
+                case FieldValue::Type::Bool:
+                    out.bool_val = f.bool_val;
+                    break;
+            }
+            return out;
+        }
+    } // namespace
+
+    void RecordingSubscriber::spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept {
+        recordQuietly([&] {
+            std::scoped_lock lock(mutex_);
+            for (auto& span : spans_) {
+                if (span.span_id == span_id) {
+                    auto copied = copyField(attr);
+                    for (auto& existing : span.attributes) {
+                        if (existing.key == copied.key) {
+                            existing = std::move(copied);
+                            return;
+                        }
+                    }
+                    span.attributes.push_back(std::move(copied));
+                    return;
+                }
+            }
+        });
+    }
+
     void RecordingSubscriber::setSpanStatus(uint64_t span_id, SpanStatus status) noexcept {
         recordQuietly([&] {
             std::scoped_lock lock(mutex_);
@@ -614,13 +704,21 @@ namespace cinder {
     void RecordingSubscriber::spanEvent(
         uint64_t span_id,
         std::string_view name,
-        std::chrono::steady_clock::time_point at
+        std::chrono::steady_clock::time_point at,
+        std::initializer_list<FieldValue> fields
     ) noexcept {
         recordQuietly([&] {
+            RecordedEvent event;
+            event.at = at;
+            event.name = std::string(name);
+            for (const auto& f : fields) {
+                event.fields.push_back(copyField(f));
+            }
+
             std::scoped_lock lock(mutex_);
             for (auto& span : spans_) {
                 if (span.span_id == span_id) {
-                    span.events.push_back({at, std::string(name)});
+                    span.events.push_back(std::move(event));
                     return;
                 }
             }

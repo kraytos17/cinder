@@ -162,6 +162,10 @@ namespace cinder {
         return z ^ (z >> 31U);
     }
 
+    // Span attributes reuse FieldValue (declared below); a forward declaration
+    // suffices here because member declarations only name the type.
+    struct FieldValue;
+
     // RAII span that sets a thread-local trace context. While alive, all Event
     // calls on this thread include [t=<trace>.<span>] [<operation>] in the output.
     // Nested spans save/restore the previous context. Span-ids are generated
@@ -238,11 +242,24 @@ namespace cinder {
         // exactly once. Never throws.
         void setStatus(SpanStatus status) noexcept;
 
+        // Set one typed attribute on this span (reuses the FieldValue
+        // vocabulary from CINDER_* events, so callers learn one field type).
+        // Attributes are low-cardinality operator data: opcode, phase, counts,
+        // bytes, durations, attempt numbers. Never keys, values, or secrets.
+        // Last write wins per key. Forwarded synchronously to the notified
+        // subscriber (which copies); dropped silently when none was notified,
+        // so unattributed spans cost nothing. Never throws.
+        void setAttribute(const FieldValue& attr) noexcept;
+
         // Timestamped marker inside this span's lifetime (phase transitions,
-        // retries, async hop boundaries). Prefer CINDER_* events for hot paths
-        // — this is for operation milestones a future exporter should keep.
-        // Dropped silently when no subscriber was notified at construction.
-        void addEvent(std::string_view name) noexcept;
+        // retries, async hop boundaries), with optional typed fields.
+        // Prefer CINDER_* events for hot paths — this is for operation
+        // milestones a future exporter should keep. Dropped silently when no
+        // subscriber was notified at construction.
+        void addEvent(
+            std::string_view name,
+            std::initializer_list<FieldValue> fields = {}
+        ) noexcept;
 
         // Most recently set status (Unset when never reported).
         [[nodiscard]]
@@ -395,12 +412,18 @@ namespace cinder {
         // that retain it must copy.
         virtual void setSpanStatus(uint64_t /*span_id*/, SpanStatus /*status*/) noexcept {}
 
+        // A span set one typed attribute via Span::setAttribute. Default
+        // ignores it. The FieldValue borrows string views for the duration of
+        // the synchronous call; layers that retain them must copy.
+        virtual void spanAttribute(uint64_t /*span_id*/, const FieldValue& /*attr*/) noexcept {}
+
         // A span recorded a timestamped milestone via Span::addEvent. Default
-        // ignores it. Same borrowing rule as setSpanStatus: copy to retain.
+        // ignores it. Same borrowing rule as spanAttribute: copy to retain.
         virtual void spanEvent(
             uint64_t /*span_id*/,
             std::string_view /*name*/,
-            std::chrono::steady_clock::time_point /*at*/
+            std::chrono::steady_clock::time_point /*at*/,
+            std::initializer_list<FieldValue> /*fields*/ = {}
         ) noexcept {}
 
         // An event occurred. Must not call Event methods (no reentrancy) —
@@ -462,6 +485,14 @@ namespace cinder {
         void enter(uint64_t span_id) noexcept override;
         void exit(uint64_t span_id) noexcept override;
         void tryClose(uint64_t span_id) noexcept override;
+        void setSpanStatus(uint64_t span_id, SpanStatus status) noexcept override;
+        void spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept override;
+        void spanEvent(
+            uint64_t span_id,
+            std::string_view name,
+            std::chrono::steady_clock::time_point at,
+            std::initializer_list<FieldValue> fields = {}
+        ) noexcept override;
         void event(const EventRecord& record) noexcept override;
 
     private:
@@ -493,6 +524,14 @@ namespace cinder {
         void enter(uint64_t span_id) noexcept override;
         void exit(uint64_t span_id) noexcept override;
         void tryClose(uint64_t span_id) noexcept override;
+        void setSpanStatus(uint64_t span_id, SpanStatus status) noexcept override;
+        void spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept override;
+        void spanEvent(
+            uint64_t span_id,
+            std::string_view name,
+            std::chrono::steady_clock::time_point at,
+            std::initializer_list<FieldValue> fields = {}
+        ) noexcept override;
         void event(const EventRecord& record) noexcept override;
 
     private:
@@ -503,17 +542,28 @@ namespace cinder {
 
     // In-memory recording backend for tests and future exporters. Captures
     // complete span records — identity, parentage, operation, monotonic
-    // start/end timestamps, status, span events — plus correlated log events,
-    // behind one mutex. Owns copies of all strings, so records stay valid
-    // after caller temporaries die. All fallible work is swallowed internally
-    // (subscriber callbacks are noexcept); on allocation failure the offending
-    // record is dropped and recording continues.
+    // start/end timestamps, status, attributes, span events — plus correlated
+    // log events, behind one mutex. Owns copies of all strings, so records
+    // stay valid after caller temporaries die. All fallible work is swallowed
+    // internally (subscriber callbacks are noexcept); on allocation failure
+    // the offending record is dropped and recording continues.
     class RecordingSubscriber : public Subscriber {
     public:
+
+        // Owned copy of one FieldValue: string data is copied, scalars by value.
+        struct RecordedField {
+            std::string key;
+            FieldValue::Type type = FieldValue::Type::Str;
+            int64_t int_val = 0;
+            uint64_t uint_val = 0;
+            bool bool_val = false;
+            std::string str_val;
+        };
 
         struct RecordedEvent {
             std::chrono::steady_clock::time_point at{};
             std::string name;
+            std::vector<RecordedField> fields;
         };
 
         struct RecordedLog {
@@ -532,6 +582,8 @@ namespace cinder {
             std::chrono::steady_clock::time_point started_at{};
             std::chrono::steady_clock::time_point ended_at{};
             SpanStatus status = SpanStatus::Unset;
+            // Last write wins per key.
+            std::vector<RecordedField> attributes;
             std::vector<RecordedEvent> events;
             bool closed = false;
         };
@@ -548,10 +600,12 @@ namespace cinder {
         void exit(uint64_t span_id) noexcept override;
         void tryClose(uint64_t span_id) noexcept override;
         void setSpanStatus(uint64_t span_id, SpanStatus status) noexcept override;
+        void spanAttribute(uint64_t span_id, const FieldValue& attr) noexcept override;
         void spanEvent(
             uint64_t span_id,
             std::string_view name,
-            std::chrono::steady_clock::time_point at
+            std::chrono::steady_clock::time_point at,
+            std::initializer_list<FieldValue> fields = {}
         ) noexcept override;
         void event(const EventRecord& record) noexcept override;
 

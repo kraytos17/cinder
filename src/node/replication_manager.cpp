@@ -260,6 +260,7 @@ namespace cinder {
                             SpanContext{req.trace_id, req.span_id}
                         );
 
+                        fail_span.setAttribute({"replica", node});
                         CINDER_WARN("replica unreachable", {"node", node}, {"key", req.key});
                         if (metrics_) {
                             metrics_->replicationMetrics().replica_unreachable.fetch_add(
@@ -289,6 +290,8 @@ namespace cinder {
 
         size_t total = replica_nodes.size() + 1;
         size_t w = total / 2 + 1;
+        span.setAttribute({"replicas", replica_nodes.size()});
+        span.setAttribute({"W", w});
         if (replica_nodes.empty()) {
             // W == 1: the local ack suffices.
             on_done(ok());
@@ -335,6 +338,7 @@ namespace cinder {
             }
         }, [this, st, fanout](std::size_t i, Result<void> r, bool active) {
             Span replica_span("replication.write.replica", fanout);
+            replica_span.setAttribute({"replica", st->replicas[i]});
             if (!r.has_value()) {
                 replica_span.setStatus(SpanStatus::Error);
                 CINDER_WARN("replica unreachable", {"node", st->replicas[i]}, {"key", st->key});
@@ -368,6 +372,8 @@ namespace cinder {
                 );
 
                 ok_span.setStatus(SpanStatus::Ok);
+                ok_span.setAttribute({"acks", st->acks});
+                ok_span.setAttribute({"needed", st->w});
                 CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});
                 if (metrics_) {
                     metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
@@ -383,6 +389,8 @@ namespace cinder {
                 );
 
                 fail_span.setStatus(SpanStatus::Error);
+                fail_span.setAttribute({"acks", st->acks});
+                fail_span.setAttribute({"needed", st->w});
                 CINDER_WARN(
                     "quorum write failed",
                     {"key", st->key},
@@ -436,6 +444,8 @@ namespace cinder {
         uint64_t span_id
     ) {
         Span span("replication.read.fanout", SpanContext{trace_id, span_id});
+        span.setAttribute({"replicas", replica_nodes.size()});
+        span.setAttribute({"R", R});
         // Local read — always attempted first.
         auto local_entry = local_.getVersioned(key);
         if (!local_entry.has_value()) {
@@ -543,8 +553,9 @@ namespace cinder {
                     [report, i](Result<net::Response> r) mutable { report(i, std::move(r)); }
                 );
             }
-        }, [this, st, fanout](std::size_t, Result<net::Response> r, bool active) {
+        }, [this, st, fanout](std::size_t i, Result<net::Response> r, bool active) {
             Span replica_span("replication.read.replica", fanout);
+            replica_span.setAttribute({"replica", st->replicas[i]});
             if (!active) {
                 replica_span.setStatus(SpanStatus::Cancelled);
                 return;
@@ -587,6 +598,9 @@ namespace cinder {
             --st->pending;
         }, [st] -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st, fanout] {
             Span decide_span("replication.read.quorum", fanout);
+            decide_span.setAttribute({"acks", st->acks});
+            decide_span.setAttribute({"needed", st->r});
+            decide_span.setAttribute({"needs_repair", st->needs_repair});
             std::optional<VersionedEntry> result;
             if (st->best_entry.has_value()) {
                 result = std::move(st->best_entry);
@@ -758,6 +772,8 @@ namespace cinder {
         };
 
         if (batch.empty()) {
+            span.setAttribute({"attempted", batch.size()});
+            span.setAttribute({"replayed", 0U});
             span.setStatus(SpanStatus::Ok);
             finish(0);
             return;
@@ -796,12 +812,16 @@ namespace cinder {
             // Fresh root: the setup span is long gone (stack local) and the
             // batch mixes hints from unrelated writes, so no single parent.
             Span done_span("replication.hint.replay", SpanContext{});
+            done_span.setAttribute({"attempted", st->batch.size()});
+            done_span.setAttribute({"replayed", st->replayed});
             done_span.setStatus(
                 !st->batch.empty() && st->replayed == 0 ? SpanStatus::Error : SpanStatus::Ok
             );
             st->finish(st->replayed);
         }, [st] {
             Span done_span("replication.hint.replay", SpanContext{});
+            done_span.setAttribute({"attempted", st->batch.size()});
+            done_span.setAttribute({"replayed", 0U});
             done_span.setStatus(SpanStatus::Error);
             st->finish(0);
         });

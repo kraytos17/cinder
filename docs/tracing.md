@@ -23,11 +23,17 @@ Stable dotted names, one per operation boundary:
   thread-local state.
 - `setStatus(Ok|Error|Cancelled|Timeout)` records the outcome; last call wins,
   destruction always closes exactly once. Unset means "never reported".
-- `addEvent(name)` records a timestamped milestone (phase transitions, async
-  hop boundaries). Prefer `CINDER_*` events for hot paths.
-- Spans only manage context without a subscriber; lifecycle, status and events
-  are delivered to the installed subscriber when one was present at
-  construction.
+- `setAttribute(FieldValue)` records one typed attribute (reuses the
+  `CINDER_*` field vocabulary: ints, uints, bools, short strings). Low
+  cardinality only — opcode, phase, counts, bytes, attempts. Never keys,
+  values, secrets, or bearer material. Last write wins per key.
+- `addEvent(name, fields={})` records a timestamped milestone (phase
+  transitions, async hop boundaries) with optional typed fields. Prefer
+  `CINDER_*` events for hot paths.
+- Spans only manage context without a subscriber; lifecycle, status,
+  attributes and events are delivered to the installed subscriber when one
+  was present at construction. `LayeredSubscriber` fans all four out to
+  every layer; `RecordingSubscriber` owns copies (last-wins per key).
 
 ## Client propagation
 
@@ -36,6 +42,11 @@ context onto every outbound request (`client.route` covers a key's
 redirect/retry chain as one child unit), so the server joins the client trace
 instead of minting a fresh root. Batch operations stamp the batch span's
 context on all sub-requests.
+
+`cinder-cli` / `cinder-admin` wrap each invocation in a `cli.command` root
+(`tool`, `cmd`, `host`, `port` attributes; `exit_code` plus `Ok`/`Error` at
+exit). Pool sends join it as children, so one CLI call is traceable
+server-side. Never records keys, values, or the client secret.
 
 Span status convention: `Ok` when the operation was served (including cache
 misses and ownership redirects — those are well-formed answers), `Error` on

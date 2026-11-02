@@ -1017,6 +1017,16 @@ namespace cinder {
             return nullptr;
         }
 
+        auto findAttr(const RecordingSubscriber::RecordedSpan& span, std::string_view key)
+            -> const RecordingSubscriber::RecordedField* {
+            for (const auto& a : span.attributes) {
+                if (a.key == key) {
+                    return &a;
+                }
+            }
+            return nullptr;
+        }
+
         TEST(ReplicationQuorumTraceTest, AsyncTailKeepsRequestTrace) {
             RealClock clock;
             LruStore store(1U << 20U);
@@ -1063,6 +1073,20 @@ namespace cinder {
             EXPECT_TRUE(replica->closed);
             EXPECT_EQ(quorum->trace_id, K_TRACE);
             EXPECT_EQ(quorum->status, SpanStatus::Ok);
+            // Decision evidence: acks/needed on the quorum span, replica id
+            // on the per-replica span, shape on the fanout.
+            const auto* q_acks = findAttr(*quorum, "acks");
+            ASSERT_NE(q_acks, nullptr);
+            EXPECT_EQ(q_acks->uint_val, 2U);
+            const auto* q_needed = findAttr(*quorum, "needed");
+            ASSERT_NE(q_needed, nullptr);
+            EXPECT_EQ(q_needed->uint_val, 2U);
+            const auto* r_replica = findAttr(*replica, "replica");
+            ASSERT_NE(r_replica, nullptr);
+            EXPECT_EQ(r_replica->str_val, "n2");
+            const auto* f_replicas = findAttr(*fanout, "replicas");
+            ASSERT_NE(f_replicas, nullptr);
+            EXPECT_EQ(f_replicas->uint_val, 1U);
         }
 
         TEST(ReplicationQuorumTraceTest, FailedReplicaHintEnqueueKeepsTrace) {
@@ -1114,6 +1138,13 @@ namespace cinder {
             EXPECT_EQ(replica->status, SpanStatus::Error);
             EXPECT_EQ(quorum->trace_id, K_TRACE);
             EXPECT_EQ(quorum->status, SpanStatus::Error);
+            // The failed decision still records how far the quorum got.
+            const auto* q_acks = findAttr(*quorum, "acks");
+            ASSERT_NE(q_acks, nullptr);
+            EXPECT_EQ(q_acks->uint_val, 1U);
+            const auto* r_replica = findAttr(*replica, "replica");
+            ASSERT_NE(r_replica, nullptr);
+            EXPECT_EQ(r_replica->str_val, "n2");
         }
 
         TEST(ReplicationQuorumTraceTest, ReadMissDecisionIsServedNotFailed) {
@@ -1175,6 +1206,18 @@ namespace cinder {
             }
             // Two opens (staging + recovery) both report Ok.
             EXPECT_TRUE(opened);
+            // The recovery open reports how many hints it replayed.
+            bool hints_seen = false;
+            for (const auto& s : spans) {
+                if (s.operation == "hint.journal.open") {
+                    for (const auto& a : s.attributes) {
+                        if (a.key == "hints" && a.uint_val == 1) {
+                            hints_seen = true;
+                        }
+                    }
+                }
+            }
+            EXPECT_TRUE(hints_seen);
         }
 
         TEST(HintJournalSpanTest, CompactReportsOk) {

@@ -120,6 +120,21 @@ auto main(int argc, char* argv[]) -> int {
         cinder::LogSink::Stderr
     );
 
+    // One root span per invocation: command/host/port as attributes (never
+    // keys, values, or the client secret). pool.send children join it via
+    // thread-local context, so the server joins the CLI trace. The finish
+    // helper reports the exit outcome at every return below.
+    cinder::Span cli_span("cli.command");
+    cli_span.setAttribute({"tool", "cinder-cli"});
+    cli_span.setAttribute({"cmd", cmd});
+    cli_span.setAttribute({"host", host});
+    cli_span.setAttribute({"port", port});
+    auto finish = [&](cinder::SpanStatus status, int code) {
+        cli_span.setStatus(status);
+        cli_span.setAttribute({"exit_code", code});
+        return code;
+    };
+
     cinder::ClusterConfig config;
     config.nodes.push_back({"server", host, port});
     config.client_shared_secret = cinder::tools::resolveClientSecret(client_secret);
@@ -202,12 +217,12 @@ auto main(int argc, char* argv[]) -> int {
         if (keys.empty()) {
             CINDER_ERROR("mget requires at least one key");
             io.stop();
-            return 1;
+            return finish(cinder::SpanStatus::Error, 1);
         }
 
         int rc = runMultiGet(pool, keys);
         io.stop();
-        return rc;
+        return finish(rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error, rc);
     } else if (cmd == "mset") {
         // Pairs arrive through every positional slot: `key` (k1), then
         // `value` (v1), then the take_all `extra_keys` (k2, v2, ...).
@@ -224,7 +239,7 @@ auto main(int argc, char* argv[]) -> int {
         if (args.empty() || args.size() % 2 != 0) {
             CINDER_ERROR("mset requires key/value pairs");
             io.stop();
-            return 1;
+            return finish(cinder::SpanStatus::Error, 1);
         }
 
         std::vector<std::string> mset_keys;
@@ -236,10 +251,11 @@ auto main(int argc, char* argv[]) -> int {
 
         int mset_rc = runMultiSet(pool, mset_keys, mset_values, ttl_ms);
         io.stop();
-        return mset_rc;
+        return finish(mset_rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error, mset_rc);
     } else {
         CINDER_ERROR("unknown command", {"cmd", cmd});
-        return 1;
+        io.stop();
+        return finish(cinder::SpanStatus::Error, 1);
     }
 
     CINDER_DEBUG("sending", {"cmd", cmd}, {"host", host}, {"port", port});
@@ -247,7 +263,7 @@ auto main(int argc, char* argv[]) -> int {
     io.stop();
     if (!res.has_value()) {
         CINDER_ERROR("request failed", {"reason", res.error().message()});
-        return 1;
+        return finish(cinder::SpanStatus::Error, 1);
     }
 
     auto& response = res.value();
@@ -257,9 +273,8 @@ auto main(int argc, char* argv[]) -> int {
         // print-to-stdout behavior.
         CINDER_ERROR("permission denied", {"cmd", cmd});
         std::println(stderr, "error: permission denied");
-        return 1;
+        return finish(cinder::SpanStatus::Error, 1);
     }
-
     if (cmd == "ping") {
         std::println("pong");
     } else if (response.value.has_value()) {
@@ -280,5 +295,5 @@ auto main(int argc, char* argv[]) -> int {
     } else {
         std::println("{}", cinder::toString(response.status));
     }
-    return 0;
+    return finish(cinder::SpanStatus::Ok, 0);
 }

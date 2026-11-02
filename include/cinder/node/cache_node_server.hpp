@@ -221,6 +221,8 @@ namespace cinder {
         void scheduleReplay();
         void scheduleGossip();
         void scheduleProbe();
+        // Next timer-run id for span attribution (monotonic per process).
+        auto nextTimerRun() -> uint64_t;
         void scheduleEvict();
         void scheduleCompact();
         // Out-of-cycle compact when the WAL outgrows max_wal_entries between
@@ -264,6 +266,9 @@ namespace cinder {
         std::string config_path_;
         signal_set signals_;
         NodeTimers timers_;
+        // Global timer-run sequence: every scheduled callback mints its run
+        // id from here, so runs order across timers on one trace backend.
+        std::atomic<uint64_t> timer_run_{0};
         ConsistentHashRing ring_;
         MembershipTable table_;
         TcpTransport transport_;

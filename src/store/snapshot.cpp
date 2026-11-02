@@ -78,6 +78,7 @@ namespace cinder {
             return err(Error(Errc::InternalError, "snapshot rename failed: " + ec.message()));
         }
 
+        span.setAttribute({"entries", entries.size()});
         span.setStatus(SpanStatus::Ok);
         return ok();
     }
@@ -208,6 +209,7 @@ namespace cinder {
             );
         }
 
+        span.setAttribute({"entries", data.entries.size()});
         span.setStatus(SpanStatus::Ok);
         return data;
     }

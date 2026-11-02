@@ -152,6 +152,7 @@ namespace cinder {
         }
 
         CINDER_INFO("hint journal recovered", {"path", path}, {"hints", queue.size()});
+        span.setAttribute({"hints", queue.size()});
         span.setStatus(SpanStatus::Ok);
         return queue.size();
     }
@@ -251,6 +252,7 @@ namespace cinder {
         fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
         records_ = kept;
         CINDER_INFO("hint journal compacted", {"path", path_}, {"hints", kept});
+        span.setAttribute({"hints", kept});
         span.setStatus(SpanStatus::Ok);
     }
 

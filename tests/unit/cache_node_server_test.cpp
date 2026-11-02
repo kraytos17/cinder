@@ -525,6 +525,25 @@ namespace cinder {
             ASSERT_NE(stopped, nullptr);
             EXPECT_EQ(stopped->status, SpanStatus::Ok);
             EXPECT_TRUE(stopped->closed);
+            // Every background pass mints a strictly increasing run id, so
+            // runs order on the backend even across timer types.
+            uint64_t last_run = 0;
+            size_t evict_runs = 0;
+            for (const auto& s : spans) {
+                if (s.operation != "timer.evict") {
+                    continue;
+                }
+                uint64_t run = 0;
+                for (const auto& a : s.attributes) {
+                    if (a.key == "run") {
+                        run = a.uint_val;
+                    }
+                }
+                EXPECT_GT(run, last_run) << "run ids must increase per pass";
+                last_run = run;
+                ++evict_runs;
+            }
+            EXPECT_GE(evict_runs, 2U) << "2.5s at ~1s cadence must show 2+ passes";
         }
     } // namespace
 } // namespace cinder

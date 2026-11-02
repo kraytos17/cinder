@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cinder/cluster/membership.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -147,6 +148,65 @@ namespace cinder {
             }
             // With 3 nodes and ~1/3 ownership per node, some keys must have moved.
             EXPECT_GT(moved_to_node3, 0);
+        }
+
+        TEST(RebalanceSimTest, MigrationSpansReportOutcomes) {
+            RebalanceCluster c;
+            c.seedTwoNodes();
+            for (int i = 0; i < 100; i++) {
+                // NOLINTNEXTLINE
+                (void)c.node1->store.put("key" + std::to_string(i), "v");
+            }
+
+            auto sub = std::make_shared<RecordingSubscriber>();
+            std::shared_ptr<Subscriber> prev = globalSubscriber();
+            setGlobalSubscriber(sub);
+            c.joinNode3();
+            c.clock.advance(1ms);
+            c.bus.deliver();
+            setGlobalSubscriber(prev);
+
+            auto spans = sub->spans();
+            const RecordingSubscriber::RecordedSpan* rebalance = nullptr;
+            for (const auto& s : spans) {
+                if (s.operation == "shard.rebalance") {
+                    rebalance = &s;
+                }
+            }
+            ASSERT_NE(rebalance, nullptr);
+            EXPECT_EQ(rebalance->status, SpanStatus::Ok);
+            uint64_t migrations = 0;
+            for (const auto& a : rebalance->attributes) {
+                if (a.key == "migrations") {
+                    migrations = a.uint_val;
+                }
+            }
+            EXPECT_GT(migrations, 0U);
+
+            // Every migration reports exactly one completed result on the
+            // rebalance trace; the ack tally closed out each key.
+            size_t completed = 0;
+            for (const auto& s : spans) {
+                if (s.operation != "shard.migrate.result") {
+                    continue;
+                }
+                EXPECT_EQ(s.trace_id, rebalance->trace_id);
+                EXPECT_EQ(s.status, SpanStatus::Ok);
+                bool done = false;
+                bool has_owner = false;
+                for (const auto& a : s.attributes) {
+                    if (a.key == "outcome" && a.str_val == "completed") {
+                        done = true;
+                    }
+                    if (a.key == "owner" && !a.str_val.empty()) {
+                        has_owner = true;
+                    }
+                }
+                EXPECT_TRUE(done);
+                EXPECT_TRUE(has_owner);
+                ++completed;
+            }
+            EXPECT_EQ(completed, migrations);
         }
 
         // §2 (rebalance safety): the local copy is dropped only once EVERY member

@@ -283,6 +283,16 @@ namespace cinder {
             return nullptr;
         }
 
+        auto findAttr(const RecordingSubscriber::RecordedSpan& span, std::string_view key)
+            -> const RecordingSubscriber::RecordedField* {
+            for (const auto& a : span.attributes) {
+                if (a.key == key) {
+                    return &a;
+                }
+            }
+            return nullptr;
+        }
+
         TEST(PoolRpcTimeout, TimeoutMarksSpan) {
             constexpr uint16_t K_PORT = 17'885;
             constexpr auto K_TIMEOUT = milliseconds(100);
@@ -319,6 +329,20 @@ namespace cinder {
             ASSERT_NE(span, nullptr);
             EXPECT_EQ(span->status, SpanStatus::Timeout);
             EXPECT_TRUE(span->closed);
+            // The black hole accepts then goes silent: resolve/connect/write
+            // succeed, the exchange dies waiting for the response header.
+            const auto* phase = findAttr(*span, "phase");
+            ASSERT_NE(phase, nullptr);
+            EXPECT_EQ(phase->str_val, "read header");
+            const auto* peer = findAttr(*span, "peer");
+            ASSERT_NE(peer, nullptr);
+            EXPECT_EQ(peer->str_val, "127.0.0.1");
+            const auto* reused = findAttr(*span, "reused");
+            ASSERT_NE(reused, nullptr);
+            EXPECT_FALSE(reused->bool_val);
+            const auto* bytes_out = findAttr(*span, "bytes_out");
+            ASSERT_NE(bytes_out, nullptr);
+            EXPECT_GT(bytes_out->uint_val, 0U);
         }
 
         TEST(PoolRpcTimeout, SuccessMarksSpanOk) {
@@ -377,6 +401,14 @@ namespace cinder {
             const auto* span = findOp(spans, "pool.send");
             ASSERT_NE(span, nullptr);
             EXPECT_EQ(span->status, SpanStatus::Ok);
+            // Success carries sizes but no failure phase.
+            EXPECT_EQ(findAttr(*span, "phase"), nullptr);
+            const auto* bytes_out = findAttr(*span, "bytes_out");
+            ASSERT_NE(bytes_out, nullptr);
+            EXPECT_GT(bytes_out->uint_val, 0U);
+            const auto* bytes_in = findAttr(*span, "bytes_in");
+            ASSERT_NE(bytes_in, nullptr);
+            EXPECT_GT(bytes_in->uint_val, 0U);
         }
 
         TEST(PoolRpcTimeout, BatchTimeoutMarksSpan) {

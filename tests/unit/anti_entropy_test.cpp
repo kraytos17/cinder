@@ -497,6 +497,113 @@ namespace cinder {
                     }
                 }
                 EXPECT_TRUE(completed_on_round) << "round completion lost the round trace";
+                // The async result span joins the round trace with its outcome.
+                const RecordingSubscriber::RecordedSpan* result = nullptr;
+                for (const auto& s : spans) {
+                    if (s.operation == "anti_entropy.round.result") {
+                        result = &s;
+                    }
+                }
+                ASSERT_NE(result, nullptr);
+                EXPECT_EQ(result->trace_id, round->trace_id);
+                EXPECT_EQ(result->status, SpanStatus::Ok);
+                bool outcome_completed = false;
+                bool partner_seen = false;
+                for (const auto& a : result->attributes) {
+                    if (a.key == "outcome" && a.str_val == "completed") {
+                        outcome_completed = true;
+                    }
+                    if (a.key == "partner" && a.str_val == "n2") {
+                        partner_seen = true;
+                    }
+                }
+                EXPECT_TRUE(outcome_completed);
+                EXPECT_TRUE(partner_seen);
+            }
+        }
+
+        TEST(AntiEntropyRoundTest, NoPartnerSkipsRoundWithOutcome) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            ConsistentHashRing ring;
+            ring.addNode("n1");
+            FakeTransport transport;
+            AntiEntropyManager manager(store, ring, "n1", clock, transport, 8);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            {
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(sub);
+                manager.runRound(1);
+                setGlobalSubscriber(prev);
+
+                auto spans = sub->spans();
+                const RecordingSubscriber::RecordedSpan* round = nullptr;
+                for (const auto& s : spans) {
+                    if (s.operation == "anti_entropy.round") {
+                        round = &s;
+                    }
+                }
+                ASSERT_NE(round, nullptr);
+                // Skipped, not failed: nothing was attempted, but the reason
+                // is recorded so the skip is distinguishable from a bug.
+                EXPECT_EQ(round->status, SpanStatus::Unset);
+                bool skipped = false;
+                bool no_partner = false;
+                for (const auto& a : round->attributes) {
+                    if (a.key == "outcome" && a.str_val == "skipped") {
+                        skipped = true;
+                    }
+                    if (a.key == "reason" && a.str_val == "no-partner") {
+                        no_partner = true;
+                    }
+                }
+                EXPECT_TRUE(skipped);
+                EXPECT_TRUE(no_partner);
+            }
+        }
+
+        TEST(AntiEntropyRoundTest, DigestFailureReportsErrorResult) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            ASSERT_TRUE(store.putVersioned("k1", makeEntry("v1", 1)).has_value());
+            ConsistentHashRing ring;
+            ring.addNode("n1");
+            ring.addNode("n2");
+            // FakeTransport answers digest requests with an inline error, so
+            // the round's async callback runs the failure path.
+            FakeTransport transport;
+            AntiEntropyManager manager(store, ring, "n1", clock, transport, 8);
+            auto sub = std::make_shared<RecordingSubscriber>();
+
+            {
+                auto prev = globalSubscriber();
+                setGlobalSubscriber(sub);
+                manager.runRound(2);
+                setGlobalSubscriber(prev);
+
+                auto spans = sub->spans();
+                const RecordingSubscriber::RecordedSpan* round = nullptr;
+                const RecordingSubscriber::RecordedSpan* result = nullptr;
+                for (const auto& s : spans) {
+                    if (s.operation == "anti_entropy.round") {
+                        round = &s;
+                    }
+                    if (s.operation == "anti_entropy.round.result") {
+                        result = &s;
+                    }
+                }
+                ASSERT_NE(round, nullptr);
+                ASSERT_NE(result, nullptr);
+                EXPECT_EQ(result->trace_id, round->trace_id);
+                EXPECT_EQ(result->status, SpanStatus::Error);
+                bool digest_failed = false;
+                for (const auto& a : result->attributes) {
+                    if (a.key == "outcome" && a.str_val == "digest-failed") {
+                        digest_failed = true;
+                    }
+                }
+                EXPECT_TRUE(digest_failed);
             }
         }
     } // namespace

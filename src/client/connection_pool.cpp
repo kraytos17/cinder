@@ -153,6 +153,9 @@ namespace cinder {
         SpanContext parent
     ) -> asio::awaitable<Result<net::Response>> {
         Span span("pool.send", parent);
+        span.setAttribute({"peer", conn.addr.host});
+        span.setAttribute({"reused", conn.connected});
+        span.setAttribute({"bytes_out", data.size()});
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
 
@@ -176,8 +179,11 @@ namespace cinder {
         // nor cancels another exchange's socket use.
         bool timed_out = false;
         // Every exit below reports exactly one outcome on this exchange's span.
-        auto fail_status = [&span](bool was_timeout) {
+        // The phase attribute names the failing step so traces group by
+        // where the exchange died, not just the outcome.
+        auto fail_status = [&span](bool was_timeout, std::string_view phase) {
             span.setStatus(was_timeout ? SpanStatus::Timeout : SpanStatus::Error);
+            span.setAttribute({"phase", phase});
         };
 
         asio::steady_timer timer(ex);
@@ -208,7 +214,7 @@ namespace cinder {
             );
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "resolve");
                 co_return err<net::Response>(poolError(timed_out, "resolve", ec));
             }
 #ifdef CINDER_ENABLE_TLS
@@ -221,7 +227,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "connect");
                     co_return err<net::Response>(poolError(timed_out, "connect", ec));
                 }
 
@@ -231,14 +237,14 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "tls handshake");
                     co_return err<net::Response>(poolError(timed_out, "tls handshake", ec));
                 }
             } else {
                 co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "connect");
                     co_return err<net::Response>(poolError(timed_out, "connect", ec));
                 }
             }
@@ -246,7 +252,7 @@ namespace cinder {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "connect");
                 co_return err<net::Response>(poolError(timed_out, "connect", ec));
             }
 #endif
@@ -266,7 +272,7 @@ namespace cinder {
         if (ec) {
             closeConn(conn);
             CINDER_WARN("send failed", {"node", conn.addr.host}, {"phase", "write"});
-            fail_status(timed_out);
+            fail_status(timed_out, "write");
             co_return err<net::Response>(poolError(timed_out, "write", ec));
         }
 
@@ -282,7 +288,7 @@ namespace cinder {
 #endif
         if (ec) {
             closeConn(conn);
-            fail_status(timed_out);
+            fail_status(timed_out, "read header");
             co_return err<net::Response>(poolError(timed_out, "read header", ec));
         }
         if (header[0] != std::byte{net::K_MAGIC}) {
@@ -291,6 +297,7 @@ namespace cinder {
             // peer) — the socket is already closed so the next RPC reconnects
             // clean. NotReady (not InvalidArgument) so the caller retries.
             span.setStatus(SpanStatus::Error);
+            span.setAttribute({"phase", "framing"});
             co_return err<net::Response>(Error(Errc::NotReady, "bad magic in response"));
         }
 
@@ -300,6 +307,7 @@ namespace cinder {
         if (payload_len > net::K_MAX_MESSAGE_SIZE) {
             closeConn(conn);
             span.setStatus(SpanStatus::Error);
+            span.setAttribute({"phase", "framing"});
             co_return err<net::Response>(Error(Errc::NotReady, "response payload too large"));
         }
 
@@ -329,7 +337,7 @@ namespace cinder {
 #endif
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "read payload");
                 co_return err<net::Response>(poolError(timed_out, "read payload", ec));
             }
         }
@@ -344,9 +352,11 @@ namespace cinder {
         auto result = net::decodeResponse(frame).transform_error([&](const Error& e) -> Error {
             closeConn(conn);
             span.setStatus(e.code() == Errc::Timeout ? SpanStatus::Timeout : SpanStatus::Error);
+            span.setAttribute({"phase", "decode"});
             return asRetryable(e, "response decode failed on reused socket");
         });
         if (result.has_value()) {
+            span.setAttribute({"bytes_in", frame.size()});
             span.setStatus(SpanStatus::Ok);
         }
         co_return result;
@@ -358,6 +368,15 @@ namespace cinder {
         SpanContext parent
     ) -> asio::awaitable<Result<std::vector<net::Response>>> {
         Span span("pool.send_batch", parent);
+        span.setAttribute({"peer", conn.addr.host});
+        span.setAttribute({"reused", conn.connected});
+        span.setAttribute({"count", all_data.size()});
+        size_t bytes_out = 0;
+        for (const auto& data : all_data) {
+            bytes_out += data.size();
+        }
+
+        span.setAttribute({"bytes_out", bytes_out});
         std::error_code ec;
         auto ex = co_await asio::this_coro::executor; // NOLINT
         // A batch is one pipelined exchange on this socket: hold the same gate
@@ -375,8 +394,11 @@ namespace cinder {
         BatchGateReleaser releaser{conn.gate};
         bool timed_out = false;
         // Every exit below reports exactly one outcome on this exchange's span.
-        auto fail_status = [&span](bool was_timeout) {
+        // The phase attribute names the failing step so traces group by
+        // where the exchange died, not just the outcome.
+        auto fail_status = [&span](bool was_timeout, std::string_view phase) {
             span.setStatus(was_timeout ? SpanStatus::Timeout : SpanStatus::Error);
+            span.setAttribute({"phase", phase});
         };
 
         asio::steady_timer timer(ex);
@@ -406,7 +428,7 @@ namespace cinder {
             );
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "resolve");
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "resolve", ec));
             }
 #ifdef CINDER_ENABLE_TLS
@@ -419,7 +441,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "connect");
                     co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
                 }
 
@@ -429,7 +451,7 @@ namespace cinder {
                 );
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "tls handshake");
                     co_return err<std::vector<net::Response>>(
                         poolError(timed_out, "tls handshake", ec)
                     );
@@ -438,7 +460,7 @@ namespace cinder {
                 co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "connect");
                     co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
                 }
             }
@@ -446,7 +468,7 @@ namespace cinder {
             co_await async_connect(conn.socket, endpoints, asio::redirect_error(ec));
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "connect");
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
             }
 #endif
@@ -477,12 +499,13 @@ namespace cinder {
 #endif
         if (ec) {
             closeConn(conn);
-            fail_status(timed_out);
+            fail_status(timed_out, "write");
             co_return err<std::vector<net::Response>>(poolError(timed_out, "write", ec));
         }
 
         std::vector<net::Response> responses;
         responses.reserve(all_data.size());
+        size_t bytes_in = 0;
         for (size_t i = 0; i < all_data.size(); ++i) {
             std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
 #ifdef CINDER_ENABLE_TLS
@@ -496,12 +519,13 @@ namespace cinder {
 #endif
             if (ec) {
                 closeConn(conn);
-                fail_status(timed_out);
+                fail_status(timed_out, "read header");
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "read header", ec));
             }
             if (header[0] != std::byte{net::K_MAGIC}) {
                 closeConn(conn);
                 span.setStatus(SpanStatus::Error);
+                span.setAttribute({"phase", "framing"});
                 co_return err<std::vector<net::Response>>(
                     Error(Errc::NotReady, "bad magic in response")
                 );
@@ -513,6 +537,7 @@ namespace cinder {
             if (payload_len > net::K_MAX_MESSAGE_SIZE) {
                 closeConn(conn);
                 span.setStatus(SpanStatus::Error);
+                span.setAttribute({"phase", "framing"});
                 co_return err<std::vector<net::Response>>(
                     Error(Errc::NotReady, "response payload too large")
                 );
@@ -544,7 +569,7 @@ namespace cinder {
 #endif
                 if (ec) {
                     closeConn(conn);
-                    fail_status(timed_out);
+                    fail_status(timed_out, "read payload");
                     co_return err<std::vector<net::Response>>(
                         poolError(timed_out, "read payload", ec)
                     );
@@ -565,14 +590,18 @@ namespace cinder {
                     decoded.error().code() == Errc::Timeout ? SpanStatus::Timeout
                                                             : SpanStatus::Error
                 );
+                span.setAttribute({"phase", "decode"});
                 co_return std::unexpected(
                     asRetryable(decoded.error(), "batch response decode failed")
                 );
             }
+
             responses.push_back(std::move(decoded.value()));
+            bytes_in += frame.size();
         }
 
         timer.cancel();
+        span.setAttribute({"bytes_in", bytes_in});
         span.setStatus(SpanStatus::Ok);
         co_return ok(std::move(responses));
     }

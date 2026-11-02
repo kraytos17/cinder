@@ -115,6 +115,11 @@ namespace cinder {
             {"migrations", migrates.size()},
             {"deferred", deferred_count}
         );
+
+        span.setAttribute({"copies", copies.size()});
+        span.setAttribute({"migrations", migrates.size()});
+        span.setAttribute({"deferred", deferred_count});
+        span.setStatus(SpanStatus::Ok);
         if (metrics_) {
             metrics_->clusterMetrics().rebalance_copies.fetch_add(
                 copies.size(),
@@ -149,6 +154,8 @@ namespace cinder {
         const std::vector<NodeId>& replica_peers
     ) {
         Span span("shard.migrate", captureTraceContext());
+        span.setAttribute({"owner", owner});
+        span.setAttribute({"replicas", replica_peers.size()});
         auto info = table_.get(owner);
         if (info.has_value() && info->state != NodeState::Alive) {
             CINDER_DEBUG(
@@ -157,6 +164,9 @@ namespace cinder {
                 {"owner", owner},
                 {"state", static_cast<int>(info->state)}
             );
+
+            span.setAttribute({"outcome", "skipped"});
+            span.setAttribute({"reason", "owner-not-alive"});
             return;
         }
 
@@ -185,10 +195,15 @@ namespace cinder {
         }
 
         auto req = makeReplicateRequest(key, entry);
+        // The migrate span above dies when this function returns; the outcome
+        // lands on a child that joins the same trace.
+        SpanContext migrate_ctx = span.context();
         transport_.sendAsync(
             owner,
             req,
-            [this, key, owner, tally, expected, replica_count](Result<void> r) {
+            [this, key, owner, tally, expected, replica_count, migrate_ctx](Result<void> r) {
+            Span result_span("shard.migrate.result", migrate_ctx);
+            result_span.setAttribute({"owner", owner});
             if (!r.has_value()) {
                 CINDER_WARN(
                     "migrate failed",
@@ -196,6 +211,10 @@ namespace cinder {
                     {"to", owner},
                     {"reason", r.error().message()}
                 );
+                // Keep the local copy as a failover copy; notify the owner so it
+                // can schedule a delayed re-rebalance once the peer recovers.
+                result_span.setAttribute({"outcome", "failed"});
+                result_span.setStatus(SpanStatus::Error);
                 // Keep the local copy as a failover copy; notify the owner so it
                 // can schedule a delayed re-rebalance once the peer recovers.
                 if (metrics_) {
@@ -211,6 +230,8 @@ namespace cinder {
             }
 
             const size_t acks = tally->acks.fetch_add(1, std::memory_order_relaxed) + 1;
+            result_span.setAttribute({"acks", acks});
+            result_span.setAttribute({"expected", expected});
             if (acks == expected) {
                 // Every member of the new set holds the key: the local copy is now
                 // a redundant orphan and can be reclaimed.
@@ -220,6 +241,9 @@ namespace cinder {
                     {"to", owner},
                     {"replicas", replica_count}
                 );
+
+                result_span.setAttribute({"outcome", "completed"});
+                result_span.setStatus(SpanStatus::Ok);
                 store_.remove(key);
                 return;
             }
@@ -242,6 +266,10 @@ namespace cinder {
                 {"acks", acks},
                 {"expected", expected}
             );
+            // Degraded but safe: the key is still served locally, and the next
+            // rebalance retries.
+            result_span.setAttribute({"outcome", "retained-underreplicated"});
+            result_span.setStatus(SpanStatus::Ok);
         }
         );
     }
@@ -252,6 +280,7 @@ namespace cinder {
         const NodeId& owner
     ) {
         Span span("shard.push", captureTraceContext());
+        span.setAttribute({"owner", owner});
         auto info = table_.get(owner);
         if (info.has_value() && info->state != NodeState::Alive) {
             CINDER_DEBUG(
@@ -260,11 +289,17 @@ namespace cinder {
                 {"owner", owner},
                 {"state", static_cast<int>(info->state)}
             );
+
+            span.setAttribute({"outcome", "skipped"});
+            span.setAttribute({"reason", "owner-not-alive"});
             return;
         }
 
         auto req = makeReplicateRequest(key, entry);
-        transport_.sendAsync(owner, req, [key, owner](Result<void> r) {
+        SpanContext push_ctx = span.context();
+        transport_.sendAsync(owner, req, [key, owner, push_ctx](Result<void> r) {
+            Span result_span("shard.push.result", push_ctx);
+            result_span.setAttribute({"owner", owner});
             if (!r.has_value()) {
                 CINDER_WARN(
                     "push failed",
@@ -272,7 +307,13 @@ namespace cinder {
                     {"to", owner},
                     {"reason", r.error().message()}
                 );
+                result_span.setAttribute({"outcome", "failed"});
+                result_span.setStatus(SpanStatus::Error);
+                return;
             }
+
+            result_span.setAttribute({"outcome", "completed"});
+            result_span.setStatus(SpanStatus::Ok);
         });
     }
 } // namespace cinder

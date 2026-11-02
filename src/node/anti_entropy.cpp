@@ -439,11 +439,15 @@ namespace cinder {
         auto partner = pickPartner(replica_factor);
         if (!partner.has_value()) {
             CINDER_DEBUG(("no partner available, skipping round"));
+            span.setAttribute({"outcome", "skipped"});
+            span.setAttribute({"reason", "no-partner"});
             return;
         }
 
+        span.setAttribute({"partner", *partner});
         auto local = computeDigest();
         net::Request req;
+
         req.opcode = net::Opcode::AntiEntropyDigest;
         req.value = encodeDigest(local);
         req.trace_id = span.traceId();
@@ -462,8 +466,15 @@ namespace cinder {
                 Result<net::Response> r
             ) mutable {
             TraceScope scope(round_ctx);
+            // The initiating round span is a stack local that died when
+            // runRound returned; report the async outcome on a child that
+            // joins the same trace.
+            Span result_span("anti_entropy.round.result", round_ctx);
+            result_span.setAttribute({"partner", partner});
             if (!r.has_value() || r->status != Errc::OK || !r->value.has_value()) {
                 CINDER_DEBUG("digest round failed", {"partner", partner});
+                result_span.setAttribute({"outcome", "digest-failed"});
+                result_span.setStatus(SpanStatus::Error);
                 return;
             }
 
@@ -474,12 +485,16 @@ namespace cinder {
                 sizeof(uint32_t) + static_cast<size_t>(num_buckets_) * sizeof(uint64_t);
             if (payload.size() < digest_len) {
                 CINDER_WARN("short digest response", {"from", partner});
+                result_span.setAttribute({"outcome", "short-response"});
+                result_span.setStatus(SpanStatus::Error);
                 return;
             }
 
             auto remote = decodeDigest(std::string_view(payload.data(), digest_len), num_buckets_);
             if (!remote.has_value()) {
                 CINDER_WARN("bad digest response", {"from", partner});
+                result_span.setAttribute({"outcome", "bad-digest"});
+                result_span.setStatus(SpanStatus::Error);
                 return;
             }
 
@@ -509,6 +524,10 @@ namespace cinder {
                 }
             }
             if (divergent.empty()) {
+                result_span.setAttribute({"repaired", repaired});
+                result_span.setAttribute({"divergent", divergent.size()});
+                result_span.setAttribute({"outcome", "completed"});
+                result_span.setStatus(SpanStatus::Ok);
                 return;
             }
 
@@ -517,6 +536,11 @@ namespace cinder {
             sync.value = collectEntries(divergent);
             sync.trace_id = round_ctx.trace_id;
             sync.span_id = round_ctx.span_id;
+
+            result_span.setAttribute({"repaired", repaired});
+            result_span.setAttribute({"divergent", divergent.size()});
+            result_span.setAttribute({"outcome", "completed"});
+            result_span.setStatus(SpanStatus::Ok);
             transport_.sendRequestAsync(partner, sync, [partner](Result<net::Response> sr) {
                 if (!sr.has_value() || sr->status != Errc::OK) {
                     CINDER_DEBUG("sync phase failed", {"partner", partner});

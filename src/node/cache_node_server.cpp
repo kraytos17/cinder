@@ -420,12 +420,20 @@ namespace cinder {
         span.setStatus(SpanStatus::Ok);
     }
 
+    auto CacheNodeServer::nextTimerRun() -> uint64_t {
+        return timer_run_.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+
     void CacheNodeServer::scheduleReplay() {
         timers_.replay.expires_after(seconds(1));
         timers_.replay.async_wait([this](std::error_code ec) {
             if (ec) {
                 return;
             }
+
+            // Run root (see scheduleEvict): fresh trace per firing.
+            Span span("timer.replay", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             if (repl_.hintCount() > 0) {
                 repl_.replayHints([](size_t replayed) {
                     if (replayed > 0) {
@@ -433,6 +441,8 @@ namespace cinder {
                     }
                 });
             }
+
+            span.setStatus(SpanStatus::Ok);
             scheduleReplay();
         });
     }
@@ -444,7 +454,10 @@ namespace cinder {
                 return;
             }
 
+            Span span("timer.gossip", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             gossip_.tick();
+            span.setStatus(SpanStatus::Ok);
             scheduleGossip();
         });
     }
@@ -456,7 +469,10 @@ namespace cinder {
                 return;
             }
 
+            Span span("timer.probe", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             detector_.tick();
+            span.setStatus(SpanStatus::Ok);
             scheduleProbe();
         });
     }
@@ -471,6 +487,7 @@ namespace cinder {
             // Run root: the timer fires on an io thread with unrelated TLS,
             // so join nothing ambient — mint a fresh trace for this pass.
             Span span("timer.evict", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             store_->evictExpired();
             // Steady-state WAL drain (batched, ~1s cadence): bounds the
             // pending queue (and the crash-loss window) between periodic
@@ -532,11 +549,15 @@ namespace cinder {
             if (ec) {
                 return;
             }
+
+            Span span("timer.rebalance", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             // If some migrations were deferred because their owner is still
             // quarantined, retry once the window has elapsed.
             if (shard_.rebalance()) {
                 scheduleRebalance();
             }
+            span.setStatus(SpanStatus::Ok);
         });
     }
 
@@ -550,11 +571,15 @@ namespace cinder {
             if (ec) {
                 return;
             }
+
+            Span span("timer.quarantine", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             // Keep retrying while any owner is still inside its quarantine window
             // (e.g. a flapping node keeps resetting joined_at).
             if (shard_.rebalance()) {
                 scheduleRebalance();
             }
+            span.setStatus(SpanStatus::Ok);
         });
     }
 
@@ -583,10 +608,13 @@ namespace cinder {
                 return;
             }
 
+            Span span("timer.migration_retry", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             CINDER_INFO("migration retry fired");
             // Re-run through the debounce gate so rapid membership changes that
             // arrived while waiting collapse into a single scan.
             scheduleRebalanceDebounced();
+            span.setStatus(SpanStatus::Ok);
         });
     }
 
@@ -596,8 +624,14 @@ namespace cinder {
             if (ec) {
                 return;
             }
+
+            Span span("timer.compact", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             if (auto result = persistence_.compact(); !result.has_value()) {
                 CINDER_ERROR("compact failed", {"reason", result.error().message()});
+                span.setStatus(SpanStatus::Error);
+            } else {
+                span.setStatus(SpanStatus::Ok);
             }
             scheduleCompact();
         });
@@ -615,8 +649,13 @@ namespace cinder {
         timers_.compact_pending = true;
         asio::post(io_, [this] {
             timers_.compact_pending = false;
+            Span span("timer.compact", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             if (auto result = persistence_.compact(); !result.has_value()) {
                 CINDER_ERROR("compact failed", {"reason", result.error().message()});
+                span.setStatus(SpanStatus::Error);
+            } else {
+                span.setStatus(SpanStatus::Ok);
             }
         });
     }
@@ -631,12 +670,20 @@ namespace cinder {
             if (ec) {
                 return;
             }
+
+            Span span("timer.anti_entropy", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             // Skip background repair while the cluster view is degraded: with
             // fewer than a majority visible, partner selection may flap and
             // repair against stale membership.
             if (!table_.isDegraded()) {
                 anti_entropy_.runRound(replica_factor_);
+            } else {
+                span.setAttribute({"outcome", "skipped"});
+                span.setAttribute({"reason", "degraded-view"});
             }
+
+            span.setStatus(SpanStatus::Ok);
             scheduleAntiEntropy();
         });
     }
@@ -648,7 +695,10 @@ namespace cinder {
                 return;
             }
 
+            Span span("timer.config_reload", SpanContext{});
+            span.setAttribute({"run", nextTimerRun()});
             applyConfig();
+            span.setStatus(SpanStatus::Ok);
             scheduleConfigReload();
         });
     }
