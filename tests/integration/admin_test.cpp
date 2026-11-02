@@ -1,4 +1,3 @@
-#include <cstdio>
 #include <fstream>
 #include <gtest/gtest.h>
 #include <string>
@@ -6,6 +5,7 @@
 #include <unistd.h>
 
 #include "integration/test_helpers.hpp"
+#include "test_scratch.hpp"
 
 using cinder::net::test::NodeProcGuard;
 using cinder::net::test::pickHeldPort;
@@ -122,8 +122,9 @@ namespace {
         // reload must not revert the served identity to file values.
         const uint16_t port = pickHeldPort();
         ASSERT_NE(port, 0);
-        const std::string cfg_path =
-            "/tmp/cinder_reload_identity_" + std::to_string(port) + ".yaml";
+        const cinder::test::ScratchFile cfg_file("cinder_reload_identity", ".yaml");
+        ASSERT_TRUE(cfg_file) << "scratch file reservation failed";
+        const std::string cfg_path = cfg_file.string();
         {
             std::ofstream f(cfg_path);
             ASSERT_TRUE(f.is_open());
@@ -183,6 +184,5 @@ namespace {
         EXPECT_EQ(reload_res.value().status, cinder::Errc::OK);
 
         check_identity("after reload");
-        (void)std::remove(cfg_path.c_str());
     }
 } // namespace

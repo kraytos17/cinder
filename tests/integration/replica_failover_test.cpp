@@ -9,6 +9,7 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
 #include "integration/test_helpers.hpp"
+#include "test_scratch.hpp"
 
 using std::chrono::milliseconds;
 
@@ -211,7 +212,11 @@ namespace cinder {
             ASSERT_NE(metrics1, 0);
             const uint16_t port2 = pickHeldPort();
             ASSERT_NE(port2, 0);
-            const std::string data_dir = "/tmp/cinder_hint_restart_" + std::to_string(port1);
+            // Scratch (not port-derived): a killed run's leftover dir plus a
+            // reused ephemeral port would otherwise resurrect stale hints.
+            test::ScratchDir data_dir_guard;
+            ASSERT_TRUE(data_dir_guard) << "scratch dir creation failed";
+            const std::string data_dir = data_dir_guard.path().string();
             const auto peers2 = "node2@127.0.0.1:" + std::to_string(port2);
             const auto peers1 = "node1@127.0.0.1:" + std::to_string(port1);
 
