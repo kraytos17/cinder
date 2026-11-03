@@ -150,6 +150,7 @@ namespace cinder {
                 span.setStatus(SpanStatus::Error);
                 return;
             }
+
             span.setStatus(SpanStatus::Ok);
             return;
         }
@@ -240,7 +241,6 @@ namespace cinder {
             se.version = ve.version();
             se.writer_node_hash = ve.writer_node_hash;
             se.has_ttl = ve.hasTtl();
-
             if (ve.hasTtl()) {
                 se.expires_at_ms = toSystemMsOrDefault(clock_, ve.expires_at);
             } else {
@@ -278,7 +278,6 @@ namespace cinder {
             ve.setVersion(entry->version);
             ve.writer_node_hash = entry->writer_node_hash;
             ve.setHasTtl(entry->has_ttl);
-
             if (entry->has_ttl && entry->expires_at_ms > 0) {
                 // Preserve remaining wall-clock lifetime across restart (see
                 // recover()).

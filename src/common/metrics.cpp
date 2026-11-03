@@ -305,6 +305,7 @@ namespace cinder {
         appendCounter(os, "cluster_dead_marked_total", cluster_.dead_marked.load());
         appendCounter(os, "cluster_alive_marked_total", cluster_.alive_marked.load());
         appendCounter(os, "cluster_refuted_self_rumors_total", cluster_.refuted_self_rumors.load());
+
         appendCounter(os, "cluster_rebalance_copies_total", cluster_.rebalance_copies.load());
         appendCounter(
             os,

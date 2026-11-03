@@ -247,7 +247,6 @@ namespace cinder {
                 store_.remove(key);
                 return;
             }
-
             // Primary acked but at least one replica has not confirmed. KEEP the
             // local copy as an extra failover replica and report it: over-
             // replication is safe, under-replication is not. The next rebalance
@@ -259,6 +258,7 @@ namespace cinder {
                     std::memory_order_relaxed
                 );
             }
+
             CINDER_WARN(
                 "migration retained locally: replicas unconfirmed",
                 {"key", key},
@@ -307,6 +307,7 @@ namespace cinder {
                     {"to", owner},
                     {"reason", r.error().message()}
                 );
+
                 result_span.setAttribute({"outcome", "failed"});
                 result_span.setStatus(SpanStatus::Error);
                 return;

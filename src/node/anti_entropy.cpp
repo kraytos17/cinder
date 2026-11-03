@@ -395,7 +395,7 @@ namespace cinder {
         return out;
     }
 
-    auto AntiEntropyManager::decodeBucketRefinement(std::string_view data, size_t num_buckets)
+    auto AntiEntropyManager::decodeBucketRefinement(std::string_view data, size_t expected_groups)
         -> std::optional<BucketRefinement> {
         const char* p = data.data();
         const char* end = p + data.size();
@@ -410,12 +410,13 @@ namespace cinder {
             * (sizeof(uint32_t) + sizeof(uint64_t))) {
             return std::nullopt;
         }
+
         BucketRefinement request;
         request.bucket_hashes.reserve(bucket_count);
         for (uint32_t i = 0; i < bucket_count; ++i) {
             uint32_t bucket = 0;
             uint64_t hash = 0;
-            if (!readU32(p, end, bucket) || bucket >= num_buckets || !readU64(p, end, hash)) {
+            if (!readU32(p, end, bucket) || bucket >= expected_groups || !readU64(p, end, hash)) {
                 return std::nullopt;
             }
             request.bucket_hashes.emplace_back(bucket, hash);
@@ -438,20 +439,24 @@ namespace cinder {
             + sizeof(uint32_t)
             + rows.size()
         );
+
         appendU32(out, K_DIGEST_RESPONSE_MAGIC);
         appendU32(out, static_cast<uint32_t>(response.group_hashes.size()));
         for (uint64_t hash : response.group_hashes) {
             appendU64(out, hash);
         }
+
         appendU32(out, static_cast<uint32_t>(response.bucket_hashes.size()));
         for (const auto& [bucket, hash] : response.bucket_hashes) {
             appendU32(out, bucket);
             appendU64(out, hash);
         }
+
         appendU32(out, static_cast<uint32_t>(response.covered_buckets.size()));
         for (uint32_t bucket : response.covered_buckets) {
             appendU32(out, bucket);
         }
+
         appendU32(out, static_cast<uint32_t>(rows.size()));
         out += rows;
         return out;
@@ -1047,6 +1052,7 @@ namespace cinder {
             onBucketRefinement(from, req, std::move(respond));
             return;
         }
+
         Span span("anti_entropy.digest", captureTraceContext());
         auto remote_groups = decodeGroupDigest(
             req.value,
@@ -1080,6 +1086,7 @@ namespace cinder {
             .trace_id = req.trace_id,
             .span_id = req.span_id,
         };
+
         CINDER_DEBUG("digest received", {"from", from}, {"groups", response.group_hashes.size()});
         respond(std::move(digest_response));
     }
@@ -1113,6 +1120,7 @@ namespace cinder {
                 requested_buckets.push_back(bucket);
             }
         }
+
         std::sort(requested_buckets.begin(), requested_buckets.end());
         std::string meta =
             collectMetadata(requested_buckets, K_MAX_METADATA_BYTES, &response.covered_buckets);
@@ -1126,6 +1134,7 @@ namespace cinder {
                 std::memory_order_relaxed
             );
         }
+
         CINDER_DEBUG(
             "bucket refinement received",
             {"from", from},
@@ -1220,6 +1229,7 @@ namespace cinder {
                 result_span.setStatus(SpanStatus::Error);
                 return;
             }
+
             remote_buckets[bucket] = hash;
             has_remote_bucket[bucket] = 1;
         }
@@ -1231,6 +1241,7 @@ namespace cinder {
             result_span.setStatus(SpanStatus::Error);
             return;
         }
+
         std::vector<uint32_t> divergent_groups;
         for (uint32_t group = 0; group < group_count; ++group) {
             if (local_groups[group] != response.group_hashes[group]) {
@@ -1323,6 +1334,7 @@ namespace cinder {
                 fetch_span.setStatus(SpanStatus::Error);
                 return;
             }
+
             auto resp = decodeSync(*sr->value);
             if (!resp.has_value() || !resp->needs.empty()) {
                 CINDER_WARN("bad sync response", {"from", partner});
@@ -1330,6 +1342,7 @@ namespace cinder {
                 fetch_span.setStatus(SpanStatus::Error);
                 return;
             }
+
             size_t fetched = resp->entries.size();
             size_t repaired = applySync(std::move(*resp));
             if (metrics_ != nullptr) {
@@ -1344,6 +1357,7 @@ namespace cinder {
                     std::memory_order_relaxed
                 );
             }
+
             CINDER_INFO(
                 "fetch completed",
                 {"partner", partner},
@@ -1351,6 +1365,7 @@ namespace cinder {
                 {"entries", fetched}
             );
             CINDER_INFO("round completed", {"partner", partner}, {"repaired", repaired});
+
             fetch_span.setAttribute({"repaired", repaired});
             fetch_span.setAttribute({"outcome", "completed"});
             fetch_span.setStatus(SpanStatus::Ok);
@@ -1446,6 +1461,7 @@ namespace cinder {
                     refinement.bucket_hashes.emplace_back(bucket, local[bucket]);
                 }
             }
+
             const SpanContext refinement_parent = result_span.context();
             result_span.setAttribute({"divergent_groups", divergent_groups.size()});
             result_span.setAttribute({"outcome", "refining"});
@@ -1474,6 +1490,7 @@ namespace cinder {
                     fail_span.setStatus(SpanStatus::Error);
                     return;
                 }
+
                 const size_t groups =
                     (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
                 auto decoded = decodeDigestResponse(*refined->value, groups);
@@ -1484,6 +1501,7 @@ namespace cinder {
                     fail_span.setStatus(SpanStatus::Error);
                     return;
                 }
+
                 Span refinement_span("anti_entropy.round.refinement", refinement_parent);
                 refinement_span.setAttribute({"partner", partner});
                 refinement_span.setAttribute({"bucket_hashes", decoded->bucket_hashes.size()});

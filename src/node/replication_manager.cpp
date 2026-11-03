@@ -728,6 +728,7 @@ namespace cinder {
         for (const auto& entry : batch) {
             snapshot_bytes += HintQueue::estimatedPayloadBytes(entry.hint);
         }
+
         auto* replication_metrics = metrics_ == nullptr ? nullptr : &metrics_->replicationMetrics();
         if (replication_metrics != nullptr) {
             const uint64_t current_snapshot_bytes =
