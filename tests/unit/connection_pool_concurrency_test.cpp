@@ -27,7 +27,9 @@ using asio::buffer;
 using asio::error_code;
 using asio::io_context;
 using asio::ip::tcp;
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
     namespace {
@@ -159,7 +161,7 @@ namespace cinder {
             ConnectionPool pool(config, io);
 
             std::atomic<size_t> ok_count{0};
-            const auto start = std::chrono::steady_clock::now();
+            const auto start = steady_clock::now();
 
             std::vector<std::thread> callers;
             callers.reserve(K_CALLERS);
@@ -180,8 +182,7 @@ namespace cinder {
                 t.join();
             }
 
-            const auto elapsed =
-                std::chrono::duration_cast<milliseconds>(std::chrono::steady_clock::now() - start);
+            const auto elapsed = duration_cast<milliseconds>(steady_clock::now() - start);
 
             work.reset();
             pool.shutdown();

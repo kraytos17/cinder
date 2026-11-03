@@ -15,7 +15,9 @@
 #include "common_args.hpp"
 
 using asio::io_context;
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::seconds;
 
 // Batch get: one Get per key over the shared pool. Prints `key: value` per
 // line (or `key: <status>` on a miss/error) and exits nonzero if any key
@@ -285,10 +287,8 @@ auto main(int argc, char* argv[]) -> int {
             std::println("version: {}", response.version);
             std::println("writer: {}", response.writer_node_hash);
             if (response.expires_at.has_value()) {
-                const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
-                                      response.expires_at->time_since_epoch()
-                )
-                                      .count();
+                const auto secs =
+                    duration_cast<seconds>(response.expires_at->time_since_epoch()).count();
                 std::println("expires_at: {}", secs);
             }
         }

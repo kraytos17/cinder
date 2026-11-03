@@ -21,6 +21,7 @@
 
 using asio::io_context;
 using asio::ip::tcp;
+using std::chrono::milliseconds;
 
 namespace cinder {
 
@@ -171,7 +172,7 @@ namespace cinder {
 #ifdef CINDER_ENABLE_TLS
         asio::ssl::context* ssl_ctx_ = nullptr;
 #endif
-        std::chrono::milliseconds rpc_timeout_{0};
+        milliseconds rpc_timeout_{0};
         mutable std::mutex mu_;
         bool stopping_ = false;
         ankerl::unordered_dense::map<NodeId, std::unique_ptr<NodePool>> pools_;

@@ -22,8 +22,10 @@
 
 namespace cinder {
 
+    using std::chrono::duration_cast;
     using std::chrono::milliseconds;
     using std::chrono::steady_clock;
+    using std::chrono::system_clock;
 
     // Coordinates writes to the primary + replicas. The write path assigns a
     // monotonic version and a stable per-node writer hash so replica applies are
@@ -134,10 +136,9 @@ namespace cinder {
         static constexpr milliseconds K_HINT_TTL{30'000};
 
         static auto sysHintExpiryMs() -> uint64_t {
-            return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                             std::chrono::system_clock::now().time_since_epoch()
+            return static_cast<uint64_t>(
+                       duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
                    )
-                                             .count())
                 + static_cast<uint64_t>(K_HINT_TTL.count());
         }
 

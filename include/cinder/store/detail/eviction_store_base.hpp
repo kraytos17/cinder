@@ -17,12 +17,14 @@
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/slab_allocator.hpp"
 #include "cinder/common/status.hpp"
-#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/persistence.hpp"
 
+using std::chrono::ceil;
+using std::chrono::floor;
 using std::chrono::milliseconds;
+using std::chrono::seconds;
 using std::chrono::steady_clock;
 
 namespace cinder {
@@ -356,7 +358,7 @@ namespace cinder {
                 // Advance the wheel to catch up with elapsed wall time (always >= 1 tick so
                 // a freshly-inserted sub-second TTL fires on the very next call).
                 auto elapsed = current - sh.last_evict;
-                auto elapsed_ticks = std::chrono::floor<std::chrono::seconds>(elapsed).count();
+                auto elapsed_ticks = floor<seconds>(elapsed).count();
                 size_t ticks = elapsed_ticks < 1 ? 1 : static_cast<size_t>(elapsed_ticks);
 
                 sh.last_evict = current;
@@ -473,11 +475,11 @@ namespace cinder {
         [[nodiscard]]
         auto expiryTicks(steady_clock::time_point expires_at) const -> size_t {
             auto remaining = expires_at - now();
-            if (remaining <= std::chrono::seconds(0)) {
+            if (remaining <= seconds(0)) {
                 return 1;
             }
 
-            auto ticks = std::chrono::ceil<std::chrono::seconds>(remaining).count();
+            auto ticks = ceil<seconds>(remaining).count();
             return static_cast<size_t>(ticks) < 1 ? 1 : static_cast<size_t>(ticks);
         }
 
@@ -543,6 +545,7 @@ namespace cinder {
             if (sink_) {
                 sink_(it->first, outgoing.version_and_ttl, outgoing.writer_node_hash, true);
             }
+
             size_t freed = Derived::nodeSize(*list_it);
             self.onEvictExpired(sh, list_it);
             sh.wheel.remove(&(*list_it));

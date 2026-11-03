@@ -1,8 +1,13 @@
 #include "cinder/common/metrics.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <sstream>
+
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
     namespace {
@@ -268,11 +273,9 @@ namespace cinder {
         if (!repl_.replica_lags.empty()) {
             os << "# HELP cinder_replication_lag_ms Replication lag per replica (ms since last ack)\n";
             os << "# TYPE cinder_replication_lag_ms gauge\n";
-            auto now_ms =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch()
-                )
-                                          .count());
+            auto now_ms = static_cast<uint64_t>(
+                duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count()
+            );
             for (const auto& lag : repl_.replica_lags) {
                 auto delta = now_ms > lag.last_ack_epoch_ms ? now_ms - lag.last_ack_epoch_ms : 0;
                 os

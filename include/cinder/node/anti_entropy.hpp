@@ -21,6 +21,8 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/store/cache_store.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
 
     // Periodic anti-entropy repair. Each round compares a compact digest with
@@ -62,7 +64,7 @@ namespace cinder {
         // Backstop cadence for incremental digests (P1): full rehash at least
         // this often, bounding the silent-divergence window to wall-clock
         // time rather than round counts.
-        static constexpr std::chrono::milliseconds K_DEFAULT_FULL_REHASH_INTERVAL{300'000};
+        static constexpr milliseconds K_DEFAULT_FULL_REHASH_INTERVAL{300'000};
 
         // One metadata row: bucket id + key identity + recency, no value.
         // 4 + 8×3 = 28 bytes on the wire.
@@ -102,7 +104,7 @@ namespace cinder {
             uint32_t num_buckets,
             MetricsCollector* metrics = nullptr,
             size_t fetch_bytes = 1U << 20U,
-            std::chrono::milliseconds full_rehash_interval = K_DEFAULT_FULL_REHASH_INTERVAL
+            milliseconds full_rehash_interval = K_DEFAULT_FULL_REHASH_INTERVAL
         );
 
         ~AntiEntropyManager();
@@ -246,7 +248,7 @@ namespace cinder {
             return fetch_bytes_.load(std::memory_order_relaxed);
         }
 
-        void setFullRehashInterval(std::chrono::milliseconds interval) {
+        void setFullRehashInterval(milliseconds interval) {
             full_rehash_interval_.store(interval, std::memory_order_relaxed);
         }
 
@@ -327,7 +329,7 @@ namespace cinder {
         Clock& clock_;
         Transport& transport_;
         std::atomic<size_t> fetch_bytes_;
-        std::atomic<std::chrono::milliseconds> full_rehash_interval_;
+        std::atomic<milliseconds> full_rehash_interval_;
         size_t partner_idx_ = 0;
         MetricsCollector* metrics_ = nullptr;
         // P1 incremental state. xor_[b] is the XOR of entry hashes in bucket b,

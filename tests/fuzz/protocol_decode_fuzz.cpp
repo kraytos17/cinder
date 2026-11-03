@@ -11,6 +11,9 @@
 #include "cinder/common/status.hpp"
 #include "cinder/net/protocol.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
+
 namespace {
 
     // Decode rejects expires_at past int64max/1e6 ms; keep FDP-built expiries
@@ -18,8 +21,8 @@ namespace {
     // encoder roundtrips exactly.
     constexpr int64_t K_MAX_EXPIRY_MS = 9'000'000'000'000LL;
 
-    static auto msTime(int64_t ms) -> std::chrono::system_clock::time_point {
-        return std::chrono::system_clock::time_point(std::chrono::milliseconds(ms));
+    auto msTime(int64_t ms) -> system_clock::time_point {
+        return system_clock::time_point(milliseconds(ms));
     }
 
     static auto makeRequest(FuzzedDataProvider& fdp) -> cinder::net::Request {
@@ -53,7 +56,7 @@ namespace {
         req.writer_node_hash = fdp.ConsumeIntegral<uint64_t>();
         if (fdp.ConsumeBool()) {
             // u32 on the wire: bound the count so the cast is lossless.
-            req.ttl = std::chrono::milliseconds(fdp.ConsumeIntegral<uint32_t>());
+            req.ttl = milliseconds(fdp.ConsumeIntegral<uint32_t>());
         }
         if (fdp.ConsumeBool()) {
             req.expires_at = msTime(fdp.ConsumeIntegralInRange<int64_t>(0, K_MAX_EXPIRY_MS));

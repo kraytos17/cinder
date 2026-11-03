@@ -533,7 +533,7 @@ namespace cinder {
     void LayeredSubscriber::spanEvent(
         uint64_t span_id,
         std::string_view name,
-        std::chrono::steady_clock::time_point at,
+        steady_clock::time_point at,
         std::initializer_list<FieldValue> fields
     ) noexcept {
         for (const auto& layer : layersSnapshot()) {
@@ -589,7 +589,7 @@ namespace cinder {
     void LevelFilter::spanEvent(
         uint64_t span_id,
         std::string_view name,
-        std::chrono::steady_clock::time_point at,
+        steady_clock::time_point at,
         std::initializer_list<FieldValue> fields
     ) noexcept {
         inner_->spanEvent(span_id, name, at, fields);
@@ -704,7 +704,7 @@ namespace cinder {
     void RecordingSubscriber::spanEvent(
         uint64_t span_id,
         std::string_view name,
-        std::chrono::steady_clock::time_point at,
+        steady_clock::time_point at,
         std::initializer_list<FieldValue> fields
     ) noexcept {
         recordQuietly([&] {

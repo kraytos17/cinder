@@ -25,6 +25,7 @@ namespace cinder::net {
             if (off_ + sizeof(T) > data_.size()) {
                 return err<T>(Error(Errc::InvalidArgument, "truncated"));
             }
+
             T val{};
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             std::memcpy(&val, &data_[off_], sizeof(T));
@@ -47,6 +48,7 @@ namespace cinder::net {
             if (off_ + n > data_.size()) {
                 return err<std::span<const std::byte>>(Error(Errc::InvalidArgument, "truncated"));
             }
+
             auto result = data_.subspan(off_, n);
             off_ += n;
             return result;

@@ -799,13 +799,14 @@ namespace cinder {
 
             // Every stage of the write → compact → flush → recover cycle
             // reports Ok on its span.
-            for (const char* op :
-                 {"persistence.compact",
-                  "snapshot.write",
-                  "persistence.flush",
-                  "persistence.recover",
-                  "snapshot.read",
-                  "persistence.replay"}) {
+            for (const char* op : {
+                     "persistence.compact",
+                     "snapshot.write",
+                     "persistence.flush",
+                     "persistence.recover",
+                     "snapshot.read",
+                     "persistence.replay",
+                 }) {
                 auto found = findSpanByOp(*sub, op);
                 ASSERT_TRUE(found.has_value()) << "missing span: " << op;
                 EXPECT_EQ(found->status, SpanStatus::Ok) << op;
@@ -813,8 +814,9 @@ namespace cinder {
             }
 
             // Counts logged at each stage are also on the spans.
-            auto attrByKey = [](const RecordingSubscriber::RecordedSpan& span,
-                                std::string_view key) -> const RecordingSubscriber::RecordedField* {
+            auto attr_by_key =
+                [](const RecordingSubscriber::RecordedSpan& span,
+                   std::string_view key) -> const RecordingSubscriber::RecordedField* {
                 for (const auto& a : span.attributes) {
                     if (a.key == key) {
                         return &a;
@@ -822,22 +824,23 @@ namespace cinder {
                 }
                 return nullptr;
             };
+
             const auto compact = findSpanByOp(*sub, "persistence.compact");
             ASSERT_TRUE(compact.has_value());
-            ASSERT_NE(attrByKey(*compact, "entries"), nullptr);
-            EXPECT_EQ(attrByKey(*compact, "entries")->uint_val, 2U);
+            ASSERT_NE(attr_by_key(*compact, "entries"), nullptr);
+            EXPECT_EQ(attr_by_key(*compact, "entries")->uint_val, 2U);
             const auto snap_write = findSpanByOp(*sub, "snapshot.write");
             ASSERT_TRUE(snap_write.has_value());
-            ASSERT_NE(attrByKey(*snap_write, "entries"), nullptr);
-            EXPECT_EQ(attrByKey(*snap_write, "entries")->uint_val, 2U);
+            ASSERT_NE(attr_by_key(*snap_write, "entries"), nullptr);
+            EXPECT_EQ(attr_by_key(*snap_write, "entries")->uint_val, 2U);
             const auto replay = findSpanByOp(*sub, "persistence.replay");
             ASSERT_TRUE(replay.has_value());
-            ASSERT_NE(attrByKey(*replay, "entries"), nullptr);
-            EXPECT_EQ(attrByKey(*replay, "entries")->uint_val, 1U);
+            ASSERT_NE(attr_by_key(*replay, "entries"), nullptr);
+            EXPECT_EQ(attr_by_key(*replay, "entries")->uint_val, 1U);
             const auto snap_read = findSpanByOp(*sub, "snapshot.read");
             ASSERT_TRUE(snap_read.has_value());
-            ASSERT_NE(attrByKey(*snap_read, "entries"), nullptr);
-            EXPECT_EQ(attrByKey(*snap_read, "entries")->uint_val, 2U);
+            ASSERT_NE(attr_by_key(*snap_read, "entries"), nullptr);
+            EXPECT_EQ(attr_by_key(*snap_read, "entries")->uint_val, 2U);
         }
 
         TEST_F(PersistenceTest, CorruptSnapshotReportsErrorSpan) {

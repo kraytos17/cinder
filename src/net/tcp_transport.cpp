@@ -1,6 +1,7 @@
 #include "cinder/net/tcp_transport.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <string>
 #include <system_error>
@@ -16,6 +17,7 @@ using asio::async_write;
 using asio::buffer;
 using asio::error_code;
 using asio::io_context;
+using std::chrono::milliseconds;
 
 namespace {
     auto rpcError(bool timed_out, const char* phase, const error_code& ec) -> cinder::Error {
@@ -98,7 +100,7 @@ namespace cinder {
         addrs_.insert_or_assign(id, ClusterConfig::NodeConfig{id, host, port});
     }
 
-    void TcpTransport::setRpcTimeout(std::chrono::milliseconds timeout) {
+    void TcpTransport::setRpcTimeout(milliseconds timeout) {
         rpc_timeout_ms_.store(timeout.count(), std::memory_order_relaxed);
     }
 
@@ -195,10 +197,7 @@ namespace cinder {
             span.setAttribute({"phase", phase});
         };
 
-        asio::steady_timer timer(
-            ex,
-            std::chrono::milliseconds(rpc_timeout_ms_.load(std::memory_order_relaxed))
-        );
+        asio::steady_timer timer(ex, milliseconds(rpc_timeout_ms_.load(std::memory_order_relaxed)));
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wsubobject-linkage"

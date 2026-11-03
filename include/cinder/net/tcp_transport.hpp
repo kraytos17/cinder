@@ -4,6 +4,7 @@
 #include <asio.hpp>
 #include <asio/experimental/concurrent_channel.hpp>
 #include <atomic>
+#include <chrono>
 #include <flat_map>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,7 @@
 
 using asio::io_context;
 using asio::ip::tcp;
+using std::chrono::milliseconds;
 
 namespace cinder {
 
@@ -71,7 +73,7 @@ namespace cinder {
         void onMessage(MessageHandler handler) override;
 
         // Set the per-RPC deadline. Must be called before any send.
-        void setRpcTimeout(std::chrono::milliseconds timeout);
+        void setRpcTimeout(milliseconds timeout);
 
         // Close all cached sockets and cancel in-flight coroutines. Safe to call
         // multiple times. Must be called before the io_context is stopped.
@@ -135,7 +137,7 @@ namespace cinder {
         // Written by setRpcTimeout (config reload, any thread) and read by
         // sendCoroutine on io strands without taking mu_: plain member would
         // be a data race. Count-based atomic; the unit is milliseconds.
-        std::atomic<std::chrono::milliseconds::rep> rpc_timeout_ms_{5000};
+        std::atomic<milliseconds::rep> rpc_timeout_ms_{5000};
         // Set once by shutdown(); observed by in-flight coroutines. Atomic so
         // the check needs no lock on the send path.
         std::atomic<bool> stopping_{false};

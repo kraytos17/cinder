@@ -36,8 +36,12 @@
 #include "cinder/store/lru_store.hpp"
 #include "test_scratch.hpp"
 
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::minutes;
+using std::chrono::seconds;
 using std::chrono::steady_clock;
+using std::chrono::system_clock;
 
 namespace cinder {
     namespace {
@@ -360,20 +364,20 @@ namespace cinder {
             // adds the replacement, keeping count and bytes aligned.
             // Distinct keys: same-key writes coalesce instead of filling.
             // Fixed-width suffixes keep every filler hint the same size.
-            auto makeFillerKey = [](size_t i) {
+            auto make_filler_key = [](size_t i) {
                 auto num = std::to_string(i);
                 return "filler-" + std::string(4 - num.size(), '0') + num;
             };
             const uint64_t filler_bytes =
-                HintQueue::estimatedPayloadBytes(cctMakeHint("replica", makeFillerKey(0)));
+                HintQueue::estimatedPayloadBytes(cctMakeHint("replica", make_filler_key(0)));
             const uint64_t bytes_at_capacity =
                 first_bytes + second_bytes + (HintQueue::K_CAPACITY - 2) * filler_bytes;
             for (size_t i = 0; i < HintQueue::K_CAPACITY - 2; ++i) {
-                q.push(cctMakeHint("replica", makeFillerKey(i)));
+                q.push(cctMakeHint("replica", make_filler_key(i)));
             }
             ASSERT_EQ(entries.load(), HintQueue::K_CAPACITY);
             EXPECT_EQ(bytes.load(), bytes_at_capacity);
-            q.push(cctMakeHint("replica", makeFillerKey(HintQueue::K_CAPACITY)));
+            q.push(cctMakeHint("replica", make_filler_key(HintQueue::K_CAPACITY)));
             EXPECT_EQ(entries.load(), HintQueue::K_CAPACITY);
             EXPECT_EQ(bytes.load(), bytes_at_capacity - first_bytes + filler_bytes);
         }
@@ -535,7 +539,7 @@ namespace cinder {
             HintQueue q;
             constexpr int K_PRODUCERS = 4;
             constexpr int K_PER_PRODUCER = 200; // 800 total < 1024: no drops expected
-            const auto far = steady_clock::now() + std::chrono::seconds(3600);
+            const auto far = steady_clock::now() + seconds(3600);
 
             std::atomic<int> done{0};
             std::atomic<bool> go{false};
@@ -607,7 +611,7 @@ namespace cinder {
             constexpr int K_PER_PRODUCER = 2000; // 8000 total >> 1024: drops expected
             const auto start = steady_clock::now();
             const auto soon = start + milliseconds(50);
-            const auto far = start + std::chrono::seconds(3600);
+            const auto far = start + seconds(3600);
 
             std::atomic<int> done{0};
             std::atomic<bool> go{false};
@@ -727,10 +731,9 @@ namespace cinder {
         TEST(HintJournalTest, RoundtripPreservesLiveAndDropsTombstoned) {
             HintJournalDir paths;
             const uint64_t far_future =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::system_clock::now().time_since_epoch()
+                static_cast<uint64_t>(
+                    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
                 )
-                                          .count())
                 + 60'000U;
             {
                 HintQueue staging;
@@ -772,10 +775,9 @@ namespace cinder {
         TEST(HintJournalTest, TornTailTruncatesWithoutLosingHistory) {
             HintJournalDir paths;
             const uint64_t far_future =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::system_clock::now().time_since_epoch()
+                static_cast<uint64_t>(
+                    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
                 )
-                                          .count())
                 + 60'000U;
             {
                 HintQueue staging;
@@ -805,10 +807,9 @@ namespace cinder {
         TEST(HintJournalTest, CompactionRewritesFromLiveSnapshot) {
             HintJournalDir paths;
             const uint64_t far_future =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::system_clock::now().time_since_epoch()
+                static_cast<uint64_t>(
+                    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
                 )
-                                          .count())
                 + 600'000U;
             {
                 HintQueue staging;
@@ -821,7 +822,7 @@ namespace cinder {
                     for (int k = 0; k < 10; ++k) {
                         auto h = hjMakeHint("n2", "ck" + std::to_string(k), 1);
                         h.req.value = "r" + std::to_string(round);
-                        h.expires_at = steady_clock::now() + std::chrono::minutes(10);
+                        h.expires_at = steady_clock::now() + minutes(10);
                         journal.appendAdd(h, far_future);
                         staging.push(std::move(h));
                         if (round % 50 == 0) {
@@ -1218,10 +1219,9 @@ namespace cinder {
                 HintJournal journal;
                 journal.open(paths.journal, staging);
                 const uint64_t far_future =
-                    static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                              std::chrono::system_clock::now().time_since_epoch()
+                    static_cast<uint64_t>(
+                        duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
                     )
-                                              .count())
                     + 600'000ULL;
                 for (int i = 0; i < 4100; ++i) {
                     journal.appendAdd(hjMakeHint("n2", "ck" + std::to_string(i), 1), far_future);

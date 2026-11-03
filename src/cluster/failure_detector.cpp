@@ -8,6 +8,7 @@
 
 namespace cinder {
 
+    using std::chrono::duration_cast;
     using std::chrono::milliseconds;
 
     FailureDetector::FailureDetector(
@@ -31,8 +32,7 @@ namespace cinder {
 
         CINDER_INFO(
             "failure_detector started",
-            {"suspect_timeout_ms",
-             std::chrono::duration_cast<milliseconds>(suspect_timeout_.load()).count()}
+            {"suspect_timeout_ms", duration_cast<milliseconds>(suspect_timeout_.load()).count()}
         );
         // Late joiners discovered via gossip/failure-detection must be added
         // dynamically after start(); each arrival fires this callback.

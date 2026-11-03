@@ -1,13 +1,9 @@
 #include <array>
-#include <chrono>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <gtest/gtest.h>
 #include <string>
 #include <sys/wait.h>
-#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -296,6 +292,15 @@ namespace {
 #ifdef CINDER_ENABLE_TLS
 namespace {
 
+#include <chrono>
+#include <csignal>
+#include <filesystem>
+#include <thread>
+
+    using std::chrono::milliseconds;
+    using std::chrono::seconds;
+    using std::chrono::steady_clock;
+
     // Test certificates (see tests/fixtures). CMAKE_CURRENT_SOURCE_DIR for
     // this TU is tests/, matching the tls integration suite's layout.
     std::string cliFixturePath(const std::string& name) {
@@ -351,13 +356,13 @@ namespace {
 
         (void)kill(pid, SIGTERM);
         int status = 0;
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (std::chrono::steady_clock::now() < deadline) {
+        auto deadline = steady_clock::now() + seconds(2);
+        while (steady_clock::now() < deadline) {
             pid_t r = waitpid(pid, &status, WNOHANG);
             if (r == pid) {
                 return;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            std::this_thread::sleep_for(milliseconds(50));
         }
 
         (void)kill(pid, SIGKILL);
@@ -411,7 +416,7 @@ namespace {
             if (rc == 0 && out == "pong\n") {
                 return true;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::sleep_for(milliseconds(100));
         }
         return false;
     }

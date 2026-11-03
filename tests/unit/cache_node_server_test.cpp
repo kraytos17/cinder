@@ -15,6 +15,8 @@
 #include "integration/test_helpers.hpp"
 #include "test_scratch.hpp"
 
+using std::chrono::milliseconds;
+
 namespace cinder {
     namespace {
 
@@ -120,9 +122,9 @@ namespace cinder {
             opts.replica_factor = 1;
             opts.mode = ConsistencyMode::Async;
             opts.peers = {{"dead-peer", "127.0.0.1", dead_peer_port}};
-            opts.ping_interval = std::chrono::milliseconds(100);
-            opts.suspect_timeout = std::chrono::milliseconds(K_SUSPECT_A);
-            opts.gossip_interval = std::chrono::milliseconds(K_GOSSIP_A);
+            opts.ping_interval = milliseconds(100);
+            opts.suspect_timeout = milliseconds(K_SUSPECT_A);
+            opts.gossip_interval = milliseconds(K_GOSSIP_A);
             opts.io_threads = 4;
             opts.config_path = cfg_path;
             {
@@ -148,7 +150,7 @@ namespace cinder {
                 auto res = admin(net::Opcode::AdminInfo);
                 ready = res.has_value() && res->status == Errc::OK;
                 if (!ready) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::this_thread::sleep_for(milliseconds(50));
                 }
             }
             ASSERT_TRUE(ready);
@@ -486,7 +488,7 @@ namespace cinder {
                 std::thread runner([&] { server.run(); });
                 // Evict runs on a ~1s cadence; wait long enough to observe at
                 // least one background pass.
-                std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+                std::this_thread::sleep_for(milliseconds(2500));
                 server.shutdown();
                 runner.join();
                 setGlobalSubscriber(prev);

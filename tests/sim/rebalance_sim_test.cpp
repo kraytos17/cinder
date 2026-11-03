@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -11,6 +12,9 @@
 #include "cinder/store/lru_store.hpp"
 #include "sim_clock.hpp"
 #include "sim_transport.hpp"
+
+using std::chrono::milliseconds;
+using std::chrono::seconds;
 
 namespace cinder {
     namespace {
@@ -35,7 +39,7 @@ namespace cinder {
                 NodeId node_id,
                 size_t capacity,
                 int replica_factor,
-                std::chrono::milliseconds quarantine = std::chrono::milliseconds(0)
+                milliseconds quarantine = milliseconds(0)
             ) :
                 id(node_id),
                 clock(c),
@@ -71,10 +75,7 @@ namespace cinder {
             std::unique_ptr<RebalanceNode> node2;
             std::unique_ptr<RebalanceNode> node3;
 
-            explicit RebalanceCluster(
-                int rf = 1,
-                std::chrono::milliseconds quarantine = std::chrono::milliseconds(0)
-            ) :
+            explicit RebalanceCluster(int rf = 1, milliseconds quarantine = milliseconds(0)) :
                 replica_factor(rf) {
                 constexpr size_t CAPACITY = 1'048'576; // ample — no eviction of test keys
                 node1 =
@@ -321,7 +322,7 @@ namespace cinder {
         // window every copy push is skipped, rebalance() reports deferred work,
         // and nothing is sent. After the window clears, a re-rebalance pushes.
         TEST(RebalanceSimTest, QuarantinedOwnersDeferMigration) {
-            RebalanceCluster c(2, std::chrono::seconds(60));
+            RebalanceCluster c(2, seconds(60));
             c.seedTwoNodes();
 
             std::vector<std::string> keys;

@@ -2,6 +2,7 @@
 
 #include <asio.hpp>
 #include <cassert>
+#include <chrono>
 #include <utility>
 
 #include "cinder/cluster/gossip.hpp"
@@ -16,6 +17,9 @@
 using asio::async_read;
 using asio::async_write;
 using asio::buffer;
+using std::chrono::duration_cast;
+using std::chrono::nanoseconds;
+using std::chrono::steady_clock;
 
 namespace cinder::net {
 
@@ -428,7 +432,7 @@ namespace cinder::net {
         // sendResponse/maybeRead assume strand confinement.
         assert(strand_.running_in_this_thread());
         pending_opcode_ = req.opcode;
-        request_start_ = std::chrono::steady_clock::now();
+        request_start_ = steady_clock::now();
 
         Span span(getOperationName(req.opcode), SpanContext{req.trace_id, req.span_id});
         CINDER_DEBUG(
@@ -892,11 +896,9 @@ namespace cinder::net {
     void TcpConnection::sendResponse(const Response& res) {
         Span span("tcp.sendResponse", captureTraceContext());
         if (pending_opcode_.has_value() && metrics_) {
-            auto elapsed_ns =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                          std::chrono::steady_clock::now() - request_start_
-                )
-                                          .count());
+            auto elapsed_ns = static_cast<uint64_t>(
+                duration_cast<nanoseconds>(steady_clock::now() - request_start_).count()
+            );
             metrics_->opcodeMetrics().recordLatency(
                 std::to_underlying(*pending_opcode_),
                 elapsed_ns

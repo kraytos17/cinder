@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <set>
 #include <shared_mutex>
@@ -11,6 +12,11 @@
 #include <xxhash.h>
 
 #include "cinder/common/tracing.hpp"
+
+using std::chrono::duration_cast;
+using std::chrono::milliseconds;
+using std::chrono::nanoseconds;
+using std::chrono::system_clock;
 
 namespace cinder {
     namespace {
@@ -84,7 +90,7 @@ namespace cinder {
         uint32_t num_buckets,
         MetricsCollector* metrics,
         size_t fetch_bytes,
-        std::chrono::milliseconds full_rehash_interval
+        milliseconds full_rehash_interval
     ) :
         store_(store),
         ring_(ring),
@@ -179,13 +185,11 @@ namespace cinder {
 
         bool need_rehash = !xor_valid_.load(std::memory_order_acquire);
         if (!need_rehash) {
-            auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                clock_.now().time_since_epoch()
-            );
+            auto now_ns = duration_cast<nanoseconds>(clock_.now().time_since_epoch());
             auto last_ns = last_full_rehash_ns_.load(std::memory_order_acquire);
             auto interval = full_rehash_interval_.load(std::memory_order_acquire);
-            need_rehash = (now_ns.count() - last_ns)
-                >= std::chrono::duration_cast<std::chrono::nanoseconds>(interval).count();
+            need_rehash =
+                (now_ns.count() - last_ns) >= duration_cast<nanoseconds>(interval).count();
         }
         if (!need_rehash) {
             rehashing_.store(false, std::memory_order_release);
@@ -224,6 +228,7 @@ namespace cinder {
             pending_.clear();
             capturing_.store(true, std::memory_order_release);
         }
+
         std::vector<uint64_t> local(num_buckets_, 0);
         store_.forEach([this, &local](const std::string& key, const VersionedEntry& entry) {
             local[bucketFor(key)] ^= entryHash(key, entry);
@@ -258,12 +263,10 @@ namespace cinder {
                     std::memory_order_relaxed
                 );
             }
+
             xor_valid_.store(true, std::memory_order_release);
             last_full_rehash_ns_.store(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    clock_.now().time_since_epoch()
-                )
-                    .count(),
+                duration_cast<nanoseconds>(clock_.now().time_since_epoch()).count(),
                 std::memory_order_release
             );
         }

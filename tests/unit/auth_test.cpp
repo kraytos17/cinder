@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gtest/gtest.h>
 #include <string>
 
@@ -6,6 +7,7 @@
 
 using namespace cinder;
 using namespace cinder::net;
+using std::chrono::milliseconds;
 
 TEST(HmacTest, ComputeHmacSha256) {
     auto digest = computeHmacSha256("secret", "message");
@@ -159,7 +161,7 @@ TEST(ProtocolAuthTest, RequestWithAuthAndTtl) {
     req.opcode = Opcode::Set;
     req.key = "ttl-key";
     req.value = "ttl-value";
-    req.ttl = std::chrono::milliseconds(5000);
+    req.ttl = milliseconds(5000);
     std::string auth_token(32, '\xEF');
 
     auto encoded = encode(req, auth_token);

@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gtest/gtest.h>
 #include <string>
 #include <thread>
@@ -7,6 +8,8 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/cache_node_server.hpp"
 #include "integration/test_helpers.hpp"
+
+using std::chrono::milliseconds;
 
 namespace cinder {
     namespace {
@@ -72,7 +75,7 @@ namespace cinder {
                         return true;
                     }
 
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    std::this_thread::sleep_for(milliseconds(50));
                 }
                 return false;
             }

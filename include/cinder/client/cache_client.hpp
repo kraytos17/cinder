@@ -20,6 +20,7 @@
 
 using asio::io_context;
 using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
 namespace cinder {
 
@@ -101,7 +102,7 @@ namespace cinder {
             std::string value;
             Version version = 0;
             uint64_t writer_node_hash = 0;
-            std::optional<std::chrono::system_clock::time_point> expires_at;
+            std::optional<system_clock::time_point> expires_at;
         };
 
         auto getVersioned(const std::string& key) -> std::optional<VersionedValue>;

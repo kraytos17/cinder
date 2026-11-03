@@ -11,6 +11,7 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 
 namespace cinder {
@@ -55,8 +56,7 @@ namespace cinder {
 
         CINDER_INFO(
             "gossip started",
-            {"interval_ms",
-             std::chrono::duration_cast<milliseconds>(gossip_interval_.load()).count()}
+            {"interval_ms", duration_cast<milliseconds>(gossip_interval_.load()).count()}
         );
         // Late joiners discovered via gossip/failure-detection must be added
         // dynamically after start(); each arrival fires this callback.

@@ -1,6 +1,7 @@
 #include "cinder/net/tcp_server.hpp"
 
 #include <asio.hpp>
+#include <chrono>
 #include <memory>
 #include <utility>
 
@@ -12,6 +13,7 @@
 
 using asio::io_context;
 using asio::ip::tcp;
+using std::chrono::milliseconds;
 
 namespace cinder::net {
 
@@ -229,7 +231,7 @@ namespace cinder::net {
                     return !c->isAlive();
                 });
 
-                emfile_timer_.expires_after(std::chrono::milliseconds(100));
+                emfile_timer_.expires_after(milliseconds(100));
                 emfile_timer_.async_wait(
                     asio::bind_executor(strand_, [this](std::error_code timer_ec) {
                     if (!timer_ec && !stopping_ && acceptor_.is_open()) {

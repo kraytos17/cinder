@@ -4,7 +4,9 @@
 
 #include "cinder/common/tracing.hpp"
 
+using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
 namespace cinder {
 
@@ -314,11 +316,11 @@ namespace cinder {
         }
 
         span.setStatus(SpanStatus::Ok);
-        auto remaining = *got->expires_at - std::chrono::system_clock::now();
-        if (remaining <= std::chrono::system_clock::duration::zero()) {
+        auto remaining = *got->expires_at - system_clock::now();
+        if (remaining <= system_clock::duration::zero()) {
             return milliseconds{0};
         }
-        return std::chrono::duration_cast<milliseconds>(remaining);
+        return duration_cast<milliseconds>(remaining);
     }
 
     auto CacheClient::multiSet(

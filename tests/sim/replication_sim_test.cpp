@@ -16,6 +16,7 @@
 
 using std::chrono::milliseconds;
 using std::chrono::seconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
     namespace {
@@ -175,9 +176,9 @@ namespace cinder {
         // Block (up to a generous deadline) until the async decision arrives.
         // Failure means the quorum never decided — the bug being guarded.
         auto awaitDecision(std::atomic<int>& done_count) -> bool {
-            auto deadline = std::chrono::steady_clock::now() + seconds(10);
+            auto deadline = steady_clock::now() + seconds(10);
             while (done_count.load() == 0) {
-                if (std::chrono::steady_clock::now() >= deadline) {
+                if (steady_clock::now() >= deadline) {
                     return false;
                 }
                 std::this_thread::sleep_for(milliseconds(1));
@@ -493,8 +494,8 @@ namespace cinder {
             // node2 fails once (hinted, pending 2→1: no decision either way).
             auto dup = c.transport.peekSend(0);
             (*dup)(cinder::err(Error(Errc::NotReady, "deferred failure")));
-            auto hint_deadline = std::chrono::steady_clock::now() + seconds(10);
-            while (c.mgr.hintCount() != 1u && std::chrono::steady_clock::now() < hint_deadline) {
+            auto hint_deadline = steady_clock::now() + seconds(10);
+            while (c.mgr.hintCount() != 1u && steady_clock::now() < hint_deadline) {
                 std::this_thread::sleep_for(milliseconds(1));
             }
             ASSERT_EQ(c.mgr.hintCount(), 1u);

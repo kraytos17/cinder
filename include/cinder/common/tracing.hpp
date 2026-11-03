@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+using std::chrono::steady_clock;
+
 namespace cinder {
 
     enum class LogLevel : uint8_t {
@@ -422,7 +424,7 @@ namespace cinder {
         virtual void spanEvent(
             uint64_t /*span_id*/,
             std::string_view /*name*/,
-            std::chrono::steady_clock::time_point /*at*/,
+            steady_clock::time_point /*at*/,
             std::initializer_list<FieldValue> /*fields*/ = {}
         ) noexcept {}
 
@@ -490,7 +492,7 @@ namespace cinder {
         void spanEvent(
             uint64_t span_id,
             std::string_view name,
-            std::chrono::steady_clock::time_point at,
+            steady_clock::time_point at,
             std::initializer_list<FieldValue> fields = {}
         ) noexcept override;
         void event(const EventRecord& record) noexcept override;
@@ -529,7 +531,7 @@ namespace cinder {
         void spanEvent(
             uint64_t span_id,
             std::string_view name,
-            std::chrono::steady_clock::time_point at,
+            steady_clock::time_point at,
             std::initializer_list<FieldValue> fields = {}
         ) noexcept override;
         void event(const EventRecord& record) noexcept override;
@@ -561,7 +563,7 @@ namespace cinder {
         };
 
         struct RecordedEvent {
-            std::chrono::steady_clock::time_point at{};
+            steady_clock::time_point at{};
             std::string name;
             std::vector<RecordedField> fields;
         };
@@ -579,8 +581,8 @@ namespace cinder {
             uint64_t trace_id = 0;
             uint64_t parent_span_id = 0;
             std::string operation;
-            std::chrono::steady_clock::time_point started_at{};
-            std::chrono::steady_clock::time_point ended_at{};
+            steady_clock::time_point started_at{};
+            steady_clock::time_point ended_at{};
             SpanStatus status = SpanStatus::Unset;
             // Last write wins per key.
             std::vector<RecordedField> attributes;
@@ -604,7 +606,7 @@ namespace cinder {
         void spanEvent(
             uint64_t span_id,
             std::string_view name,
-            std::chrono::steady_clock::time_point at,
+            steady_clock::time_point at,
             std::initializer_list<FieldValue> fields = {}
         ) noexcept override;
         void event(const EventRecord& record) noexcept override;

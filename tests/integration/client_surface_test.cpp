@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
@@ -11,6 +12,8 @@ using cinder::net::test::NodeProcGuard;
 using cinder::net::test::pickHeldPort;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
+using std::chrono::milliseconds;
+using std::chrono::system_clock;
 
 namespace cinder {
     namespace {
@@ -59,15 +62,13 @@ namespace cinder {
         }
 
         TEST_F(ClientSurfaceTest, GetVersionedCarriesMetadata) {
-            ASSERT_TRUE(
-                client_->set("vkey", "vval", std::chrono::milliseconds(60'000)).has_value()
-            );
+            ASSERT_TRUE(client_->set("vkey", "vval", milliseconds(60'000)).has_value());
             auto got = client_->getVersioned("vkey");
             ASSERT_TRUE(got.has_value());
             EXPECT_EQ(got->value, "vval");
             EXPECT_GT(got->version, 0U);
             ASSERT_TRUE(got->expires_at.has_value());
-            EXPECT_GT(*got->expires_at, std::chrono::system_clock::now());
+            EXPECT_GT(*got->expires_at, system_clock::now());
         }
 
         TEST_F(ClientSurfaceTest, GetVersionedNoTtlHasNoExpiry) {
@@ -83,7 +84,7 @@ namespace cinder {
         }
 
         TEST_F(ClientSurfaceTest, TtlRemainingWithinBounds) {
-            ASSERT_TRUE(client_->set("ttlkey", "v", std::chrono::milliseconds(60'000)).has_value());
+            ASSERT_TRUE(client_->set("ttlkey", "v", milliseconds(60'000)).has_value());
             auto remaining = client_->ttl("ttlkey");
             ASSERT_TRUE(remaining.has_value());
             EXPECT_GT(remaining->count(), 0);

@@ -12,9 +12,10 @@
 
 namespace {
 
-    using steady_clock = std::chrono::steady_clock;
+    using std::chrono::milliseconds;
+    using std::chrono::steady_clock;
 
-    static auto makeHint(FuzzedDataProvider& fdp, steady_clock::time_point now)
+    auto makeHint(FuzzedDataProvider& fdp, steady_clock::time_point now)
         -> cinder::HintQueue::Hint {
         cinder::HintQueue::Hint hint;
         hint.target = fdp.ConsumeRandomLengthString(8);
@@ -26,7 +27,8 @@ namespace {
         const int64_t delta = fdp.PickValueInArray(
             {int64_t{-1}, int64_t{0}, int64_t{1}, fdp.ConsumeIntegral<int64_t>() % 1'000'000}
         );
-        hint.expires_at = now + std::chrono::milliseconds(delta);
+
+        hint.expires_at = now + milliseconds(delta);
         return hint;
     }
 
@@ -65,7 +67,7 @@ namespace {
     static void sequence(FuzzedDataProvider& fdp) {
         cinder::HintQueue queue;
         std::deque<cinder::HintQueue::Hint> model;
-        auto now = steady_clock::time_point(std::chrono::milliseconds(1'000'000));
+        auto now = steady_clock::time_point(milliseconds(1'000'000));
 
         const size_t n_ops = fdp.ConsumeIntegralInRange<size_t>(0, 128);
         for (size_t i = 0; i < n_ops; ++i) {
@@ -142,7 +144,7 @@ namespace {
             } else if (op == 3) {
                 // Advance time: entries expire only when a snapshot reaps them;
                 // size() alone must not drop anything.
-                now += std::chrono::milliseconds(fdp.ConsumeIntegralInRange<int64_t>(0, 2'000'000));
+                now += milliseconds(fdp.ConsumeIntegralInRange<int64_t>(0, 2'000'000));
                 assert(queue.size() == model.size());
             } else {
                 // Legacy tuple removal: removes the first matching

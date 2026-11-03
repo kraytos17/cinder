@@ -15,6 +15,9 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/status.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
 namespace {
 
     // Deterministic clock: gossip tick seeds its RNG from the clock, so a fixed
@@ -22,8 +25,8 @@ namespace {
     class FuzzClock final : public cinder::Clock {
     public:
 
-        auto now() const -> std::chrono::steady_clock::time_point override {
-            return std::chrono::steady_clock::time_point(std::chrono::milliseconds(1'000'000));
+        auto now() const -> steady_clock::time_point override {
+            return steady_clock::time_point(milliseconds(1'000'000));
         }
     };
 
@@ -192,8 +195,7 @@ namespace {
         cinder::MembershipTable table("fuzz-self");
         FuzzTransport transport;
         FuzzClock clock;
-        cinder::GossipManager
-            gm(clock, transport, table, "fuzz-self", std::chrono::milliseconds(1000));
+        cinder::GossipManager gm(clock, transport, table, "fuzz-self", milliseconds(1000));
 
         cinder::net::Request req;
         req.opcode = cinder::net::Opcode::Gossip;

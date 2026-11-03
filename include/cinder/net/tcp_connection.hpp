@@ -28,6 +28,8 @@
 #include "cinder/store/cache_store.hpp"
 
 using asio::ip::tcp;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
     class ReplicationManager;
@@ -82,11 +84,11 @@ namespace cinder::net {
         // is closed instead of buffering unbounded responses for a slow client.
         static constexpr size_t K_MAX_WRITE_QUEUE_BYTES = 4 * 1024 * 1024;
         // No complete request/response on a connection for this long -> close it.
-        static constexpr auto K_IDLE_TIMEOUT = std::chrono::seconds(30);
+        static constexpr auto K_IDLE_TIMEOUT = seconds(30);
         // Grace period granted to in-flight requests when the server is shutting
         // down. After this, connections still holding a pending request are
         // force-closed. Reuses the idle-timer machinery as the backstop.
-        static constexpr auto K_DRAIN_TIMEOUT = std::chrono::seconds(2);
+        static constexpr auto K_DRAIN_TIMEOUT = seconds(2);
 
         TcpConnection(
             tcp::socket socket,
@@ -248,7 +250,7 @@ namespace cinder::net {
         size_t payload_len_ = 0;
         uint8_t flags_ = 0; // bit 0: writing_, bit 1: reading_, bit 2: draining_
         std::optional<Opcode> pending_opcode_;
-        std::chrono::steady_clock::time_point request_start_{};
+        steady_clock::time_point request_start_{};
         std::deque<std::vector<std::byte>> write_queue_;
         size_t write_queue_bytes_ = 0;
         std::vector<std::byte> encode_buf_; // Scratch buffer, recycled across writes.

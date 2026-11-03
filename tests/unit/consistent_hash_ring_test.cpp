@@ -1,4 +1,5 @@
 #include <atomic>
+#include <chrono>
 #include <gtest/gtest.h>
 #include <set>
 #include <string>
@@ -6,6 +7,8 @@
 #include <vector>
 
 #include "cinder/hashing/consistent_hash_ring.hpp"
+
+using std::chrono::milliseconds;
 
 namespace cinder {
     namespace {
@@ -404,7 +407,7 @@ namespace cinder {
                 });
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(milliseconds(200));
             stop.store(true, std::memory_order_relaxed);
             for (auto& th : threads) {
                 th.join();

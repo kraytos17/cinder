@@ -1,3 +1,4 @@
+#include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
 #include <stdexcept>
@@ -6,6 +7,8 @@
 #include <vector>
 
 #include "cinder/common/tracing.hpp"
+
+using std::chrono::steady_clock;
 
 namespace cinder {
     namespace {
@@ -868,7 +871,7 @@ namespace cinder {
                 void spanEvent(
                     uint64_t id,
                     std::string_view name,
-                    std::chrono::steady_clock::time_point /*at*/,
+                    steady_clock::time_point /*at*/,
                     std::initializer_list<FieldValue> /*fields*/
                 ) noexcept override {
                     event_calls.emplace_back(id, std::string(name));

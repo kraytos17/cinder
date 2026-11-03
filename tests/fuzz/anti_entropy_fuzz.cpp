@@ -17,6 +17,10 @@
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/lru_store.hpp"
 
+using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+using std::chrono::system_clock;
+
 namespace {
 
     // Deterministic clock so TTL expiries are reproducible (no RealClock).
@@ -27,14 +31,12 @@ namespace {
     class FuzzClock final : public cinder::Clock {
     public:
 
-        auto now() const -> std::chrono::steady_clock::time_point override {
-            return std::chrono::steady_clock::time_point(std::chrono::milliseconds(1'000'000));
+        auto now() const -> steady_clock::time_point override {
+            return steady_clock::time_point(milliseconds(1'000'000));
         }
 
-        auto nowSystem() const -> std::chrono::system_clock::time_point override {
-            return std::chrono::system_clock::time_point(
-                std::chrono::milliseconds(1'700'000'000'000LL)
-            );
+        auto nowSystem() const -> system_clock::time_point override {
+            return system_clock::time_point(milliseconds(1'700'000'000'000LL));
         }
     };
 
@@ -71,8 +73,8 @@ namespace {
         e.setVersionAndTtl(fdp.ConsumeIntegral<cinder::Version>(), has_ttl);
         e.writer_node_hash = fdp.ConsumeIntegral<uint64_t>();
         if (has_ttl) {
-            e.expires_at = clock.now()
-                + std::chrono::milliseconds(fdp.ConsumeIntegralInRange<int64_t>(0, 500'000));
+            e.expires_at =
+                clock.now() + milliseconds(fdp.ConsumeIntegralInRange<int64_t>(0, 500'000));
         }
         return e;
     }
