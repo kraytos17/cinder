@@ -104,9 +104,11 @@ namespace {
 
     // Codec roundtrips: decode inverts encode exactly, and a wrong bucket count
     // rejects the digest. Meta rows and sync messages round-trip too, with
-    // exact-size validation rejecting truncation and junk.
+    // exact-size validation rejecting truncation and junk. Group digests and
+    // the compact phase-1 / refinement codecs round-trip as well.
     static void codecRoundtrip(FuzzedDataProvider& fdp) {
-        if (fdp.ConsumeBool()) {
+        const int mode = fdp.ConsumeIntegralInRange<int>(0, 2);
+        if (mode == 0) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
             std::vector<uint64_t> digest;
             for (size_t i = 0; i < n; ++i) {
@@ -119,7 +121,7 @@ namespace {
             // Wrong expectation rejects.
             auto wrong = cinder::AntiEntropyManager::decodeDigest(blob, n + 1);
             assert(!wrong.has_value());
-        } else {
+        } else if (mode == 2) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
             std::vector<cinder::AntiEntropyManager::MetaRow> rows;
             for (size_t i = 0; i < n; ++i) {
@@ -145,6 +147,55 @@ namespace {
                 assert((*back)[i].version == rows[i].version);
                 assert((*back)[i].writer == rows[i].writer);
             }
+        } else if (mode == 1) {
+            const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 8);
+            std::vector<uint64_t> groups;
+            for (size_t i = 0; i < n; ++i) {
+                groups.push_back(fdp.ConsumeIntegral<uint64_t>());
+            }
+            auto blob = cinder::AntiEntropyManager::encodeGroupDigest(groups);
+            auto back = cinder::AntiEntropyManager::decodeGroupDigest(blob, n);
+            assert(back.has_value());
+            assert(*back == groups);
+            assert(!cinder::AntiEntropyManager::decodeGroupDigest(blob, n + 1).has_value());
+
+            cinder::AntiEntropyManager::BucketRefinement req;
+            const size_t m = fdp.ConsumeIntegralInRange<size_t>(0, 8);
+            for (size_t i = 0; i < m; ++i) {
+                // Keep indices in range: out-of-range buckets are (correctly)
+                // rejected by the decoder.
+                req.bucket_hashes.emplace_back(
+                    fdp.ConsumeIntegral<uint32_t>() % 1024,
+                    fdp.ConsumeIntegral<uint64_t>()
+                );
+            }
+            auto req_blob = cinder::AntiEntropyManager::encodeBucketRefinement(req);
+            auto req_back = cinder::AntiEntropyManager::decodeBucketRefinement(req_blob, 1024);
+            assert(req_back.has_value());
+            assert(req_back->bucket_hashes == req.bucket_hashes);
+            // Truncation and out-of-range bucket indices are rejected.
+            assert(!cinder::AntiEntropyManager::decodeBucketRefinement(
+                        req_blob.substr(0, req_blob.size() > 0 ? req_blob.size() - 1 : 0),
+                        1024
+            )
+                        .has_value());
+        } else {
+            const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 8);
+            std::vector<uint64_t> groups;
+            for (size_t i = 0; i < n; ++i) {
+                groups.push_back(fdp.ConsumeIntegral<uint64_t>());
+            }
+            cinder::AntiEntropyManager::DigestResponse resp;
+            resp.group_hashes = groups;
+            auto blob = cinder::AntiEntropyManager::encodeDigestResponse(resp);
+            auto back = cinder::AntiEntropyManager::decodeDigestResponse(blob, n);
+            assert(back.has_value());
+            assert(back->group_hashes == groups);
+            assert(back->bucket_hashes.empty());
+            assert(back->covered_buckets.empty());
+            assert(back->rows.empty());
+            std::string truncated = blob.substr(0, blob.size() - 1);
+            assert(!cinder::AntiEntropyManager::decodeDigestResponse(truncated, n).has_value());
         }
     }
 
@@ -220,7 +271,16 @@ namespace {
 
         bool responded = false;
         if (req.opcode == cinder::net::Opcode::AntiEntropyDigest) {
-            mgr.onDigestRequest("fuzz-peer", req, [&](cinder::net::Response) { responded = true; });
+            if (fdp.ConsumeBool()) {
+                req.key = "bucket-refinement-v3";
+                mgr.onBucketRefinement("fuzz-peer", req, [&](cinder::net::Response) {
+                    responded = true;
+                });
+            } else {
+                mgr.onDigestRequest("fuzz-peer", req, [&](cinder::net::Response) {
+                    responded = true;
+                });
+            }
         } else {
             mgr.onSyncRequest("fuzz-peer", req, [&](cinder::net::Response) { responded = true; });
         }

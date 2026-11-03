@@ -16,6 +16,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
@@ -52,8 +53,12 @@ namespace cinder {
 
         // Schema magics (u32 LE) prefixing every anti-entropy payload.
         static constexpr uint32_t K_DIGEST_MAGIC = 0x41454D32; // "AEM2"
+        static constexpr uint32_t K_GROUP_DIGEST_MAGIC = 0x41454D33; // "AEM3"
+        static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455233; // "AER3"
+        static constexpr uint32_t K_BUCKET_REFINEMENT_MAGIC = 0x41454233; // "AEB3"
         static constexpr uint32_t K_SYNC_MAGIC = 0x41454D53; // "AEMS"
         static constexpr uint32_t K_NEED_MAGIC = 0x41454D4E; // "AEMN"
+        static constexpr uint32_t K_BUCKETS_PER_GROUP = 16;
 
         // Upper bound on metadata rows per digest response. Buckets fill
         // atomically (a bucket's rows are all included or the bucket is
@@ -95,6 +100,17 @@ namespace cinder {
             std::vector<std::pair<uint64_t, std::string>> have;
         };
 
+        struct DigestResponse {
+            std::vector<uint64_t> group_hashes;
+            std::vector<std::pair<uint32_t, uint64_t>> bucket_hashes;
+            std::vector<uint32_t> covered_buckets;
+            std::vector<MetaRow> rows;
+        };
+
+        struct BucketRefinement {
+            std::vector<std::pair<uint32_t, uint64_t>> bucket_hashes;
+        };
+
         AntiEntropyManager(
             CacheStore& store,
             ConsistentHashRing& ring,
@@ -128,8 +144,11 @@ namespace cinder {
         // bucket-atomically up to max_bytes. Layout: [MAGIC][row count u32]
         // [rows: key_hash u64, version u64, writer u64]*.
         [[nodiscard]]
-        auto collectMetadata(const std::vector<uint32_t>& bucket_ids, size_t max_bytes) const
-            -> std::string;
+        auto collectMetadata(
+            const std::vector<uint32_t>& bucket_ids,
+            size_t max_bytes,
+            std::vector<uint32_t>* covered_buckets = nullptr
+        ) const -> std::string;
 
         // Full entries for the given key hashes (needlist serving), sorted by
         // key_hash, bounded by max_bytes. Layout: entries-only sync blob.
@@ -152,7 +171,8 @@ namespace cinder {
         [[nodiscard]]
         auto diffRows(
             const std::vector<MetaRow>& rows,
-            const std::vector<uint32_t>& divergent
+            const std::vector<uint32_t>& divergent,
+            const std::vector<uint32_t>& covered_buckets = {}
         ) const -> MetaDiff;
 
         // Apply a decoded sync message's entries via putVersioned (LWW).
@@ -164,7 +184,7 @@ namespace cinder {
         // Kept for tests/fuzz; production flows use decodeSync + applySync.
         auto applyEntries(std::string_view data) -> size_t;
 
-        // Serialize a digest vector: [MAGIC][u32 num][u64 hash * num].
+        // Legacy flat digest codec retained for fuzz and diagnostics.
         [[nodiscard]]
         static auto encodeDigest(const std::vector<uint64_t>& digest) -> std::string;
 
@@ -174,6 +194,33 @@ namespace cinder {
         [[nodiscard]]
         static auto decodeDigest(std::string_view data, size_t expected_buckets)
             -> std::optional<std::vector<uint64_t>>;
+
+        // Bucket indices are grouped in fixed consecutive runs
+        // of 16. Group hash folds (bucket index, bucket hash) in order.
+        [[nodiscard]]
+        static auto groupDigests(const std::vector<uint64_t>& bucket_hashes)
+            -> std::vector<uint64_t>;
+
+        [[nodiscard]]
+        static auto encodeGroupDigest(const std::vector<uint64_t>& groups) -> std::string;
+
+        [[nodiscard]]
+        static auto decodeGroupDigest(std::string_view data, size_t expected_groups)
+            -> std::optional<std::vector<uint64_t>>;
+
+        [[nodiscard]]
+        static auto encodeBucketRefinement(const BucketRefinement& request) -> std::string;
+
+        [[nodiscard]]
+        static auto decodeBucketRefinement(std::string_view data, size_t expected_groups)
+            -> std::optional<BucketRefinement>;
+
+        [[nodiscard]]
+        static auto encodeDigestResponse(const DigestResponse& response) -> std::string;
+
+        [[nodiscard]]
+        static auto decodeDigestResponse(std::string_view data, size_t expected_groups)
+            -> std::optional<DigestResponse>;
 
         // Serialize metadata rows: [MAGIC][u32 count][rows...].
         [[nodiscard]]
@@ -192,13 +239,6 @@ namespace cinder {
         // Parse a sync message with exact-size validation at every step.
         [[nodiscard]]
         auto decodeSync(std::string_view data) const -> std::optional<SyncMessage>;
-
-        // Split a digest response payload into its digest and metadata
-        // sections. The digest section has a fixed size derived from the
-        // bucket count; the remainder is the metadata blob.
-        [[nodiscard]]
-        static auto splitDigestResponse(std::string_view payload, size_t num_buckets)
-            -> std::optional<std::pair<std::string_view, std::string_view>>;
 
         // Select next partner round-robin from the cached replica set. The
         // set refreshes on full-rehash rounds (which scan anyway) and when
@@ -224,6 +264,12 @@ namespace cinder {
         // that defers the callback (post, async store access) must switch to
         // shared_from_this capture and re-enter via the connection's strand.
         void onDigestRequest(
+            const NodeId& from,
+            const net::Request& req,
+            std::function<void(net::Response)> respond
+        );
+
+        void onBucketRefinement(
             const NodeId& from,
             const net::Request& req,
             std::function<void(net::Response)> respond
@@ -275,6 +321,13 @@ namespace cinder {
         // full-rehash rounds (which scan anyway) and when the cache is empty,
         // so steady-state rounds never scan for partners.
         void refreshPartners(int replica_factor);
+
+        void finishRefinement(
+            const std::vector<uint64_t>& local_bucket_hashes,
+            const NodeId& partner,
+            SpanContext round_ctx,
+            const DigestResponse& response
+        );
 
         // Fill entries for sorted (hash, key) pairs up to max_bytes, via
         // point lookups (deterministic order, cursor-free convergence: the

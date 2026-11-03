@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>
@@ -500,7 +501,14 @@ namespace cinder {
             ) override {
                 net::Response resp;
                 if (req.opcode == net::Opcode::AntiEntropyDigest) {
-                    peer->onDigestRequest(from, req, [&](net::Response r) { resp = std::move(r); });
+                    auto respond = [&](net::Response r) {
+                        resp = std::move(r);
+                    };
+                    if (req.key == "bucket-refinement-v3") {
+                        peer->onBucketRefinement(from, req, respond);
+                    } else {
+                        peer->onDigestRequest(from, req, respond);
+                    }
                 } else {
                     peer->onSyncRequest(from, req, [&](net::Response r) { resp = std::move(r); });
                 }
@@ -722,9 +730,8 @@ namespace cinder {
         class DeferredScriptedTransport : public Transport {
         public:
 
-            explicit DeferredScriptedTransport(AntiEntropyManager* manager, uint32_t buckets) :
-                manager_(manager),
-                buckets_(buckets) {}
+            explicit DeferredScriptedTransport(AntiEntropyManager* manager) :
+                manager_(manager) {}
 
             void setManager(AntiEntropyManager* manager) {
                 manager_ = manager;
@@ -745,14 +752,21 @@ namespace cinder {
             ) override {
                 if (req.opcode == net::Opcode::AntiEntropyDigest) {
                     seen_digest_trace = req.trace_id;
-                    auto zeros = std::vector<uint64_t>(buckets_, 0);
+                    auto local = manager_->digestForRound();
                     net::Response resp{
                         .status = Errc::OK,
-                        .value = AntiEntropyManager::encodeDigest(zeros)
-                            + AntiEntropyManager::encodeMetaRows({}),
+                        .value = AntiEntropyManager::encodeDigestResponse({
+                            .group_hashes = AntiEntropyManager::groupDigests(local),
+                            .bucket_hashes = {},
+                            .covered_buckets = {},
+                            .rows = {},
+                        }),
                     };
+
                     pending_digest_ = std::move(on_done);
                     pending_digest_response_ = std::move(resp);
+                } else if (req.opcode == net::Opcode::AntiEntropyDigest) {
+                    on_done(err<net::Response>(Error(Errc::NotReady, "refinement not scripted")));
                 } else {
                     net::Response resp{
                         .status = Errc::OK,
@@ -773,10 +787,165 @@ namespace cinder {
         private:
 
             AntiEntropyManager* manager_ = nullptr;
-            uint32_t buckets_;
             RequestCallback pending_digest_;
             net::Response pending_digest_response_;
         };
+
+        TEST(AntiEntropyEncodeTest, HierarchicalDigestRoundTripAndValidation) {
+            const std::vector<uint64_t> buckets = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+            auto groups = AntiEntropyManager::groupDigests(buckets);
+            ASSERT_EQ(groups.size(), 1U);
+
+            AntiEntropyManager::DigestResponse response{
+                .group_hashes = groups,
+                .bucket_hashes = {{0, 1}, {1, 2}, {8, 9}},
+                .covered_buckets = {0, 1, 8},
+                .rows = {{0, 11, 1, 7}, {1, 22, 2, 7}},
+            };
+
+            auto blob = AntiEntropyManager::encodeDigestResponse(response);
+            auto decoded = AntiEntropyManager::decodeDigestResponse(blob, groups.size());
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->group_hashes, groups);
+            EXPECT_EQ(decoded->bucket_hashes, response.bucket_hashes);
+            EXPECT_EQ(decoded->covered_buckets, response.covered_buckets);
+            ASSERT_EQ(decoded->rows.size(), 2U);
+            EXPECT_EQ(decoded->rows[0].key_hash, 11U);
+
+            EXPECT_FALSE(AntiEntropyManager::decodeGroupDigest(blob, groups.size()).has_value());
+            EXPECT_FALSE(
+                AntiEntropyManager::decodeDigestResponse(
+                    std::string_view(blob).substr(0, blob.size() - 1),
+                    groups.size()
+                )
+                    .has_value()
+            );
+        }
+
+        TEST(AntiEntropyDigestTest, GroupDigestChangesOnlyContainingGroup) {
+            Node a;
+            Node b;
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 32);
+            AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 32);
+            auto before_a = AntiEntropyManager::groupDigests(ma.computeDigest());
+            auto before_b = AntiEntropyManager::groupDigests(mb.computeDigest());
+            EXPECT_EQ(before_a, before_b);
+
+            ASSERT_TRUE(b.store.putVersioned("one-key", makeEntry("v", 1)).has_value());
+            auto after_b = AntiEntropyManager::groupDigests(mb.computeDigest());
+            size_t changed = 0;
+            for (size_t i = 0; i < before_a.size(); ++i) {
+                changed += before_a[i] != after_b[i] ? 1U : 0U;
+            }
+            EXPECT_EQ(changed, 1U);
+        }
+
+        TEST(AntiEntropyHandlerTest, MatchingGroupDigestSendsNoBucketHashesOrRows) {
+            Node a;
+            ASSERT_TRUE(a.store.putVersioned("key", makeEntry("v", 1)).has_value());
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 32);
+            auto groups = AntiEntropyManager::groupDigests(ma.computeDigest());
+            net::Request req;
+            req.opcode = net::Opcode::AntiEntropyDigest;
+            req.value = AntiEntropyManager::encodeGroupDigest(groups);
+            std::optional<net::Response> response;
+            ma.onDigestRequest("n2", req, [&](net::Response r) { response = std::move(r); });
+            ASSERT_TRUE(response.has_value());
+            ASSERT_TRUE(response->value.has_value());
+            auto decoded =
+                AntiEntropyManager::decodeDigestResponse(*response->value, groups.size());
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->group_hashes, groups);
+            EXPECT_TRUE(decoded->bucket_hashes.empty());
+            EXPECT_TRUE(decoded->covered_buckets.empty());
+            EXPECT_TRUE(decoded->rows.empty());
+        }
+
+        TEST(AntiEntropyHandlerTest, DivergentGroupRefinesToItsBuckets) {
+            constexpr uint32_t K_BUCKETS = 64;
+            Node node;
+            ASSERT_TRUE(node.store.putVersioned("key", makeEntry("v", 1)).has_value());
+            AntiEntropyManager manager(
+                node.store,
+                node.ring,
+                "n1",
+                node.clock,
+                node.transport,
+                K_BUCKETS,
+                &node.metrics
+            );
+
+            // Phase 1 carries group hashes only — no bucket hashes, coverage,
+            // or rows, even when groups diverge.
+            auto local_buckets = manager.computeDigest();
+            auto local_groups = AntiEntropyManager::groupDigests(local_buckets);
+            auto remote_groups = local_groups;
+            remote_groups[1] ^= 0xfeedbeefU;
+            net::Request req;
+            req.opcode = net::Opcode::AntiEntropyDigest;
+            req.value = AntiEntropyManager::encodeGroupDigest(remote_groups);
+            std::optional<net::Response> response;
+            manager.onDigestRequest("n2", req, [&](net::Response r) { response = std::move(r); });
+            ASSERT_TRUE(response.has_value());
+            ASSERT_EQ(response->status, Errc::OK);
+            ASSERT_TRUE(response->value.has_value());
+            auto decoded =
+                AntiEntropyManager::decodeDigestResponse(*response->value, remote_groups.size());
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->group_hashes, local_groups);
+            EXPECT_TRUE(decoded->bucket_hashes.empty());
+            EXPECT_TRUE(decoded->covered_buckets.empty());
+            EXPECT_TRUE(decoded->rows.empty());
+
+            // Phase 2: the initiator names the 16 buckets of the group that
+            // actually holds data. Only buckets whose hashes differ get
+            // metadata; empty-on-both-sides buckets agree silently.
+            auto live = manager.computeDigest();
+            uint32_t live_bucket = 0;
+            while (live_bucket < K_BUCKETS && live[live_bucket] == 0) {
+                ++live_bucket;
+            }
+            ASSERT_LT(live_bucket, K_BUCKETS);
+            const uint32_t live_group = live_bucket / AntiEntropyManager::K_BUCKETS_PER_GROUP;
+            AntiEntropyManager::BucketRefinement refinement;
+            for (uint32_t bucket = live_group * AntiEntropyManager::K_BUCKETS_PER_GROUP;
+                 bucket < (live_group + 1) * AntiEntropyManager::K_BUCKETS_PER_GROUP;
+                 ++bucket) {
+                refinement.bucket_hashes.emplace_back(bucket, 0);
+            }
+            net::Request refine_req;
+            refine_req.opcode = net::Opcode::AntiEntropyDigest;
+            refine_req.key = "bucket-refinement-v3";
+            refine_req.value = AntiEntropyManager::encodeBucketRefinement(refinement);
+            std::optional<net::Response> refined;
+            manager.onBucketRefinement("n2", refine_req, [&](net::Response r) {
+                refined = std::move(r);
+            });
+            ASSERT_TRUE(refined.has_value());
+            ASSERT_EQ(refined->status, Errc::OK);
+            ASSERT_TRUE(refined->value.has_value());
+            auto refined_decoded =
+                AntiEntropyManager::decodeDigestResponse(*refined->value, remote_groups.size());
+            ASSERT_TRUE(refined_decoded.has_value());
+            ASSERT_EQ(
+                refined_decoded->bucket_hashes.size(),
+                AntiEntropyManager::K_BUCKETS_PER_GROUP
+            );
+            for (uint32_t i = 0; i < AntiEntropyManager::K_BUCKETS_PER_GROUP; ++i) {
+                EXPECT_EQ(
+                    refined_decoded->bucket_hashes[i].first,
+                    live_group * AntiEntropyManager::K_BUCKETS_PER_GROUP + i
+                );
+            }
+            // Only the bucket whose hash actually differs is covered: the 15
+            // empty buckets agree with the requester's zeros, so no metadata
+            // is needed for them. Coverage still distinguishes them from
+            // deferred buckets (none here).
+            ASSERT_EQ(refined_decoded->covered_buckets.size(), 1U);
+            ASSERT_EQ(refined_decoded->rows.size(), 1U);
+            EXPECT_EQ(refined_decoded->rows[0].bucket, refined_decoded->covered_buckets[0]);
+            EXPECT_EQ(node.metrics.replicationMetrics().anti_entropy_meta_rows_sent.load(), 1U);
+        }
 
         TEST(AntiEntropyRoundTest, DigestCallbackKeepsRoundTrace) {
             constexpr uint32_t K_BUCKETS = 8;
@@ -786,7 +955,7 @@ namespace cinder {
             ConsistentHashRing ring;
             ring.addNode("n1");
             ring.addNode("n2");
-            DeferredScriptedTransport transport(nullptr, K_BUCKETS);
+            DeferredScriptedTransport transport(nullptr);
             AntiEntropyManager manager(store, ring, "n1", clock, transport, K_BUCKETS);
             transport.setManager(&manager);
             auto sub = std::make_shared<RecordingSubscriber>();

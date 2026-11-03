@@ -268,6 +268,16 @@ namespace cinder {
             "replication_anti_entropy_rehash_mismatches_total",
             repl_.anti_entropy_rehash_mismatches.load()
         );
+        appendCounter(
+            os,
+            "replication_anti_entropy_group_mismatches_total",
+            repl_.anti_entropy_group_mismatches.load()
+        );
+        appendCounter(
+            os,
+            "replication_anti_entropy_bucket_mismatches_total",
+            repl_.anti_entropy_bucket_mismatches.load()
+        );
 
         // Per-replica lag
         if (!repl_.replica_lags.empty()) {

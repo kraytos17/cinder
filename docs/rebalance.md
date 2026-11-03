@@ -299,14 +299,20 @@ bucketing, run by the primary every `anti_entropy_interval`. It catches drift
 that read repair and hinted handoff cannot — e.g. a replica down longer than
 the hint TTL.
 
-**Two-phase exchange with metadata-first sync:**
-1. *Digest exchange* — the initiator computes a digest (N bucket XOR hashes
-   over `key + version_and_ttl + writer_node_hash`) and sends it to a replica
-   partner (`ANTI_ENTROPY_DIGEST`, opcode 9). The partner diffs digests,
-   identifies divergent buckets, and responds with **its own digest** plus
-   compact **metadata rows** `(bucket, key_hash, version, writer)` — 28 bytes
-   each, values never cross the wire in this phase.
-2. *Targeted fetch* — both sides diff the metadata against their local store
+**Three-phase exchange with metadata-first sync and hierarchical digests:**
+1. *Digest exchange* — the initiator computes one xxHash per group of 16
+   consecutive buckets (136 bytes for the default 256 buckets) and sends it
+   to a replica partner (`ANTI_ENTROPY_DIGEST`, opcode 9). The partner
+   answers with its own group hashes. Converged rounds end here.
+2. *Bucket refinement* — for each divergent group, the initiator requests
+   that group's 16 bucket hashes (same opcode, `key` set to
+   `"bucket-refinement-v3"`). The responder returns the intersection of
+   requested buckets whose hashes differ, plus compact **metadata rows**
+   `(bucket, key_hash, version, writer)` — 28 bytes each — for the buckets
+   its byte budget covers, and an explicit covered-bucket set. Values never
+   cross the wire in this phase; uncovered buckets are deferred, never
+   treated as missing.
+3. *Targeted fetch* — both sides diff the metadata against their local store
    (remote wins iff newer version, or equal version with greater writer).
    The initiator pushes full entries only where it wins and sends a
    **needlist** (key hashes) where it loses; the partner serves the needlist
@@ -315,11 +321,12 @@ the hint TTL.
    default 1 MiB) with cursor-free geometric convergence: the next round
    re-diffs the remainder.
 
-**Bucket digest**: keys are partitioned into N hash buckets (default 256).
-Each bucket hash is the XOR of its entries' hashes — order-independent, so no
-per-bucket sort. Two nodes with identical data produce identical digests, so
-only divergent buckets exchange metadata, and only true deltas exchange
-values.
+**Group digests**: keys are partitioned into N hash buckets (default 256),
+folded 16-to-1 into group hashes. Each bucket hash is the XOR of its entries'
+hashes over `(key, version_and_ttl, writer_node_hash)` — order-independent,
+so no per-bucket sort. Two nodes with identical data produce identical group
+hashes, so metadata is only exchanged for buckets inside divergent groups,
+and only true deltas exchange values.
 
 **Incremental digests**: stores maintain the per-bucket XOR on the write path
 (observed mutations), so converged rounds cost a 2 KiB copy instead of a full

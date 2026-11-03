@@ -321,6 +321,226 @@ namespace cinder {
         return digest;
     }
 
+    auto AntiEntropyManager::groupDigests(const std::vector<uint64_t>& bucket_hashes)
+        -> std::vector<uint64_t> {
+        const size_t group_count =
+            (bucket_hashes.size() + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
+        std::vector<uint64_t> groups(group_count, 0);
+        for (size_t group = 0; group < group_count; ++group) {
+            // Include each absolute bucket index to make the fold sensitive to
+            // placement, not only the multiset of bucket hashes.
+            std::string material;
+            const size_t begin = group * K_BUCKETS_PER_GROUP;
+            const size_t end = std::min(begin + K_BUCKETS_PER_GROUP, bucket_hashes.size());
+            material.reserve((end - begin) * (sizeof(uint32_t) + sizeof(uint64_t)));
+            for (size_t bucket = begin; bucket < end; ++bucket) {
+                appendU32(material, static_cast<uint32_t>(bucket));
+                appendU64(material, bucket_hashes[bucket]);
+            }
+            groups[group] = XXH3_64bits(material.data(), material.size());
+        }
+        return groups;
+    }
+
+    auto AntiEntropyManager::encodeGroupDigest(const std::vector<uint64_t>& groups) -> std::string {
+        std::string out;
+        out.reserve(2 * sizeof(uint32_t) + groups.size() * sizeof(uint64_t));
+        appendU32(out, K_GROUP_DIGEST_MAGIC);
+        appendU32(out, static_cast<uint32_t>(groups.size()));
+        for (uint64_t hash : groups) {
+            appendU64(out, hash);
+        }
+        return out;
+    }
+
+    auto AntiEntropyManager::decodeGroupDigest(std::string_view data, size_t expected_groups)
+        -> std::optional<std::vector<uint64_t>> {
+        const char* p = data.data();
+        const char* end = p + data.size();
+        uint32_t magic = 0;
+        uint32_t count = 0;
+        if (!readU32(p, end, magic)
+            || magic
+            != K_GROUP_DIGEST_MAGIC
+            || !readU32(p, end, count)
+            || count
+            != expected_groups
+            || static_cast<size_t>(end - p)
+            != static_cast<size_t>(count)
+            * sizeof(uint64_t)) {
+            return std::nullopt;
+        }
+
+        std::vector<uint64_t> result;
+        result.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            uint64_t hash = 0;
+            if (!readU64(p, end, hash)) {
+                return std::nullopt;
+            }
+            result.push_back(hash);
+        }
+        return result;
+    }
+
+    auto AntiEntropyManager::encodeBucketRefinement(const BucketRefinement& request)
+        -> std::string {
+        std::string out;
+        appendU32(out, K_BUCKET_REFINEMENT_MAGIC);
+        appendU32(out, static_cast<uint32_t>(request.bucket_hashes.size()));
+        for (const auto& [bucket, hash] : request.bucket_hashes) {
+            appendU32(out, bucket);
+            appendU64(out, hash);
+        }
+        return out;
+    }
+
+    auto AntiEntropyManager::decodeBucketRefinement(std::string_view data, size_t num_buckets)
+        -> std::optional<BucketRefinement> {
+        const char* p = data.data();
+        const char* end = p + data.size();
+        uint32_t magic = 0;
+        uint32_t bucket_count = 0;
+        if (!readU32(p, end, magic)
+            || magic
+            != K_BUCKET_REFINEMENT_MAGIC
+            || !readU32(p, end, bucket_count)
+            || static_cast<size_t>(end - p)
+            != static_cast<size_t>(bucket_count)
+            * (sizeof(uint32_t) + sizeof(uint64_t))) {
+            return std::nullopt;
+        }
+        BucketRefinement request;
+        request.bucket_hashes.reserve(bucket_count);
+        for (uint32_t i = 0; i < bucket_count; ++i) {
+            uint32_t bucket = 0;
+            uint64_t hash = 0;
+            if (!readU32(p, end, bucket) || bucket >= num_buckets || !readU64(p, end, hash)) {
+                return std::nullopt;
+            }
+            request.bucket_hashes.emplace_back(bucket, hash);
+        }
+        return request;
+    }
+
+    auto AntiEntropyManager::encodeDigestResponse(const DigestResponse& response) -> std::string {
+        std::string rows = encodeMetaRows(response.rows);
+        std::string out;
+        out.reserve(
+            3
+            * sizeof(uint32_t)
+            + response.group_hashes.size()
+            * sizeof(uint64_t)
+            + response.bucket_hashes.size()
+            * (sizeof(uint32_t) + sizeof(uint64_t))
+            + response.covered_buckets.size()
+            * sizeof(uint32_t)
+            + sizeof(uint32_t)
+            + rows.size()
+        );
+        appendU32(out, K_DIGEST_RESPONSE_MAGIC);
+        appendU32(out, static_cast<uint32_t>(response.group_hashes.size()));
+        for (uint64_t hash : response.group_hashes) {
+            appendU64(out, hash);
+        }
+        appendU32(out, static_cast<uint32_t>(response.bucket_hashes.size()));
+        for (const auto& [bucket, hash] : response.bucket_hashes) {
+            appendU32(out, bucket);
+            appendU64(out, hash);
+        }
+        appendU32(out, static_cast<uint32_t>(response.covered_buckets.size()));
+        for (uint32_t bucket : response.covered_buckets) {
+            appendU32(out, bucket);
+        }
+        appendU32(out, static_cast<uint32_t>(rows.size()));
+        out += rows;
+        return out;
+    }
+
+    auto AntiEntropyManager::decodeDigestResponse(std::string_view data, size_t expected_groups)
+        -> std::optional<DigestResponse> {
+        const char* p = data.data();
+        const char* end = p + data.size();
+        uint32_t magic = 0;
+        uint32_t group_count = 0;
+        if (!readU32(p, end, magic)
+            || magic
+            != K_DIGEST_RESPONSE_MAGIC
+            || !readU32(p, end, group_count)
+            || group_count
+            != expected_groups) {
+            return std::nullopt;
+        }
+
+        DigestResponse response;
+        response.group_hashes.reserve(group_count);
+        for (uint32_t i = 0; i < group_count; ++i) {
+            uint64_t hash = 0;
+            if (!readU64(p, end, hash)) {
+                return std::nullopt;
+            }
+            response.group_hashes.push_back(hash);
+        }
+
+        uint32_t bucket_hash_count = 0;
+        if (!readU32(p, end, bucket_hash_count)
+            || static_cast<size_t>(end - p)
+            < static_cast<size_t>(bucket_hash_count)
+            * (sizeof(uint32_t) + sizeof(uint64_t))) {
+            return std::nullopt;
+        }
+
+        response.bucket_hashes.reserve(bucket_hash_count);
+        for (uint32_t i = 0; i < bucket_hash_count; ++i) {
+            uint32_t bucket = 0;
+            uint64_t hash = 0;
+            if (!readU32(p, end, bucket) || !readU64(p, end, hash)) {
+                return std::nullopt;
+            }
+            response.bucket_hashes.emplace_back(bucket, hash);
+        }
+
+        uint32_t covered_count = 0;
+        if (!readU32(p, end, covered_count)
+            || static_cast<size_t>(end - p)
+            < static_cast<size_t>(covered_count)
+            * sizeof(uint32_t)
+            + sizeof(uint32_t)) {
+            return std::nullopt;
+        }
+
+        response.covered_buckets.reserve(covered_count);
+        for (uint32_t i = 0; i < covered_count; ++i) {
+            uint32_t bucket = 0;
+            if (!readU32(p, end, bucket)) {
+                return std::nullopt;
+            }
+            response.covered_buckets.push_back(bucket);
+        }
+
+        uint32_t rows_size = 0;
+        if (!readU32(p, end, rows_size) || static_cast<size_t>(end - p) != rows_size) {
+            return std::nullopt;
+        }
+
+        auto rows = decodeMetaRows(std::string_view(p, rows_size));
+        if (!rows.has_value()) {
+            return std::nullopt;
+        }
+
+        response.rows = std::move(*rows);
+        for (const auto& row : response.rows) {
+            if (!std::binary_search(
+                    response.covered_buckets.begin(),
+                    response.covered_buckets.end(),
+                    row.bucket
+                )) {
+                return std::nullopt;
+            }
+        }
+        return response;
+    }
+
     // One row: bucket u32 + key_hash/version/writer u64 (28 bytes).
     constexpr size_t K_META_ROW_BYTES = sizeof(uint32_t) + 3 * sizeof(uint64_t);
 
@@ -377,9 +597,11 @@ namespace cinder {
             if (item.entry.hasTtl()) {
                 appendU64(out, toSystemMs(clock_, item.entry.expires_at));
             }
+
             appendU32(out, static_cast<uint32_t>(item.entry.value.size()));
             out.append(item.entry.value);
         }
+
         appendU32(out, static_cast<uint32_t>(msg.needs.size()));
         for (auto h : msg.needs) {
             appendU64(out, h);
@@ -400,6 +622,7 @@ namespace cinder {
         if (!readU32(p, end, entry_count)) {
             return std::nullopt;
         }
+
         msg.entries.reserve(entry_count);
         for (uint32_t i = 0; i < entry_count; ++i) {
             SyncMessage::Item item;
@@ -408,6 +631,7 @@ namespace cinder {
             if (auto reason = parseSingleEntry(p, end, key, entry); reason.has_value()) {
                 return std::nullopt;
             }
+
             item.key = std::move(key);
             item.entry = std::move(entry);
             msg.entries.push_back(std::move(item));
@@ -420,6 +644,7 @@ namespace cinder {
         if (static_cast<size_t>(end - p) != static_cast<size_t>(need_count) * sizeof(uint64_t)) {
             return std::nullopt;
         }
+
         msg.needs.reserve(need_count);
         for (uint32_t i = 0; i < need_count; ++i) {
             uint64_t h = 0;
@@ -431,18 +656,10 @@ namespace cinder {
         return msg;
     }
 
-    auto AntiEntropyManager::splitDigestResponse(std::string_view payload, size_t num_buckets)
-        -> std::optional<std::pair<std::string_view, std::string_view>> {
-        size_t digest_len = sizeof(uint32_t) * 2 + num_buckets * sizeof(uint64_t);
-        if (payload.size() < digest_len) {
-            return std::nullopt;
-        }
-        return std::make_pair(payload.substr(0, digest_len), payload.substr(digest_len));
-    }
-
     auto AntiEntropyManager::collectMetadata(
         const std::vector<uint32_t>& bucket_ids,
-        size_t max_bytes
+        size_t max_bytes,
+        std::vector<uint32_t>* covered_buckets
     ) const -> std::string {
         std::vector<char> wanted(num_buckets_, 0);
         for (auto id : bucket_ids) {
@@ -472,19 +689,52 @@ namespace cinder {
         );
 
         std::vector<MetaRow> rows;
-        size_t bytes = sizeof(uint32_t);
+        // Outer metadata-row count and covered-bucket count.
+        size_t bytes = 2 * sizeof(uint32_t);
         for (uint32_t b = 0; b < num_buckets_; ++b) {
-            if (!wanted[b] || per_bucket[b].empty()) {
+            if (!wanted[b]) {
                 continue;
             }
+
             auto& vec = per_bucket[b];
+            // Coverage is explicit even for empty buckets. Without this, a
+            // peer cannot distinguish "empty" from "omitted by byte budget".
+            const size_t coverage_cost = sizeof(uint32_t);
+            if (bytes
+                + coverage_cost
+                > max_bytes
+                && covered_buckets
+                != nullptr
+                && !covered_buckets->empty()) {
+                break;
+            }
+
+            bytes += coverage_cost;
+            if (covered_buckets != nullptr) {
+                covered_buckets->push_back(b);
+            }
+            if (vec.empty()) {
+                continue;
+            }
+
             std::sort(vec.begin(), vec.end(), [](const MetaRow& a, const MetaRow& b) {
                 return a.key_hash < b.key_hash;
             });
+
             size_t need = vec.size() * K_META_ROW_BYTES;
-            if (bytes + need > max_bytes && !rows.empty()) {
+            if (bytes
+                + need
+                > max_bytes
+                && covered_buckets
+                != nullptr
+                && covered_buckets->size()
+                > 1) {
+                // Over budget: drop this bucket's coverage (the pop) and stop.
+                // No need to adjust `bytes`: it is only read while filling.
+                covered_buckets->pop_back();
                 break;
             }
+
             bytes += need;
             rows.insert(rows.end(), vec.begin(), vec.end());
             if (bytes > max_bytes) {
@@ -506,10 +756,12 @@ namespace cinder {
             if (!existing.has_value()) {
                 continue;
             }
+
             size_t cost = entryWireSize(key, *existing);
             if (bytes + cost > max_bytes && !items.empty()) {
                 break;
             }
+
             bytes += cost;
             items.push_back({key, std::move(*existing)});
             if (bytes > max_bytes) {
@@ -526,6 +778,7 @@ namespace cinder {
         if (hashes.empty()) {
             return {};
         }
+
         std::vector<uint64_t> sorted = hashes;
         std::sort(sorted.begin(), sorted.end());
         sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
@@ -546,6 +799,7 @@ namespace cinder {
         for (auto& [h, key] : resolved) {
             pairs.emplace_back(h, std::move(key));
         }
+
         std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) {
             return a.first < b.first;
         });
@@ -568,6 +822,7 @@ namespace cinder {
         for (const auto& key : keys) {
             pairs.emplace_back(XXH3_64bits(key.data(), key.size()), key);
         }
+
         std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) {
             return a.first < b.first;
         });
@@ -576,7 +831,8 @@ namespace cinder {
 
     auto AntiEntropyManager::diffRows(
         const std::vector<MetaRow>& rows,
-        const std::vector<uint32_t>& divergent
+        const std::vector<uint32_t>& divergent,
+        const std::vector<uint32_t>& covered_buckets
     ) const -> MetaDiff {
         MetaDiff diff;
         if (rows.empty() || divergent.empty()) {
@@ -600,17 +856,32 @@ namespace cinder {
         // Single scan over divergent buckets. Entries absent from the rows
         // are wins by absence (the partner lacks them); rows left over at
         // the end are entries the partner has and we lack (fetch).
-        store_.forEach(
-            [this, &wanted, &by_hash, &diff](const std::string& key, const VersionedEntry& entry) {
+        std::vector<char> covered(num_buckets_, covered_buckets.empty() ? 1 : 0);
+        for (uint32_t bucket : covered_buckets) {
+            if (bucket < num_buckets_) {
+                covered[bucket] = 1;
+            }
+        }
+
+        store_.forEach([this, &wanted, &covered, &by_hash, &diff](
+                           const std::string& key,
+                           const VersionedEntry& entry
+                       ) {
             if (!wanted[bucketFor(key)]) {
                 return;
             }
+
             uint64_t h = XXH3_64bits(key.data(), key.size());
             auto it = by_hash.find(h);
             if (it == by_hash.end()) {
-                diff.have.emplace_back(h, key);
+                // Only infer remote absence when this bucket's complete
+                // metadata was sent. An uncovered bucket is deferred whole.
+                if (covered[bucketFor(key)]) {
+                    diff.have.emplace_back(h, key);
+                }
                 return;
             }
+
             const MetaRow* row = it->second;
             if (row->version
                 > entry.version()
@@ -624,13 +895,14 @@ namespace cinder {
                 diff.have.emplace_back(h, key);
             }
             by_hash.erase(it);
-        }
-        );
+        });
 
         for (const auto& [h, row] : by_hash) {
-            (void)row;
-            diff.need.push_back(h);
+            if (covered[row->bucket]) {
+                diff.need.push_back(h);
+            }
         }
+
         std::sort(diff.need.begin(), diff.need.end());
         std::sort(diff.have.begin(), diff.have.end(), [](const auto& a, const auto& b) {
             return a.first < b.first;
@@ -771,9 +1043,16 @@ namespace cinder {
         const net::Request& req,
         std::function<void(net::Response)> respond
     ) {
+        if (req.key == "bucket-refinement-v3") {
+            onBucketRefinement(from, req, std::move(respond));
+            return;
+        }
         Span span("anti_entropy.digest", captureTraceContext());
-        auto remote = decodeDigest(req.value, num_buckets_);
-        if (!remote.has_value()) {
+        auto remote_groups = decodeGroupDigest(
+            req.value,
+            (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP
+        );
+        if (!remote_groups.has_value()) {
             CINDER_WARN("bad digest", {"from", from});
             respond(
                 net::Response{
@@ -786,35 +1065,77 @@ namespace cinder {
             return;
         }
 
-        auto local = digestForRound();
-        std::vector<uint32_t> divergent;
-        for (uint32_t i = 0; i < num_buckets_; ++i) {
-            if (local[i] != (*remote)[i]) {
-                divergent.push_back(i);
-            }
-        }
-
-        // Response: our digest (so the initiator derives the same divergent
-        // set) plus our metadata rows for those buckets.
-        std::string payload = encodeDigest(local);
-        std::string meta = collectMetadata(divergent, K_MAX_METADATA_BYTES);
-        auto rows = decodeMetaRows(meta);
+        DigestResponse response;
+        response.group_hashes = groupDigests(digestForRound());
         if (metrics_ != nullptr) {
             metrics_->replicationMetrics().anti_entropy_rounds.fetch_add(
                 1,
                 std::memory_order_relaxed
             );
+        }
+
+        net::Response digest_response{
+            .status = Errc::OK,
+            .value = encodeDigestResponse(response),
+            .trace_id = req.trace_id,
+            .span_id = req.span_id,
+        };
+        CINDER_DEBUG("digest received", {"from", from}, {"groups", response.group_hashes.size()});
+        respond(std::move(digest_response));
+    }
+
+    void AntiEntropyManager::onBucketRefinement(
+        const NodeId& from,
+        const net::Request& req,
+        std::function<void(net::Response)> respond
+    ) {
+        Span span("anti_entropy.refine", captureTraceContext());
+        auto request = decodeBucketRefinement(req.value, num_buckets_);
+        if (!request.has_value()) {
+            respond(
+                net::Response{
+                    .status = Errc::InvalidArgument,
+                    .value = std::nullopt,
+                    .trace_id = req.trace_id,
+                    .span_id = req.span_id,
+                }
+            );
+            return;
+        }
+
+        auto local = digestForRound();
+        DigestResponse response;
+        response.group_hashes = groupDigests(local);
+        std::vector<uint32_t> requested_buckets;
+        for (const auto& [bucket, requester_hash] : request->bucket_hashes) {
+            response.bucket_hashes.emplace_back(bucket, local[bucket]);
+            if (local[bucket] != requester_hash) {
+                requested_buckets.push_back(bucket);
+            }
+        }
+        std::sort(requested_buckets.begin(), requested_buckets.end());
+        std::string meta =
+            collectMetadata(requested_buckets, K_MAX_METADATA_BYTES, &response.covered_buckets);
+        std::sort(response.bucket_hashes.begin(), response.bucket_hashes.end());
+        if (auto rows = decodeMetaRows(meta); rows.has_value()) {
+            response.rows = std::move(*rows);
+        }
+        if (metrics_ != nullptr) {
             metrics_->replicationMetrics().anti_entropy_meta_rows_sent.fetch_add(
-                rows.has_value() ? rows->size() : 0,
+                response.rows.size(),
                 std::memory_order_relaxed
             );
         }
-        payload += meta;
-        CINDER_DEBUG("digest received", {"from", from}, {"divergent_buckets", divergent.size()});
+        CINDER_DEBUG(
+            "bucket refinement received",
+            {"from", from},
+            {"bucket_hashes", request->bucket_hashes.size()},
+            {"rows", response.rows.size()}
+        );
         respond(
             net::Response{
                 .status = Errc::OK,
-                .value = std::move(payload),
+                .value = encodeDigestResponse(response),
                 .trace_id = req.trace_id,
                 .span_id = req.span_id,
             }
@@ -867,6 +1188,7 @@ namespace cinder {
                 {"served", resp.entries.size()}
             );
         }
+
         CINDER_DEBUG("sync received", {"from", from}, {"entries", repaired});
         respond(
             net::Response{
@@ -875,6 +1197,164 @@ namespace cinder {
                 .trace_id = req.trace_id,
                 .span_id = req.span_id,
             }
+        );
+    }
+
+    void AntiEntropyManager::finishRefinement(
+        const std::vector<uint64_t>& local,
+        const NodeId& partner,
+        SpanContext round_ctx,
+        const DigestResponse& response
+    ) {
+        TraceScope scope(round_ctx);
+        Span result_span("anti_entropy.round.result", round_ctx);
+        result_span.setAttribute({"partner", partner});
+
+        std::vector<uint32_t> divergent_buckets;
+        std::vector<uint64_t> remote_buckets(num_buckets_, 0);
+        std::vector<char> has_remote_bucket(num_buckets_, 0);
+        for (const auto& [bucket, hash] : response.bucket_hashes) {
+            if (bucket >= num_buckets_ || has_remote_bucket[bucket]) {
+                CINDER_WARN("bad bucket digest response", {"from", partner});
+                result_span.setAttribute({"outcome", "bad-buckets"});
+                result_span.setStatus(SpanStatus::Error);
+                return;
+            }
+            remote_buckets[bucket] = hash;
+            has_remote_bucket[bucket] = 1;
+        }
+
+        const size_t group_count = (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
+        auto local_groups = groupDigests(local);
+        if (response.group_hashes.size() != group_count) {
+            result_span.setAttribute({"outcome", "bad-refinement"});
+            result_span.setStatus(SpanStatus::Error);
+            return;
+        }
+        std::vector<uint32_t> divergent_groups;
+        for (uint32_t group = 0; group < group_count; ++group) {
+            if (local_groups[group] != response.group_hashes[group]) {
+                divergent_groups.push_back(group);
+            }
+        }
+        for (uint32_t bucket = 0; bucket < num_buckets_; ++bucket) {
+            if (has_remote_bucket[bucket] && local[bucket] != remote_buckets[bucket]) {
+                divergent_buckets.push_back(bucket);
+            }
+        }
+        if (divergent_buckets.empty()) {
+            result_span.setAttribute({"divergent_groups", divergent_groups.size()});
+            result_span.setAttribute({"divergent", 0});
+            result_span.setAttribute({"outcome", "completed"});
+            result_span.setStatus(SpanStatus::Ok);
+            CINDER_INFO("round completed", {"partner", partner}, {"repaired", 0});
+            return;
+        }
+
+        std::vector<char> covered(num_buckets_, 0);
+        for (uint32_t bucket : response.covered_buckets) {
+            if (bucket >= num_buckets_ || covered[bucket]) {
+                CINDER_WARN("bad metadata coverage", {"from", partner});
+                result_span.setAttribute({"outcome", "bad-meta-coverage"});
+                result_span.setStatus(SpanStatus::Error);
+                return;
+            }
+            covered[bucket] = 1;
+        }
+        for (const auto& row : response.rows) {
+            if (row.bucket
+                >= num_buckets_
+                || !covered[row.bucket]
+                || !std::binary_search(
+                    divergent_buckets.begin(),
+                    divergent_buckets.end(),
+                    row.bucket
+                )) {
+                CINDER_WARN("bad metadata row", {"from", partner});
+                result_span.setAttribute({"outcome", "bad-meta-row"});
+                result_span.setStatus(SpanStatus::Error);
+                return;
+            }
+        }
+        if (metrics_ != nullptr) {
+            metrics_->replicationMetrics().anti_entropy_group_mismatches.fetch_add(
+                divergent_groups.size(),
+                std::memory_order_relaxed
+            );
+            metrics_->replicationMetrics().anti_entropy_bucket_mismatches.fetch_add(
+                divergent_buckets.size(),
+                std::memory_order_relaxed
+            );
+            metrics_->replicationMetrics().anti_entropy_meta_rows_recv.fetch_add(
+                response.rows.size(),
+                std::memory_order_relaxed
+            );
+        }
+
+        MetaDiff diff = diffRows(response.rows, divergent_buckets, response.covered_buckets);
+        SyncMessage sync;
+        sync.entries = selectEntriesForPairs(diff.have, fetchBytes());
+        sync.needs = std::move(diff.need);
+        result_span.setAttribute({"push", sync.entries.size()});
+        result_span.setAttribute({"fetch", sync.needs.size()});
+
+        net::Request sync_req;
+        sync_req.opcode = net::Opcode::AntiEntropySync;
+        sync_req.value = encodeSync(sync);
+        sync_req.trace_id = round_ctx.trace_id;
+        sync_req.span_id = round_ctx.span_id;
+
+        // The digest result span is closed before this async callback; use a
+        // separate fetch span that retains the original round context.
+        result_span.setAttribute({"divergent_groups", divergent_groups.size()});
+        result_span.setAttribute({"divergent_buckets", divergent_buckets.size()});
+        result_span.setAttribute({"outcome", "completed"});
+        result_span.setStatus(SpanStatus::Ok);
+        transport_.sendRequestAsync(
+            partner,
+            sync_req,
+            [this, partner, round_ctx](Result<net::Response> sr) mutable {
+            TraceScope inner_scope(round_ctx);
+            Span fetch_span("anti_entropy.round.fetch", round_ctx);
+            fetch_span.setAttribute({"partner", partner});
+            if (!sr.has_value() || sr->status != Errc::OK || !sr->value.has_value()) {
+                CINDER_DEBUG("sync phase failed", {"partner", partner});
+                fetch_span.setAttribute({"outcome", "sync-failed"});
+                fetch_span.setStatus(SpanStatus::Error);
+                return;
+            }
+            auto resp = decodeSync(*sr->value);
+            if (!resp.has_value() || !resp->needs.empty()) {
+                CINDER_WARN("bad sync response", {"from", partner});
+                fetch_span.setAttribute({"outcome", "bad-sync"});
+                fetch_span.setStatus(SpanStatus::Error);
+                return;
+            }
+            size_t fetched = resp->entries.size();
+            size_t repaired = applySync(std::move(*resp));
+            if (metrics_ != nullptr) {
+                if (repaired > 0) {
+                    metrics_->replicationMetrics().anti_entropy_keys_repaired.fetch_add(
+                        repaired,
+                        std::memory_order_relaxed
+                    );
+                }
+                metrics_->replicationMetrics().anti_entropy_entries_fetched.fetch_add(
+                    fetched,
+                    std::memory_order_relaxed
+                );
+            }
+            CINDER_INFO(
+                "fetch completed",
+                {"partner", partner},
+                {"repaired", repaired},
+                {"entries", fetched}
+            );
+            CINDER_INFO("round completed", {"partner", partner}, {"repaired", repaired});
+            fetch_span.setAttribute({"repaired", repaired});
+            fetch_span.setAttribute({"outcome", "completed"});
+            fetch_span.setStatus(SpanStatus::Ok);
+        }
         );
     }
 
@@ -893,7 +1373,7 @@ namespace cinder {
         net::Request req;
 
         req.opcode = net::Opcode::AntiEntropyDigest;
-        req.value = encodeDigest(local);
+        req.value = encodeGroupDigest(groupDigests(local));
         req.trace_id = span.traceId();
         req.span_id = span.spanId();
 
@@ -922,119 +1402,95 @@ namespace cinder {
                 return;
             }
 
-            auto split = splitDigestResponse(*r->value, num_buckets_);
-            if (!split.has_value()) {
+            const size_t group_count =
+                (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
+            auto response = decodeDigestResponse(*r->value, group_count);
+            if (!response.has_value()) {
                 CINDER_WARN("short digest response", {"from", partner});
                 result_span.setAttribute({"outcome", "short-response"});
                 result_span.setStatus(SpanStatus::Error);
                 return;
             }
 
-            auto remote = decodeDigest(split->first, num_buckets_);
-            if (!remote.has_value()) {
-                CINDER_WARN("bad digest response", {"from", partner});
-                result_span.setAttribute({"outcome", "bad-digest"});
-                result_span.setStatus(SpanStatus::Error);
-                return;
-            }
-
-            // Derive the divergent set from the two digests and diff the
-            // partner's metadata rows against the local store.
-            std::vector<uint32_t> divergent;
-            for (uint32_t i = 0; i < num_buckets_; ++i) {
-                if (local[i] != (*remote)[i]) {
-                    divergent.push_back(i);
+            auto local_groups = groupDigests(local);
+            std::vector<uint32_t> divergent_groups;
+            for (uint32_t group = 0; group < group_count; ++group) {
+                if (local_groups[group] != response->group_hashes[group]) {
+                    divergent_groups.push_back(group);
                 }
             }
-            if (divergent.empty()) {
+            if (divergent_groups.empty()) {
                 result_span.setAttribute({"repaired", 0});
+                result_span.setAttribute({"divergent_groups", 0});
                 result_span.setAttribute({"divergent", 0});
                 result_span.setAttribute({"outcome", "completed"});
                 result_span.setStatus(SpanStatus::Ok);
                 CINDER_INFO("round completed", {"partner", partner}, {"repaired", 0});
                 return;
             }
-
-            auto rows = decodeMetaRows(split->second);
-            if (!rows.has_value()) {
-                CINDER_WARN("bad metadata response", {"from", partner});
-                result_span.setAttribute({"outcome", "bad-meta"});
-                result_span.setStatus(SpanStatus::Error);
-                return;
-            }
             if (metrics_ != nullptr) {
-                metrics_->replicationMetrics().anti_entropy_meta_rows_recv.fetch_add(
-                    rows->size(),
+                metrics_->replicationMetrics().anti_entropy_group_mismatches.fetch_add(
+                    divergent_groups.size(),
                     std::memory_order_relaxed
                 );
             }
-            MetaDiff diff = diffRows(*rows, divergent);
+            // Phase 2: request hashes only for buckets in divergent groups.
+            // This refines one 128-byte group hash into at most 16 bucket
+            // hashes; values and metadata remain absent until the exact
+            // divergent buckets are known.
+            BucketRefinement refinement;
+            for (uint32_t group : divergent_groups) {
+                const uint32_t begin = group * K_BUCKETS_PER_GROUP;
+                const uint32_t end = std::min(begin + K_BUCKETS_PER_GROUP, num_buckets_);
+                for (uint32_t bucket = begin; bucket < end; ++bucket) {
+                    refinement.bucket_hashes.emplace_back(bucket, local[bucket]);
+                }
+            }
+            const SpanContext refinement_parent = result_span.context();
+            result_span.setAttribute({"divergent_groups", divergent_groups.size()});
+            result_span.setAttribute({"outcome", "refining"});
+            result_span.setStatus(SpanStatus::Ok);
 
-            // Push entries where we win; ask for entries where we lose.
-            // Both directions are byte-budgeted; the next round re-diffs
-            // any remainder, so convergence is monotonic without a cursor.
-            SyncMessage sync;
-            sync.entries = selectEntriesForPairs(diff.have, fetchBytes());
-            sync.needs = std::move(diff.need);
-            result_span.setAttribute({"push", sync.entries.size()});
-            result_span.setAttribute({"fetch", sync.needs.size()});
-            net::Request sync_req;
-            sync_req.opcode = net::Opcode::AntiEntropySync;
-            sync_req.value = encodeSync(sync);
-            sync_req.trace_id = round_ctx.trace_id;
-            sync_req.span_id = round_ctx.span_id;
-
+            net::Request refine_req;
+            refine_req.opcode = net::Opcode::AntiEntropyDigest;
+            refine_req.key = "bucket-refinement-v3";
+            refine_req.value = encodeBucketRefinement(refinement);
+            refine_req.trace_id = round_ctx.trace_id;
+            refine_req.span_id = round_ctx.span_id;
             transport_.sendRequestAsync(
                 partner,
-                sync_req,
-                [this, partner, round_ctx](Result<net::Response> sr) mutable {
-                TraceScope inner_scope(round_ctx);
-                Span fetch_span("anti_entropy.round.fetch", round_ctx);
-                fetch_span.setAttribute({"partner", partner});
-                if (!sr.has_value() || sr->status != Errc::OK || !sr->value.has_value()) {
-                    CINDER_DEBUG("sync phase failed", {"partner", partner});
-                    fetch_span.setAttribute({"outcome", "sync-failed"});
-                    fetch_span.setStatus(SpanStatus::Error);
+                refine_req,
+                [this, local = std::move(local), partner, refinement_parent](
+                    Result<net::Response> refined
+                ) mutable {
+                TraceScope refinement_scope(refinement_parent);
+                if (!refined.has_value()
+                    || refined->status
+                    != Errc::OK
+                    || !refined->value.has_value()) {
+                    Span fail_span("anti_entropy.round.refinement", refinement_parent);
+                    fail_span.setAttribute({"partner", partner});
+                    fail_span.setAttribute({"outcome", "refinement-failed"});
+                    fail_span.setStatus(SpanStatus::Error);
                     return;
                 }
-                // Response carries entries only; a needlist here is a
-                // protocol violation.
-                auto resp = decodeSync(*sr->value);
-                if (!resp.has_value() || !resp->needs.empty()) {
-                    CINDER_WARN("bad sync response", {"from", partner});
-                    fetch_span.setAttribute({"outcome", "bad-sync"});
-                    fetch_span.setStatus(SpanStatus::Error);
+                const size_t groups =
+                    (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
+                auto decoded = decodeDigestResponse(*refined->value, groups);
+                if (!decoded.has_value()) {
+                    Span fail_span("anti_entropy.round.refinement", refinement_parent);
+                    fail_span.setAttribute({"partner", partner});
+                    fail_span.setAttribute({"outcome", "bad-refinement"});
+                    fail_span.setStatus(SpanStatus::Error);
                     return;
                 }
-                size_t fetched = resp->entries.size();
-                size_t repaired = applySync(std::move(*resp));
-                if (metrics_ != nullptr) {
-                    if (repaired > 0) {
-                        metrics_->replicationMetrics().anti_entropy_keys_repaired.fetch_add(
-                            repaired,
-                            std::memory_order_relaxed
-                        );
-                    }
-                    metrics_->replicationMetrics().anti_entropy_entries_fetched.fetch_add(
-                        fetched,
-                        std::memory_order_relaxed
-                    );
-                }
-                CINDER_INFO(
-                    "fetch completed",
-                    {"partner", partner},
-                    {"repaired", repaired},
-                    {"entries", fetched}
-                );
-                CINDER_INFO("round completed", {"partner", partner}, {"repaired", repaired});
-                fetch_span.setAttribute({"repaired", repaired});
-                fetch_span.setAttribute({"outcome", "completed"});
-                fetch_span.setStatus(SpanStatus::Ok);
+                Span refinement_span("anti_entropy.round.refinement", refinement_parent);
+                refinement_span.setAttribute({"partner", partner});
+                refinement_span.setAttribute({"bucket_hashes", decoded->bucket_hashes.size()});
+                refinement_span.setStatus(SpanStatus::Ok);
+                finishRefinement(local, partner, refinement_parent, *decoded);
             }
             );
-            result_span.setAttribute({"divergent", divergent.size()});
-            result_span.setAttribute({"outcome", "completed"});
-            result_span.setStatus(SpanStatus::Ok);
         }
         );
     }

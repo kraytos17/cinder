@@ -113,5 +113,58 @@ namespace cinder {
 
         BENCHMARK(bmMetadataCollect);
 
+        // P2 wire sizes: converged rounds send only group hashes (16×8 B);
+        // a single divergent bucket costs one refinement round-trip carrying
+        // 16 bucket hashes plus metadata for exactly the differing bucket.
+        void bmGroupDigestRoundTripBytes(benchmark::State& state) {
+            BenchStore bench(256);
+            auto buckets = bench.manager->computeDigest();
+            auto groups = AntiEntropyManager::groupDigests(buckets);
+            AntiEntropyManager::DigestResponse converged;
+            converged.group_hashes = groups;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                auto blob = AntiEntropyManager::encodeDigestResponse(converged);
+                benchmark::DoNotOptimize(blob.data());
+                state.counters["converged_bytes"] = static_cast<double>(blob.size());
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        BENCHMARK(bmGroupDigestRoundTripBytes);
+
+        void bmSingleBucketDivergenceBytes(benchmark::State& state) {
+            BenchStore bench(256);
+            auto buckets = bench.manager->computeDigest();
+            auto groups = AntiEntropyManager::groupDigests(buckets);
+            AntiEntropyManager::BucketRefinement refinement;
+            for (uint32_t b = 0; b < AntiEntropyManager::K_BUCKETS_PER_GROUP; ++b) {
+                refinement.bucket_hashes.emplace_back(b, buckets[b] ^ 0x1ULL);
+            }
+            std::vector<uint32_t> group_buckets;
+            for (uint32_t b = 0; b < AntiEntropyManager::K_BUCKETS_PER_GROUP; ++b) {
+                group_buckets.push_back(b);
+            }
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                // Phase 1: group digests both ways (request omits the key
+                // list here; the refinement carries the bucket hashes).
+                size_t bytes = AntiEntropyManager::encodeGroupDigest(groups).size()
+                    + AntiEntropyManager::encodeBucketRefinement(refinement).size();
+                // Phase 2: the responder collects metadata for exactly the
+                // buckets whose hashes differ (here: all 16, since every
+                // request hash was flipped).
+                auto meta = bench.manager->collectMetadata(group_buckets, 1U << 20U);
+                auto rows = AntiEntropyManager::decodeMetaRows(meta);
+                bytes += meta.size();
+                benchmark::DoNotOptimize(bytes);
+                benchmark::DoNotOptimize(rows.has_value());
+                state.counters["divergent_bytes"] = static_cast<double>(bytes);
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        BENCHMARK(bmSingleBucketDivergenceBytes);
+
     } // namespace
 } // namespace cinder

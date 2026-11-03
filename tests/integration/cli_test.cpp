@@ -15,6 +15,17 @@ using cinder::net::test::pickHeldPort;
 using cinder::net::test::spawnNode;
 using cinder::net::test::waitForNode;
 
+#ifdef CINDER_ENABLE_TLS
+#include <chrono>
+#include <csignal>
+#include <filesystem>
+#include <thread>
+
+using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
+#endif
+
 namespace {
 
     // Extra env vars are set in the forked child before exec. When exit_code
@@ -291,15 +302,6 @@ namespace {
 
 #ifdef CINDER_ENABLE_TLS
 namespace {
-
-#include <chrono>
-#include <csignal>
-#include <filesystem>
-#include <thread>
-
-    using std::chrono::milliseconds;
-    using std::chrono::seconds;
-    using std::chrono::steady_clock;
 
     // Test certificates (see tests/fixtures). CMAKE_CURRENT_SOURCE_DIR for
     // this TU is tests/, matching the tls integration suite's layout.

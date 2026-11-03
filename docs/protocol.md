@@ -95,7 +95,7 @@ the former on writes, replication uses the latter.
 | 6 | `REPLICATE` | `key` + `value` set; `expires_at_ms` set when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
 | 7 | `HINT` | same layout as `REPLICATE` |
 | 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) |
-| 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its bucket digest (see [Anti-Entropy Payloads](#anti-entropy-payloads)); `key` empty |
+| 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its group digest, later a bucket refinement for divergent groups (`key` = `bucket-refinement-v3`); see [Anti-Entropy Payloads](#anti-entropy-payloads) |
 | 10 | `ANTI_ENTROPY_SYNC` | entries where the sender wins plus a needlist of key hashes where it loses (partner answers with entries); `key` empty |
 | 11 | `ADMIN_INFO` | request: empty; response: `value` = JSON node info (node_id, port, capacity, store stats, config) |
 | 12 | `ADMIN_CLUSTER` | request: empty; response: `value` = JSON membership array (id, host, port, state, incarnation) |
@@ -332,43 +332,73 @@ at the version check before reaching the flags byte.
 
 Opcodes 9 and 10 carry custom binary payloads inside the `value` field. All
 integers are little-endian (native byte order; the cluster is homogeneous).
-Every AE payload starts with a schema magic (`uint32`): `0x41454D32`
-("AEM2", digest), `0x41454D53` ("AEMS", sync), `0x41454D4E` ("AEMN" —
-reserved for needlists, currently folded into the sync message). Payloads
+Every AE payload starts with a schema magic (`uint32`): `0x41454D33`
+("AEM3", group digest request), `0x41454D32` ("AEM2", legacy full digest —
+accepted on decode for compatibility but no longer sent), `0x41454D53`
+("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455233` ("AER3",
+digest response), `0x41454233` ("AEB3", bucket refinement). Payloads
 without a recognized magic are rejected, so old peers fail a round cleanly
 and converge once the cluster is homogeneous.
 
-### Digest (`ANTI_ENTROPY_DIGEST` request, opcode 9)
+### Group Digest (`ANTI_ENTROPY_DIGEST` request, opcode 9)
+
+The initiator sends one xxHash per *group* of 16 consecutive buckets
+(`K_BUCKETS_PER_GROUP`), so a converged round costs 16 hashes (136 bytes)
+instead of 256 bucket hashes:
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41454D32` (`uint32`) |
-| `num_buckets` | 4    | `uint32` |
-| `bucket[0..N-1]` | 8 each | XOR of per-entry hashes in the bucket |
-
-Total size: `8 + 8 × num_buckets` bytes (2 KiB at the default 256 buckets).
-Each entry hash covers `(key, version_and_ttl, writer)` — values are never
-hashed, since `(writer, version)` already uniquely identifies a write.
-Buckets are order-independent (XOR), so no per-bucket sort.
+| `magic`       | 4    | `0x41454D33` (`uint32`) |
+| `group count` | 4    | `uint32` |
+| `group[0..G-1]` | 8 each | XOR-fold of the group's bucket hashes |
 
 ### Digest Response (opcode 9 response)
 
-The partner responds with its own digest followed by metadata rows for
-divergent buckets. The initiator derives the divergent set by comparing both
-digests:
+The partner answers with its own group hashes only (no bucket data yet):
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41454D32` (`uint32`) |
-| `num_buckets` | 4    | `uint32` |
-| `bucket[0..N-1]` | 8 each | XOR of per-entry hashes in the bucket |
-| `row count`   | 4    | number of metadata rows, `uint32` |
-| rows          | 28 each | metadata rows (see below) |
+| `magic`       | 4    | `0x41455233` (`uint32`) |
+| `group count` | 4    | `uint32` |
+| `group[0..G-1]` | 8 each | XOR-fold of the group's bucket hashes |
+| `bucket hash count` | 4 | always `0` in a phase-1 response |
+| `covered count` | 4 | always `0` in a phase-1 response |
+| `rows size`   | 4    | always `4` (empty metadata row list) |
+| rows          | 0    | empty |
+
+### Bucket Refinement (opcode 9 with key `"bucket-refinement-v3"`)
+
+For each divergent group, the initiator requests that group's bucket
+hashes. The request lists the initiator's own hashes so the responder
+returns metadata only for buckets that actually differ:
+
+| Field           | Size | Description |
+|-----------------|------|--------------|
+| `magic`         | 4    | `0x41454233` (`uint32`) |
+| `bucket count`  | 4    | `uint32` |
+| entries         | 12 each | `[bucket u32][hash u64]` (initiator's view) |
+
+The refinement response reuses the digest-response envelope, this time
+populated: the responder's bucket hashes for the requested buckets,
+the covered-bucket set, and the metadata rows:
+
+| Field         | Size | Description |
+|---------------|------|--------------|
+| `magic`       | 4    | `0x41455233` (`uint32`) |
+| `group count` | 4    | `uint32` (full group vector, for validation) |
+| `group[0..G-1]` | 8 each | responder's group hashes |
+| `bucket hash count` | 4 | number of bucket hashes, `uint32` |
+| `bucket hashes` | 12 each | `[bucket u32][hash u64]` |
+| `covered count` | 4  | number of covered buckets, `uint32` |
+| `covered`     | 4 each | `uint32` bucket ids with complete metadata |
+| `rows size`   | 4    | metadata bytes that follow, `uint32` |
+| rows          | var  | metadata rows (see below) |
 
 A metadata row is `[bucket u32][key_hash u64][version u64][writer u64]`:
 identity plus recency, no value. Rows are bucket-atomic (a bucket's rows are
 all included or the bucket is deferred to a later round), so truncation
-delays but never stalls convergence.
+delays but never stalls convergence. Covered buckets with no rows are
+explicitly empty — the initiator must not treat omission as absence.
 
 ### Sync (`ANTI_ENTROPY_SYNC`, opcode 10)
 

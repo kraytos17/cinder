@@ -821,11 +821,15 @@ namespace cinder::net {
                 if (anti_entropy_ != nullptr) {
                     // Sender identity is best-effort (same as gossip); used only
                     // for logging inside the anti-entropy manager.
-                    anti_entropy_
-                        ->onDigestRequest(std::string(node_id_), req, [this](const Response& r) {
+                    auto respond = [this](const Response& r) {
                         sendResponse(r);
                         maybeRead();
-                    });
+                    };
+                    if (req.key == "bucket-refinement-v3") {
+                        anti_entropy_->onBucketRefinement(std::string(node_id_), req, respond);
+                    } else {
+                        anti_entropy_->onDigestRequest(std::string(node_id_), req, respond);
+                    }
                     return;
                 }
 
