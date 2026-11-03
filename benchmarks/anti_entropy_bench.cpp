@@ -1,4 +1,5 @@
 #include <benchmark/benchmark.h>
+#include <cassert>
 #include <memory>
 #include <string>
 
@@ -51,8 +52,12 @@ namespace cinder {
                     e.value = std::string(96, 'v');
                     e.setVersion(static_cast<Version>(i + 1));
                     e.writer_node_hash = 7;
-                    auto key = "bench-key-" + std::to_string(i);
-                    (void)store.putVersioned(key, std::move(e));
+                    // Setup path (not timed): every put must succeed. NOLINT
+                    // covers NDEBUG builds, where assert compiles out.
+                    // NOLINTNEXTLINE(bugprone-unused-local-non-trivial-variable)
+                    auto inserted =
+                        store.putVersioned("bench-key-" + std::to_string(i), std::move(e));
+                    assert(inserted.has_value());
                 }
                 manager = std::make_unique<AntiEntropyManager>(
                     store,

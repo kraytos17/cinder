@@ -185,10 +185,10 @@ namespace {
         assert(resp.has_value());
         assert(resp->needs.empty());
         const auto before = snapshotOf(dst);
-        (void)apply_mgr.applySync(*resp);
+        (void)apply_mgr.applySync(std::move(*resp));
         const auto first = snapshotOf(dst);
         assert(first.size() == before.size() + diff.need.size());
-        (void)apply_mgr.applySync(*resp);
+        (void)apply_mgr.applySync(std::move(*resp));
         const auto second = snapshotOf(dst);
         assert(first == second);
 

@@ -154,8 +154,9 @@ namespace cinder {
         ) const -> MetaDiff;
 
         // Apply a decoded sync message's entries via putVersioned (LWW).
+        // Takes the message by value: entries are moved into the store.
         // Returns count of entries actually newer than what we have.
-        auto applySync(const SyncMessage& msg) -> size_t;
+        auto applySync(SyncMessage msg) -> size_t;
 
         // Legacy entry point: parses an entries-only sync blob and applies it.
         // Kept for tests/fuzz; production flows use decodeSync + applySync.
@@ -323,38 +324,35 @@ namespace cinder {
 
         CacheStore& store_;
         ConsistentHashRing& ring_;
-        NodeId self_;
         Clock& clock_;
         Transport& transport_;
-        uint32_t num_buckets_;
         std::atomic<size_t> fetch_bytes_;
         std::atomic<std::chrono::milliseconds> full_rehash_interval_;
         size_t partner_idx_ = 0;
         MetricsCollector* metrics_ = nullptr;
-        // partners_dirty_ flags a required partner-set refresh (cold start,
-        // full rehash); the timer thread consumes it in pickPartner, so
-        // refresh scans never run on connection strands.
-        std::atomic<bool> partners_dirty_{true};
-
         // P1 incremental state. xor_[b] is the XOR of entry hashes in bucket b,
         // updated lock-free on the write path (atomic fetch_xor) and blessed
         // by fullRehash. No mutex on the fast path: torn cross-bucket reads
         // only look divergent and self-heal next round. Fixed-size array:
         // vector<atomic> is neither movable nor copyable.
         std::unique_ptr<std::atomic<uint64_t>[]> xor_;
-        std::atomic<bool> xor_valid_{false};
         // Nanoseconds since steady-clock epoch of the last blessed rehash.
         std::atomic<int64_t> last_full_rehash_ns_{0};
+        // Pending-log for divert-while-scanning (see fullRehash).
+        std::vector<std::pair<uint32_t, uint64_t>> pending_;
+        std::vector<NodeId> partners_;
+        NodeId self_;
+        std::mutex pending_mutex_;
+        std::shared_mutex acc_mutex_;
+        uint32_t num_buckets_;
+        // Cold start / post-rehash refresh flag; consumed on the timer thread
+        // in pickPartner, so refresh scans never run on connection strands.
+        std::atomic<bool> partners_dirty_{true};
+        std::atomic<bool> xor_valid_{false};
         // Rehash mutual exclusion: concurrent digestForRound calls must not
         // rehash simultaneously; losers serve the current accumulators.
         std::atomic<bool> rehashing_{false};
-        // Divert-while-scanning (see fullRehash): when set, the sink logs
-        // mutations instead of xoring them. Guarded by acc_mutex_ for the
-        // flag handoff; the pending log has its own mutex for the slow path.
-        std::shared_mutex acc_mutex_;
+        // Divert-while-scanning flag (see fullRehash).
         std::atomic<bool> capturing_{false};
-        std::mutex pending_mutex_;
-        std::vector<std::pair<uint32_t, uint64_t>> pending_;
-        std::vector<NodeId> partners_;
     };
 } // namespace cinder

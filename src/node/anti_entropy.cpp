@@ -88,14 +88,14 @@ namespace cinder {
     ) :
         store_(store),
         ring_(ring),
-        self_(std::move(self)),
         clock_(clock),
         transport_(transport),
-        num_buckets_(num_buckets == 0 ? 1 : num_buckets),
         fetch_bytes_(fetch_bytes),
         full_rehash_interval_(full_rehash_interval),
         metrics_(metrics),
-        xor_(std::make_unique<std::atomic<uint64_t>[]>(num_buckets_ == 0 ? 1 : num_buckets_)) {
+        xor_(std::make_unique<std::atomic<uint64_t>[]>(num_buckets == 0 ? 1 : num_buckets)),
+        self_(std::move(self)),
+        num_buckets_(num_buckets == 0 ? 1 : num_buckets) {
         // Feed the incremental digest (P1). Unregistered in the destructor;
         // the store may outlive or predate this manager in tests.
         store_.setMutationSink(
@@ -434,10 +434,7 @@ namespace cinder {
         if (payload.size() < digest_len) {
             return std::nullopt;
         }
-        return std::make_pair(
-            std::string_view(payload.data(), digest_len),
-            std::string_view(payload.data() + digest_len, payload.size() - digest_len)
-        );
+        return std::make_pair(payload.substr(0, digest_len), payload.substr(digest_len));
     }
 
     auto AntiEntropyManager::collectMetadata(
@@ -461,12 +458,12 @@ namespace cinder {
             [this, &wanted, &per_bucket](const std::string& key, const VersionedEntry& entry) {
             uint32_t b = bucketFor(key);
             if (wanted[b]) {
-                per_bucket[b].push_back(
-                    {b,
-                     XXH3_64bits(key.data(), key.size()),
-                     entry.version(),
-                     entry.writer_node_hash}
-                );
+                per_bucket[b].push_back({
+                    b,
+                    XXH3_64bits(key.data(), key.size()),
+                    entry.version(),
+                    entry.writer_node_hash,
+                });
             }
         }
         );
@@ -694,9 +691,9 @@ namespace cinder {
             || (version == existing->version() && writer_hash > existing->writer_node_hash);
     }
 
-    auto AntiEntropyManager::applySync(const SyncMessage& msg) -> size_t {
+    auto AntiEntropyManager::applySync(SyncMessage msg) -> size_t {
         size_t applied = 0;
-        for (const auto& item : msg.entries) {
+        for (auto& item : msg.entries) {
             // Only count as repaired if the entry is actually newer than what
             // we have. putVersioned always returns ok() (LWW accepts or
             // discards), so pre-check to get an accurate repair count.
@@ -720,7 +717,7 @@ namespace cinder {
             }
             return 0;
         }
-        return applySync(*msg);
+        return applySync(std::move(*msg));
     }
 
     void AntiEntropyManager::refreshPartners(int replica_factor) {
@@ -844,7 +841,10 @@ namespace cinder {
             respond_error(Errc::InvalidArgument);
             return;
         }
-        size_t repaired = applySync(*msg);
+        // NOTE: entries are moved into applySync; pull the needlist out first —
+        // reading msg->needs after the move sees an empty vector.
+        std::vector<uint64_t> needs = std::move(msg->needs);
+        size_t repaired = applySync(std::move(*msg));
         if (metrics_ != nullptr && repaired > 0) {
             metrics_->replicationMetrics().anti_entropy_keys_repaired.fetch_add(
                 repaired,
@@ -855,12 +855,12 @@ namespace cinder {
         // Serve the needlist (if any) with an entries-only response. The
         // entries the sender pushed are already applied above.
         SyncMessage resp;
-        if (!msg->needs.empty()) {
-            resp.entries = selectEntriesForHashes(msg->needs, fetchBytes());
+        if (!needs.empty()) {
+            resp.entries = selectEntriesForHashes(needs, fetchBytes());
             CINDER_DEBUG(
                 "sync serving needlist",
                 {"from", from},
-                {"requested", msg->needs.size()},
+                {"requested", needs.size()},
                 {"served", resp.entries.size()}
             );
         }
@@ -1003,7 +1003,8 @@ namespace cinder {
                     fetch_span.setStatus(SpanStatus::Error);
                     return;
                 }
-                size_t repaired = applySync(*resp);
+                size_t fetched = resp->entries.size();
+                size_t repaired = applySync(std::move(*resp));
                 if (metrics_ != nullptr) {
                     if (repaired > 0) {
                         metrics_->replicationMetrics().anti_entropy_keys_repaired.fetch_add(
@@ -1012,7 +1013,7 @@ namespace cinder {
                         );
                     }
                     metrics_->replicationMetrics().anti_entropy_entries_fetched.fetch_add(
-                        resp->entries.size(),
+                        fetched,
                         std::memory_order_relaxed
                     );
                 }
@@ -1020,7 +1021,7 @@ namespace cinder {
                     "fetch completed",
                     {"partner", partner},
                     {"repaired", repaired},
-                    {"entries", resp->entries.size()}
+                    {"entries", fetched}
                 );
                 CINDER_INFO("round completed", {"partner", partner}, {"repaired", repaired});
                 fetch_span.setAttribute({"repaired", repaired});

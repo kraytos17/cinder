@@ -158,8 +158,8 @@ namespace cinder {
                 {0, 22, 2, 7},
                 {5, 33, 1, 9},
             };
-            auto blob = ma.encodeMetaRows(rows);
-            auto back = ma.decodeMetaRows(blob);
+            auto blob = AntiEntropyManager::encodeMetaRows(rows);
+            auto back = AntiEntropyManager::decodeMetaRows(blob);
             ASSERT_TRUE(back.has_value());
             ASSERT_EQ(back->size(), 3U);
             for (size_t i = 0; i < 3; ++i) {
@@ -169,14 +169,16 @@ namespace cinder {
                 EXPECT_EQ((*back)[i].writer, rows[i].writer);
             }
 
-            auto empty = ma.encodeMetaRows({});
-            auto back_empty = ma.decodeMetaRows(empty);
+            auto empty = AntiEntropyManager::encodeMetaRows({});
+            auto back_empty = AntiEntropyManager::decodeMetaRows(empty);
             ASSERT_TRUE(back_empty.has_value());
             EXPECT_TRUE(back_empty->empty());
 
-            EXPECT_FALSE(ma.decodeMetaRows(blob.substr(0, blob.size() - 1)).has_value());
-            EXPECT_FALSE(ma.decodeMetaRows("").has_value());
-            EXPECT_FALSE(ma.decodeMetaRows("garbage-blob").has_value());
+            EXPECT_FALSE(
+                AntiEntropyManager::decodeMetaRows(blob.substr(0, blob.size() - 1)).has_value()
+            );
+            EXPECT_FALSE(AntiEntropyManager::decodeMetaRows("").has_value());
+            EXPECT_FALSE(AntiEntropyManager::decodeMetaRows("garbage-blob").has_value());
         }
 
         TEST(AntiEntropyEncodeTest, SyncRoundTrip) {
@@ -210,7 +212,7 @@ namespace cinder {
             AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8);
 
             auto meta = ma.collectMetadata(allBuckets(8), 1U << 20U);
-            auto rows = ma.decodeMetaRows(meta);
+            auto rows = AntiEntropyManager::decodeMetaRows(meta);
             ASSERT_TRUE(rows.has_value());
             ASSERT_EQ(rows->size(), 2U);
             auto diff = mb.diffRows(*rows, allBuckets(8));
@@ -221,7 +223,7 @@ namespace cinder {
             auto resp = mb.decodeSync(fetched);
             ASSERT_TRUE(resp.has_value());
             EXPECT_TRUE(resp->needs.empty());
-            EXPECT_EQ(mb.applySync(*resp), 2);
+            EXPECT_EQ(mb.applySync(std::move(*resp)), 2);
 
             auto e1 = b.store.getVersioned("k1");
             ASSERT_TRUE(e1.has_value());
@@ -240,8 +242,10 @@ namespace cinder {
             AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
             AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8);
 
-            auto meta_a = ma.decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
-            auto meta_b = mb.decodeMetaRows(mb.collectMetadata(allBuckets(8), 1U << 20U));
+            auto meta_a =
+                AntiEntropyManager::decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
+            auto meta_b =
+                AntiEntropyManager::decodeMetaRows(mb.collectMetadata(allBuckets(8), 1U << 20U));
             ASSERT_TRUE(meta_a.has_value());
             ASSERT_TRUE(meta_b.has_value());
 
@@ -257,14 +261,14 @@ namespace cinder {
             auto stale = ma.collectEntriesByKeys({"k"}, 1U << 20U);
             auto stale_msg = mb.decodeSync(stale);
             ASSERT_TRUE(stale_msg.has_value());
-            EXPECT_EQ(mb.applySync(*stale_msg), 0);
+            EXPECT_EQ(mb.applySync(std::move(*stale_msg)), 0);
             EXPECT_EQ(b.store.getVersioned("k")->value, "new");
 
             // Newer write wins: returns 1 (counted as repair).
             auto fresh = mb.collectEntriesByKeys({"k"}, 1U << 20U);
             auto fresh_msg = ma.decodeSync(fresh);
             ASSERT_TRUE(fresh_msg.has_value());
-            EXPECT_EQ(ma.applySync(*fresh_msg), 1);
+            EXPECT_EQ(ma.applySync(std::move(*fresh_msg)), 1);
             EXPECT_EQ(a.store.getVersioned("k")->value, "new");
         }
 
@@ -288,14 +292,15 @@ namespace cinder {
 
             AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
             AntiEntropyManager mb(b.store, b.ring, "n2", b.clock, b.transport, 8);
-            auto meta = ma.decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
+            auto meta =
+                AntiEntropyManager::decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
             ASSERT_TRUE(meta.has_value());
             auto diff = mb.diffRows(*meta, allBuckets(8));
             ASSERT_EQ(diff.need.size(), 1U);
             auto fetched = ma.collectEntriesForHashes(diff.need, 1U << 20U);
             auto resp = mb.decodeSync(fetched);
             ASSERT_TRUE(resp.has_value());
-            EXPECT_EQ(mb.applySync(*resp), 1);
+            EXPECT_EQ(mb.applySync(std::move(*resp)), 1);
 
             auto got = b.store.getVersioned("tk");
             ASSERT_TRUE(got.has_value());
@@ -315,7 +320,8 @@ namespace cinder {
                 );
             }
 
-            auto meta = ma.decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
+            auto meta =
+                AntiEntropyManager::decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
             ASSERT_TRUE(meta.has_value());
             ASSERT_EQ(meta->size(), 50U);
 
@@ -440,7 +446,9 @@ namespace cinder {
             // B asks for k1 by hash without knowing the key.
             uint64_t h = 0;
             {
-                auto meta = ma.decodeMetaRows(ma.collectMetadata(allBuckets(8), 1U << 20U));
+                auto meta = AntiEntropyManager::decodeMetaRows(
+                    ma.collectMetadata(allBuckets(8), 1U << 20U)
+                );
                 ASSERT_TRUE(meta.has_value());
                 ASSERT_EQ(meta->size(), 1U);
                 h = (*meta)[0].key_hash;
@@ -503,18 +511,18 @@ namespace cinder {
         };
 
         struct LoopbackPair {
+            MetricsCollector metrics_a;
+            MetricsCollector metrics_b;
             RealClock clock_a;
             RealClock clock_b;
-            LruStore store_a{1U << 20U};
-            LruStore store_b{1U << 20U};
+            std::unique_ptr<AntiEntropyManager> ma;
+            std::unique_ptr<AntiEntropyManager> mb;
             ConsistentHashRing ring_a;
             ConsistentHashRing ring_b;
             LoopbackTransport transport_a;
             LoopbackTransport transport_b;
-            MetricsCollector metrics_a;
-            MetricsCollector metrics_b;
-            std::unique_ptr<AntiEntropyManager> ma;
-            std::unique_ptr<AntiEntropyManager> mb;
+            LruStore store_a{1U << 20U};
+            LruStore store_b{1U << 20U};
 
             LoopbackPair() {
                 ring_a.addNode("n1");
@@ -547,7 +555,7 @@ namespace cinder {
 
             // Rounds alternate until the digests agree or the budget runs out.
             // Returns the rounds run.
-            auto converge(int max_rounds = 10) -> int {
+            auto converge(int max_rounds = 10) const -> int {
                 int rounds = 0;
                 for (; rounds < max_rounds; ++rounds) {
                     ma->runRound(2);
@@ -608,11 +616,15 @@ namespace cinder {
             AntiEntropyManager manager(store, ring, "n1", clock, transport, K_BUCKETS);
             AntiEntropyManager tiny_mgr(tiny, ring, "n1", clock, transport, K_BUCKETS);
 
-            std::mt19937_64 rng(42);
+            // Non-constant seed (bugprone-random-generator-seed forbids
+            // fixed ones); logged so a failure stays reproducible.
+            const auto seed = std::random_device{}();
+            RecordProperty("rng_seed", std::to_string(seed));
+            std::mt19937_64 rng{seed};
             auto key = [&](int i) {
                 return "key" + std::to_string(i);
             };
-            auto expiredEntry = [&](Version v) {
+            auto expired_entry = [&](Version v) {
                 VersionedEntry e = makeEntry("ttl", v, 1);
                 e.setHasTtl(true);
                 e.expires_at = clock.now() - seconds(1);
@@ -626,15 +638,21 @@ namespace cinder {
                     if (op < 2) {
                         Version v = static_cast<Version>(rng() % 50 + 1);
                         uint64_t w = rng() % 3;
+                        // Any outcome is a legal test input (stale rejects,
+                        // capacity errors): the property must hold regardless.
+                        // NOLINTNEXTLINE(bugprone-unused-return-value)
                         (void)store.putVersioned(key(k), makeEntry("v", v, w));
+                        // NOLINTNEXTLINE(bugprone-unused-return-value)
                         (void)tiny.putVersioned(key(k), makeEntry("v", v, w));
                     } else if (op == 2) {
                         (void)store.remove(key(k));
                         (void)tiny.remove(key(k));
                     } else {
                         Version v = 100 + static_cast<Version>(i);
-                        (void)store.putVersioned(key(k), expiredEntry(v));
-                        (void)tiny.putVersioned(key(k), expiredEntry(v));
+                        // NOLINTNEXTLINE(bugprone-unused-return-value)
+                        (void)store.putVersioned(key(k), expired_entry(v));
+                        // NOLINTNEXTLINE(bugprone-unused-return-value)
+                        (void)tiny.putVersioned(key(k), expired_entry(v));
                         (void)store.evictExpired();
                         (void)tiny.evictExpired();
                     }
@@ -730,7 +748,8 @@ namespace cinder {
                     auto zeros = std::vector<uint64_t>(buckets_, 0);
                     net::Response resp{
                         .status = Errc::OK,
-                        .value = manager_->encodeDigest(zeros) + manager_->encodeMetaRows({}),
+                        .value = AntiEntropyManager::encodeDigest(zeros)
+                            + AntiEntropyManager::encodeMetaRows({}),
                     };
                     pending_digest_ = std::move(on_done);
                     pending_digest_response_ = std::move(resp);
