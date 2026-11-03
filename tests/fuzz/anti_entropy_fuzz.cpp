@@ -101,7 +101,8 @@ namespace {
     }
 
     // Codec roundtrips: decode inverts encode exactly, and a wrong bucket count
-    // rejects the digest.
+    // rejects the digest. Meta rows and sync messages round-trip too, with
+    // exact-size validation rejecting truncation and junk.
     static void codecRoundtrip(FuzzedDataProvider& fdp) {
         if (fdp.ConsumeBool()) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
@@ -118,20 +119,37 @@ namespace {
             assert(!wrong.has_value());
         } else {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
-            std::vector<uint32_t> ids;
+            std::vector<cinder::AntiEntropyManager::MetaRow> rows;
             for (size_t i = 0; i < n; ++i) {
-                ids.push_back(fdp.ConsumeIntegral<uint32_t>());
+                rows.push_back(
+                    {fdp.ConsumeIntegral<uint32_t>(),
+                     fdp.ConsumeIntegral<uint64_t>(),
+                     fdp.ConsumeIntegral<uint64_t>(),
+                     fdp.ConsumeIntegral<uint64_t>()}
+                );
             }
-            auto blob = cinder::AntiEntropyManager::encodeBucketIds(ids);
-            auto back = cinder::AntiEntropyManager::decodeBucketIds(blob);
+            FuzzClock clock;
+            FuzzTransport transport;
+            cinder::ConsistentHashRing ring;
+            cinder::LruStore store(64 * 1024, &clock);
+            cinder::AntiEntropyManager mgr(store, ring, "fuzz-self", clock, transport, 8);
+            auto blob = mgr.encodeMetaRows(rows);
+            auto back = mgr.decodeMetaRows(blob);
             assert(back.has_value());
-            assert(*back == ids);
+            assert(back->size() == rows.size());
+            for (size_t i = 0; i < n; ++i) {
+                assert((*back)[i].bucket == rows[i].bucket);
+                assert((*back)[i].key_hash == rows[i].key_hash);
+                assert((*back)[i].version == rows[i].version);
+                assert((*back)[i].writer == rows[i].writer);
+            }
         }
     }
 
-    // Collect/apply idempotence: entries gathered from a populated store apply
-    // cleanly to an empty one, and re-applying the same blob is a no-op (LWW
-    // re-apply of identical versions changes nothing observable).
+    // Collect/apply idempotence: metadata gathered from a populated store
+    // diffs against an empty one, the needlist is served, and re-applying the
+    // fetched entries is a no-op (LWW re-apply of identical versions changes
+    // nothing observable).
     static void collectApply(FuzzedDataProvider& fdp) {
         FuzzClock clock;
         FuzzTransport transport;
@@ -149,17 +167,28 @@ namespace {
 
         const uint32_t buckets = fdp.ConsumeIntegralInRange<uint32_t>(1, 32);
         cinder::AntiEntropyManager collect_mgr(src, ring, "fuzz-self", clock, transport, buckets);
-        std::vector<uint32_t> ids;
-        const size_t m = fdp.ConsumeIntegralInRange<size_t>(0, 8);
-        for (size_t i = 0; i < m; ++i) {
-            ids.push_back(fdp.ConsumeIntegral<uint32_t>() % buckets);
-        }
-        auto blob = collect_mgr.collectEntries(ids);
-
         cinder::AntiEntropyManager apply_mgr(dst, ring, "fuzz-self", clock, transport, buckets);
-        (void)apply_mgr.applyEntries(blob);
+
+        std::vector<uint32_t> ids;
+        for (uint32_t b = 0; b < buckets; ++b) {
+            ids.push_back(b);
+        }
+        auto meta = collect_mgr.collectMetadata(ids, 1U << 20U);
+        auto rows = collect_mgr.decodeMetaRows(meta);
+        assert(rows.has_value());
+        auto diff = apply_mgr.diffRows(*rows, ids);
+        // Everything the source has, the empty destination needs.
+        assert(diff.need.size() == rows->size());
+        assert(diff.have.empty());
+        auto fetched = collect_mgr.collectEntriesForHashes(diff.need, 1U << 20U);
+        auto resp = apply_mgr.decodeSync(fetched);
+        assert(resp.has_value());
+        assert(resp->needs.empty());
+        const auto before = snapshotOf(dst);
+        (void)apply_mgr.applySync(*resp);
         const auto first = snapshotOf(dst);
-        (void)apply_mgr.applyEntries(blob);
+        assert(first.size() == before.size() + diff.need.size());
+        (void)apply_mgr.applySync(*resp);
         const auto second = snapshotOf(dst);
         assert(first == second);
 
@@ -168,6 +197,8 @@ namespace {
         auto d2 = collect_mgr.computeDigest();
         assert(d1.size() == buckets);
         assert(d1 == d2);
+        // Incremental accumulators agree with the full scan.
+        assert(collect_mgr.digestForRound() == d1);
     }
 
     // Raw protocol handlers: arbitrary payloads must never crash, and the

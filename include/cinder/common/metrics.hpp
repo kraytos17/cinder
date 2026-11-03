@@ -204,6 +204,11 @@ namespace cinder {
         std::atomic<uint64_t> replica_unreachable{0};
         std::atomic<uint64_t> anti_entropy_rounds{0};
         std::atomic<uint64_t> anti_entropy_keys_repaired{0};
+        std::atomic<uint64_t> anti_entropy_meta_rows_sent{0};
+        std::atomic<uint64_t> anti_entropy_meta_rows_recv{0};
+        std::atomic<uint64_t> anti_entropy_entries_fetched{0};
+        std::atomic<uint64_t> anti_entropy_full_rehashes{0};
+        std::atomic<uint64_t> anti_entropy_rehash_mismatches{0};
 
         struct ReplicaLag {
             std::string node_id;

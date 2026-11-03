@@ -57,6 +57,11 @@ namespace cinder {
         // Anti-entropy (periodic background repair between replica partners)
         int anti_entropy_interval_ms = 30'000; // 0 = disabled
         int anti_entropy_buckets = 256;
+        // Per-round fetch budget for repair entries (bytes); needlists and
+        // metadata are small enough to stay unbounded (frame-capped).
+        size_t anti_entropy_fetch_bytes = 1U << 20U;
+        // Silent-divergence backstop: full rehash at least this often.
+        int anti_entropy_full_rehash_interval_ms = 300'000;
 
         // Persistence
         bool persistence_enabled = false;

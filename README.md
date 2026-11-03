@@ -171,7 +171,7 @@ Seven libFuzzer harnesses with ASan + UBSan:
 | `store_put_fuzz` | `LruStore` / `LfuStore` — put, get, remove, putVersioned, evictExpired, plus op-dispatch (Set/Get/Del/Ping) | Arbitrary key/value lengths, versioned writes, capacity edge cases |
 | `snapshot_fuzz` | `SnapshotReader::readAll()` | Crafted snapshot files, oversized `entry_count`, truncated data |
 | `wal_fuzz` | `WalReader::next()` + `PersistenceManager::recover()` | WAL checksummed/legacy formats, truncated entries, replay through persistence |
-| `anti_entropy_fuzz` | `decodeDigest()`, `decodeBucketIds()`, `applyEntries()`, `onSyncRequest()`, `onDigestRequest()` | Anti-entropy binary blobs, malformed digests, truncated entry streams |
+| `anti_entropy_fuzz` | `decodeDigest()`, `decodeMetaRows()`, `decodeSync()`, `applyEntries()`, `collectMetadata()`, `diffRows()`, `onSyncRequest()`, `onDigestRequest()` | Anti-entropy binary blobs, malformed digests/metadata/sync payloads, truncated entry streams, collect/apply idempotence, digest equivalence |
 | `http_parse_fuzz` | `parseHttpRequest()` | Malformed HTTP requests, bad methods, truncated headers |
 | `redirect_parse_fuzz` | `parseRedirectTarget()` / `parseRedirect()` | Redirect hint parsing, `@host:port` splitting, port overflow, prefix edge cases |
 

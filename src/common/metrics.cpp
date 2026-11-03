@@ -238,6 +238,31 @@ namespace cinder {
             "replication_anti_entropy_keys_repaired_total",
             repl_.anti_entropy_keys_repaired.load()
         );
+        appendCounter(
+            os,
+            "replication_anti_entropy_meta_rows_sent_total",
+            repl_.anti_entropy_meta_rows_sent.load()
+        );
+        appendCounter(
+            os,
+            "replication_anti_entropy_meta_rows_recv_total",
+            repl_.anti_entropy_meta_rows_recv.load()
+        );
+        appendCounter(
+            os,
+            "replication_anti_entropy_entries_fetched_total",
+            repl_.anti_entropy_entries_fetched.load()
+        );
+        appendCounter(
+            os,
+            "replication_anti_entropy_full_rehashes_total",
+            repl_.anti_entropy_full_rehashes.load()
+        );
+        appendCounter(
+            os,
+            "replication_anti_entropy_rehash_mismatches_total",
+            repl_.anti_entropy_rehash_mismatches.load()
+        );
 
         // Per-replica lag
         if (!repl_.replica_lags.empty()) {

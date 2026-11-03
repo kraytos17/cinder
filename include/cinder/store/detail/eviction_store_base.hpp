@@ -82,6 +82,33 @@ namespace cinder {
             capacity_bytes_(capacity_bytes),
             next_version_(static_cast<Version>(now().time_since_epoch().count())) {}
 
+        auto setMutationSink(MutationSink sink) -> void final {
+            sink_ = std::move(sink);
+        }
+
+    protected:
+
+        // Mutation fan-out for the anti-entropy incremental digest. Exactly
+        // five call sites, all under sh.mutex (putVersioned insert-accept and
+        // overwrite-accept, eraseNode covering remove()/expiry/evictExpired,
+        // and each policy's evictOne for capacity evictions). The sink fires
+        // with borrowed key bytes — it must consume them synchronously and
+        // never call back into the store (CacheStore::setMutationSink
+        // documents the leaf-only rule).
+        void noteAdded(const std::string& key, uint64_t version_and_ttl, uint64_t writer) {
+            if (sink_) {
+                sink_(key, version_and_ttl, writer, false);
+            }
+        }
+
+        void noteRemoved(const std::string& key, uint64_t version_and_ttl, uint64_t writer) {
+            if (sink_) {
+                sink_(key, version_and_ttl, writer, true);
+            }
+        }
+
+    public:
+
         auto put(
             const std::string& key,
             std::string value,
@@ -109,6 +136,8 @@ namespace cinder {
 
             auto it = sh.index.find(key);
             if (it != sh.index.end()) {
+                uint64_t old_version_and_ttl = 0;
+                uint64_t old_writer = 0;
                 {
                     // Idempotent apply: reject stale/equal-lower writes (replay-safe).
                     // Scoped: `it`/`it->second` must not survive evictIfNeeded() below.
@@ -126,6 +155,11 @@ namespace cinder {
                         < entry0.writer_node_hash) {
                         return ok();
                     }
+                    // Snapshot the outgoing write for the mutation feed: the
+                    // node is overwritten below, so the old identity must be
+                    // captured while the reference is alive.
+                    old_version_and_ttl = entry0.version_and_ttl;
+                    old_writer = entry0.writer_node_hash;
                 }
 
                 // Lamport bump: advance past any observed version so
@@ -148,10 +182,18 @@ namespace cinder {
                 // survived, so updateWheel must use the fresh one.
                 it = sh.index.find(key);
                 if (it == sh.index.end()) {
+                    // Self-evicted by evictIfNeeded above: the old write is
+                    // gone with nothing replacing it.
+                    noteRemoved(key, old_version_and_ttl, old_writer);
                     refreshMetrics();
                     return ok();
                 }
 
+                {
+                    const auto& resident = Derived::nodeEntry(*it->second);
+                    noteRemoved(key, old_version_and_ttl, old_writer);
+                    noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
+                }
                 updateWheel(sh, it->second);
                 writeWal(sh, key);
                 if (metrics_) {
@@ -175,12 +217,18 @@ namespace cinder {
             evictIfNeeded(sh);
             // Same self-eviction hazard as above: the new node starts at freq 1
             // (the minimum), so under capacity pressure evictIfNeeded can take
-            // it right back. Re-lookup before touching the iterator.
+            // it right back. Re-lookup before touching the iterator. (new_it
+            // itself stays valid: only index iterators relocate on erase, and
+            // list nodes are stable — the find proves our node survived.)
             if (sh.index.find(key) == sh.index.end()) {
                 refreshMetrics();
                 return ok();
             }
 
+            {
+                const auto& resident = Derived::nodeEntry(*new_it);
+                noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
+            }
             updateWheel(sh, new_it);
             writeWal(sh, key);
             if (metrics_) {
@@ -443,6 +491,9 @@ namespace cinder {
         std::atomic<size_t> total_entries_{0};
         PersistenceManager* persistence_ = nullptr;
         MetricsCollector* metrics_ = nullptr;
+        // Anti-entropy incremental-digest feed; empty unless a manager
+        // registered via setMutationSink. Invoked under sh.mutex — leaf only.
+        MutationSink sink_;
 
         auto shardFor(std::string_view key) const -> size_t {
             const Derived& self = d();
@@ -486,6 +537,12 @@ namespace cinder {
         template <typename S, typename IndexIt> void eraseNode(S& sh, IndexIt it) {
             Derived& self = d();
             auto list_it = it->second;
+            // Capture the outgoing identity BEFORE erasing: the sink borrows
+            // these bytes synchronously (leaf-only, no store callbacks).
+            const auto& outgoing = Derived::nodeEntry(*list_it);
+            if (sink_) {
+                sink_(it->first, outgoing.version_and_ttl, outgoing.writer_node_hash, true);
+            }
             size_t freed = Derived::nodeSize(*list_it);
             self.onEvictExpired(sh, list_it);
             sh.wheel.remove(&(*list_it));

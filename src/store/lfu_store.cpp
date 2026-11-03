@@ -72,6 +72,8 @@ namespace cinder {
         }
 
         size_t freed = node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
+        // Mutation feed for incremental anti-entropy (inherited helper).
+        noteRemoved(node_it->key, node_it->entry.version_and_ttl, node_it->entry.writer_node_hash);
         sh.wheel.remove(&(*node_it));
         sh.index.erase(node_it->key);
         sh.list.erase(node_it);

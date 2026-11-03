@@ -52,6 +52,9 @@ namespace cinder {
         milliseconds rpc_timeout{5000};
         // Anti-entropy: background repair between replica partners (0 = disabled).
         milliseconds anti_entropy_interval{30'000};
+        // Per-round repair fetch budget (bytes) and full-rehash backstop.
+        size_t anti_entropy_fetch_bytes = 1U << 20U;
+        milliseconds anti_entropy_full_rehash_interval{300'000};
         std::vector<ClusterConfig::NodeConfig> peers;
         std::string node_id;
         // Persistence

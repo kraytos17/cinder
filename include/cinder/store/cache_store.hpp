@@ -5,6 +5,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -69,6 +70,19 @@ namespace cinder {
         // Same contract as forEach: the store may be mutated freely while
         // iterating the returned vector.
         virtual auto liveEntries() const -> std::vector<std::pair<std::string, VersionedEntry>> = 0;
+
+        // Mutation observer for incremental digest maintenance (anti-entropy).
+        // Invoked synchronously for every accepted write, remove, and eviction
+        // while the caller holds the store's shard lock, so the sink MUST be
+        // leaf-only: never call back into the store (deadlock), never block.
+        // Removal passes removed=true; the XOR toggle downstream is
+        // self-inverse, so add and remove converge on the same operation.
+        using MutationSink = std::move_only_function<
+            void(std::string_view key, uint64_t version_and_ttl, uint64_t writer, bool removed)
+        >;
+
+        // Register the mutation sink. Default no-op (stores without AE).
+        virtual void setMutationSink(MutationSink /*sink*/) {}
 
         // Set the persistence manager for WAL writes. Default no-op for stores
         // that don't support persistence (e.g. simulation stores).

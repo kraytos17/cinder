@@ -96,7 +96,7 @@ the former on writes, replication uses the latter.
 | 7 | `HINT` | same layout as `REPLICATE` |
 | 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) |
 | 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its bucket digest (see [Anti-Entropy Payloads](#anti-entropy-payloads)); `key` empty |
-| 10 | `ANTI_ENTROPY_SYNC` | initiator sends entries for divergent buckets; `key` empty |
+| 10 | `ANTI_ENTROPY_SYNC` | entries where the sender wins plus a needlist of key hashes where it loses (partner answers with entries); `key` empty |
 | 11 | `ADMIN_INFO` | request: empty; response: `value` = JSON node info (node_id, port, capacity, store stats, config) |
 | 12 | `ADMIN_CLUSTER` | request: empty; response: `value` = JSON membership array (id, host, port, state, incarnation) |
 | 13 | `ADMIN_RING` | request: empty; response: `value` = JSON ring snapshot (self, vnodes_per_node) |
@@ -331,34 +331,63 @@ at the version check before reaching the flags byte.
 ## Anti-Entropy Payloads
 
 Opcodes 9 and 10 carry custom binary payloads inside the `value` field. All
-integers are big-endian.
+integers are little-endian (native byte order; the cluster is homogeneous).
+Every AE payload starts with a schema magic (`uint32`): `0x41454D32`
+("AEM2", digest), `0x41454D53` ("AEMS", sync), `0x41454D4E` ("AEMN" —
+reserved for needlists, currently folded into the sync message). Payloads
+without a recognized magic are rejected, so old peers fail a round cleanly
+and converge once the cluster is homogeneous.
 
 ### Digest (`ANTI_ENTROPY_DIGEST` request, opcode 9)
 
 | Field         | Size | Description |
 |---------------|------|--------------|
+| `magic`       | 4    | `0x41454D32` (`uint32`) |
 | `num_buckets` | 4    | `uint32` |
-| `bucket[0..N-1]` | 8 each | xxHash3 of one bucket's contents |
+| `bucket[0..N-1]` | 8 each | XOR of per-entry hashes in the bucket |
 
-Total size: `4 + 8 × num_buckets` bytes. Each bucket's hash is computed by
-sorting the keys assigned to it, then hashing `key + version + writer_hash`
-per key via xxHash3.
+Total size: `8 + 8 × num_buckets` bytes (2 KiB at the default 256 buckets).
+Each entry hash covers `(key, version_and_ttl, writer)` — values are never
+hashed, since `(writer, version)` already uniquely identifies a write.
+Buckets are order-independent (XOR), so no per-bucket sort.
 
 ### Digest Response (opcode 9 response)
 
-The partner responds with its own digest followed by its entries for divergent
-buckets. The initiator derives the divergent set by comparing both digests:
+The partner responds with its own digest followed by metadata rows for
+divergent buckets. The initiator derives the divergent set by comparing both
+digests:
 
 | Field         | Size | Description |
 |---------------|------|--------------|
+| `magic`       | 4    | `0x41454D32` (`uint32`) |
 | `num_buckets` | 4    | `uint32` |
-| `bucket[0..N-1]` | 8 each | xxHash3 of one bucket's contents |
-| entry count   | 4    | number of entries, `uint32` |
+| `bucket[0..N-1]` | 8 each | XOR of per-entry hashes in the bucket |
+| `row count`   | 4    | number of metadata rows, `uint32` |
+| rows          | 28 each | metadata rows (see below) |
+
+A metadata row is `[bucket u32][key_hash u64][version u64][writer u64]`:
+identity plus recency, no value. Rows are bucket-atomic (a bucket's rows are
+all included or the bucket is deferred to a later round), so truncation
+delays but never stalls convergence.
+
+### Sync (`ANTI_ENTROPY_SYNC`, opcode 10)
+
+One format for requests and responses: entries to apply, then a needlist of
+key hashes the sender is missing. Responses always carry an empty needlist.
+
+| Field         | Size | Description |
+|---------------|------|--------------|
+| `magic`       | 4    | `0x41454D53` (`uint32`) |
+| `entry count` | 4    | number of entries, `uint32` |
 | entries       | var  | variable-length entries (see below) |
+| `need count`  | 4    | number of key hashes, `uint32` |
+| `need hashes` | 8 each | `uint64` key hashes to fetch |
 
-### Entry List (`ANTI_ENTROPY_SYNC`, opcode 10)
+The initiator sends entries where it wins plus a needlist where it loses
+(both byte-budgeted); the partner applies the entries and answers with the
+requested entries. Full entries cross only for true deltas.
 
-A 4-byte `count` field, followed by `count` variable-length entries:
+### Entry (variable-length, inside sync payloads)
 
 | Field              | Size | Description |
 |--------------------|------|--------------|

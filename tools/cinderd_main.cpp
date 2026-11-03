@@ -48,6 +48,8 @@ auto main(int argc, char* argv[]) -> int {
     int rpc_timeout_ms = 5000;
     int anti_entropy_interval_ms = 30'000;
     int anti_entropy_buckets = 256;
+    size_t anti_entropy_fetch_bytes = 1U << 20U;
+    int anti_entropy_full_rehash_interval_ms = 300'000;
     size_t max_hint_bytes = 0;
     uint16_t metrics_port = 0;
 
@@ -117,6 +119,16 @@ auto main(int argc, char* argv[]) -> int {
         "Anti-entropy hash bucket count"
     );
     app.add_option(
+        "--anti-entropy-fetch-bytes",
+        anti_entropy_fetch_bytes,
+        "Per-round anti-entropy repair fetch budget in bytes"
+    );
+    app.add_option(
+        "--anti-entropy-full-rehash-interval",
+        anti_entropy_full_rehash_interval_ms,
+        "Anti-entropy full-rehash backstop interval in milliseconds"
+    );
+    app.add_option(
         "--max-hint-bytes",
         max_hint_bytes,
         "Hinted-handoff byte budget (0 = config/default)"
@@ -170,6 +182,8 @@ auto main(int argc, char* argv[]) -> int {
                                                           : milliseconds(rpc_timeout_ms);
     options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
     options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
+    options.anti_entropy_fetch_bytes = anti_entropy_fetch_bytes;
+    options.anti_entropy_full_rehash_interval = milliseconds(anti_entropy_full_rehash_interval_ms);
     options.max_hint_bytes = max_hint_bytes == 0 ? cfg.max_hint_bytes : max_hint_bytes;
     if (!config_path.empty()) {
         if (app.count("--anti-entropy-interval") == 0) {
@@ -177,6 +191,13 @@ auto main(int argc, char* argv[]) -> int {
         }
         if (app.count("--anti-entropy-buckets") == 0) {
             options.anti_entropy_buckets = static_cast<uint32_t>(cfg.anti_entropy_buckets);
+        }
+        if (app.count("--anti-entropy-fetch-bytes") == 0) {
+            options.anti_entropy_fetch_bytes = cfg.anti_entropy_fetch_bytes;
+        }
+        if (app.count("--anti-entropy-full-rehash-interval") == 0) {
+            options.anti_entropy_full_rehash_interval =
+                milliseconds(cfg.anti_entropy_full_rehash_interval_ms);
         }
     }
 

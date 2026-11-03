@@ -220,7 +220,9 @@ namespace cinder {
             clock_,
             transport_,
             options.anti_entropy_buckets,
-            &metrics_
+            &metrics_,
+            options.anti_entropy_fetch_bytes,
+            options.anti_entropy_full_rehash_interval
         ),
         persistence_(
             PersistenceManager::Options{
@@ -289,7 +291,9 @@ namespace cinder {
         CINDER_INFO(
             "anti-entropy",
             {"interval_ms", options.anti_entropy_interval.count()},
-            {"buckets", options.anti_entropy_buckets}
+            {"buckets", options.anti_entropy_buckets},
+            {"fetch_bytes", options.anti_entropy_fetch_bytes},
+            {"full_rehash_interval_ms", options.anti_entropy_full_rehash_interval.count()}
         );
     }
 
@@ -729,6 +733,12 @@ namespace cinder {
             if (was_disabled && anti_entropy_interval_.load().count() > 0) {
                 scheduleAntiEntropy();
             }
+        } else if (field == "anti_entropy_fetch_bytes") {
+            anti_entropy_.setFetchBytes(cfg.anti_entropy_fetch_bytes);
+        } else if (field == "anti_entropy_full_rehash_interval_ms") {
+            anti_entropy_.setFullRehashInterval(
+                milliseconds(cfg.anti_entropy_full_rehash_interval_ms)
+            );
         } else {
             // ping_interval_ms, anti_entropy_buckets, and unknown fields need restart.
             CINDER_WARN("config field requires restart", {"field", field});

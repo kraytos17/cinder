@@ -45,6 +45,8 @@ namespace cinder {
 
         auto& node = sh.list.back();
         size_t freed = node.key.size() + node.entry.value.size() + sizeof(LruNode);
+        // Mutation feed for incremental anti-entropy (inherited helper).
+        noteRemoved(node.key, node.entry.version_and_ttl, node.entry.writer_node_hash);
         sh.wheel.remove(&node);
         sh.index.erase(node.key);
         sh.list.pop_back();

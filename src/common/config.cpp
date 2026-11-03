@@ -68,6 +68,10 @@ namespace cinder {
         out += "\"max_hint_bytes\":" + std::to_string(cfg.max_hint_bytes) + ",";
         out += "\"anti_entropy_interval_ms\":" + std::to_string(cfg.anti_entropy_interval_ms) + ",";
         out += "\"anti_entropy_buckets\":" + std::to_string(cfg.anti_entropy_buckets) + ",";
+        out += "\"anti_entropy_fetch_bytes\":" + std::to_string(cfg.anti_entropy_fetch_bytes) + ",";
+        out += "\"anti_entropy_full_rehash_interval_ms\":"
+            + std::to_string(cfg.anti_entropy_full_rehash_interval_ms)
+            + ",";
         out += "\"persistence_enabled\":"
             + std::string(cfg.persistence_enabled ? "true" : "false")
             + ",";
@@ -151,6 +155,13 @@ namespace cinder {
         }
         if (old_cfg.anti_entropy_buckets != new_cfg.anti_entropy_buckets) {
             changed.emplace_back("anti_entropy_buckets");
+        }
+        if (old_cfg.anti_entropy_fetch_bytes != new_cfg.anti_entropy_fetch_bytes) {
+            changed.emplace_back("anti_entropy_fetch_bytes");
+        }
+        if (old_cfg.anti_entropy_full_rehash_interval_ms
+            != new_cfg.anti_entropy_full_rehash_interval_ms) {
+            changed.emplace_back("anti_entropy_full_rehash_interval_ms");
         }
         if (old_cfg.persistence_enabled != new_cfg.persistence_enabled) {
             changed.emplace_back("persistence_enabled");
@@ -247,6 +258,10 @@ namespace cinder {
         if (auto ae = root["anti_entropy"]) {
             cfg.anti_entropy_interval_ms = ae["interval_ms"].as<int>(cfg.anti_entropy_interval_ms);
             cfg.anti_entropy_buckets = ae["buckets"].as<int>(cfg.anti_entropy_buckets);
+            cfg.anti_entropy_fetch_bytes =
+                ae["fetch_bytes"].as<size_t>(cfg.anti_entropy_fetch_bytes);
+            cfg.anti_entropy_full_rehash_interval_ms =
+                ae["full_rehash_interval_ms"].as<int>(cfg.anti_entropy_full_rehash_interval_ms);
         }
         // Hinted handoff
         if (auto repl = root["replication"]) {
@@ -353,6 +368,11 @@ namespace cinder {
         out +=
             "\"anti_entropy_interval_ms\":" + std::to_string(config.anti_entropy_interval_ms) + ",";
         out += "\"anti_entropy_buckets\":" + std::to_string(config.anti_entropy_buckets) + ",";
+        out +=
+            "\"anti_entropy_fetch_bytes\":" + std::to_string(config.anti_entropy_fetch_bytes) + ",";
+        out += "\"anti_entropy_full_rehash_interval_ms\":"
+            + std::to_string(config.anti_entropy_full_rehash_interval_ms)
+            + ",";
         out += "\"tls_enabled\":" + std::string(config.tls.enabled ? "true" : "false") + ",";
         out += "\"auth_enabled\":"
             + std::string(config.auth.shared_secret.empty() ? "false" : "true")

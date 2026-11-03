@@ -299,23 +299,35 @@ bucketing, run by the primary every `anti_entropy_interval`. It catches drift
 that read repair and hinted handoff cannot — e.g. a replica down longer than
 the hint TTL.
 
-**Two-phase exchange:**
-1. *Digest exchange* — the initiator computes a digest (N bucket hashes via
-   xxHash3) and sends it to a replica partner (`ANTI_ENTROPY_DIGEST`, opcode
-   9). The partner diffs digests, identifies divergent buckets, and responds
-   with **its own digest** plus its entries for those buckets.
-2. *Entry sync* — the initiator applies the received entries via LWW
-   (`putVersioned`), derives the divergent set by comparing both digests, then
-   sends its own entries for the same divergent buckets back to the partner
-   (`ANTI_ENTROPY_SYNC`, opcode 10).
+**Two-phase exchange with metadata-first sync:**
+1. *Digest exchange* — the initiator computes a digest (N bucket XOR hashes
+   over `key + version_and_ttl + writer_node_hash`) and sends it to a replica
+   partner (`ANTI_ENTROPY_DIGEST`, opcode 9). The partner diffs digests,
+   identifies divergent buckets, and responds with **its own digest** plus
+   compact **metadata rows** `(bucket, key_hash, version, writer)` — 28 bytes
+   each, values never cross the wire in this phase.
+2. *Targeted fetch* — both sides diff the metadata against their local store
+   (remote wins iff newer version, or equal version with greater writer).
+   The initiator pushes full entries only where it wins and sends a
+   **needlist** (key hashes) where it loses; the partner serves the needlist
+   with full entries (`ANTI_ENTROPY_SYNC`, opcode 10). Values cross only for
+   true deltas, and each direction is byte-budgeted (`anti_entropy_fetch_bytes`,
+   default 1 MiB) with cursor-free geometric convergence: the next round
+   re-diffs the remainder.
 
 **Bucket digest**: keys are partitioned into N hash buckets (default 256).
-Within a bucket, keys are sorted lexicographically, then hashed via xxHash3
-over `key + version + writer_node_hash`; the digest is the resulting vector
-of N `uint64` hashes. Two nodes with identical data produce identical
-digests, so only divergent buckets need a full entry exchange.
+Each bucket hash is the XOR of its entries' hashes — order-independent, so no
+per-bucket sort. Two nodes with identical data produce identical digests, so
+only divergent buckets exchange metadata, and only true deltas exchange
+values.
 
-**Entry format** (sync payload):
+**Incremental digests**: stores maintain the per-bucket XOR on the write path
+(observed mutations), so converged rounds cost a 2 KiB copy instead of a full
+scan. A wall-clock backstop (`anti_entropy_full_rehash_interval_ms`, default
+5 min) re-verifies from a full scan with an exact divert-while-scanning
+protocol, bounding any silent-divergence window.
+
+**Entry format** (sync payload entries):
 
 ```
 [key_len(4)][key][version(8)][writer_hash(8)][has_ttl(1)][expires_at_ms?(8)][val_len(4)][value]
@@ -431,6 +443,8 @@ both sides of the partition are reconciled by LWW.
 | `--rpc-timeout` | `5000` | Per-RPC deadline for peer sends (ms). `0` = no timeout |
 | `--anti-entropy-interval` | `30000` | Anti-entropy round interval (ms). `0` disables it |
 | `--anti-entropy-buckets` | `256` | Number of hash buckets for anti-entropy digest |
+| `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget (bytes) |
+| `--anti-entropy-full-rehash-interval` | `300000` | Anti-entropy full-rehash backstop interval (ms) |
 | `--persistence-enabled` | `false` | Enable disk persistence (snapshot + WAL) |
 | `--data-dir` | (empty) | Directory for snapshot and WAL files |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots |
@@ -470,6 +484,8 @@ failure_detector:
 anti_entropy:
   interval_ms: 30000
   buckets: 256
+  fetch_bytes: 1048576
+  full_rehash_interval_ms: 300000
 
 persistence:
   enabled: true
