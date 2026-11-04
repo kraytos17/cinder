@@ -1107,6 +1107,78 @@ namespace cinder {
             EXPECT_TRUE(store.getVersioned("k")->isTombstone());
         }
 
+        TEST(ReplicationDeleteTest, QuorumReadTombstoneTieBreaksDeterministically) {
+            // Equal (version, writer), contradictory delete state: reachable
+            // across standalone writers sharing writer 0. The read must pick
+            // the tombstone and repair the live replica — never deadlock or
+            // flap between the two.
+            RealClock clock;
+            LruStore store(1U << 20U);
+            TombstoneVotingTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(5);
+            live.writer_node_hash = 7;
+            ASSERT_TRUE(store.putVersioned("k", std::move(live)).has_value());
+
+            std::promise<Result<VersionedEntry>> done;
+            auto done_future = done.get_future();
+            repl.readAsync("k", {"n2"}, 2, [&done](Result<VersionedEntry> r) {
+                done.set_value(std::move(r));
+            });
+
+            auto result = done_future.get();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_TRUE(result->isTombstone()) << "tombstone must win exact-stamp ties";
+            EXPECT_EQ(result->version(), 5U);
+            // Loser repaired: local live copy converged to the tombstone.
+            EXPECT_TRUE(store.getVersioned("k")->isTombstone());
+        }
+
+        TEST(HintQueueTest, CoalesceTombstoneWinsExactStampTies) {
+            // Equal (version, writer), contradictory delete state: the
+            // tombstone must win regardless of arrival order, or a replayed
+            // live hint resurrects a delete that already won LWW.
+            HintQueue q;
+            auto live = cctMakeHint("n2", "k", 5);
+            live.req.writer_node_hash = 7;
+            live.req.value = "live";
+            auto dead = cctMakeHint("n2", "k", 5);
+            dead.req.writer_node_hash = 7;
+            dead.req.tombstone = true;
+
+            EXPECT_TRUE(q.push(std::move(live)));
+            EXPECT_TRUE(q.push(std::move(dead)));
+            EXPECT_EQ(q.size(), 1U);
+            std::vector<bool> tombstones;
+            q.replay([&](const HintQueue::Hint& h) {
+                tombstones.push_back(h.req.tombstone);
+            }, steady_clock::now());
+            ASSERT_EQ(tombstones.size(), 1U);
+            EXPECT_TRUE(tombstones[0]) << "tombstone must survive live-at-tie";
+
+            HintQueue q2;
+            auto dead2 = cctMakeHint("n2", "k", 5);
+            dead2.req.writer_node_hash = 7;
+            dead2.req.tombstone = true;
+            auto live2 = cctMakeHint("n2", "k", 5);
+            live2.req.writer_node_hash = 7;
+            live2.req.value = "live";
+            EXPECT_TRUE(q2.push(std::move(dead2)));
+            // Tied live hint is ignored (push reports false), leaving the
+            // tombstone queued.
+            EXPECT_FALSE(q2.push(std::move(live2)));
+            EXPECT_EQ(q2.size(), 1U);
+            std::vector<bool> tombstones2;
+            q2.replay([&](const HintQueue::Hint& h) {
+                tombstones2.push_back(h.req.tombstone);
+            }, steady_clock::now());
+            ASSERT_EQ(tombstones2.size(), 1U);
+            EXPECT_TRUE(tombstones2[0]) << "live must not displace tombstone at tie";
+        }
+
         TEST(ClusterComponentsTest, SelfRumorWithHigherIncarnationIsStillRefuted) {
             // membership_test.cpp covers a plain self-rumor refutation. The
             // harder case is a well-formed rumor about ourselves whose claimed

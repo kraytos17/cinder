@@ -1245,29 +1245,27 @@ namespace cinder {
             }
 
             const MetaRow* row = it->second;
-            if (row->version
-                > entry.version()
-                || (row->version == entry.version() && row->writer > entry.writer_node_hash)) {
+            // Single shared LWW rule (see compareLww): the tombstone bit is
+            // part of the identity, so delete-vs-write resolves exactly like
+            // write-vs-write, with tombstone winning exact-stamp ties (which
+            // keeps divergent buckets converging instead of stalling, since
+            // digests cover the tombstone bit).
+            const LwwStamp remote{
+                row->version,
+                row->writer,
+                row->tombstone,
+            };
+
+            const LwwStamp local{
+                entry.version(),
+                entry.writer_node_hash,
+                entry.isTombstone(),
+            };
+
+            if (lwwWinsOver(remote, local)) {
                 diff.need.push_back(h);
-            } else if (
-                entry.version()
-                > row->version
-                || (entry.version() == row->version && entry.writer_node_hash > row->writer)
-            ) {
+            } else if (lwwWinsOver(local, remote)) {
                 diff.have.emplace_back(h, key);
-            } else if (row->tombstone != entry.isTombstone()) {
-                // Equal (version, writer) with contradictory delete state.
-                // Unreachable through store paths (per-writer versions are
-                // monotonic), except across standalone writers sharing
-                // writer 0 with colliding Lamport values. Tombstone wins
-                // ties so both sides converge instead of stalling divergent
-                // with zero repair (the digests cover the tombstone bit, so
-                // without a decision here the bucket disagrees forever).
-                if (row->tombstone) {
-                    diff.need.push_back(h);
-                } else {
-                    diff.have.emplace_back(h, key);
-                }
             }
             by_hash.erase(it);
         });
@@ -1332,15 +1330,20 @@ namespace cinder {
         return std::nullopt;
     }
 
-    auto AntiEntropyManager::isNewer(const std::string& key, uint64_t version, uint64_t writer_hash)
-        -> bool {
+    auto AntiEntropyManager::isNewer(
+        const std::string& key,
+        uint64_t version,
+        uint64_t writer_hash,
+        bool tombstone
+    ) -> bool {
         auto existing = store_.getVersioned(key);
         if (!existing.has_value()) {
             return true;
         }
-        return version
-            > existing->version()
-            || (version == existing->version() && writer_hash > existing->writer_node_hash);
+        // Shared LWW rule so the repair count agrees with what putVersioned
+        // will actually apply: strictly-greater wins, including a tombstone
+        // winning an exact-stamp tie; identical re-applies change nothing.
+        return lwwWinsOver(LwwStamp{version, writer_hash, tombstone}, stampOf(*existing));
     }
 
     auto AntiEntropyManager::applySync(SyncMessage msg) -> size_t {
@@ -1349,7 +1352,13 @@ namespace cinder {
             // Only count as repaired if the entry is actually newer than what
             // we have. putVersioned always returns ok() (LWW accepts or
             // discards), so pre-check to get an accurate repair count.
-            bool is_new = isNewer(item.key, item.entry.version(), item.entry.writer_node_hash);
+            bool is_new = isNewer(
+                item.key,
+                item.entry.version(),
+                item.entry.writer_node_hash,
+                item.entry.isTombstone()
+            );
+
             [[maybe_unused]]
             auto put_result = store_.putVersioned(item.key, std::move(item.entry));
             if (is_new) {

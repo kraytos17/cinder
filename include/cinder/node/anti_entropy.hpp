@@ -430,8 +430,10 @@ namespace cinder {
             std::string& key,
             VersionedEntry& entry
         ) const -> std::optional<std::string_view>;
+
         [[nodiscard]]
-        auto isNewer(const std::string& key, uint64_t version, uint64_t writer_hash) -> bool;
+        auto isNewer(const std::string& key, uint64_t version, uint64_t writer_hash, bool tombstone)
+            -> bool;
 
         CacheStore& store_;
         ConsistentHashRing& ring_;

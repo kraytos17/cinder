@@ -79,4 +79,57 @@ namespace cinder {
     };
 
     static_assert(sizeof(VersionedEntry) == 56, "VersionedEntry should fit in one cache line");
+
+    // Total LWW order shared by every convergence path (store applies,
+    // quorum-read reduction, anti-entropy diff, hint coalescing, read repair).
+    // Compare version, then writer hash; a contradictory tombstone bit at an
+    // otherwise identical stamp resolves tombstone-wins so replicas converge
+    // instead of disagreeing by arrival order. (Identical stamps can only
+    // arise across standalone writers sharing writer 0; per-writer versions
+    // are monotonic.)
+    struct LwwStamp {
+        Version version = 0;
+        uint64_t writer = 0;
+        bool tombstone = false;
+    };
+
+    enum class LwwOrder : uint8_t {
+        Less,
+        Equal,
+        Greater,
+    };
+
+    [[nodiscard]]
+    constexpr auto compareLww(const LwwStamp& a, const LwwStamp& b) -> LwwOrder {
+        if (a.version != b.version) {
+            return a.version < b.version ? LwwOrder::Less : LwwOrder::Greater;
+        }
+        if (a.writer != b.writer) {
+            return a.writer < b.writer ? LwwOrder::Less : LwwOrder::Greater;
+        }
+        if (a.tombstone != b.tombstone) {
+            return a.tombstone ? LwwOrder::Greater : LwwOrder::Less;
+        }
+        return LwwOrder::Equal;
+    }
+
+    // Strictly-greater check for "incoming wins over resident" decisions
+    // (store apply, read reduction, need/fetch derivation).
+    [[nodiscard]]
+    constexpr auto lwwWinsOver(const LwwStamp& incoming, const LwwStamp& resident) -> bool {
+        return compareLww(incoming, resident) == LwwOrder::Greater;
+    }
+
+    // Greater-or-equal check for idempotent refresh decisions (hint
+    // coalescing): an identical stamp counts as newer so a retried write
+    // refreshes TTL without changing the outcome.
+    [[nodiscard]]
+    constexpr auto lwwCovers(const LwwStamp& incoming, const LwwStamp& resident) -> bool {
+        return compareLww(incoming, resident) != LwwOrder::Less;
+    }
+
+    [[nodiscard]]
+    inline auto stampOf(const VersionedEntry& entry) -> LwwStamp {
+        return {entry.version(), entry.writer_node_hash, entry.isTombstone()};
+    }
 } // namespace cinder

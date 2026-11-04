@@ -268,14 +268,16 @@ namespace cinder {
             return static_cast<size_t>(estimatedPayloadBytes(hint));
         }
 
-        // LWW order on replicate payloads: higher version wins; ties break
-        // toward the larger writer hash (same rule replicas apply), and an
-        // identical stamp counts as newer so a retried write refreshes TTL.
+        // LWW order on replicate payloads, shared with every other
+        // convergence path (see compareLww): higher version wins; ties break
+        // toward the larger writer hash; tombstone wins exact-stamp ties so a
+        // live retry cannot displace a delete; an identical stamp counts as
+        // newer so a retried write refreshes TTL.
         static auto isNewerThan(const net::Request& a, const net::Request& b) -> bool {
-            if (a.version != b.version) {
-                return a.version > b.version;
-            }
-            return a.writer_node_hash >= b.writer_node_hash;
+            return lwwCovers(
+                LwwStamp{a.version, a.writer_node_hash, a.tombstone},
+                LwwStamp{b.version, b.writer_node_hash, b.tombstone}
+            );
         }
 
         void publishMetrics() {

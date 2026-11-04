@@ -151,25 +151,11 @@ namespace cinder {
                     // invalidates the erased element. No map mutation happens inside
                     // this block (applyExisting touches list/freq structures only).
                     auto& entry0 = Derived::nodeEntry(*it->second);
-                    if (entry.version() < entry0.version()) {
-                        return ok();
-                    }
-                    if (entry.version()
-                        == entry0.version()
-                        && entry.writer_node_hash
-                        < entry0.writer_node_hash) {
-                        return ok();
-                    }
-                    if (entry.version()
-                        == entry0.version()
-                        && entry.writer_node_hash
-                        == entry0.writer_node_hash
-                        && !entry.isTombstone()
-                        && entry0.isTombstone()) {
-                        // Equal identity, contradictory delete state (only
-                        // reachable across standalone writers sharing writer
-                        // 0): the tombstone wins ties so replicas converge
-                        // instead of disagreeing by arrival order.
+                    // Single shared LWW rule (see compareLww): a strict loss
+                    // rejects; equal stamps re-apply idempotently (refreshing
+                    // a tombstone's GC deadline); tombstone wins ties so
+                    // replicas converge instead of disagreeing by arrival.
+                    if (compareLww(stampOf(entry), stampOf(entry0)) == LwwOrder::Less) {
                         return ok();
                     }
 
