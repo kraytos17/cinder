@@ -194,11 +194,18 @@ namespace cinder {
 
         // Replication metrics
         appendCounter(os, "replication_async_writes_total", repl_.async_writes.load());
+        appendCounter(os, "replication_async_deletes_total", repl_.async_deletes.load());
         appendCounter(os, "replication_quorum_writes_ok_total", repl_.quorum_writes_ok.load());
         appendCounter(
             os,
             "replication_quorum_writes_failed_total",
             repl_.quorum_writes_failed.load()
+        );
+        appendCounter(os, "replication_quorum_deletes_ok_total", repl_.quorum_deletes_ok.load());
+        appendCounter(
+            os,
+            "replication_quorum_deletes_failed_total",
+            repl_.quorum_deletes_failed.load()
         );
 
         appendCounter(os, "replication_quorum_reads_total", repl_.quorum_reads.load());

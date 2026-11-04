@@ -141,6 +141,7 @@ namespace cinder {
         req.value = entry.value;
         req.version = entry.version();
         req.writer_node_hash = entry.writer_node_hash;
+        req.tombstone = entry.isTombstone();
         if (entry.hasTtl()) {
             req.expires_at = toSystemExpiry(clock_, entry.expires_at);
         }

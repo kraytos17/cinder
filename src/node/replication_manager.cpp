@@ -204,10 +204,11 @@ namespace cinder {
         uint64_t trace_id,
         uint64_t span_id
     ) {
-        Span span("replication.write.fanout", SpanContext{trace_id, span_id});
         // Version comes from the store — it is the single version authority. The
         // store's counter has advanced past any observed peer versions (Lamport
         // bump) and is seeded from the clock, so a restarted node wins LWW.
+        // NOTE: the fan-out span lives in fanOutWrite (single owner, shared by
+        // writes and deletes) to keep the replica spans' parent stable.
         Version version = local_.mintVersion();
         uint64_t writer = fnv1a64(self_);
 
@@ -249,14 +250,81 @@ namespace cinder {
         req.writer_node_hash = writer;
         req.trace_id = trace_id;
         req.span_id = span_id;
+        fanOutWrite(key, std::move(req), replica_nodes, mode, std::move(on_done));
+    }
+
+    void ReplicationManager::deleteAsync(
+        const std::string& key,
+        const std::vector<NodeId>& replica_nodes,
+        ConsistencyMode mode,
+        WriteCallback on_done,
+        uint64_t trace_id,
+        uint64_t span_id
+    ) {
+        Span span("replication.delete.fanout", SpanContext{trace_id, span_id});
+        // Same version authority as writes: mint, then plant the tombstone
+        // locally via the versioned remove path (a stale delete loses LWW to
+        // a newer put, exactly like a stale put loses).
+        Version version = local_.mintVersion();
+        uint64_t writer = fnv1a64(self_);
+        auto local_res = local_.removeVersioned(key, version, writer);
+        if (!local_res.has_value()) {
+            CINDER_WARN(
+                "local delete failed",
+                {"key", key},
+                {"reason", local_res.error().message()}
+            );
+
+            on_done(local_res);
+            return;
+        }
+
+        // Converge the GC deadline: read back the locally-planted tombstone
+        // so replicas reap at the same instant (same mechanism as TTL expiry).
+        std::optional<system_clock::time_point> wire_expiry;
+        if (auto tomb = local_.getVersioned(key);
+            tomb.has_value() && tomb->isTombstone() && tomb->hasTtl()) {
+            wire_expiry = toSystemExpiry(clock_, tomb->expires_at);
+        }
+
+        net::Request req;
+        req.opcode = net::Opcode::Replicate;
+        req.key = key;
+        req.tombstone = true;
+        req.expires_at = wire_expiry;
+        req.version = version;
+        req.writer_node_hash = writer;
+        req.trace_id = trace_id;
+        req.span_id = span_id;
+        fanOutWrite(key, std::move(req), replica_nodes, mode, std::move(on_done));
+    }
+
+    void ReplicationManager::fanOutWrite(
+        const std::string& key,
+        net::Request req,
+        const std::vector<NodeId>& replica_nodes,
+        ConsistencyMode mode,
+        WriteCallback on_done
+    ) {
+        const bool is_delete = req.tombstone;
+        Span span(
+            is_delete ? "replication.delete.fanout" : "replication.write.fanout",
+            SpanContext{req.trace_id, req.span_id}
+        );
+
         if (mode == ConsistencyMode::Async) {
-            CINDER_DEBUG("async write fan-out", {"key", key}, {"replicas", replica_nodes.size()});
+            CINDER_DEBUG(
+                is_delete ? "async delete fan-out" : "async write fan-out",
+                {"key", key},
+                {"replicas", replica_nodes.size()}
+            );
             // Local commit counts; fan-out best-effort, hint on failure.
             for (const auto& node : replica_nodes) {
                 transport_.sendAsync(node, req, [this, node, req](Result<void> r) {
                     if (!r.has_value()) {
                         Span fail_span(
-                            "replication.write.async.fail",
+                            req.tombstone ? "replication.delete.async.fail"
+                                          : "replication.write.async.fail",
                             SpanContext{req.trace_id, req.span_id}
                         );
 
@@ -273,7 +341,17 @@ namespace cinder {
                 });
             }
             if (metrics_) {
-                metrics_->replicationMetrics().async_writes.fetch_add(1, std::memory_order_relaxed);
+                if (is_delete) {
+                    metrics_->replicationMetrics().async_deletes.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                } else {
+                    metrics_->replicationMetrics().async_writes.fetch_add(
+                        1,
+                        std::memory_order_relaxed
+                    );
+                }
             }
 
             on_done(ok());
@@ -282,7 +360,7 @@ namespace cinder {
 
         // Quorum: W = R/2 + 1 acknowledgements including the local write.
         CINDER_DEBUG(
-            "quorum write fan-out",
+            is_delete ? "quorum delete fan-out" : "quorum write fan-out",
             {"key", key},
             {"replicas", replica_nodes.size()},
             {"W", replica_nodes.size() / 2 + 1}
@@ -337,7 +415,11 @@ namespace cinder {
                 });
             }
         }, [this, st, fanout](std::size_t i, Result<void> r, bool active) {
-            Span replica_span("replication.write.replica", fanout);
+            Span replica_span(
+                st->req.tombstone ? "replication.delete.replica" : "replication.write.replica",
+                fanout
+            );
+
             replica_span.setAttribute({"replica", st->replicas[i]});
             if (!r.has_value()) {
                 replica_span.setStatus(SpanStatus::Error);
@@ -367,24 +449,37 @@ namespace cinder {
         }, [this, st] {
             if (st->acks >= st->w) {
                 Span ok_span(
-                    "replication.write.quorum.ok",
+                    st->req.tombstone ? "replication.delete.quorum.ok"
+                                      : "replication.write.quorum.ok",
                     SpanContext{st->req.trace_id, st->req.span_id}
                 );
 
                 ok_span.setStatus(SpanStatus::Ok);
                 ok_span.setAttribute({"acks", st->acks});
                 ok_span.setAttribute({"needed", st->w});
-                CINDER_DEBUG("quorum write succeeded", {"key", st->key}, {"acks", st->acks});
+                CINDER_DEBUG(
+                    st->req.tombstone ? "quorum delete succeeded" : "quorum write succeeded",
+                    {"key", st->key},
+                    {"acks", st->acks}
+                );
                 if (metrics_) {
-                    metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
+                    if (st->req.tombstone) {
+                        metrics_->replicationMetrics().quorum_deletes_ok.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    } else {
+                        metrics_->replicationMetrics().quorum_writes_ok.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
                 }
                 st->on_done(ok());
             } else {
                 Span fail_span(
-                    "replication.write.quorum.fail",
+                    st->req.tombstone ? "replication.delete.quorum.fail"
+                                      : "replication.write.quorum.fail",
                     SpanContext{st->req.trace_id, st->req.span_id}
                 );
 
@@ -392,16 +487,23 @@ namespace cinder {
                 fail_span.setAttribute({"acks", st->acks});
                 fail_span.setAttribute({"needed", st->w});
                 CINDER_WARN(
-                    "quorum write failed",
+                    st->req.tombstone ? "quorum delete failed" : "quorum write failed",
                     {"key", st->key},
                     {"acks", st->acks},
                     {"needed", st->w}
                 );
                 if (metrics_) {
-                    metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
+                    if (st->req.tombstone) {
+                        metrics_->replicationMetrics().quorum_deletes_failed.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    } else {
+                        metrics_->replicationMetrics().quorum_writes_failed.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    }
                 }
                 st->on_done(err(Error(Errc::NotReady, "quorum not reached")));
             }
@@ -578,9 +680,15 @@ namespace cinder {
                     st->best_writer_hash = r->writer_node_hash;
 
                     VersionedEntry entry;
-                    entry.value = std::move(*r->value);
+                    // Tombstone votes carry no value (GetVersioned omits it);
+                    // the marker itself is the vote.
+                    if (r->value.has_value()) {
+                        entry.value = std::move(*r->value);
+                    }
+
                     entry.setVersion(r->version);
                     entry.writer_node_hash = r->writer_node_hash;
+                    entry.setTombstone(r->tombstone);
                     if (r->expires_at.has_value()) {
                         entry.setHasTtl(true);
                         entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
@@ -701,6 +809,7 @@ namespace cinder {
         repair.value = winner.value;
         repair.version = winner.version();
         repair.writer_node_hash = winner.writer_node_hash;
+        repair.tombstone = winner.isTombstone();
         // Propagate trace context for end-to-end correlation.
         repair.trace_id = span.traceId();
         repair.span_id = span.spanId();

@@ -51,7 +51,7 @@ namespace cinder {
                 ve.setVersion(entry.version);
                 ve.writer_node_hash = entry.writer_node_hash;
                 ve.setHasTtl(entry.has_ttl);
-
+                ve.setTombstone(entry.tombstone);
                 if (entry.has_ttl && entry.expires_at_ms > 0) {
                     // Preserve the entry's remaining wall-clock lifetime across
                     // restart: convert the stored absolute expiry back onto the
@@ -241,6 +241,7 @@ namespace cinder {
             se.version = ve.version();
             se.writer_node_hash = ve.writer_node_hash;
             se.has_ttl = ve.hasTtl();
+            se.tombstone = ve.isTombstone();
             if (ve.hasTtl()) {
                 se.expires_at_ms = toSystemMsOrDefault(clock_, ve.expires_at);
             } else {
@@ -278,6 +279,7 @@ namespace cinder {
             ve.setVersion(entry->version);
             ve.writer_node_hash = entry->writer_node_hash;
             ve.setHasTtl(entry->has_ttl);
+            ve.setTombstone(entry->is_tombstone);
             if (entry->has_ttl && entry->expires_at_ms > 0) {
                 // Preserve remaining wall-clock lifetime across restart (see
                 // recover()).

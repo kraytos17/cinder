@@ -12,7 +12,11 @@
 namespace cinder {
 
     constexpr uint32_t K_SNAPSHOT_MAGIC = 0x43534E50; // "CSNP"
-    constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION = 1;
+    // v1: legacy entries (no tombstone byte; deletes absent from snapshots).
+    // v2: trailing tombstone byte per entry; tombstones restore as versioned
+    // delete markers so a restart cannot resurrect deleted keys.
+    constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION = 2;
+    constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION_V1 = 1;
 
     struct SnapshotEntry {
         std::string key;
@@ -22,6 +26,7 @@ namespace cinder {
         uint64_t expires_at_ms = 0; // wall-clock ms since epoch, 0 if no TTL
         bool has_ttl = false;
         size_t freq = 0; // 0 for LRU
+        bool tombstone = false;
     };
 
     struct SnapshotData {

@@ -132,6 +132,9 @@ namespace cinder::net {
         if (req.expires_at.has_value()) {
             flags |= K_FLAG_HAS_EXPIRES_AT;
         }
+        if (req.tombstone) {
+            flags |= K_FLAG_HAS_TOMBSTONE;
+        }
         if (has_trace) {
             flags |= K_FLAG_HAS_TRACE;
         }
@@ -213,6 +216,7 @@ namespace cinder::net {
 
         bool has_ttl = (*flags & K_FLAG_HAS_TTL) != 0;
         bool has_expires_at = (*flags & K_FLAG_HAS_EXPIRES_AT) != 0;
+        req.tombstone = (*flags & K_FLAG_HAS_TOMBSTONE) != 0;
         if (has_ttl) {
             auto ttl = mustRead<uint32_t>(r);
             if (!ttl) {
@@ -309,6 +313,9 @@ namespace cinder::net {
         if (res.expires_at.has_value()) {
             flags |= K_FLAG_HAS_EXPIRES_AT;
         }
+        if (res.tombstone) {
+            flags |= K_FLAG_HAS_TOMBSTONE;
+        }
 
         bool has_trace = res.trace_id != 0;
         if (has_trace) {
@@ -404,6 +411,8 @@ namespace cinder::net {
             }
             flags = *flags_raw;
         }
+
+        res.tombstone = (flags & K_FLAG_HAS_TOMBSTONE) != 0;
         if (flags & 0x01U) {
             auto version = mustRead<uint64_t>(r);
             if (!version) {

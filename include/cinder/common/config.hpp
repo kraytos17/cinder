@@ -39,6 +39,9 @@ namespace cinder {
         // Hinted handoff: estimated-bytes budget for queued hints
         // (drop-oldest past it). Mirrors HintQueue::K_DEFAULT_MAX_BYTES.
         size_t max_hint_bytes = 67'108'864;
+        // Tombstone GC grace in milliseconds: how long a delete marker
+        // survives before reaping (must exceed worst-case partition healing).
+        int tombstone_gc_ms = 300'000;
         int replica_factor = 1;
         std::string consistency = "async";
 

@@ -67,15 +67,21 @@ namespace cinder {
             return true;
         }
 
-        auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer) -> uint64_t {
-            std::array<uint64_t, 3> words{key_hash, version, writer};
+        auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer, bool tombstone)
+            -> uint64_t {
+            std::array<uint64_t, 4> words{key_hash, version, writer, tombstone ? 1U : 0U};
             return XXH3_64bits(words.data(), sizeof(words));
         }
 
-        auto ibltPositions(uint64_t key_hash, uint64_t version, uint64_t writer, size_t count)
-            -> std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> {
+        auto ibltPositions(
+            uint64_t key_hash,
+            uint64_t version,
+            uint64_t writer,
+            bool tombstone,
+            size_t count
+        ) -> std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> {
             std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> positions{};
-            std::array<uint64_t, 3> words{key_hash, version, writer};
+            std::array<uint64_t, 4> words{key_hash, version, writer, tombstone ? 1U : 0U};
             uint64_t hash = XXH3_64bits(words.data(), sizeof(words));
             for (size_t i = 0; i < positions.size(); ++i) {
                 uint64_t candidate = hash + (i + 1) * 0x9E3779B97F4A7C15ULL;
@@ -106,21 +112,31 @@ namespace cinder {
             int64_t sign,
             uint64_t key_hash,
             uint64_t version,
-            uint64_t writer
+            uint64_t writer,
+            bool tombstone
         ) {
             cell.count += sign;
             cell.key_hash_xor ^= key_hash;
             cell.version_xor ^= version;
             cell.writer_xor ^= writer;
-            cell.checksum_xor ^= ibltItemChecksum(key_hash, version, writer);
+            cell.tombstone_xor ^= tombstone ? 1U : 0U;
+            cell.checksum_xor ^= ibltItemChecksum(key_hash, version, writer, tombstone);
         }
 
         auto ibltPure(const AntiEntropyManager::IbltCell& cell) -> bool {
             if (cell.count != 1 && cell.count != -1) {
                 return false;
             }
+            if (cell.tombstone_xor != 0 && cell.tombstone_xor != 1) {
+                return false;
+            }
             return cell.checksum_xor
-                == ibltItemChecksum(cell.key_hash_xor, cell.version_xor, cell.writer_xor);
+                == ibltItemChecksum(
+                       cell.key_hash_xor,
+                       cell.version_xor,
+                       cell.writer_xor,
+                       cell.tombstone_xor != 0
+                );
         }
 
         // Wire size of one serialized entry (values are never hashed).
@@ -689,9 +705,17 @@ namespace cinder {
         IbltSketch sketch;
         sketch.cells.resize(cell_count);
         for (const auto& row : rows) {
-            const auto positions = ibltPositions(row.key_hash, row.version, row.writer, cell_count);
+            const auto positions =
+                ibltPositions(row.key_hash, row.version, row.writer, row.tombstone, cell_count);
             for (size_t pos : positions) {
-                ibltApply(sketch.cells[pos], 1, row.key_hash, row.version, row.writer);
+                ibltApply(
+                    sketch.cells[pos],
+                    1,
+                    row.key_hash,
+                    row.version,
+                    row.writer,
+                    row.tombstone
+                );
             }
         }
         return sketch;
@@ -703,7 +727,7 @@ namespace cinder {
         }
 
         std::string out;
-        out.reserve(2 * sizeof(uint32_t) + sketch.cells.size() * 40U);
+        out.reserve(2 * sizeof(uint32_t) + sketch.cells.size() * 48U);
         appendU32(out, K_IBLT_MAGIC);
         appendU32(out, static_cast<uint32_t>(sketch.cells.size()));
         for (const auto& cell : sketch.cells) {
@@ -711,6 +735,7 @@ namespace cinder {
             appendU64(out, cell.key_hash_xor);
             appendU64(out, cell.version_xor);
             appendU64(out, cell.writer_xor);
+            appendU64(out, cell.tombstone_xor);
             appendU64(out, cell.checksum_xor);
         }
         return out;
@@ -721,7 +746,7 @@ namespace cinder {
         const char* end = p + data.size();
         uint32_t magic = 0;
         uint32_t count = 0;
-        constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 4 * sizeof(uint64_t);
+        constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 5 * sizeof(uint64_t);
         if (!readU32(p, end, magic)
             || magic
             != K_IBLT_MAGIC
@@ -745,6 +770,7 @@ namespace cinder {
                 || !readU64(p, end, cell.key_hash_xor)
                 || !readU64(p, end, cell.version_xor)
                 || !readU64(p, end, cell.writer_xor)
+                || !readU64(p, end, cell.tombstone_xor)
                 || !readU64(p, end, cell.checksum_xor)) {
                 return std::nullopt;
             }
@@ -784,6 +810,7 @@ namespace cinder {
             difference.cells[i].key_hash_xor ^= local.cells[i].key_hash_xor;
             difference.cells[i].version_xor ^= local.cells[i].version_xor;
             difference.cells[i].writer_xor ^= local.cells[i].writer_xor;
+            difference.cells[i].tombstone_xor ^= local.cells[i].tombstone_xor;
             difference.cells[i].checksum_xor ^= local.cells[i].checksum_xor;
         }
 
@@ -811,19 +838,26 @@ namespace cinder {
                 .key_hash = cell.key_hash_xor,
                 .version = cell.version_xor,
                 .writer = cell.writer_xor,
+                .tombstone = cell.tombstone_xor != 0,
             };
 
             const bool is_remote = cell.count == 1;
             (is_remote ? decoded.remote_only : decoded.local_only).push_back(row);
-            const auto positions =
-                ibltPositions(row.key_hash, row.version, row.writer, difference.cells.size());
+            const auto positions = ibltPositions(
+                row.key_hash,
+                row.version,
+                row.writer,
+                row.tombstone,
+                difference.cells.size()
+            );
             for (size_t target : positions) {
                 ibltApply(
                     difference.cells[target],
                     is_remote ? -1 : 1,
                     row.key_hash,
                     row.version,
-                    row.writer
+                    row.writer,
+                    row.tombstone
                 );
                 if (!queued[target] && ibltPure(difference.cells[target])) {
                     queue.push_back(target);
@@ -840,6 +874,8 @@ namespace cinder {
                 != 0
                 || cell.writer_xor
                 != 0
+                || cell.tombstone_xor
+                != 0
                 || cell.checksum_xor
                 != 0) {
                 return std::nullopt;
@@ -848,8 +884,9 @@ namespace cinder {
         return decoded;
     }
 
-    // One row: bucket u32 + key_hash/version/writer u64 (28 bytes).
-    constexpr size_t K_META_ROW_BYTES = sizeof(uint32_t) + 3 * sizeof(uint64_t);
+    // One row: bucket u32 + key_hash/version/writer u64 + tombstone u8
+    // (29 bytes).
+    constexpr size_t K_META_ROW_BYTES = sizeof(uint32_t) + 3 * sizeof(uint64_t) + sizeof(uint8_t);
 
     auto AntiEntropyManager::encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string {
         std::string out;
@@ -860,6 +897,7 @@ namespace cinder {
             appendU64(out, r.key_hash);
             appendU64(out, r.version);
             appendU64(out, r.writer);
+            out.push_back(r.tombstone ? static_cast<char>(1) : static_cast<char>(0));
         }
         return out;
     }
@@ -883,9 +921,19 @@ namespace cinder {
             if (!readU32(p, end, r.bucket)
                 || !readU64(p, end, r.key_hash)
                 || !readU64(p, end, r.version)
-                || !readU64(p, end, r.writer)) {
+                || !readU64(p, end, r.writer)
+                || p
+                >= end) {
                 return std::nullopt;
             }
+
+            // Exact-size validation above bounds p: one flag byte remains.
+            const auto tombstone = static_cast<uint8_t>(*p++);
+            if (tombstone > 1) {
+                return std::nullopt;
+            }
+
+            r.tombstone = tombstone != 0;
             rows.push_back(r);
         }
         return rows;
@@ -900,7 +948,17 @@ namespace cinder {
             out.append(item.key);
             appendU64(out, item.entry.version());
             appendU64(out, item.entry.writer_node_hash);
-            out.push_back(item.entry.hasTtl() ? static_cast<char>(1) : static_cast<char>(0));
+            // Entry flags bitfield: bit 0 = has_ttl, bit 1 = tombstone.
+            // Unknown bits are rejected (clean fail on mixed versions).
+            uint8_t entry_flags = 0;
+            if (item.entry.hasTtl()) {
+                entry_flags |= 1U;
+            }
+            if (item.entry.isTombstone()) {
+                entry_flags |= 2U;
+            }
+
+            out.push_back(static_cast<char>(entry_flags));
             if (item.entry.hasTtl()) {
                 appendU64(out, toSystemMs(clock_, item.entry.expires_at));
             }
@@ -990,6 +1048,7 @@ namespace cinder {
                     XXH3_64bits(key.data(), key.size()),
                     entry.version(),
                     entry.writer_node_hash,
+                    entry.isTombstone(),
                 });
             }
         }
@@ -1196,6 +1255,19 @@ namespace cinder {
                 || (entry.version() == row->version && entry.writer_node_hash > row->writer)
             ) {
                 diff.have.emplace_back(h, key);
+            } else if (row->tombstone != entry.isTombstone()) {
+                // Equal (version, writer) with contradictory delete state.
+                // Unreachable through store paths (per-writer versions are
+                // monotonic), except across standalone writers sharing
+                // writer 0 with colliding Lamport values. Tombstone wins
+                // ties so both sides converge instead of stalling divergent
+                // with zero repair (the digests cover the tombstone bit, so
+                // without a decision here the bucket disagrees forever).
+                if (row->tombstone) {
+                    diff.need.push_back(h);
+                } else {
+                    diff.have.emplace_back(h, key);
+                }
             }
             by_hash.erase(it);
         });
@@ -1233,14 +1305,15 @@ namespace cinder {
             return "truncated entry";
         }
 
-        uint8_t has_ttl = static_cast<uint8_t>(*p);
+        uint8_t entry_flags = static_cast<uint8_t>(*p);
         ++p;
-        if (has_ttl != 0 && has_ttl != 1) {
-            return "bad ttl flag";
+        if ((entry_flags & uint8_t{3}) != entry_flags) {
+            return "bad entry flags";
         }
 
+        const bool has_ttl = (entry_flags & 1U) != 0;
         uint64_t expires_ms = 0;
-        if (has_ttl == 1 && !readU64(p, end, expires_ms)) {
+        if (has_ttl && !readU64(p, end, expires_ms)) {
             return "truncated expiry";
         }
         if (!readU32(p, end, val_len) || !readBytes(p, end, val_len, value)) {
@@ -1250,7 +1323,8 @@ namespace cinder {
         entry.setVersion(version);
         entry.writer_node_hash = writer_hash;
         entry.value = std::move(value);
-        if (has_ttl == 1) {
+        entry.setTombstone((entry_flags & 2U) != 0);
+        if (has_ttl) {
             entry.setHasTtl(true);
             entry.expires_at =
                 toSteadyExpiry(clock_, system_clock::time_point(milliseconds(expires_ms)));
@@ -1466,6 +1540,7 @@ namespace cinder {
                     .key_hash = XXH3_64bits(key.data(), key.size()),
                     .version = entry.version(),
                     .writer = entry.writer_node_hash,
+                    .tombstone = entry.isTombstone(),
                 };
 
                 auto& build = *builds[bucket];
@@ -1480,15 +1555,21 @@ namespace cinder {
                         }
                     }
                 } else {
-                    const auto positions =
-                        ibltPositions(row.key_hash, row.version, row.writer, K_IBLT_DEFAULT_CELLS);
+                    const auto positions = ibltPositions(
+                        row.key_hash,
+                        row.version,
+                        row.writer,
+                        row.tombstone,
+                        K_IBLT_DEFAULT_CELLS
+                    );
                     for (size_t pos : positions) {
                         ibltApply(
                             build.sketch.cells[pos],
                             1,
                             row.key_hash,
                             row.version,
-                            row.writer
+                            row.writer,
+                            row.tombstone
                         );
                     }
                 }

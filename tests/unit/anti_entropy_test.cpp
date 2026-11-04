@@ -752,6 +752,109 @@ namespace cinder {
             );
         }
 
+        TEST(AntiEntropyExchangeTest, DeletePropagatesAndStaysDeleted) {
+            LoopbackPair pair;
+            ASSERT_TRUE(pair.store_a.putVersioned("gone", makeEntry("v", 3)).has_value());
+            ASSERT_TRUE(pair.store_b.putVersioned("gone", makeEntry("v", 3)).has_value());
+
+            // Delete on A with a newer version; the tombstone must reach B
+            // through anti-entropy and must not be resurrected by B's live
+            // copy in later rounds (the pre-tombstone resurrection bug).
+            ASSERT_TRUE(pair.store_a.removeVersioned("gone", 5, 7).has_value());
+            EXPECT_FALSE(pair.store_a.get("gone").has_value());
+
+            EXPECT_LE(pair.converge(12), 12);
+            EXPECT_EQ(pair.ma->computeDigest(), pair.mb->computeDigest());
+            EXPECT_FALSE(pair.store_a.get("gone").has_value());
+            EXPECT_FALSE(pair.store_b.get("gone").has_value());
+            // Absent on both, but the delete marker survives until GC.
+            auto tomb_a = pair.store_a.getVersioned("gone");
+            auto tomb_b = pair.store_b.getVersioned("gone");
+            ASSERT_TRUE(tomb_a.has_value());
+            ASSERT_TRUE(tomb_b.has_value());
+            EXPECT_TRUE(tomb_a->isTombstone());
+            EXPECT_TRUE(tomb_b->isTombstone());
+        }
+
+        TEST(AntiEntropyExchangeTest, DeleteOnEmptyNodeHealsReplica) {
+            LoopbackPair pair;
+            // A never held the key: the delete still plants a tombstone so
+            // the replica's live copy cannot resurrect it.
+            ASSERT_TRUE(pair.store_b.putVersioned("ghost", makeEntry("v", 3)).has_value());
+            ASSERT_TRUE(pair.store_a.removeVersioned("ghost", 5, 7).has_value());
+
+            EXPECT_LE(pair.converge(12), 12);
+            EXPECT_EQ(pair.ma->computeDigest(), pair.mb->computeDigest());
+            EXPECT_FALSE(pair.store_a.get("ghost").has_value());
+            EXPECT_FALSE(pair.store_b.get("ghost").has_value());
+            auto tomb = pair.store_b.getVersioned("ghost");
+            ASSERT_TRUE(tomb.has_value());
+            EXPECT_TRUE(tomb->isTombstone());
+        }
+
+        TEST(AntiEntropyExchangeTest, TombstoneWinsVersionWriterTies) {
+            // Equal (version, writer), contradictory delete state: the
+            // tombstone wins so both sides converge instead of stalling.
+            Node node;
+            AntiEntropyManager
+                manager(node.store, node.ring, "n1", node.clock, node.transport, 8, &node.metrics);
+            ASSERT_TRUE(node.store.putVersioned("tie", makeEntry("live", 4, 7)).has_value());
+            auto buckets = manager.computeDigest();
+            uint32_t live_bucket = 0;
+            while (live_bucket < 8 && buckets[live_bucket] == 0) {
+                ++live_bucket;
+            }
+            ASSERT_LT(live_bucket, 8U);
+            const uint64_t key_hash = XXH3_64bits("tie", 3);
+            AntiEntropyManager::MetaRow live_row{
+                .bucket = live_bucket,
+                .key_hash = key_hash,
+                .version = 4,
+                .writer = 7,
+                .tombstone = false,
+            };
+            AntiEntropyManager::MetaRow dead_row = live_row;
+            dead_row.tombstone = true;
+
+            // Remote tombstone at the tied identity → fetch the delete.
+            auto fetch = manager.diffRows({dead_row}, {live_bucket}, {live_bucket});
+            ASSERT_EQ(fetch.need.size(), 1U);
+            EXPECT_EQ(fetch.need[0], key_hash);
+            EXPECT_TRUE(fetch.have.empty());
+
+            // Remote live at the tied identity vs our tombstone → push it.
+            ASSERT_TRUE(node.store.removeVersioned("tie", 4, 7).has_value());
+            auto push = manager.diffRows({live_row}, {live_bucket}, {live_bucket});
+            EXPECT_TRUE(push.need.empty());
+            ASSERT_EQ(push.have.size(), 1U);
+            EXPECT_EQ(push.have[0].second, "tie");
+        }
+
+        TEST(AntiEntropyIbltTest, TombstoneRowsPeelWithIdentity) {
+            using Manager = AntiEntropyManager;
+            constexpr uint32_t BUCKET = 7;
+            // Same key, live v1 vs tombstone v2: distinct IBLT items.
+            std::vector<Manager::MetaRow> local_rows{
+                {BUCKET, 10, 1, 100, false},
+                {BUCKET, 20, 1, 100, false},
+            };
+            std::vector<Manager::MetaRow> remote_rows{
+                {BUCKET, 10, 1, 100, false},
+                {BUCKET, 20, 2, 100, true},
+            };
+            auto local = Manager::buildIblt(local_rows, 64);
+            auto remote = Manager::buildIblt(remote_rows, 64);
+            ASSERT_TRUE(local.has_value());
+            ASSERT_TRUE(remote.has_value());
+            auto decoded = Manager::decodeIbltDifference(*remote, *local, BUCKET);
+            ASSERT_TRUE(decoded.has_value());
+            ASSERT_EQ(decoded->remote_only.size(), 1U);
+            ASSERT_EQ(decoded->local_only.size(), 1U);
+            EXPECT_TRUE(decoded->remote_only[0].tombstone);
+            EXPECT_EQ(decoded->remote_only[0].version, 2U);
+            EXPECT_FALSE(decoded->local_only[0].tombstone);
+        }
+
         TEST(AntiEntropyIncrementalTest, MatchesFullScan) {
             // Random puts, overwrites, removes and TTL expiries, including
             // under capacity pressure (small store forces evictions through

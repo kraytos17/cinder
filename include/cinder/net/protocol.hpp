@@ -40,6 +40,7 @@ namespace cinder::net {
     constexpr uint8_t K_FLAG_HAS_EXPIRES_AT = uint8_t{1} << 1U;
     constexpr uint8_t K_FLAG_HAS_TRACE = uint8_t{1} << 2U; // trace_id + span_id (16 bytes)
     constexpr uint8_t K_FLAG_HAS_AUTH = uint8_t{1} << 3U; // auth_token (32 bytes, HMAC-SHA256)
+    constexpr uint8_t K_FLAG_HAS_TOMBSTONE = uint8_t{1} << 4U; // delete marker
 
     enum class Opcode : uint8_t {
         Get = 1,
@@ -111,6 +112,9 @@ namespace cinder::net {
         // replica expires the key at the same instant (delay-independent). Set from
         // clients uses the relative `ttl` instead.
         std::optional<system_clock::time_point> expires_at = std::nullopt;
+        // Delete marker — set on Replicate/Hint carrying a tombstone so
+        // replicas apply a versioned delete instead of a live write.
+        bool tombstone = false;
     };
 
     // Decode result. The request carries pure message data; the auth token is a
@@ -129,6 +133,10 @@ namespace cinder::net {
         // Absolute wall-clock expiry — carried in GetVersioned responses so read-repair
         // and quorum reads preserve TTL semantics across nodes.
         std::optional<system_clock::time_point> expires_at = std::nullopt;
+        // Delete marker — set on GetVersioned responses (and quorum votes) for
+        // tombstoned keys so readers distinguish "deleted at version V" from
+        // "absent". Tombstone reads map to NotFound for clients.
+        bool tombstone = false;
         // Structured tracing — echoed back for correlation.
         uint64_t trace_id = 0;
         uint64_t span_id = 0;

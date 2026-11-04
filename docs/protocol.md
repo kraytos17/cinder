@@ -45,7 +45,7 @@ depending on which flags are set.
 | `span_id`           | 8    | `flags & 0x04` |
 | `auth_token`        | 32   | `flags & 0x08` |
 
-- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`; bit 2: `has_trace`; bit 3: `has_auth`.
+- **`flags`** — bit 0: `has_ttl`; bit 1: `has_expires_at`; bit 2: `has_trace`; bit 3: `has_auth`; bit 4: `tombstone` (delete marker on `REPLICATE`/`HINT` — the value is empty and receivers apply a versioned delete).
 - **`ttl_ms`** (`uint32`) — relative TTL in milliseconds. Sent by clients on
   `SET`; the server converts it to an absolute expiry using its own clock.
 - **`expires_at_ms`** (`uint64`) — absolute wall-clock expiry (Unix epoch ms).
@@ -92,9 +92,9 @@ the former on writes, replication uses the latter.
 | 3 | `DEL` | `key` set |
 | 4 | `PING` | all fields empty/zero |
 | 5 | `GOSSIP` | membership view in `value` — `;`-delimited `id@host:port:state:incarnation` entries, e.g. `node1@127.0.0.1:7000:alive:3;node2@127.0.0.1:7001:dead:7`; `key` empty |
-| 6 | `REPLICATE` | `key` + `value` set; `expires_at_ms` set when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata |
-| 7 | `HINT` | same layout as `REPLICATE` |
-| 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) |
+| 6 | `REPLICATE` | `key` + `value` set; `expires_at_ms` set when the primary computed an absolute expiry; `version` + `writer_node_hash` carry LWW metadata; `tombstone` flag set for versioned deletes (value empty) |
+| 7 | `HINT` | same layout as `REPLICATE` (tombstone flag included) |
+| 8 | `GET_VERSIONED` | `key` set; response carries `version` + `writer_node_hash` for LWW comparison (quorum reads, read repair) plus a `tombstone` flag when the key is deleted (no value) |
 | 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its group digest, later a bucket refinement for divergent groups (`key` = `bucket-refinement-v3`); see [Anti-Entropy Payloads](#anti-entropy-payloads) |
 | 10 | `ANTI_ENTROPY_SYNC` | entries where the sender wins plus a needlist of key hashes where it loses (partner answers with entries); `key` empty |
 | 11 | `ADMIN_INFO` | request: empty; response: `value` = JSON node info (node_id, port, capacity, store stats, config) |
@@ -113,7 +113,7 @@ The opcode byte on a response frame is always `0x00`.
 | Field              | Size | Present when |
 |--------------------|------|---------------|
 | `status`            | 1    | always |
-| `flags`             | 1    | always (bit 0: version metadata; bit 1: `expires_at`; bit 2: trace) |
+| `flags`             | 1    | always (bit 0: version metadata; bit 1: `expires_at`; bit 2: trace; bit 4: `tombstone`) |
 | `version`           | 8    | `flags & 0x01` |
 | `writer_node_hash`  | 8    | `flags & 0x01` |
 | `expires_at`        | 8    | `flags & 0x02` |
@@ -128,6 +128,10 @@ LWW comparison in quorum reads and read repair). Bit 1 carries `expires_at`,
 the absolute wall-clock expiry, so TTL semantics survive across nodes. Bit 2
 carries `trace_id` + `span_id` for distributed tracing correlation — the
 server echoes the client's trace context back and propagates it to replicas.
+Bit 4 carries the `tombstone` marker: a `GET_VERSIONED` response for a deleted
+key reports `OK` with no value, the delete's `(version, writer)`, and the
+flag set, so quorum voters and read repair distinguish "deleted at version V"
+from "absent". Plain `GET` on a tombstone returns `NotFound`.
 
 ## Status Codes
 
@@ -335,7 +339,7 @@ integers are little-endian (native byte order; the cluster is homogeneous).
 Every AE payload starts with a schema magic (`uint32`): `0x41454D33`
 ("AEM3", group digest request), `0x41454D32` ("AEM2", legacy full digest —
 accepted on decode for compatibility but no longer sent), `0x41454D53`
-("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455235` ("AER5",
+("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455236` ("AER6",
 digest response), `0x41454235` ("AEB5", bucket refinement). Payloads
 without a recognized magic are rejected, so old peers fail a round cleanly
 and converge once the cluster is homogeneous.
@@ -358,7 +362,7 @@ The partner answers with its own group hashes only (no bucket data yet):
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41455235` (`uint32`) |
+| `magic`       | 4    | `0x41455236` (`uint32`) |
 | `group count` | 4    | `uint32` |
 | `group[0..G-1]` | 8 each | XOR-fold of the group's bucket hashes |
 | `bucket hash count` | 4 | always `0` in a phase-1 response |
@@ -387,7 +391,7 @@ the covered-bucket set, and the metadata rows:
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41455235` (`uint32`) |
+| `magic`       | 4    | `0x41455236` (`uint32`) |
 | `group count` | 4    | `uint32` (full group vector, for validation) |
 | `group[0..G-1]` | 8 each | responder's group hashes |
 | `bucket hash count` | 4 | number of bucket hashes, `uint32` |
@@ -399,22 +403,26 @@ the covered-bucket set, and the metadata rows:
 | `IBLT count`  | 4    | count of optional bucket sketches (`uint32`) |
 | sketches      | var  | repeated `[bucket u32][size u32][IBLT blob]` |
 
-An IBLT blob starts with `0x41454933` (`AEI3`), a cell count, then fixed
-40-byte cells: signed count (`i64`, two's-complement), key-hash XOR (`u64`),
-version XOR (`u64`), writer XOR (`u64`), and item-checksum XOR (`u64`). Three
-distinct cells are selected per `(key_hash, version, writer)` tuple; the
-enclosing refinement identifies the bucket. The initiator subtracts a local
-sketch and peels pure cells.
+An IBLT blob starts with `0x41454934` (`AEI4`), a cell count, then fixed
+48-byte cells: signed count (`i64`, two's-complement), key-hash XOR (`u64`),
+version XOR (`u64`), writer XOR (`u64`), tombstone XOR (`u64`), and
+item-checksum XOR (`u64`). Three distinct cells are selected per
+`(key_hash, version, writer, tombstone)` tuple — the tombstone bit is part of
+the item identity, so a live write and its delete never cancel each other
+during peeling; the enclosing refinement identifies the bucket. The initiator
+subtracts a local sketch and peels pure cells.
 Successful peeling yields the exact symmetric difference of LWW identities;
 failure triggers an explicit P2 metadata retry for that bucket. The current
 threshold is 32 rows per bucket with 64 cells. Smaller buckets carry metadata
 rows directly. Sketches are an optimization only; P2 remains the fallback.
 
-A metadata row is `[bucket u32][key_hash u64][version u64][writer u64]`:
-identity plus recency, no value. Rows are bucket-atomic (a bucket's rows are
-all included or the bucket is deferred to a later round), so truncation
-delays but never stalls convergence. Covered buckets with no rows are
-explicitly empty — the initiator must not treat omission as absence.
+A metadata row is `[bucket u32][key_hash u64][version u64][writer u64][tombstone u8]`:
+identity plus recency plus the delete marker, no value. Tombstoned rows
+participate in LWW with the same `(version, writer)` order as live rows, so
+deletes heal through the same diff path as writes. Rows are bucket-atomic (a
+bucket's rows are all included or the bucket is deferred to a later round),
+so truncation delays but never stalls convergence. Covered buckets with no
+rows are explicitly empty — the initiator must not treat omission as absence.
 
 ### Sync (`ANTI_ENTROPY_SYNC`, opcode 10)
 
@@ -441,10 +449,15 @@ requested entries. Full entries cross only for true deltas.
 | `key`               | N    | |
 | `version`           | 8    | LWW version, `uint64` |
 | `writer_node_hash`  | 8    | `uint64` |
-| `has_ttl`           | 1    | `0` or `1` |
-| `expires_at_ms`     | 8    | only if `has_ttl == 1` |
+| `entry_flags`       | 1    | bitfield: bit 0 = `has_ttl`, bit 1 = `tombstone`; other bits invalid |
+| `expires_at_ms`     | 8    | only if `has_ttl` is set |
 | `val_len`           | 4    | `uint32` |
-| `value`             | M    | |
+| `value`             | M    | empty for tombstones |
+
+Tombstone entries carry no value and no TTL of their own; instead
+`expires_at_ms` holds the GC deadline (reused TTL wheel machinery — see
+[Deletes](#deletes) in `rebalance.md`), so replicas reap the marker at the
+same instant.
 
 ## Implementation Reference
 

@@ -66,6 +66,7 @@ namespace cinder {
         out += "\"quarantine_interval_ms\":" + std::to_string(cfg.quarantine_interval_ms) + ",";
         out += "\"rpc_timeout_ms\":" + std::to_string(cfg.rpc_timeout_ms) + ",";
         out += "\"max_hint_bytes\":" + std::to_string(cfg.max_hint_bytes) + ",";
+        out += "\"tombstone_gc_ms\":" + std::to_string(cfg.tombstone_gc_ms) + ",";
         out += "\"anti_entropy_interval_ms\":" + std::to_string(cfg.anti_entropy_interval_ms) + ",";
         out += "\"anti_entropy_buckets\":" + std::to_string(cfg.anti_entropy_buckets) + ",";
         out += "\"anti_entropy_fetch_bytes\":" + std::to_string(cfg.anti_entropy_fetch_bytes) + ",";
@@ -149,6 +150,9 @@ namespace cinder {
         }
         if (old_cfg.max_hint_bytes != new_cfg.max_hint_bytes) {
             changed.emplace_back("max_hint_bytes");
+        }
+        if (old_cfg.tombstone_gc_ms != new_cfg.tombstone_gc_ms) {
+            changed.emplace_back("tombstone_gc_ms");
         }
         if (old_cfg.anti_entropy_interval_ms != new_cfg.anti_entropy_interval_ms) {
             changed.emplace_back("anti_entropy_interval_ms");
@@ -266,6 +270,7 @@ namespace cinder {
         // Hinted handoff
         if (auto repl = root["replication"]) {
             cfg.max_hint_bytes = repl["max_hint_bytes"].as<size_t>(cfg.max_hint_bytes);
+            cfg.tombstone_gc_ms = repl["tombstone_gc_ms"].as<int>(cfg.tombstone_gc_ms);
         }
         // Persistence
         if (auto pers = root["persistence"]) {

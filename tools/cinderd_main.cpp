@@ -52,6 +52,7 @@ auto main(int argc, char* argv[]) -> int {
     size_t anti_entropy_fetch_bytes = 1U << 20U;
     int anti_entropy_full_rehash_interval_ms = 300'000;
     size_t max_hint_bytes = 0;
+    int tombstone_gc_ms = 300'000;
     uint16_t metrics_port = 0;
 
 #ifdef CINDER_ENABLE_GRPC
@@ -139,6 +140,11 @@ auto main(int argc, char* argv[]) -> int {
         max_hint_bytes,
         "Hinted-handoff byte budget (0 = config/default)"
     );
+    app.add_option(
+        "--tombstone-gc-ms",
+        tombstone_gc_ms,
+        "Delete-marker GC grace in milliseconds (0 = config/default)"
+    );
 
     CLI11_PARSE(app, argc, argv);
 
@@ -192,6 +198,8 @@ auto main(int argc, char* argv[]) -> int {
     options.anti_entropy_fetch_bytes = anti_entropy_fetch_bytes;
     options.anti_entropy_full_rehash_interval = milliseconds(anti_entropy_full_rehash_interval_ms);
     options.max_hint_bytes = max_hint_bytes == 0 ? cfg.max_hint_bytes : max_hint_bytes;
+    options.tombstone_gc_interval =
+        tombstone_gc_ms == 0 ? milliseconds(cfg.tombstone_gc_ms) : milliseconds(tombstone_gc_ms);
     if (!config_path.empty()) {
         if (app.count("--anti-entropy-interval") == 0) {
             options.anti_entropy_interval = milliseconds(cfg.anti_entropy_interval_ms);

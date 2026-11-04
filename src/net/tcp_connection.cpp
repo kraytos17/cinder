@@ -649,9 +649,13 @@ namespace cinder::net {
                             );
 
                             Response async_res;
-                            if (result.has_value()) {
+                            if (result.has_value() && !result->isTombstone()) {
                                 async_res.status = Errc::OK;
                                 async_res.value = std::move(result->value);
+                            } else if (result.has_value()) {
+                                // Quorum winner is a delete marker: the key is
+                                // gone. Tombstones never surface values.
+                                async_res.status = Errc::NotFound;
                             } else {
                                 async_res.status = result.error().code();
                             }
@@ -692,9 +696,16 @@ namespace cinder::net {
                 auto entry = store_.getVersioned(req.key);
                 if (entry.has_value()) {
                     res.status = Errc::OK;
-                    res.value = std::move(entry->value);
+                    // Tombstones carry identity, not data: omit the value
+                    // but report the marker so quorum votes and repair see
+                    // the delete. Absent keys stay NotFound.
+                    if (!entry->isTombstone()) {
+                        res.value = std::move(entry->value);
+                    }
+
                     res.version = entry->version();
                     res.writer_node_hash = entry->writer_node_hash;
+                    res.tombstone = entry->isTombstone();
                     if (entry->hasTtl()) {
                         res.expires_at = toSystemExpiry(clock_, entry->expires_at);
                     }
@@ -774,10 +785,57 @@ namespace cinder::net {
                 break;
             }
             case Opcode::Del: {
-                ring_.incrementLoad(node_id_);
-                store_.remove(req.key);
-                ring_.decrementLoad(node_id_);
-                res.status = Errc::OK;
+                if (repl_ != nullptr && replica_factor_ > 1) {
+                    auto nodes = ring_.getNodes(req.key, replica_factor_);
+                    std::vector<NodeId> replicas;
+                    for (const auto& n : nodes) {
+                        if (n != node_id_) {
+                            replicas.push_back(n);
+                        }
+                    }
+
+                    ring_.incrementLoad(node_id_);
+                    auto self = shared_from_this();
+                    auto trace_id = req.trace_id;
+                    auto span_id = req.span_id;
+                    repl_->deleteAsync(
+                        req.key,
+                        replicas,
+                        mode_,
+                        [this, self, trace_id, span_id](Result<void> result) {
+                        ring_.decrementLoad(node_id_);
+                        // Quorum completion lands on an arbitrary pool thread —
+                        // hop back onto this connection's strand.
+                        asio::post(strand_, [this, self, result, trace_id, span_id] {
+                            Span async_span(
+                                "replication.delete.quorum",
+                                SpanContext{trace_id, span_id}
+                            );
+
+                            Response async_res{
+                                .status = result.has_value() ? Errc::OK : result.error().code(),
+                                .value = std::nullopt,
+                            };
+
+                            async_res.trace_id = trace_id;
+                            async_res.span_id = span_id;
+                            sendResponse(async_res);
+                            maybeRead();
+                        });
+                    },
+                        trace_id,
+                        span_id
+                    );
+                    return; // response sent asynchronously from the delete callback
+                } else {
+                    // Standalone node: versioned tombstone (writer 0, matching
+                    // local put()) so a later rebalance join heals via
+                    // anti-entropy instead of resurrecting the key.
+                    ring_.incrementLoad(node_id_);
+                    auto result = store_.removeVersioned(req.key, store_.mintVersion(), 0);
+                    ring_.decrementLoad(node_id_);
+                    res.status = result.has_value() ? Errc::OK : result.error().code();
+                }
                 CINDER_TRACE(
                     "opcode completed",
                     {"opcode", static_cast<int>(req.opcode)},
@@ -798,9 +856,24 @@ namespace cinder::net {
                 entry.writer_node_hash = req.writer_node_hash;
                 // Apply the primary's absolute wall-clock expiry on the local steady
                 // basis, so all replicas expire the key at the same instant.
+                // Tombstone GC deadlines ride the same field: the sender's
+                // deadline converges the reap time across replicas.
                 if (req.expires_at.has_value()) {
                     entry.expires_at = toSteadyExpiry(clock_, *req.expires_at);
                     entry.setHasTtl(true);
+                }
+                if (req.tombstone) {
+                    entry.setTombstone(true);
+                    if (!req.expires_at.has_value()) {
+                        // No sender deadline (hand-rolled peer or old sender):
+                        // fall back to a locally-computed GC deadline via the
+                        // versioned remove path, preserving the sender's
+                        // (version, writer) for LWW.
+                        auto del_res =
+                            store_.removeVersioned(req.key, req.version, req.writer_node_hash);
+                        res.status = del_res.has_value() ? Errc::OK : del_res.error().code();
+                        break;
+                    }
                 }
 
                 auto result = store_.putVersioned(req.key, std::move(entry));

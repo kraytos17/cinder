@@ -25,9 +25,12 @@ namespace cinder {
             uint64_t writer_node_hash = 0;
             uint64_t expires_ms = 0;
             uint8_t has_ttl = 0;
+            uint8_t tombstone = 0;
         };
 
-        auto readEntryFields(std::istream& in) -> std::optional<ParsedEntry> {
+        // v2 records carry a trailing tombstone byte after has_ttl; v1
+        // records end at has_ttl. The caller gates on the file version.
+        auto readEntryFields(std::istream& in, bool is_v2) -> std::optional<ParsedEntry> {
             auto op_byte = readU8(in);
             if (!op_byte.has_value()) {
                 return std::nullopt;
@@ -77,6 +80,15 @@ namespace cinder {
             if (!has_ttl.has_value()) {
                 return std::nullopt;
             }
+
+            uint8_t tombstone = 0;
+            if (is_v2) {
+                auto tombstone_byte = readU8(in);
+                if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
+                    return std::nullopt;
+                }
+                tombstone = tombstone_byte.value();
+            }
             return ParsedEntry{
                 .op = op,
                 .key_len = key_len.value(),
@@ -87,10 +99,11 @@ namespace cinder {
                 .writer_node_hash = writer_hash.value(),
                 .expires_ms = expires_ms.value(),
                 .has_ttl = has_ttl.value(),
+                .tombstone = tombstone,
             };
         }
 
-        auto computeEntryChecksum(const ParsedEntry& e) -> uint64_t {
+        auto computeEntryChecksum(const ParsedEntry& e, bool is_v2) -> uint64_t {
             XXH3_state_t* state = XXH3_createState();
             XXH3_64bits_reset(state);
 
@@ -104,6 +117,9 @@ namespace cinder {
             XXH3_64bits_update(state, &e.writer_node_hash, sizeof(e.writer_node_hash));
             XXH3_64bits_update(state, &e.expires_ms, sizeof(e.expires_ms));
             XXH3_64bits_update(state, &e.has_ttl, sizeof(e.has_ttl));
+            if (is_v2) {
+                XXH3_64bits_update(state, &e.tombstone, sizeof(e.tombstone));
+            }
 
             auto digest = XXH3_64bits_digest(state);
             XXH3_freeState(state);
@@ -119,6 +135,7 @@ namespace cinder {
                 .writer_node_hash = e.writer_node_hash,
                 .expires_at_ms = e.expires_ms,
                 .has_ttl = e.has_ttl != 0,
+                .is_tombstone = e.tombstone != 0,
             };
         }
     } // namespace
@@ -153,9 +170,10 @@ namespace cinder {
 
         // Pre-size scratch buffer: 1(op) + 4(key_len) + key + 4(val_len) + value
         // + 8(version) + 8(writer_node_hash) + 8(expires_at_ms) + 1(has_ttl)
-        // + 8(checksum). Digest appended in-buffer so the record lands with a
-        // single stream write; on-disk bytes are unchanged.
-        const size_t size = 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 8 + 1;
+        // + 1(tombstone) + 8(checksum). Digest appended in-buffer so the
+        // record lands with a single stream write; on-disk bytes are unchanged
+        // apart from the appended tombstone byte (v2).
+        const size_t size = 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 8 + 1 + 1;
         scratch_.resize(size + sizeof(uint64_t));
 
         size_t off = 0;
@@ -168,6 +186,7 @@ namespace cinder {
         writeU64(scratch_, off, entry.writer_node_hash);
         writeU64(scratch_, off, entry.expires_at_ms);
         writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
+        writeU8(scratch_, off, entry.is_tombstone ? 1 : 0);
 
         auto digest = XXH3_64bits(scratch_.data(), size);
         writeU64(scratch_, off, digest);
@@ -211,8 +230,12 @@ namespace cinder {
             auto magic = readU32(in_);
             if (magic.has_value() && magic.value() == K_WAL_MAGIC) {
                 auto version = readU32(in_);
-                if (version.has_value() && version.value() == K_WAL_FORMAT_VERSION) {
-                    has_checksums_ = true;
+                if (version.has_value()
+                    && (version.value()
+                        == K_WAL_FORMAT_VERSION
+                        || version.value()
+                        == K_WAL_FORMAT_VERSION_V1)) {
+                    format_version_ = version.value();
                 } else {
                     // Unknown version — rewind past magic so old-format reads work.
                     in_.seekg(0);
@@ -222,11 +245,13 @@ namespace cinder {
                 in_.seekg(0);
             }
         }
-        auto fields = readEntryFields(in_);
+
+        const bool is_v2 = format_version_ == K_WAL_FORMAT_VERSION;
+        auto fields = readEntryFields(in_, is_v2);
         if (!fields.has_value()) {
             return std::nullopt;
         }
-        if (!has_checksums_) {
+        if (format_version_ == 0) {
             return toWalEntry(fields.value());
         }
 
@@ -234,7 +259,7 @@ namespace cinder {
         if (!stored_checksum.has_value()) {
             return std::nullopt; // truncated entry
         }
-        if (computeEntryChecksum(fields.value()) != stored_checksum.value()) {
+        if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum.value()) {
             CINDER_WARN("checksum mismatch at entry — corrupt data");
             return std::nullopt;
         }

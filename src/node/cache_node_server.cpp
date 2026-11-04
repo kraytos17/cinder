@@ -15,10 +15,15 @@ namespace cinder {
     namespace {
         auto makeStore(const CacheNodeServerOptions& opts, Clock* clock)
             -> std::unique_ptr<CacheStore> {
+            std::unique_ptr<CacheStore> store;
             if (opts.eviction_policy == "lfu") {
-                return std::make_unique<LfuStore>(opts.capacity, clock);
+                store = std::make_unique<LfuStore>(opts.capacity, clock);
+            } else {
+                store = std::make_unique<LruStore>(opts.capacity, clock);
             }
-            return std::make_unique<LruStore>(opts.capacity, clock);
+
+            store->setTombstoneGcInterval(opts.tombstone_gc_interval);
+            return store;
         }
 
         auto isIdentityField(std::string_view field) -> bool {
@@ -730,6 +735,8 @@ namespace cinder {
             quarantine_interval_ = milliseconds(cfg.quarantine_interval_ms);
         } else if (field == "max_hint_bytes") {
             repl_.setMaxHintBytes(cfg.max_hint_bytes);
+        } else if (field == "tombstone_gc_ms") {
+            store_->setTombstoneGcInterval(milliseconds(cfg.tombstone_gc_ms));
         } else if (field == "anti_entropy_interval_ms") {
             bool was_disabled = anti_entropy_interval_.load().count() <= 0;
             anti_entropy_interval_ = milliseconds(cfg.anti_entropy_interval_ms);

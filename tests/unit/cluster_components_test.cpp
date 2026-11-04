@@ -755,6 +755,39 @@ namespace cinder {
             }
         }
 
+        TEST(HintJournalTest, RoundtripPreservesTombstoneAndExpiry) {
+            HintJournalDir paths;
+            const uint64_t far_future =
+                static_cast<uint64_t>(
+                    duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()
+                )
+                + 60'000U;
+            {
+                HintQueue staging;
+                HintJournal journal;
+                EXPECT_EQ(journal.open(paths.journal, staging), 0U);
+                auto tomb = hjMakeHint("n2", "gone", 7);
+                tomb.req.tombstone = true;
+                tomb.req.expires_at = system_clock::now() + milliseconds(300'000);
+                tomb.req.writer_node_hash = 11;
+                journal.appendAdd(tomb, far_future);
+                journal.sync();
+            }
+            {
+                HintQueue recovered;
+                HintJournal journal;
+                EXPECT_EQ(journal.open(paths.journal, recovered), 1U);
+                auto snap = recovered.snapshot(steady_clock::now());
+                ASSERT_EQ(snap.size(), 1U);
+                const auto& req = snap.front().hint.req;
+                EXPECT_EQ(req.key, "gone");
+                EXPECT_EQ(req.version, 7U);
+                EXPECT_EQ(req.writer_node_hash, 11U);
+                EXPECT_TRUE(req.tombstone);
+                EXPECT_TRUE(req.expires_at.has_value());
+            }
+        }
+
         TEST(HintJournalTest, ExpiredAddsAreSkippedOnRecovery) {
             HintJournalDir paths;
             {
@@ -886,6 +919,192 @@ namespace cinder {
                 static_cast<uint64_t>(20)
             );
             EXPECT_EQ(metrics.replicationMetrics().hints_dropped.load(), repl.hintsDropped());
+        }
+
+        // Transport that records Replicate/Delete fan-out requests and acks ok
+        // inline, so delete tests can assert the tombstone bit and LWW
+        // identity carried on the wire.
+        class CapturingTransport : public Transport {
+        public:
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& req,
+                SendCallback on_done
+            ) override {
+                std::scoped_lock lock(mutex_);
+                last_ = req;
+                on_done(ok());
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                RequestCallback on_done
+            ) override {
+                on_done(err<net::Response>(Error(Errc::NotReady, "unused")));
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+
+            auto last() const -> net::Request {
+                std::scoped_lock lock(mutex_);
+                return last_;
+            }
+
+        private:
+
+            mutable std::mutex mutex_;
+            net::Request last_;
+        };
+
+        TEST(ReplicationDeleteTest, DeleteAsyncFansOutTombstone) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            CapturingTransport transport;
+            MetricsCollector metrics;
+            ReplicationManager repl(store, "n1", clock, transport);
+            repl.setMetrics(&metrics);
+
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(3);
+            live.writer_node_hash = 7;
+            ASSERT_TRUE(store.putVersioned("k", std::move(live)).has_value());
+
+            bool done = false;
+            repl.deleteAsync("k", {"n2"}, ConsistencyMode::Async, [&](Result<void> r) {
+                EXPECT_TRUE(r.has_value());
+                done = true;
+            });
+            EXPECT_TRUE(done);
+
+            // Local delete is a versioned tombstone, hidden from live reads.
+            EXPECT_FALSE(store.get("k").has_value());
+            auto tomb = store.getVersioned("k");
+            ASSERT_TRUE(tomb.has_value());
+            EXPECT_TRUE(tomb->isTombstone());
+            EXPECT_GT(tomb->version(), 3U);
+
+            // Fan-out carries the marker with the same LWW identity.
+            auto sent = transport.last();
+            EXPECT_EQ(sent.opcode, net::Opcode::Replicate);
+            EXPECT_EQ(sent.key, "k");
+            EXPECT_TRUE(sent.tombstone);
+            EXPECT_EQ(sent.version, tomb->version());
+            EXPECT_EQ(sent.writer_node_hash, tomb->writer_node_hash);
+            EXPECT_TRUE(sent.expires_at.has_value()); // converged GC deadline
+            EXPECT_EQ(metrics.replicationMetrics().async_deletes.load(), 1U);
+        }
+
+        TEST(ReplicationDeleteTest, DeleteAsyncQuorumFailClosedHints) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            FailingTransport transport;
+            MetricsCollector metrics;
+            ReplicationManager repl(store, "n1", clock, transport);
+            repl.setMetrics(&metrics);
+            repl.setMaxHintBytes(1U << 20U);
+
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(3);
+            live.writer_node_hash = 7;
+            ASSERT_TRUE(store.putVersioned("k", std::move(live)).has_value());
+            bool done = false;
+            repl.deleteAsync("k", {"n2"}, ConsistencyMode::Quorum, [&](Result<void> r) {
+                EXPECT_FALSE(r.has_value());
+                EXPECT_EQ(r.error().code(), Errc::NotReady);
+                done = true;
+            });
+            EXPECT_TRUE(done);
+
+            // Local delete still applied; the failed replica got a hint
+            // carrying the tombstone so it heals on return.
+            EXPECT_FALSE(store.get("k").has_value());
+            EXPECT_TRUE(store.getVersioned("k")->isTombstone());
+            EXPECT_EQ(repl.hintCount(), 1U);
+            EXPECT_EQ(metrics.replicationMetrics().quorum_deletes_failed.load(), 1U);
+        }
+
+        TEST(ReplicationDeleteTest, DeleteAsyncQuorumOkCountsAcks) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            CapturingTransport transport;
+            MetricsCollector metrics;
+            ReplicationManager repl(store, "n1", clock, transport);
+            repl.setMetrics(&metrics);
+
+            VersionedEntry live2;
+            live2.value = "v";
+            live2.setVersion(3);
+            live2.writer_node_hash = 7;
+            ASSERT_TRUE(store.putVersioned("k", std::move(live2)).has_value());
+            bool done = false;
+            repl.deleteAsync("k", {"n2"}, ConsistencyMode::Quorum, [&](Result<void> r) {
+                EXPECT_TRUE(r.has_value());
+                done = true;
+            });
+            EXPECT_TRUE(done);
+            EXPECT_EQ(metrics.replicationMetrics().quorum_deletes_ok.load(), 1U);
+            EXPECT_TRUE(store.getVersioned("k")->isTombstone());
+        }
+
+        // Transport that answers every GetVersioned with a tombstone vote,
+        // exercising the quorum-read delete path without a live peer.
+        class TombstoneVotingTransport : public Transport {
+        public:
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                SendCallback on_done
+            ) override {
+                on_done(ok());
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                RequestCallback on_done
+            ) override {
+                net::Response vote;
+                vote.status = Errc::OK;
+                vote.value = std::nullopt;
+                vote.version = 5;
+                vote.writer_node_hash = 7;
+                vote.tombstone = true;
+                on_done(ok(std::move(vote)));
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+        };
+
+        TEST(ReplicationDeleteTest, QuorumReadTombstoneVoteDeletesLocally) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            TombstoneVotingTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(3);
+            live.writer_node_hash = 7;
+            ASSERT_TRUE(store.putVersioned("k", std::move(live)).has_value());
+
+            std::promise<Result<VersionedEntry>> done;
+            auto done_future = done.get_future();
+            repl.readAsync("k", {"n2"}, 2, [&done](Result<VersionedEntry> r) {
+                done.set_value(std::move(r));
+            });
+
+            auto result = done_future.get();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_TRUE(result->isTombstone());
+            EXPECT_EQ(result->version(), 5U);
+            // Self-heal applied the tombstone locally (read repair).
+            EXPECT_FALSE(store.get("k").has_value());
+            EXPECT_TRUE(store.getVersioned("k")->isTombstone());
         }
 
         TEST(ClusterComponentsTest, SelfRumorWithHigherIncarnationIsStillRefuted) {

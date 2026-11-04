@@ -15,6 +15,8 @@
 
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
+using std::chrono::seconds;
+using std::chrono::steady_clock;
 
 namespace cinder {
     namespace {
@@ -279,6 +281,36 @@ namespace cinder {
             EXPECT_FALSE(reader.hasMore());
         }
 
+        TEST_F(PersistenceTest, WalTombstoneRoundTrip) {
+            auto wal_path = (scratch_.path() / "wal.log").string();
+            {
+                WalWriter writer(wal_path);
+                ASSERT_TRUE(writer
+                                .append(
+                                    WalEntry{
+                                        .op = WalEntry::Op::Set,
+                                        .key = "gone",
+                                        .value = "",
+                                        .version = 7,
+                                        .writer_node_hash = 11,
+                                        .expires_at_ms = 9999,
+                                        .has_ttl = true,
+                                        .is_tombstone = true,
+                                    }
+                                )
+                                .has_value());
+            }
+
+            WalReader reader(wal_path);
+            auto e = reader.next();
+            ASSERT_TRUE(e.has_value());
+            EXPECT_EQ(e->op, WalEntry::Op::Set);
+            EXPECT_EQ(e->key, "gone");
+            EXPECT_EQ(e->version, 7);
+            EXPECT_TRUE(e->is_tombstone);
+            EXPECT_FALSE(reader.hasMore());
+        }
+
         TEST_F(PersistenceTest, SnapshotWriteAndRead) {
             auto snap_path = (scratch_.path() / "snapshot.dat").string();
             std::vector<SnapshotEntry> entries;
@@ -304,6 +336,18 @@ namespace cinder {
                     .freq = 0,
                 }
             );
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "c",
+                    .value = "",
+                    .version = 30,
+                    .writer_node_hash = 300,
+                    .expires_at_ms = 9999,
+                    .has_ttl = true,
+                    .freq = 2,
+                    .tombstone = true,
+                }
+            );
 
             {
                 SnapshotWriter writer(snap_path);
@@ -314,7 +358,7 @@ namespace cinder {
             auto result = reader.readAll();
             ASSERT_TRUE(result.has_value());
             EXPECT_EQ(result->next_version, 42);
-            ASSERT_EQ(result->entries.size(), 2U);
+            ASSERT_EQ(result->entries.size(), 3U);
 
             EXPECT_EQ(result->entries[0].key, "a");
             EXPECT_EQ(result->entries[0].value, "alpha");
@@ -324,6 +368,12 @@ namespace cinder {
 
             EXPECT_EQ(result->entries[1].key, "b");
             EXPECT_FALSE(result->entries[1].has_ttl);
+            EXPECT_EQ(result->entries[1].tombstone, false);
+
+            EXPECT_EQ(result->entries[2].key, "c");
+            EXPECT_EQ(result->entries[2].version, 30);
+            EXPECT_TRUE(result->entries[2].tombstone);
+            EXPECT_TRUE(result->entries[2].has_ttl);
         }
 
         TEST_F(PersistenceTest, RecoverFromSnapshotPlusWal) {
@@ -382,6 +432,48 @@ namespace cinder {
             EXPECT_TRUE(store2.get("k2").has_value());
             EXPECT_TRUE(store2.get("k3").has_value());
             EXPECT_TRUE(store2.get("k4").has_value());
+        }
+
+        TEST_F(PersistenceTest, RecoverRestoresTombstones) {
+            LruStore store(1'000'000);
+            PersistenceManager pm(
+                PersistenceManager::Options{
+                    .data_dir = scratch_.path().string(),
+                    .enabled = true,
+                    .snapshot_interval_s = 60,
+                    .max_wal_entries = 100,
+                },
+                store
+            );
+
+            ASSERT_TRUE(store.put("live", "v").has_value());
+            VersionedEntry tomb;
+            tomb.setVersion(store.mintVersion());
+            tomb.writer_node_hash = 42;
+            tomb.setTombstone(true);
+            tomb.expires_at = steady_clock::now() + seconds(600);
+            tomb.setHasTtl(true);
+            ASSERT_TRUE(store.putVersioned("gone", std::move(tomb)).has_value());
+            ASSERT_TRUE(pm.compact().has_value());
+
+            // Fresh store recovers both the live entry and the marker; the
+            // delete survives the restart instead of resurrecting.
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(
+                PersistenceManager::Options{
+                    .data_dir = scratch_.path().string(),
+                    .enabled = true,
+                    .snapshot_interval_s = 60,
+                    .max_wal_entries = 100,
+                },
+                store2
+            );
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_TRUE(store2.get("live").has_value());
+            EXPECT_FALSE(store2.get("gone").has_value());
+            auto marker = store2.getVersioned("gone");
+            ASSERT_TRUE(marker.has_value());
+            EXPECT_TRUE(marker->isTombstone());
         }
 
         TEST_F(PersistenceTest, RecoverSkipsExpiredEntries) {

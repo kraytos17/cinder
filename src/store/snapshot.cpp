@@ -37,6 +37,7 @@ namespace cinder {
         // One write per entry. Field order, widths, and native-endian byte
         // layout are unchanged from the per-field stream writes, so files
         // stay byte-identical (WAL0/CSNP magic, fuzz corpora still decode).
+        // v2 appends a trailing tombstone byte after freq.
         for (const auto& entry : entries) {
             auto key_len = static_cast<uint32_t>(entry.key.size());
             auto val_len = static_cast<uint32_t>(entry.value.size());
@@ -46,7 +47,8 @@ namespace cinder {
                 + val_len
                 + sizeof(uint64_t)
                 * 4
-                + sizeof(uint8_t);
+                + sizeof(uint8_t)
+                + sizeof(uint8_t); // has_ttl + tombstone
 
             scratch_.resize(size);
             off = 0;
@@ -59,6 +61,7 @@ namespace cinder {
             writeU64(scratch_, off, entry.expires_at_ms);
             writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
             writeU64(scratch_, off, entry.freq);
+            writeU8(scratch_, off, entry.tombstone ? 1 : 0);
             out.write(
                 reinterpret_cast<const char*>(scratch_.data()),
                 static_cast<std::streamsize>(scratch_.size())
@@ -100,7 +103,11 @@ namespace cinder {
         }
 
         auto format_ver = readU32(in_);
-        if (!format_ver.has_value() || format_ver.value() != K_SNAPSHOT_FORMAT_VERSION) {
+        const bool is_v2 =
+            format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION;
+        const bool is_v1 =
+            format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION_V1;
+        if (!is_v1 && !is_v2) {
             span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(
                 Error(Errc::CorruptData, "unsupported snapshot format version")
@@ -120,16 +127,19 @@ namespace cinder {
         }
 
         // Validate entry_count against remaining file bytes. Each entry requires
-        // at least 41 bytes (key_len + val_len + version + writer_hash +
-        // expires_ms + has_ttl + freq, excluding variable-length key/value).
-        constexpr size_t K_MIN_ENTRY_BYTES = 41;
+        // at least 41 bytes v1 (key_len + val_len + version + writer_hash +
+        // expires_ms + has_ttl + freq, excluding variable-length key/value),
+        // 42 bytes v2 (trailing tombstone byte).
+        constexpr size_t K_MIN_ENTRY_BYTES_V1 = 41;
+        constexpr size_t K_MIN_ENTRY_BYTES_V2 = 42;
+        const size_t min_entry_bytes = is_v2 ? K_MIN_ENTRY_BYTES_V2 : K_MIN_ENTRY_BYTES_V1;
         auto pos = in_.tellg();
         in_.seekg(0, std::ios::end);
 
         auto file_size = in_.tellg();
         in_.seekg(pos);
         auto remaining = static_cast<uint64_t>(file_size - pos);
-        if (static_cast<uint64_t>(entry_count.value()) > remaining / K_MIN_ENTRY_BYTES) {
+        if (static_cast<uint64_t>(entry_count.value()) > remaining / min_entry_bytes) {
             span.setStatus(SpanStatus::Error);
             return err<SnapshotData>(Error(Errc::InvalidArgument, "entry_count exceeds file size"));
         }
@@ -196,6 +206,18 @@ namespace cinder {
                 return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot freq"));
             }
 
+            bool tombstone = false;
+            if (is_v2) {
+                auto tombstone_byte = readU8(in_);
+                if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
+                    span.setStatus(SpanStatus::Error);
+                    return err<SnapshotData>(
+                        Error(Errc::CorruptData, "truncated snapshot tombstone")
+                    );
+                }
+                tombstone = tombstone_byte.value() != 0;
+            }
+
             data.entries.push_back(
                 SnapshotEntry{
                     .key = std::move(key.value()),
@@ -205,6 +227,7 @@ namespace cinder {
                     .expires_at_ms = expires_ms.value(),
                     .has_ttl = has_ttl.value() != 0,
                     .freq = freq.value(),
+                    .tombstone = tombstone,
                 }
             );
         }

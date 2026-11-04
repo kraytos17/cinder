@@ -51,6 +51,15 @@ namespace cinder {
         virtual auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> = 0;
         virtual auto getVersioned(const std::string& key) -> std::optional<VersionedEntry> = 0;
 
+        // Versioned delete: writes a tombstone marker (empty value + tombstone
+        // bit) that carries (version, writer) and wins or loses LWW exactly
+        // like a put. Unlike remove(), the marker survives in the index until
+        // tombstone GC so replicas and anti-entropy observe the delete.
+        // Stale deletes lose to newer writes — delete-vs-write resolves by
+        // the same (version, writer) order as write-vs-write.
+        virtual auto removeVersioned(const std::string& key, Version version, uint64_t writer)
+            -> Result<void> = 0;
+
         // Mint a monotonic local version for a locally-originated write. The store
         // is the single version authority regardless of which write path is used
         // (direct put() or ReplicationManager). Thread-safe (store mutex).
@@ -63,8 +72,11 @@ namespace cinder {
             std::move_only_function<void(const std::string& key, const VersionedEntry&)>
         ) const = 0;
 
-        // Snapshot accessor: point-in-time copy of all live entries (expired
-        // entries skipped), taken under the store lock and returned by value.
+        // Snapshot accessor: point-in-time copy of all present entries,
+        // including tombstones (deleted-but-not-yet-GC'd markers), expired
+        // entries skipped. Tombstones must travel with the data — snapshots,
+        // migration, and anti-entropy all need them to avoid resurrecting
+        // deleted keys. Filter with entry.isTombstone() for live-only views.
         // Prefer this over forEach when the consumer needs filtering, early
         // exit, or accumulation — a plain range-for replaces the callback.
         // Same contract as forEach: the store may be mutated freely while
@@ -93,6 +105,13 @@ namespace cinder {
 
         // Change the capacity at runtime. Default no-op.
         virtual void setCapacity(size_t /*unused*/) {}
+
+        // Tombstone GC grace: how long a delete marker survives before the
+        // TTL-wheel reaps it. Must exceed the worst-case partition healing
+        // time (hint TTL + several anti-entropy rounds); premature GC
+        // resurrects the key from any replica that missed the delete.
+        // Default no-op (stores without tombstone support).
+        virtual void setTombstoneGcInterval(milliseconds /*unused*/) {}
 
     protected:
 

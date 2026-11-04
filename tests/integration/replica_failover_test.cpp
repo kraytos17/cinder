@@ -14,6 +14,7 @@ using std::chrono::milliseconds;
 
 using cinder::net::Opcode;
 using cinder::net::Request;
+using cinder::net::test::delKey;
 using cinder::net::test::getKey;
 using cinder::net::test::NodeProc;
 using cinder::net::test::NodeProcGuard;
@@ -23,6 +24,7 @@ using cinder::net::test::scrapeMetric;
 using cinder::net::test::setKey;
 using cinder::net::test::spawnNode;
 using cinder::net::test::stopNode;
+using cinder::net::test::waitForMissing;
 using cinder::net::test::waitForNode;
 using cinder::net::test::waitForValue;
 
@@ -61,6 +63,44 @@ namespace cinder {
 
             // The replica must have applied the Replicate write (async fan-out).
             EXPECT_TRUE(waitForValue(replica, "fanout-key", "v1")) << "replica did not apply write";
+        }
+
+        TEST(ReplicaFailoverTest, DeletePropagatesAndSurvivesFailover) {
+            const uint16_t port1 = pickHeldPort();
+            const uint16_t port2 = pickHeldPort();
+            ASSERT_NE(port1, 0);
+            ASSERT_NE(port2, 0);
+            NodeProcGuard node1{
+                spawnNode(port1, "node1", "node2@127.0.0.1:" + std::to_string(port2), false, 2)
+            };
+            NodeProcGuard node2{
+                spawnNode(port2, "node2", "node1@127.0.0.1:" + std::to_string(port1), false, 2)
+            };
+            ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not start";
+            ASSERT_TRUE(waitForNode(port2, "node2")) << "node2 did not start";
+
+            auto [primary_id, replica_id] = ownersOf("del-key");
+            int primary = (primary_id == "node1") ? port1 : port2;
+            int replica = (replica_id == "node1") ? port1 : port2;
+            auto set_res = setKey(primary, "del-key", "v1");
+            ASSERT_TRUE(set_res.has_value());
+            EXPECT_EQ(set_res.value().status, Errc::OK);
+            ASSERT_TRUE(waitForValue(replica, "del-key", "v1")) << "replica did not apply write";
+
+            // Versioned delete fans out as a tombstone; the replica observes
+            // NotFound (not a resurrected value) once it lands.
+            auto del_res = delKey(primary, "del-key");
+            ASSERT_TRUE(del_res.has_value());
+            EXPECT_EQ(del_res.value().status, Errc::OK);
+            EXPECT_TRUE(waitForMissing(replica, "del-key")) << "replica did not observe delete";
+            EXPECT_TRUE(waitForMissing(primary, "del-key"));
+
+            // The primary dies with only the tombstone; the replica still
+            // serves NotFound — no resurrection from any direction.
+            stopNode((primary_id == "node1" ? node1 : node2).proc());
+            auto get_res = getKey(replica, "del-key");
+            ASSERT_TRUE(get_res.has_value());
+            EXPECT_EQ(get_res.value().status, Errc::NotFound);
         }
 
         TEST(ReplicaFailoverTest, SurvivesPrimaryFailure) {

@@ -287,6 +287,45 @@ namespace cinder::net {
             EXPECT_FALSE(decoded.value().value.has_value());
         }
 
+        TEST(ProtocolTest, EncodeDecodeTombstoneFlags) {
+            Request req;
+            req.opcode = Opcode::Replicate;
+            req.key = "k";
+            req.version = 9;
+            req.writer_node_hash = 3;
+            req.tombstone = true;
+            req.expires_at = system_clock::time_point(milliseconds(123'456));
+
+            auto encoded = encode(req);
+            ASSERT_TRUE(encoded.has_value());
+
+            auto decoded = decode(encoded.value());
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded.value().req.opcode, Opcode::Replicate);
+            EXPECT_EQ(decoded.value().req.key, "k");
+            EXPECT_TRUE(decoded.value().req.tombstone);
+            EXPECT_EQ(decoded.value().req.version, 9);
+            ASSERT_TRUE(decoded.value().req.expires_at.has_value());
+
+            // Tombstone votes ride GetVersioned responses without a value.
+            Response res;
+            res.status = Errc::OK;
+            res.value = std::nullopt;
+            res.version = 9;
+            res.writer_node_hash = 3;
+            res.tombstone = true;
+
+            auto encoded_res = encode(res);
+            ASSERT_TRUE(encoded_res.has_value());
+
+            auto decoded_res = decodeResponse(encoded_res.value());
+            ASSERT_TRUE(decoded_res.has_value());
+            EXPECT_EQ(decoded_res.value().status, Errc::OK);
+            EXPECT_TRUE(decoded_res.value().tombstone);
+            EXPECT_EQ(decoded_res.value().version, 9);
+            EXPECT_FALSE(decoded_res.value().value.has_value());
+        }
+
         TEST(ProtocolTest, PlainResponseNoVersionMeta) {
             Response res;
             res.status = Errc::OK;

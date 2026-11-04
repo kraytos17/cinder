@@ -24,6 +24,7 @@
 using std::chrono::ceil;
 using std::chrono::floor;
 using std::chrono::milliseconds;
+using std::chrono::minutes;
 using std::chrono::seconds;
 using std::chrono::steady_clock;
 
@@ -135,7 +136,9 @@ namespace cinder {
             Derived& self = d();
             auto& sh = self.shards_[shardFor(key)];
             std::scoped_lock lock(sh.mutex);
-
+            // Tombstone writes count as deletes (not live writes) for operator
+            // visibility into delete-marker pressure vs real write load.
+            const bool entry_is_tombstone = entry.isTombstone();
             auto it = sh.index.find(key);
             if (it != sh.index.end()) {
                 uint64_t old_version_and_ttl = 0;
@@ -157,6 +160,19 @@ namespace cinder {
                         < entry0.writer_node_hash) {
                         return ok();
                     }
+                    if (entry.version()
+                        == entry0.version()
+                        && entry.writer_node_hash
+                        == entry0.writer_node_hash
+                        && !entry.isTombstone()
+                        && entry0.isTombstone()) {
+                        // Equal identity, contradictory delete state (only
+                        // reachable across standalone writers sharing writer
+                        // 0): the tombstone wins ties so replicas converge
+                        // instead of disagreeing by arrival order.
+                        return ok();
+                    }
+
                     // Snapshot the outgoing write for the mutation feed: the
                     // node is overwritten below, so the old identity must be
                     // captured while the reference is alive.
@@ -196,10 +212,18 @@ namespace cinder {
                     noteRemoved(key, old_version_and_ttl, old_writer);
                     noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
                 }
+
                 updateWheel(sh, it->second);
                 writeWal(sh, key);
                 if (metrics_) {
-                    metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
+                    if (entry_is_tombstone) {
+                        metrics_->shardMetrics().live.deletes.fetch_add(
+                            1,
+                            std::memory_order_relaxed
+                        );
+                    } else {
+                        metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
+                    }
                     refreshMetrics();
                 }
                 return ok();
@@ -231,10 +255,15 @@ namespace cinder {
                 const auto& resident = Derived::nodeEntry(*new_it);
                 noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
             }
+
             updateWheel(sh, new_it);
             writeWal(sh, key);
             if (metrics_) {
-                metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
+                if (entry_is_tombstone) {
+                    metrics_->shardMetrics().live.deletes.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    metrics_->shardMetrics().live.writes.fetchAdd(1, std::memory_order_relaxed);
+                }
                 refreshMetrics();
             }
             return ok();
@@ -264,6 +293,15 @@ namespace cinder {
                         std::memory_order_relaxed
                     );
                     refreshMetrics();
+                }
+                return std::nullopt;
+            }
+            // Tombstones are present but not live: a deleted key reads as
+            // missing. getVersioned exposes the marker (repair, quorum votes,
+            // and sync serving need it); get hides it.
+            if (Derived::nodeEntry(*node).isTombstone()) {
+                if (metrics_) {
+                    metrics_->shardMetrics().live.misses.fetchAdd(1, std::memory_order_relaxed);
                 }
                 return std::nullopt;
             }
@@ -316,7 +354,6 @@ namespace cinder {
             if (it == sh.index.end()) {
                 return false;
             }
-
             // WAL append before erase
             if (persistence_) {
                 WalEntry we;
@@ -337,6 +374,28 @@ namespace cinder {
             return true;
         }
 
+        auto removeVersioned(const std::string& key, Version version, uint64_t writer)
+            -> Result<void> final {
+            // A delete is a versioned write with the tombstone bit set: it
+            // flows through putVersioned so a stale delete loses LWW to a
+            // newer put, exactly like a stale put loses. The marker carries a
+            // GC deadline on the existing TTL-wheel machinery (no new timer):
+            // hasTtl is always set on tombstones so updateWheel schedules the
+            // reap, and the absolute deadline converges across replicas via
+            // the same expires_at path as TTL writes.
+            VersionedEntry tomb;
+            tomb.setVersion(version);
+            tomb.setTombstone(true);
+            tomb.writer_node_hash = writer;
+            tomb.expires_at = now() + tombstone_gc_.load(std::memory_order_relaxed);
+            tomb.setHasTtl(true);
+            return putVersioned(key, std::move(tomb));
+        }
+
+        void setTombstoneGcInterval(milliseconds interval) final {
+            tombstone_gc_.store(interval, std::memory_order_relaxed);
+        }
+
         [[nodiscard]]
         auto size() const -> size_t final {
             const Derived& self = d();
@@ -351,7 +410,6 @@ namespace cinder {
         auto evictExpired() -> size_t final {
             Derived& self = d();
             auto current = now();
-
             size_t evicted = 0;
             for (auto& sh : self.shards_) {
                 std::scoped_lock lock(sh.mutex);
@@ -360,7 +418,6 @@ namespace cinder {
                 auto elapsed = current - sh.last_evict;
                 auto elapsed_ticks = floor<seconds>(elapsed).count();
                 size_t ticks = elapsed_ticks < 1 ? 1 : static_cast<size_t>(elapsed_ticks);
-
                 sh.last_evict = current;
                 for (size_t i = 0; i < ticks; ++i) {
                     sh.wheel.tick([&](Node& node) {
@@ -488,6 +545,11 @@ namespace cinder {
         // Global Lamport clock: fetch_add mint + CAS-max observe. Same-key
         // ordering additionally holds because a key routes to one shard.
         std::atomic<Version> next_version_;
+        // Tombstone GC grace (default 5 min): how long a delete marker
+        // survives on the TTL wheel before eraseNode reaps it. Must exceed
+        // the worst-case partition healing time or the key resurrects from
+        // a replica that missed the delete.
+        std::atomic<milliseconds> tombstone_gc_{minutes(5)};
         // Authoritative for metrics only; per-shard bytes drive eviction.
         std::atomic<size_t> total_bytes_{0};
         std::atomic<size_t> total_entries_{0};
@@ -585,6 +647,7 @@ namespace cinder {
             we.version = entry.version();
             we.writer_node_hash = entry.writer_node_hash;
             we.has_ttl = entry.hasTtl();
+            we.is_tombstone = entry.isTombstone();
             if (entry.hasTtl()) {
                 we.expires_at_ms = expiryToSystemMs(entry.expires_at);
             } else {

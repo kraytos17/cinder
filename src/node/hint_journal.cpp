@@ -260,7 +260,8 @@ namespace cinder {
         -> std::vector<std::byte> {
         std::vector<std::byte> payload;
         size_t off = 0;
-        auto reserve = hint.target.size() + hint.req.key.size() + hint.req.value.size() + 64;
+        auto reserve =
+            hint.target.size() + hint.req.key.size() + hint.req.value.size() + 64 + 8 + 1;
         payload.resize(reserve);
 
         detail::writeU8(payload, off, K_OP_ADD);
@@ -273,6 +274,20 @@ namespace cinder {
         detail::writeBytes(payload, off, hint.req.value.data(), hint.req.value.size());
         detail::writeU64(payload, off, hint.req.version);
         detail::writeU64(payload, off, hint.req.writer_node_hash);
+        // Trailing entry-expiry (absolute wall-clock ms, 0 = none) and
+        // tombstone marker. TTL writes and delete markers keep their
+        // deadlines across a journal recovery; without these, a replayed
+        // tombstone would never be GC'd (leak) and a replayed TTL write
+        // would live forever (pre-existing gap, fixed as a side effect).
+        uint64_t entry_expiry_ms = 0;
+        if (hint.req.expires_at.has_value()) {
+            entry_expiry_ms = static_cast<uint64_t>(
+                duration_cast<milliseconds>(hint.req.expires_at->time_since_epoch()).count()
+            );
+        }
+
+        detail::writeU64(payload, off, entry_expiry_ms);
+        detail::writeU8(payload, off, hint.req.tombstone ? 1 : 0);
         payload.resize(off);
         return payload;
     }
@@ -361,12 +376,30 @@ namespace cinder {
             auto value = read_str(*vlen);
             auto version = read_u64();
             auto writer = read_u64();
-            if (!value.has_value()
-                || !version.has_value()
-                || !writer.has_value()
-                || off
-                != payload.size()) {
+            if (!value.has_value() || !version.has_value() || !writer.has_value()) {
                 return false;
+            }
+
+            // New records carry a trailing entry-expiry + tombstone byte.
+            // Legacy records (written before tombstones) end here; they
+            // decode as live writes, matching their original semantics.
+            bool tombstone = false;
+            std::optional<system_clock::time_point> entry_expiry;
+            if (off != payload.size()) {
+                auto exp_ms = read_u64();
+                auto tombstone_byte = read_u8();
+                if (!exp_ms.has_value()
+                    || !tombstone_byte.has_value()
+                    || tombstone_byte.value()
+                    > 1
+                    || off
+                    != payload.size()) {
+                    return false;
+                }
+                if (exp_ms.value() != 0) {
+                    entry_expiry = system_clock::time_point(milliseconds(exp_ms.value()));
+                }
+                tombstone = tombstone_byte.value() != 0;
             }
 
             out.is_add = true;
@@ -377,6 +410,8 @@ namespace cinder {
             out.hint.req.value = std::move(*value);
             out.hint.req.version = *version;
             out.hint.req.writer_node_hash = *writer;
+            out.hint.req.expires_at = entry_expiry;
+            out.hint.req.tombstone = tombstone;
             out.hint.expires_at = steady_clock::now() + milliseconds(30'000);
             return true;
         }

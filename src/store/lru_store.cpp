@@ -43,13 +43,28 @@ namespace cinder {
             return 0;
         }
 
-        auto& node = sh.list.back();
+        // Tombstones are exempt from capacity eviction: evicting a live
+        // delete marker would resurrect the key on the next anti-entropy
+        // round with a replica that still holds the value. The TTL wheel
+        // reaps tombstones at their GC deadline instead. Scan from the back
+        // (LRU end), skipping tombstones wherever they sit.
+        auto victim = sh.list.end();
+        for (auto it = sh.list.rbegin(); it != sh.list.rend(); ++it) {
+            if (!it->entry.isTombstone()) {
+                victim = std::prev(it.base());
+                break;
+            }
+        }
+        if (victim == sh.list.end()) {
+            return 0; // only tombstones left; GC handles them
+        }
+
+        auto& node = *victim;
         size_t freed = node.key.size() + node.entry.value.size() + sizeof(LruNode);
-        // Mutation feed for incremental anti-entropy (inherited helper).
         noteRemoved(node.key, node.entry.version_and_ttl, node.entry.writer_node_hash);
         sh.wheel.remove(&node);
         sh.index.erase(node.key);
-        sh.list.pop_back();
+        sh.list.erase(victim);
         return freed;
     }
 

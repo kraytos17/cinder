@@ -12,7 +12,12 @@
 namespace cinder {
 
     constexpr uint32_t K_WAL_MAGIC = 0x57414C30; // "WAL0"
-    constexpr uint32_t K_WAL_FORMAT_VERSION = 1;
+    // v1: legacy layout (no tombstone byte; Del replays as hard remove).
+    // v2: trailing tombstone byte per record; Set+tombstone replays as a
+    // versioned delete marker, Del keeps hard-remove semantics (migration
+    // source cleanup must not resurrect markers).
+    constexpr uint32_t K_WAL_FORMAT_VERSION = 2;
+    constexpr uint32_t K_WAL_FORMAT_VERSION_V1 = 1;
 
     struct WalEntry {
         enum class Op : uint8_t {
@@ -27,6 +32,7 @@ namespace cinder {
         uint64_t writer_node_hash = 0;
         uint64_t expires_at_ms = 0; // wall-clock ms since epoch, 0 if no TTL
         bool has_ttl = false;
+        bool is_tombstone = false;
     };
 
     class WalWriter {
@@ -77,7 +83,9 @@ namespace cinder {
     private:
 
         std::ifstream in_;
-        bool has_checksums_ = false;
+        // File format version: 0 = pre-magic legacy (no checksums), 1 = v1
+        // checksummed records, 2 = v2 records with trailing tombstone byte.
+        uint32_t format_version_ = 0;
         bool header_checked_ = false;
     };
 } // namespace cinder

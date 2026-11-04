@@ -79,6 +79,12 @@ namespace cinder {
         uint32_t anti_entropy_buckets = 256;
         // Hinted-handoff byte budget (drop-oldest past it). 0 = queue default.
         size_t max_hint_bytes = 0;
+        // Tombstone GC grace in milliseconds: how long a delete marker
+        // survives before the TTL wheel reaps it. Must exceed the worst-case
+        // partition healing time (hint TTL + several anti-entropy rounds);
+        // premature GC resurrects the key from any replica that missed the
+        // delete. Default 5 minutes.
+        milliseconds tombstone_gc_interval{300'000};
         // Pre-bound listen socket fd (-1 = bind
         // port_ normally). Consumed by TcpServer at start().
         int listen_fd = -1;

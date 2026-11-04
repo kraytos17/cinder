@@ -78,6 +78,21 @@ namespace cinder {
             uint64_t span_id = 0
         );
 
+        // Async delete: tombstone locally, then fan out to replicas.
+        //   Async  — `on_done` runs inline after local commit (fan-out is
+        //            best-effort).
+        //   Quorum — `on_done` runs after W = R/2+1 acks (incl. local) are
+        //            observed, mirroring writeAsync. A quorum delete returns
+        //            NotFound to no one — success means a quorum holds the
+        //            tombstone, so later reads observe the delete.
+        void deleteAsync(
+            const std::string& key,
+            const std::vector<NodeId>& replica_nodes,
+            ConsistencyMode mode,
+            WriteCallback on_done,
+            uint64_t trace_id = 0,
+            uint64_t span_id = 0
+        );
         // Quorum read: reads from local store + fans out GetVersioned to replicas.
         // Returns the entry with the highest version (LWW). Stale replicas are
         // repaired in the background via a best-effort Replicate write-back.
@@ -143,6 +158,17 @@ namespace cinder {
         }
 
         void enqueueHint(const NodeId& target, const net::Request& req);
+        // Shared write/delete fan-out after the local commit: best-effort
+        // async fan-out with hint-on-failure, or quorum reduce to W. The
+        // request carries the tombstone bit for deletes; spans and metrics
+        // follow it. `req` is taken by value (moved into async callbacks).
+        void fanOutWrite(
+            const std::string& key,
+            net::Request req,
+            const std::vector<NodeId>& replica_nodes,
+            ConsistencyMode mode,
+            WriteCallback on_done
+        );
         // Repair fan-out parented to the caller (the read quorum that found
         // divergence), so the repair is a child span rather than a fresh root.
         void sendRepairFanOut(

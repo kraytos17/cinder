@@ -279,9 +279,42 @@ namespace cinder::grpc {
                     span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
+                if (handle_.replica_factor > 1) {
+                    auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
+                    std::vector<NodeId> replicas;
+                    for (const auto& n : nodes) {
+                        if (n != handle_.node_id) {
+                            replicas.push_back(n);
+                        }
+                    }
 
-                handle_.store.remove(req->key());
-                resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
+                    std::promise<Result<void>> promise;
+                    auto future = promise.get_future();
+                    handle_.repl.deleteAsync(
+                        req->key(),
+                        replicas,
+                        handle_.mode,
+                        [&promise](Result<void> result) { promise.set_value(std::move(result)); },
+                        span.traceId(),
+                        span.spanId()
+                    );
+
+                    auto result = future.get();
+                    resp->set_status(
+                        result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
+                                           : toProtoStatus(result.error().code())
+                    );
+                } else {
+                    // Standalone: versioned tombstone (writer 0, matching
+                    // local put()) so a later join heals via anti-entropy.
+                    auto result =
+                        handle_.store.removeVersioned(req->key(), handle_.store.mintVersion(), 0);
+                    resp->set_status(
+                        result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
+                                           : toProtoStatus(result.error().code())
+                    );
+                }
+
                 span.setStatus(cinder::SpanStatus::Ok);
                 return ::grpc::Status::OK;
             }
@@ -298,13 +331,17 @@ namespace cinder::grpc {
                 }
 
                 auto entry = handle_.store.getVersioned(req->key());
-                if (entry.has_value()) {
+                if (entry.has_value() && !entry->isTombstone()) {
                     resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
                     resp->set_value(entry->value);
                     resp->set_version(entry->version());
                     resp->set_writer_node_hash(entry->writer_node_hash);
                     resp->set_expires_at_ms(0);
                 } else {
+                    // Absent or deleted: same client-visible NOT_FOUND. The
+                    // tombstone marker itself is an internal replication
+                    // concern (quorum votes, read repair), not exposed here
+                    // to avoid a proto change.
                     resp->set_status(cinder::v1::STATUS_CODE_NOT_FOUND);
                 }
 

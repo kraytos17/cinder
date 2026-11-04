@@ -52,27 +52,46 @@ namespace cinder {
         // iterators and mapped references into freq_buckets, so bucket_it
         // and vec below must not outlive this block; erase() is the last
         // map operation and nothing after it touches them.
+        // Tombstones are exempt from capacity eviction (same rationale as
+        // LruStore::evictOne): scan buckets ascending for the first live
+        // entry, preserving min-frequency-first order among live entries.
         ListIt node_it;
+        bool found = false;
         {
-            auto bucket_it = sh.freq_buckets.begin();
-            auto& vec = bucket_it->second;
-            // Swap front to back for O(1) removal while preserving eviction order
-            // (oldest entry at min_freq is at front, pushed earliest).
-            node_it = vec.front();
-            if (vec.size() > 1) {
-                auto back_it = vec.back();
-                back_it->freq_index = 0;
-                vec[0] = back_it;
-            }
+            for (auto bucket_it = sh.freq_buckets.begin();
+                 bucket_it != sh.freq_buckets.end() && !found;
+                 ++bucket_it) {
+                auto& vec = bucket_it->second;
+                size_t victim_idx = vec.size();
+                for (size_t i = 0; i < vec.size(); ++i) {
+                    if (!vec[i]->entry.isTombstone()) {
+                        victim_idx = i;
+                        break;
+                    }
+                }
+                if (victim_idx == vec.size()) {
+                    continue; // all tombstones in this bucket
+                }
 
-            vec.pop_back();
-            if (vec.empty()) {
-                sh.freq_buckets.erase(bucket_it);
+                node_it = vec[victim_idx];
+                if (victim_idx != vec.size() - 1) {
+                    auto back_it = vec.back();
+                    back_it->freq_index = victim_idx;
+                    vec[victim_idx] = back_it;
+                }
+
+                vec.pop_back();
+                if (vec.empty()) {
+                    sh.freq_buckets.erase(bucket_it);
+                }
+                found = true;
+            }
+            if (!found) {
+                return 0; // only tombstones left; GC handles them
             }
         }
 
         size_t freed = node_it->key.size() + node_it->entry.value.size() + sizeof(LfuNode);
-        // Mutation feed for incremental anti-entropy (inherited helper).
         noteRemoved(node_it->key, node_it->entry.version_and_ttl, node_it->entry.writer_node_hash);
         sh.wheel.remove(&(*node_it));
         sh.index.erase(node_it->key);

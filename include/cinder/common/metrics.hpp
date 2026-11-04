@@ -188,8 +188,11 @@ namespace cinder {
     // reads them together.
     struct ReplicationMetrics {
         std::atomic<uint64_t> async_writes{0};
+        std::atomic<uint64_t> async_deletes{0};
         std::atomic<uint64_t> quorum_writes_ok{0};
         std::atomic<uint64_t> quorum_writes_failed{0};
+        std::atomic<uint64_t> quorum_deletes_ok{0};
+        std::atomic<uint64_t> quorum_deletes_failed{0};
         std::atomic<uint64_t> quorum_reads{0};
         std::atomic<uint64_t> reads_coalesced{0};
         std::atomic<uint64_t> read_repairs{0};

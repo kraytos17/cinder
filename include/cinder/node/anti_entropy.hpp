@@ -57,12 +57,12 @@ namespace cinder {
         // Schema magics (u32 LE) prefixing every anti-entropy payload.
         static constexpr uint32_t K_DIGEST_MAGIC = 0x41454D32; // "AEM2"
         static constexpr uint32_t K_GROUP_DIGEST_MAGIC = 0x41454D33; // "AEM3"
-        static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455235; // "AER5"
+        static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455236; // "AER6"
         static constexpr uint32_t K_BUCKET_REFINEMENT_MAGIC = 0x41454235; // "AEB5"
         static constexpr uint32_t K_SYNC_MAGIC = 0x41454D53; // "AEMS"
         static constexpr uint32_t K_NEED_MAGIC = 0x41454D4E; // "AEMN"
         static constexpr uint32_t K_BUCKETS_PER_GROUP = 16;
-        static constexpr uint32_t K_IBLT_MAGIC = 0x41454933; // "AEI3"
+        static constexpr uint32_t K_IBLT_MAGIC = 0x41454934; // "AEI4"
         static constexpr size_t K_IBLT_HASH_COUNT = 3;
         static constexpr size_t K_MAX_IBLT_CELLS = 4096;
         static constexpr size_t K_IBLT_DEFAULT_CELLS = 64;
@@ -79,13 +79,15 @@ namespace cinder {
         // time rather than round counts.
         static constexpr milliseconds K_DEFAULT_FULL_REHASH_INTERVAL{300'000};
 
-        // One metadata row: bucket id + key identity + recency, no value.
-        // 4 + 8×3 = 28 bytes on the wire.
+        // One metadata row: bucket id + key identity + recency + delete
+        // marker, no value. Tombstones participate in LWW with the same
+        // (version, writer) order as live writes.
         struct MetaRow {
             uint32_t bucket = 0;
             uint64_t key_hash = 0;
             uint64_t version = 0;
             uint64_t writer = 0;
+            bool tombstone = false;
         };
 
         // A decoded sync message: full entries to apply plus key hashes the
@@ -130,6 +132,7 @@ namespace cinder {
             uint64_t key_hash_xor = 0;
             uint64_t version_xor = 0;
             uint64_t writer_xor = 0;
+            uint64_t tombstone_xor = 0;
             uint64_t checksum_xor = 0;
         };
 

@@ -330,9 +330,12 @@ and only true deltas exchange values.
 
 **IBLT refinement**: for divergent buckets with at least 32 metadata rows,
 the responder sends a 64-cell invertible Bloom lookup table rather than all
-rows. Cells encode the signed count and XORs of `(bucket, key_hash, version,
-writer)` plus an item checksum. The initiator subtracts its local sketch and
-peels pure cells to recover the exact symmetric difference of LWW identities.
+rows. Cells encode the signed count and XORs of `(key_hash, version, writer,
+tombstone)` plus an item checksum keyed over the same tuple, so a live write
+and its delete never cancel during peeling. The initiator subtracts its
+local sketch and peels pure cells to recover the exact symmetric difference
+of LWW identities (tombstones included — a delete heals through the sketch
+path like any write).
 Small buckets continue using metadata rows; if any sketch fails to peel, that
 bucket is retried through the existing explicit-metadata path. This bounds
 the extra work and wire bytes while retaining as the correctness fallback.
@@ -346,11 +349,43 @@ protocol, bounding any silent-divergence window.
 **Entry format** (sync payload entries):
 
 ```
-[key_len(4)][key][version(8)][writer_hash(8)][has_ttl(1)][expires_at_ms?(8)][val_len(4)][value]
+[key_len(4)][key][version(8)][writer_hash(8)][entry_flags(1)][expires_at_ms?(8)][val_len(4)][value]
 ```
 
 All entries are applied via LWW (`putVersioned`), so the protocol is
 idempotent and commutative — replaying the same sync blob is always safe.
+
+## Deletes
+
+Deletes are versioned tombstones, not erasures. A `DEL` mints a fresh Lamport
+version, plants a marker (empty value + tombstone bit + GC deadline), and
+fans out through the same async/quorum path as writes — including hints, so
+an unreachable replica heals on return. The tombstone wins or loses LWW
+exactly like a put: a stale delete loses to a newer write, a concurrent
+delete and write at identical `(version, writer)` resolves tombstone-wins
+(this tie is only reachable across standalone writers sharing writer 0;
+per-node writers are unique and versions monotonic, so replicas always agree
+on the order).
+
+The marker flows everywhere values flow: digests hash it (bit-packed into
+`version_and_ttl`), metadata rows and IBLT sketches carry it, sync entries
+apply it, quorum reads count tombstone votes (a tombstone quorum reads as
+`NotFound` to clients), and snapshots/WAL/hints persist it. Migration moves
+tombstones with their range; only source-side cleanup after handoff uses a
+hard erase.
+
+Tombstones are exempt from capacity eviction (evicting a live marker would
+resurrect the key on the next anti-entropy round) and are reaped by the TTL
+wheel at their GC deadline, which rides the existing expiry machinery: the
+primary's absolute deadline converges across replicas like a TTL. The grace
+period (`tombstone_gc_ms`, default 5 min) must exceed the worst-case
+partition healing time — hint TTL plus several anti-entropy rounds. Premature
+GC resurrects the key from any replica that missed the delete.
+
+Dotted version vectors were considered for delete-vs-concurrent-write
+causality and deferred: LWW over `(version, writer)` already orders delete
+vs write the same way it orders write vs write, which is this system's
+consistency contract. Revisit only if measurements demand finer causality.
 
 ## Consistency Modes
 
@@ -457,6 +492,8 @@ both sides of the partition are reconciled by LWW.
 | `--replication-factor` | `1` | Copies per key (`1` = no replication) |
 | `--consistency` | `async` | Write consistency: `async` or `quorum` |
 | `--rpc-timeout` | `5000` | Per-RPC deadline for peer sends (ms). `0` = no timeout |
+| `--max-hint-bytes` | `67108864` | Hinted-handoff byte budget (drop-oldest past it) |
+| `--tombstone-gc-ms` | `300000` | Delete-marker GC grace (ms). Must exceed worst-case partition healing time |
 | `--anti-entropy-interval` | `30000` | Anti-entropy round interval (ms). `0` disables it |
 | `--anti-entropy-buckets` | `256` | Number of hash buckets for anti-entropy digest |
 | `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget (bytes) |

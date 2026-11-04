@@ -131,6 +131,7 @@ namespace {
                     fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeBool(),
                 });
             }
 
@@ -148,6 +149,7 @@ namespace {
                 assert((*back)[i].key_hash == rows[i].key_hash);
                 assert((*back)[i].version == rows[i].version);
                 assert((*back)[i].writer == rows[i].writer);
+                assert((*back)[i].tombstone == rows[i].tombstone);
             }
         } else if (mode == 1) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 8);
@@ -211,6 +213,7 @@ namespace {
                     fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeBool(),
                 });
             }
             const size_t cells = fdp.ConsumeIntegralInRange<size_t>(3, 128);

@@ -279,6 +279,12 @@ auto main(int argc, char* argv[]) -> int {
     }
     if (cmd == "ping") {
         std::println("pong");
+    } else if (response.tombstone) {
+        // Deleted but the marker survives (tombstone): report the delete
+        // with its LWW identity rather than a bare status.
+        std::println("tombstone");
+        std::println("version: {}", response.version);
+        std::println("writer: {}", response.writer_node_hash);
     } else if (response.value.has_value()) {
         std::println("{}", response.value.value());
         if (cmd == "get-versioned") {

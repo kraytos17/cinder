@@ -263,5 +263,139 @@ namespace cinder {
             ASSERT_TRUE(result.has_value());
             EXPECT_EQ(*result, "2");
         }
+
+        TYPED_TEST(VersionedStoreTest, RemoveVersionedPlantsTombstone) {
+            TestClock clock;
+            TypeParam store(1024, &clock);
+
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v", 5, 10)).has_value());
+            ASSERT_TRUE(store.removeVersioned("k", 7, 11).has_value());
+
+            // Live reads hide the delete; versioned reads expose the marker.
+            EXPECT_FALSE(store.get("k").has_value());
+            auto tomb = store.getVersioned("k");
+            ASSERT_TRUE(tomb.has_value());
+            EXPECT_TRUE(tomb->isTombstone());
+            EXPECT_EQ(tomb->version(), 7U);
+            EXPECT_EQ(tomb->writer_node_hash, 11U);
+        }
+
+        TYPED_TEST(VersionedStoreTest, StaleDeleteLoses) {
+            TypeParam store(1024);
+
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v", 5, 10)).has_value());
+            // Older delete replayed out of order → rejected, value survives.
+            ASSERT_TRUE(store.removeVersioned("k", 3, 99).has_value());
+            auto e = store.getVersioned("k");
+            ASSERT_TRUE(e.has_value());
+            EXPECT_FALSE(e->isTombstone());
+            EXPECT_EQ(e->value, "v");
+            EXPECT_TRUE(store.get("k").has_value());
+        }
+
+        TYPED_TEST(VersionedStoreTest, PutAfterDeleteResurrects) {
+            TypeParam store(1024);
+
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v1", 5, 10)).has_value());
+            ASSERT_TRUE(store.removeVersioned("k", 7, 11).has_value());
+            EXPECT_FALSE(store.get("k").has_value());
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v2", 9, 10)).has_value());
+
+            auto e = store.getVersioned("k");
+            ASSERT_TRUE(e.has_value());
+            EXPECT_FALSE(e->isTombstone());
+            EXPECT_EQ(e->value, "v2");
+        }
+
+        TYPED_TEST(VersionedStoreTest, DeleteMissingKeyPlantsTombstone) {
+            TypeParam store(1024);
+
+            // Deleting a key this node never saw must still record the
+            // delete: otherwise a replica holding the value resurrects it
+            // on the next anti-entropy round.
+            ASSERT_TRUE(store.removeVersioned("ghost", 4, 12).has_value());
+            EXPECT_FALSE(store.get("ghost").has_value());
+            auto tomb = store.getVersioned("ghost");
+            ASSERT_TRUE(tomb.has_value());
+            EXPECT_TRUE(tomb->isTombstone());
+            EXPECT_EQ(tomb->version(), 4U);
+        }
+
+        TYPED_TEST(VersionedStoreTest, TombstoneWinsVersionWriterTies) {
+            TypeParam store(1024);
+
+            // Equal (version, writer), contradictory delete state: reachable
+            // across standalone writers sharing writer 0. Tombstone wins both
+            // directions so replicas converge instead of disagreeing by
+            // arrival order.
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("live", 1, 0)).has_value());
+            ASSERT_TRUE(store.removeVersioned("k", 1, 0).has_value());
+            auto tomb = store.getVersioned("k");
+            ASSERT_TRUE(tomb.has_value());
+            EXPECT_TRUE(tomb->isTombstone());
+
+            // Reverse order: live write at the tied identity must not clear
+            // an established tombstone.
+            ASSERT_TRUE(store.putVersioned("j", makeVersionedEntry("live", 1, 0)).has_value());
+            VersionedEntry live_tie;
+            live_tie.value = "live-again";
+            live_tie.setVersion(1);
+            live_tie.writer_node_hash = 0;
+            ASSERT_TRUE(store.removeVersioned("j", 1, 0).has_value());
+            ASSERT_TRUE(store.putVersioned("j", live_tie).has_value());
+            auto kept = store.getVersioned("j");
+            ASSERT_TRUE(kept.has_value());
+            EXPECT_TRUE(kept->isTombstone());
+        }
+
+        TYPED_TEST(VersionedStoreTest, TombstoneGcExpires) {
+            TestClock clock;
+            TypeParam store(1024, &clock);
+            store.setTombstoneGcInterval(milliseconds(100));
+
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v", 5, 10)).has_value());
+            ASSERT_TRUE(store.removeVersioned("k", 7, 11).has_value());
+            EXPECT_EQ(store.size(), 1U);
+
+            clock.advance(milliseconds(50));
+            EXPECT_EQ(store.evictExpired(), 0); // grace not elapsed
+            EXPECT_TRUE(store.getVersioned("k").has_value());
+
+            clock.advance(milliseconds(60));
+            EXPECT_EQ(store.evictExpired(), 1); // GC reaps the marker
+            EXPECT_FALSE(store.getVersioned("k").has_value());
+            EXPECT_EQ(store.size(), 0U);
+        }
+
+        TYPED_TEST(VersionedStoreTest, EvictionSparesTombstones) {
+            TestClock clock;
+            // Tiny shard: live puts past capacity force eviction.
+            TypeParam store(512, &clock);
+            store.setTombstoneGcInterval(seconds(600)); // no GC interference
+
+            ASSERT_TRUE(store.putVersioned("live-1", makeVersionedEntry("a", 1, 1)).has_value());
+            ASSERT_TRUE(store.putVersioned("doomed", makeVersionedEntry("b", 1, 1)).has_value());
+            ASSERT_TRUE(store.removeVersioned("doomed", 2, 1).has_value());
+            // Pressure: evict live entries, never the marker.
+            for (int i = 0; i < 20; ++i) {
+                VersionedEntry e;
+                e.value = std::string(64, static_cast<char>('x' + (i % 26)));
+                e.setVersion(static_cast<Version>(i) + 10);
+                e.writer_node_hash = 1;
+                (void)store.putVersioned("pressure-" + std::to_string(i), std::move(e));
+            }
+            auto tomb = store.getVersioned("doomed");
+            ASSERT_TRUE(tomb.has_value()) << "tombstone evicted under pressure";
+            EXPECT_TRUE(tomb->isTombstone());
+        }
+
+        TYPED_TEST(VersionedStoreTest, HardRemoveStillErases) {
+            TypeParam store(1024);
+
+            ASSERT_TRUE(store.putVersioned("k", makeVersionedEntry("v", 5, 10)).has_value());
+            EXPECT_TRUE(store.remove("k")); // migration source cleanup stays hard
+            EXPECT_FALSE(store.getVersioned("k").has_value());
+            EXPECT_EQ(store.size(), 0U);
+        }
     } // namespace
 } // namespace cinder

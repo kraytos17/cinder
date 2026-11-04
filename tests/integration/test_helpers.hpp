@@ -337,6 +337,28 @@ waitForValue(int port, const std::string& key, const std::string& expected, int 
     return false;
 }
 
+// Poll a node until a key reads as NotFound (async delete fan-out is not
+// instant). Tombstones read as missing; resurrection would fail this poll.
+[[maybe_unused]] static auto
+waitForMissing(int port, const std::string& key, int max_attempts = 100) -> bool {
+    for (int i = 0; i < max_attempts; i++) {
+        auto res = getKey(port, key);
+        if (res.has_value() && res.value().status == Errc::NotFound) {
+            return true;
+        }
+        std::this_thread::sleep_for(milliseconds(100));
+    }
+    return false;
+}
+
+// Delete a key via the Del opcode (versioned tombstone + fan-out when the
+// cluster replicates).
+[[maybe_unused]] static auto
+delKey(int port, const std::string& key) -> cinder::Result<Response> {
+    Request req{.opcode = Opcode::Del, .key = key, .value = {}, .ttl = std::nullopt};
+    return rawRequest(port, req);
+}
+
 // Wait until the daemon answering on `port` identifies as node `id` bound to
 // `port` (AdminInfo). Unlike a bare connect check, this rejects stale daemons
 // left behind by earlier runs and cross-talk from other tests' daemons — the
