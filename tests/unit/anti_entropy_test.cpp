@@ -5,6 +5,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <xxhash.h>
 
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/metrics.hpp"
@@ -610,6 +611,147 @@ namespace cinder {
             EXPECT_EQ(pair.metrics_a.replicationMetrics().anti_entropy_entries_fetched.load(), 0U);
         }
 
+        TEST(AntiEntropyExchangeTest, LargeBucketUsesIbltAndConverges) {
+            LoopbackPair pair;
+            std::vector<std::string> keys;
+            for (uint64_t i = 0; keys.size() < 48; ++i) {
+                auto key = "iblt-key-" + std::to_string(i);
+                if (XXH3_64bits(key.data(), key.size()) % 8 == 3) {
+                    keys.push_back(std::move(key));
+                }
+            }
+            for (size_t i = 0; i < keys.size(); ++i) {
+                ASSERT_TRUE(
+                    pair.store_a
+                        .putVersioned(
+                            keys[i],
+                            makeEntry("local-" + std::to_string(i), static_cast<Version>(i + 10))
+                        )
+                        .has_value()
+                );
+                ASSERT_TRUE(pair.store_b
+                                .putVersioned(
+                                    keys[i],
+                                    makeEntry(
+                                        i == 0 ? "remote-0" : "local-" + std::to_string(i),
+                                        i == 0 ? 1 : static_cast<Version>(i + 10)
+                                    )
+                                )
+                                .has_value());
+            }
+
+            EXPECT_LE(pair.converge(), 10);
+            EXPECT_EQ(pair.ma->computeDigest(), pair.mb->computeDigest());
+            for (const auto& key : keys) {
+                ASSERT_TRUE(pair.store_a.getVersioned(key).has_value());
+                ASSERT_TRUE(pair.store_b.getVersioned(key).has_value());
+                EXPECT_EQ(
+                    pair.store_a.getVersioned(key)->value,
+                    pair.store_b.getVersioned(key)->value
+                );
+            }
+            EXPECT_GT(
+                pair.metrics_a.replicationMetrics().anti_entropy_iblt_successes.load()
+                    + pair.metrics_b.replicationMetrics().anti_entropy_iblt_successes.load(),
+                0U
+            );
+        }
+
+        TEST(AntiEntropyExchangeTest, UnpeelableIbltFallsBackToMetadata) {
+            LoopbackPair pair;
+            std::vector<std::string> keys;
+            for (uint64_t i = 0; keys.size() < 80; ++i) {
+                auto key = "iblt-fallback-" + std::to_string(i);
+                if (XXH3_64bits(key.data(), key.size()) % 8 == 5) {
+                    keys.push_back(std::move(key));
+                }
+            }
+            for (size_t i = 0; i < keys.size(); ++i) {
+                ASSERT_TRUE(
+                    pair.store_a
+                        .putVersioned(
+                            keys[i],
+                            makeEntry("a-" + std::to_string(i), static_cast<Version>(i + 100))
+                        )
+                        .has_value()
+                );
+                ASSERT_TRUE(pair.store_b
+                                .putVersioned(
+                                    keys[i],
+                                    makeEntry("b-" + std::to_string(i), static_cast<Version>(i + 1))
+                                )
+                                .has_value());
+            }
+
+            EXPECT_LE(pair.converge(12), 12);
+            EXPECT_EQ(pair.ma->computeDigest(), pair.mb->computeDigest());
+            EXPECT_GT(
+                pair.metrics_a.replicationMetrics().anti_entropy_iblt_fallbacks.load()
+                    + pair.metrics_b.replicationMetrics().anti_entropy_iblt_fallbacks.load(),
+                0U
+            );
+            for (const auto& key : keys) {
+                ASSERT_TRUE(pair.store_a.getVersioned(key).has_value());
+                ASSERT_TRUE(pair.store_b.getVersioned(key).has_value());
+                EXPECT_EQ(
+                    pair.store_a.getVersioned(key)->value,
+                    pair.store_b.getVersioned(key)->value
+                );
+            }
+        }
+
+        TEST(AntiEntropyExchangeTest, DisjointLargeBucketsFallBackToMetadata) {
+            // Both sides hold 120 different keys in the same bucket: the 240-row
+            // symmetric difference cannot peel from 64 cells, so the correct
+            // path is the explicit-metadata fallback — convergence via P2.
+            LoopbackPair pair;
+            std::vector<std::string> keys_a;
+            std::vector<std::string> keys_b;
+            for (uint64_t i = 0; keys_a.size() < 120 || keys_b.size() < 120; ++i) {
+                auto key_a = "iblt-disjoint-a-" + std::to_string(i);
+                if (keys_a.size() < 120 && XXH3_64bits(key_a.data(), key_a.size()) % 8 == 6) {
+                    keys_a.push_back(std::move(key_a));
+                }
+                auto key_b = "iblt-disjoint-b-" + std::to_string(i);
+                if (keys_b.size() < 120 && XXH3_64bits(key_b.data(), key_b.size()) % 8 == 6) {
+                    keys_b.push_back(std::move(key_b));
+                }
+            }
+            for (size_t i = 0; i < keys_a.size(); ++i) {
+                ASSERT_TRUE(pair.store_a
+                                .putVersioned(
+                                    keys_a[i],
+                                    makeEntry("a-" + std::to_string(i), static_cast<Version>(i + 1))
+                                )
+                                .has_value());
+            }
+            for (size_t i = 0; i < keys_b.size(); ++i) {
+                ASSERT_TRUE(pair.store_b
+                                .putVersioned(
+                                    keys_b[i],
+                                    makeEntry("b-" + std::to_string(i), static_cast<Version>(i + 1))
+                                )
+                                .has_value());
+            }
+            // Disjoint key sets: neither side's keys appear on the other.
+            for (const auto& key : keys_a) {
+                ASSERT_FALSE(pair.store_b.getVersioned(key).has_value());
+            }
+            EXPECT_LE(pair.converge(12), 12);
+            EXPECT_EQ(pair.ma->computeDigest(), pair.mb->computeDigest());
+            for (const auto& key : keys_a) {
+                EXPECT_TRUE(pair.store_b.getVersioned(key).has_value());
+            }
+            for (const auto& key : keys_b) {
+                EXPECT_TRUE(pair.store_a.getVersioned(key).has_value());
+            }
+            EXPECT_GT(
+                pair.metrics_a.replicationMetrics().anti_entropy_iblt_fallbacks.load()
+                    + pair.metrics_b.replicationMetrics().anti_entropy_iblt_fallbacks.load(),
+                0U
+            );
+        }
+
         TEST(AntiEntropyIncrementalTest, MatchesFullScan) {
             // Random puts, overwrites, removes and TTL expiries, including
             // under capacity pressure (small store forces evictions through
@@ -812,6 +954,16 @@ namespace cinder {
             ASSERT_EQ(decoded->rows.size(), 2U);
             EXPECT_EQ(decoded->rows[0].key_hash, 11U);
 
+            auto sketch = AntiEntropyManager::buildIblt(response.rows, 64);
+            ASSERT_TRUE(sketch.has_value());
+            response.iblt_sketches.emplace_back(8, AntiEntropyManager::encodeIblt(*sketch));
+            blob = AntiEntropyManager::encodeDigestResponse(response);
+            decoded = AntiEntropyManager::decodeDigestResponse(blob, groups.size());
+            ASSERT_TRUE(decoded.has_value());
+            ASSERT_EQ(decoded->iblt_sketches.size(), 1U);
+            EXPECT_EQ(decoded->iblt_sketches[0].first, 8U);
+            EXPECT_TRUE(AntiEntropyManager::decodeIblt(decoded->iblt_sketches[0].second));
+
             EXPECT_FALSE(AntiEntropyManager::decodeGroupDigest(blob, groups.size()).has_value());
             EXPECT_FALSE(
                 AntiEntropyManager::decodeDigestResponse(
@@ -820,6 +972,100 @@ namespace cinder {
                 )
                     .has_value()
             );
+        }
+
+        TEST(AntiEntropyIbltTest, PeelsSymmetricDifferenceIncludingVersionUpdates) {
+            using Manager = AntiEntropyManager;
+            constexpr uint32_t BUCKET = 7;
+            std::vector<Manager::MetaRow> local_rows{
+                {BUCKET, 10, 1, 100},
+                {BUCKET, 20, 1, 100},
+                {BUCKET, 30, 4, 100},
+            };
+            std::vector<Manager::MetaRow> remote_rows{
+                {BUCKET, 10, 1, 100},
+                {BUCKET, 20, 2, 100}, // same key, newer LWW identity
+                {BUCKET, 40, 1, 200},
+            };
+            auto local = Manager::buildIblt(local_rows, 64);
+            auto remote = Manager::buildIblt(remote_rows, 64);
+            ASSERT_TRUE(local.has_value());
+            ASSERT_TRUE(remote.has_value());
+            auto decoded = Manager::decodeIbltDifference(*remote, *local, BUCKET);
+            ASSERT_TRUE(decoded.has_value());
+            ASSERT_EQ(decoded->remote_only.size(), 2U);
+            ASSERT_EQ(decoded->local_only.size(), 2U);
+            EXPECT_TRUE(
+                std::any_of(
+                    decoded->remote_only.begin(),
+                    decoded->remote_only.end(),
+                    [](const auto& row) { return row.key_hash == 20 && row.version == 2; }
+                )
+            );
+            EXPECT_TRUE(
+                std::any_of(
+                    decoded->local_only.begin(),
+                    decoded->local_only.end(),
+                    [](const auto& row) { return row.key_hash == 20 && row.version == 1; }
+                )
+            );
+        }
+
+        TEST(AntiEntropyIbltTest, CodecAndInvalidSketchValidation) {
+            using Manager = AntiEntropyManager;
+            std::vector<Manager::MetaRow> rows;
+            for (uint64_t i = 0; i < 40; ++i) {
+                rows.push_back({3, i + 1, i + 2, i + 3});
+            }
+            auto sketch = Manager::buildIblt(rows, 64);
+            ASSERT_TRUE(sketch.has_value());
+            auto blob = Manager::encodeIblt(*sketch);
+            auto decoded = Manager::decodeIblt(blob);
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->cells.size(), 64U);
+            EXPECT_FALSE(Manager::decodeIblt(std::string_view(blob).substr(0, blob.size() - 1)));
+            EXPECT_FALSE(Manager::buildIblt(rows, Manager::K_MAX_IBLT_CELLS + 1));
+        }
+
+        TEST(AntiEntropyIbltTest, UnpeelableDifferenceRequestsFallback) {
+            using Manager = AntiEntropyManager;
+            std::vector<Manager::MetaRow> local_rows;
+            std::vector<Manager::MetaRow> remote_rows;
+            for (uint64_t i = 0; i < 80; ++i) {
+                local_rows.push_back({9, i + 1, 1, 5});
+                remote_rows.push_back({9, i + 1001, 1, 5});
+            }
+            auto local = Manager::buildIblt(local_rows, 64);
+            auto remote = Manager::buildIblt(remote_rows, 64);
+            ASSERT_TRUE(local.has_value());
+            ASSERT_TRUE(remote.has_value());
+            EXPECT_FALSE(Manager::decodeIbltDifference(*remote, *local, 9).has_value());
+        }
+
+        TEST(AntiEntropyIbltTest, EmptySketchesPeelToEmptyDifference) {
+            using Manager = AntiEntropyManager;
+            auto local = Manager::buildIblt({}, 64);
+            auto remote = Manager::buildIblt({}, 64);
+            ASSERT_TRUE(local.has_value());
+            ASSERT_TRUE(remote.has_value());
+            auto diff = Manager::decodeIbltDifference(*remote, *local, 0);
+            ASSERT_TRUE(diff.has_value());
+            EXPECT_TRUE(diff->remote_only.empty());
+            EXPECT_TRUE(diff->local_only.empty());
+        }
+
+        TEST(AntiEntropyIbltTest, RequestCodecValidatesFallbackFlag) {
+            AntiEntropyManager::BucketRefinement request{
+                .bucket_hashes = {{3, 0xfeedU}},
+                .force_metadata = true,
+            };
+            auto blob = AntiEntropyManager::encodeBucketRefinement(request);
+            auto decoded = AntiEntropyManager::decodeBucketRefinement(blob, 16);
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_TRUE(decoded->force_metadata);
+            EXPECT_EQ(decoded->bucket_hashes, request.bucket_hashes);
+            blob[4] = static_cast<char>(0x02); // unknown flag bit
+            EXPECT_FALSE(AntiEntropyManager::decodeBucketRefinement(blob, 16));
         }
 
         TEST(AntiEntropyDigestTest, GroupDigestChangesOnlyContainingGroup) {

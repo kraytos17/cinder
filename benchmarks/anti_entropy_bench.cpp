@@ -2,6 +2,7 @@
 #include <cassert>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/tracing.hpp"
@@ -165,6 +166,27 @@ namespace cinder {
         }
 
         BENCHMARK(bmSingleBucketDivergenceBytes);
+
+        void bmIbltEncodeDecode(benchmark::State& state) {
+            std::vector<AntiEntropyManager::MetaRow> rows;
+            rows.reserve(256);
+            for (uint64_t i = 0; i < 256; ++i) {
+                rows.push_back({3, i + 1, i + 2, 7});
+            }
+            auto sketch = AntiEntropyManager::buildIblt(rows, 64);
+            assert(sketch.has_value());
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                auto blob = AntiEntropyManager::encodeIblt(*sketch);
+                auto decoded = AntiEntropyManager::decodeIblt(blob);
+                benchmark::DoNotOptimize(blob.data());
+                benchmark::DoNotOptimize(decoded.has_value());
+                state.counters["iblt_bytes"] = static_cast<double>(blob.size());
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        BENCHMARK(bmIbltEncodeDecode);
 
     } // namespace
 } // namespace cinder

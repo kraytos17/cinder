@@ -211,6 +211,8 @@ namespace cinder {
         std::atomic<uint64_t> anti_entropy_rehash_mismatches{0};
         std::atomic<uint64_t> anti_entropy_group_mismatches{0};
         std::atomic<uint64_t> anti_entropy_bucket_mismatches{0};
+        std::atomic<uint64_t> anti_entropy_iblt_successes{0};
+        std::atomic<uint64_t> anti_entropy_iblt_fallbacks{0};
 
         struct ReplicaLag {
             std::string node_id;

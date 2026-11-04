@@ -1,12 +1,14 @@
 #include "cinder/node/anti_entropy.hpp"
 
 #include <algorithm>
+#include <ankerl/unordered_dense.h>
 #include <array>
+#include <bit>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <set>
 #include <shared_mutex>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <xxhash.h>
@@ -63,6 +65,62 @@ namespace cinder {
             out.assign(p, n);
             p += n;
             return true;
+        }
+
+        auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer) -> uint64_t {
+            std::array<uint64_t, 3> words{key_hash, version, writer};
+            return XXH3_64bits(words.data(), sizeof(words));
+        }
+
+        auto ibltPositions(uint64_t key_hash, uint64_t version, uint64_t writer, size_t count)
+            -> std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> {
+            std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> positions{};
+            std::array<uint64_t, 3> words{key_hash, version, writer};
+            uint64_t hash = XXH3_64bits(words.data(), sizeof(words));
+            for (size_t i = 0; i < positions.size(); ++i) {
+                uint64_t candidate = hash + (i + 1) * 0x9E3779B97F4A7C15ULL;
+                candidate ^= candidate >> 30U;
+                candidate *= 0xBF58476D1CE4E5B9ULL;
+                candidate ^= candidate >> 27U;
+                candidate *= 0x94D049BB133111EBULL;
+                candidate ^= candidate >> 31U;
+                positions[i] = static_cast<size_t>(candidate % count);
+                while (std::find(
+                           positions.begin(),
+                           positions.begin() + static_cast<ptrdiff_t>(i),
+                           positions[i]
+                       )
+                       != positions.begin()
+                       + static_cast<ptrdiff_t>(i)) {
+                    ++positions[i];
+                    if (positions[i] == count) {
+                        positions[i] = 0;
+                    }
+                }
+            }
+            return positions;
+        }
+
+        void ibltApply(
+            AntiEntropyManager::IbltCell& cell,
+            int64_t sign,
+            uint64_t key_hash,
+            uint64_t version,
+            uint64_t writer
+        ) {
+            cell.count += sign;
+            cell.key_hash_xor ^= key_hash;
+            cell.version_xor ^= version;
+            cell.writer_xor ^= writer;
+            cell.checksum_xor ^= ibltItemChecksum(key_hash, version, writer);
+        }
+
+        auto ibltPure(const AntiEntropyManager::IbltCell& cell) -> bool {
+            if (cell.count != 1 && cell.count != -1) {
+                return false;
+            }
+            return cell.checksum_xor
+                == ibltItemChecksum(cell.key_hash_xor, cell.version_xor, cell.writer_xor);
         }
 
         // Wire size of one serialized entry (values are never hashed).
@@ -387,6 +445,7 @@ namespace cinder {
         -> std::string {
         std::string out;
         appendU32(out, K_BUCKET_REFINEMENT_MAGIC);
+        appendU32(out, request.force_metadata ? 1U : 0U);
         appendU32(out, static_cast<uint32_t>(request.bucket_hashes.size()));
         for (const auto& [bucket, hash] : request.bucket_hashes) {
             appendU32(out, bucket);
@@ -400,10 +459,14 @@ namespace cinder {
         const char* p = data.data();
         const char* end = p + data.size();
         uint32_t magic = 0;
+        uint32_t flags = 0;
         uint32_t bucket_count = 0;
         if (!readU32(p, end, magic)
             || magic
             != K_BUCKET_REFINEMENT_MAGIC
+            || !readU32(p, end, flags)
+            || (flags & ~1U)
+            != 0
             || !readU32(p, end, bucket_count)
             || static_cast<size_t>(end - p)
             != static_cast<size_t>(bucket_count)
@@ -412,6 +475,7 @@ namespace cinder {
         }
 
         BucketRefinement request;
+        request.force_metadata = (flags & 1U) != 0;
         request.bucket_hashes.reserve(bucket_count);
         for (uint32_t i = 0; i < bucket_count; ++i) {
             uint32_t bucket = 0;
@@ -438,6 +502,7 @@ namespace cinder {
             * sizeof(uint32_t)
             + sizeof(uint32_t)
             + rows.size()
+            + sizeof(uint32_t)
         );
 
         appendU32(out, K_DIGEST_RESPONSE_MAGIC);
@@ -459,6 +524,12 @@ namespace cinder {
 
         appendU32(out, static_cast<uint32_t>(rows.size()));
         out += rows;
+        appendU32(out, static_cast<uint32_t>(response.iblt_sketches.size()));
+        for (const auto& [bucket, sketch] : response.iblt_sketches) {
+            appendU32(out, bucket);
+            appendU32(out, static_cast<uint32_t>(sketch.size()));
+            out += sketch;
+        }
         return out;
     }
 
@@ -524,7 +595,10 @@ namespace cinder {
         }
 
         uint32_t rows_size = 0;
-        if (!readU32(p, end, rows_size) || static_cast<size_t>(end - p) != rows_size) {
+        if (!readU32(p, end, rows_size)
+            || static_cast<size_t>(end - p)
+            < rows_size
+            + sizeof(uint32_t)) {
             return std::nullopt;
         }
 
@@ -534,6 +608,31 @@ namespace cinder {
         }
 
         response.rows = std::move(*rows);
+        p += rows_size;
+        uint32_t sketch_count = 0;
+        if (!readU32(p, end, sketch_count)
+            || static_cast<size_t>(sketch_count)
+            > static_cast<size_t>(end - p)
+            / (2 * sizeof(uint32_t))) {
+            return std::nullopt;
+        }
+
+        response.iblt_sketches.reserve(sketch_count);
+        for (uint32_t i = 0; i < sketch_count; ++i) {
+            uint32_t bucket = 0;
+            uint32_t sketch_size = 0;
+            std::string sketch_blob;
+            if (!readU32(p, end, bucket)
+                || !readU32(p, end, sketch_size)
+                || !readBytes(p, end, sketch_size, sketch_blob)
+                || !decodeIblt(sketch_blob).has_value()) {
+                return std::nullopt;
+            }
+            response.iblt_sketches.emplace_back(bucket, std::move(sketch_blob));
+        }
+        if (p != end) {
+            return std::nullopt;
+        }
         for (const auto& row : response.rows) {
             if (!std::binary_search(
                     response.covered_buckets.begin(),
@@ -543,7 +642,210 @@ namespace cinder {
                 return std::nullopt;
             }
         }
+
+        std::vector<char> sketch_bucket_seen(
+            response.covered_buckets.empty()
+                ? 0
+                : static_cast<size_t>(response.covered_buckets.back()) + 1,
+            0
+        );
+
+        std::vector<uint32_t> sorted_covered = response.covered_buckets;
+        std::sort(sorted_covered.begin(), sorted_covered.end());
+        std::vector<uint32_t> sketch_buckets;
+        sketch_buckets.reserve(response.iblt_sketches.size());
+        for (const auto& [bucket, sketch] : response.iblt_sketches) {
+            (void)sketch;
+            if (!std::binary_search(sorted_covered.begin(), sorted_covered.end(), bucket)) {
+                return std::nullopt;
+            }
+            if (bucket >= sketch_bucket_seen.size() || sketch_bucket_seen[bucket]) {
+                return std::nullopt;
+            }
+
+            sketch_bucket_seen[bucket] = 1;
+            sketch_buckets.push_back(bucket);
+        }
+
+        std::sort(sketch_buckets.begin(), sketch_buckets.end());
+        if (std::adjacent_find(sketch_buckets.begin(), sketch_buckets.end())
+            != sketch_buckets.end()) {
+            return std::nullopt;
+        }
+        for (const auto& row : response.rows) {
+            if (row.bucket < sketch_bucket_seen.size() && sketch_bucket_seen[row.bucket]) {
+                return std::nullopt;
+            }
+        }
         return response;
+    }
+
+    auto AntiEntropyManager::buildIblt(const std::vector<MetaRow>& rows, size_t cell_count)
+        -> std::optional<IbltSketch> {
+        if (cell_count < K_IBLT_HASH_COUNT || cell_count > K_MAX_IBLT_CELLS) {
+            return std::nullopt;
+        }
+
+        IbltSketch sketch;
+        sketch.cells.resize(cell_count);
+        for (const auto& row : rows) {
+            const auto positions = ibltPositions(row.key_hash, row.version, row.writer, cell_count);
+            for (size_t pos : positions) {
+                ibltApply(sketch.cells[pos], 1, row.key_hash, row.version, row.writer);
+            }
+        }
+        return sketch;
+    }
+
+    auto AntiEntropyManager::encodeIblt(const IbltSketch& sketch) -> std::string {
+        if (sketch.cells.size() < K_IBLT_HASH_COUNT || sketch.cells.size() > K_MAX_IBLT_CELLS) {
+            return {};
+        }
+
+        std::string out;
+        out.reserve(2 * sizeof(uint32_t) + sketch.cells.size() * 40U);
+        appendU32(out, K_IBLT_MAGIC);
+        appendU32(out, static_cast<uint32_t>(sketch.cells.size()));
+        for (const auto& cell : sketch.cells) {
+            appendU64(out, std::bit_cast<uint64_t>(cell.count));
+            appendU64(out, cell.key_hash_xor);
+            appendU64(out, cell.version_xor);
+            appendU64(out, cell.writer_xor);
+            appendU64(out, cell.checksum_xor);
+        }
+        return out;
+    }
+
+    auto AntiEntropyManager::decodeIblt(std::string_view data) -> std::optional<IbltSketch> {
+        const char* p = data.data();
+        const char* end = p + data.size();
+        uint32_t magic = 0;
+        uint32_t count = 0;
+        constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 4 * sizeof(uint64_t);
+        if (!readU32(p, end, magic)
+            || magic
+            != K_IBLT_MAGIC
+            || !readU32(p, end, count)
+            || count
+            < K_IBLT_HASH_COUNT
+            || count
+            > K_MAX_IBLT_CELLS
+            || static_cast<size_t>(end - p)
+            != static_cast<size_t>(count)
+            * K_CELL_BYTES) {
+            return std::nullopt;
+        }
+
+        IbltSketch sketch;
+        sketch.cells.reserve(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            uint64_t count_bits = 0;
+            IbltCell cell;
+            if (!readU64(p, end, count_bits)
+                || !readU64(p, end, cell.key_hash_xor)
+                || !readU64(p, end, cell.version_xor)
+                || !readU64(p, end, cell.writer_xor)
+                || !readU64(p, end, cell.checksum_xor)) {
+                return std::nullopt;
+            }
+            if (count_bits < (uint64_t{1} << 63U) && count_bits > (uint64_t{1} << 40U)) {
+                return std::nullopt;
+            }
+            if (count_bits
+                >= (uint64_t{1} << 63U)
+                && (std::numeric_limits<uint64_t>::max() - count_bits)
+                >= (uint64_t{1} << 40U)) {
+                return std::nullopt;
+            }
+
+            cell.count = std::bit_cast<int64_t>(count_bits);
+            sketch.cells.push_back(cell);
+        }
+        return sketch;
+    }
+
+    auto AntiEntropyManager::decodeIbltDifference(
+        const IbltSketch& remote,
+        const IbltSketch& local,
+        uint32_t bucket
+    ) -> std::optional<IbltDiff> {
+        if (remote.cells.size()
+            != local.cells.size()
+            || remote.cells.size()
+            < K_IBLT_HASH_COUNT
+            || remote.cells.size()
+            > K_MAX_IBLT_CELLS) {
+            return std::nullopt;
+        }
+
+        IbltSketch difference = remote;
+        for (size_t i = 0; i < difference.cells.size(); ++i) {
+            difference.cells[i].count -= local.cells[i].count;
+            difference.cells[i].key_hash_xor ^= local.cells[i].key_hash_xor;
+            difference.cells[i].version_xor ^= local.cells[i].version_xor;
+            difference.cells[i].writer_xor ^= local.cells[i].writer_xor;
+            difference.cells[i].checksum_xor ^= local.cells[i].checksum_xor;
+        }
+
+        IbltDiff decoded;
+        std::vector<size_t> queue;
+        std::vector<char> queued(difference.cells.size(), 0);
+        queue.reserve(difference.cells.size());
+        for (size_t i = 0; i < difference.cells.size(); ++i) {
+            if (ibltPure(difference.cells[i])) {
+                queue.push_back(i);
+                queued[i] = 1;
+            }
+        }
+        for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
+            const size_t pos = queue[cursor];
+            const IbltCell cell = difference.cells[pos];
+            if (!ibltPure(cell)) {
+                queued[pos] = 0;
+                continue;
+            }
+
+            queued[pos] = 0;
+            MetaRow row{
+                .bucket = bucket,
+                .key_hash = cell.key_hash_xor,
+                .version = cell.version_xor,
+                .writer = cell.writer_xor,
+            };
+
+            const bool is_remote = cell.count == 1;
+            (is_remote ? decoded.remote_only : decoded.local_only).push_back(row);
+            const auto positions =
+                ibltPositions(row.key_hash, row.version, row.writer, difference.cells.size());
+            for (size_t target : positions) {
+                ibltApply(
+                    difference.cells[target],
+                    is_remote ? -1 : 1,
+                    row.key_hash,
+                    row.version,
+                    row.writer
+                );
+                if (!queued[target] && ibltPure(difference.cells[target])) {
+                    queue.push_back(target);
+                    queued[target] = 1;
+                }
+            }
+        }
+        for (const auto& cell : difference.cells) {
+            if (cell.count
+                != 0
+                || cell.key_hash_xor
+                != 0
+                || cell.version_xor
+                != 0
+                || cell.writer_xor
+                != 0
+                || cell.checksum_xor
+                != 0) {
+                return std::nullopt;
+            }
+        }
+        return decoded;
     }
 
     // One row: bucket u32 + key_hash/version/writer u64 (28 bytes).
@@ -702,6 +1004,9 @@ namespace cinder {
             }
 
             auto& vec = per_bucket[b];
+            std::sort(vec.begin(), vec.end(), [](const MetaRow& lhs, const MetaRow& rhs) {
+                return lhs.key_hash < rhs.key_hash;
+            });
             // Coverage is explicit even for empty buckets. Without this, a
             // peer cannot distinguish "empty" from "omitted by byte budget".
             const size_t coverage_cost = sizeof(uint32_t);
@@ -718,13 +1023,6 @@ namespace cinder {
             if (covered_buckets != nullptr) {
                 covered_buckets->push_back(b);
             }
-            if (vec.empty()) {
-                continue;
-            }
-
-            std::sort(vec.begin(), vec.end(), [](const MetaRow& a, const MetaRow& b) {
-                return a.key_hash < b.key_hash;
-            });
 
             size_t need = vec.size() * K_META_ROW_BYTES;
             if (bytes
@@ -790,7 +1088,7 @@ namespace cinder {
 
         // Resolve hashes to keys with one scan (point lookups would need the
         // keys, which is what we're resolving).
-        std::unordered_map<uint64_t, std::string> resolved;
+        ankerl::unordered_dense::map<uint64_t, std::string> resolved;
         resolved.reserve(sorted.size() * 2);
         store_.forEach([&sorted, &resolved](const std::string& key, const VersionedEntry&) {
             uint64_t h = XXH3_64bits(key.data(), key.size());
@@ -840,7 +1138,7 @@ namespace cinder {
         const std::vector<uint32_t>& covered_buckets
     ) const -> MetaDiff {
         MetaDiff diff;
-        if (rows.empty() || divergent.empty()) {
+        if (divergent.empty()) {
             return diff;
         }
 
@@ -852,7 +1150,7 @@ namespace cinder {
         }
         // Row lookup by hash. Duplicate hashes (2^-64 collision class, same
         // as the digest itself) keep the last row — deterministic.
-        std::unordered_map<uint64_t, const MetaRow*> by_hash;
+        ankerl::unordered_dense::map<uint64_t, const MetaRow*> by_hash;
         by_hash.reserve(rows.size() * 2);
         for (const auto& row : rows) {
             by_hash[row.key_hash] = &row;
@@ -1122,11 +1420,90 @@ namespace cinder {
         }
 
         std::sort(requested_buckets.begin(), requested_buckets.end());
-        std::string meta =
-            collectMetadata(requested_buckets, K_MAX_METADATA_BYTES, &response.covered_buckets);
         std::sort(response.bucket_hashes.begin(), response.bucket_hashes.end());
-        if (auto rows = decodeMetaRows(meta); rows.has_value()) {
-            response.rows = std::move(*rows);
+        if (request->force_metadata) {
+            std::vector<uint32_t> metadata_covered;
+            auto meta = collectMetadata(requested_buckets, K_MAX_METADATA_BYTES, &metadata_covered);
+            auto metadata_rows = decodeMetaRows(meta);
+            if (!metadata_rows.has_value()) {
+                respond(
+                    net::Response{
+                        .status = Errc::InternalError,
+                        .value = std::nullopt,
+                        .trace_id = req.trace_id,
+                        .span_id = req.span_id,
+                    }
+                );
+                return;
+            }
+
+            response.covered_buckets = std::move(metadata_covered);
+            response.rows = std::move(*metadata_rows);
+        } else {
+            struct BucketBuild {
+                std::vector<MetaRow> sample;
+                IbltSketch sketch;
+                bool sketching = false;
+            };
+
+            std::vector<char> requested(num_buckets_, 0);
+            std::vector<std::optional<BucketBuild>> builds(num_buckets_);
+            for (uint32_t bucket : requested_buckets) {
+                requested[bucket] = 1;
+                builds[bucket].emplace();
+                builds[bucket]->sample.reserve(K_IBLT_MIN_ROWS);
+            }
+
+            store_.forEach(
+                [this, &requested, &builds](const std::string& key, const VersionedEntry& entry) {
+                const uint32_t bucket = bucketFor(key);
+                if (!requested[bucket]) {
+                    return;
+                }
+
+                MetaRow row{
+                    .bucket = bucket,
+                    .key_hash = XXH3_64bits(key.data(), key.size()),
+                    .version = entry.version(),
+                    .writer = entry.writer_node_hash,
+                };
+
+                auto& build = *builds[bucket];
+                if (!build.sketching) {
+                    build.sample.push_back(row);
+                    if (build.sample.size() == K_IBLT_MIN_ROWS) {
+                        auto sketch = buildIblt(build.sample, K_IBLT_DEFAULT_CELLS);
+                        if (sketch.has_value()) {
+                            build.sketch = std::move(*sketch);
+                            build.sample.clear();
+                            build.sketching = true;
+                        }
+                    }
+                } else {
+                    const auto positions =
+                        ibltPositions(row.key_hash, row.version, row.writer, K_IBLT_DEFAULT_CELLS);
+                    for (size_t pos : positions) {
+                        ibltApply(
+                            build.sketch.cells[pos],
+                            1,
+                            row.key_hash,
+                            row.version,
+                            row.writer
+                        );
+                    }
+                }
+            }
+            );
+            for (uint32_t bucket : requested_buckets) {
+                auto& build = *builds[bucket];
+                response.covered_buckets.push_back(bucket);
+                if (build.sketching) {
+                    response.iblt_sketches.emplace_back(bucket, encodeIblt(build.sketch));
+                } else {
+                    response.rows
+                        .insert(response.rows.end(), build.sample.begin(), build.sample.end());
+                }
+            }
         }
         if (metrics_ != nullptr) {
             metrics_->replicationMetrics().anti_entropy_meta_rows_sent.fetch_add(
@@ -1219,6 +1596,242 @@ namespace cinder {
         Span result_span("anti_entropy.round.result", round_ctx);
         result_span.setAttribute({"partner", partner});
 
+        // Reconstruct the partner's full metadata set from the local set plus
+        // the IBLT symmetric difference. If any sketch fails to peel, request
+        // explicit rows for those buckets and use the established path.
+        std::vector<uint32_t> failed_sketch_buckets;
+        std::vector<MetaRow> reconstructed_remote_rows = response.rows;
+        std::vector<uint32_t> reconstructed_covered_buckets = response.covered_buckets;
+        std::vector<char> sketch_has_diff(num_buckets_, 0);
+        size_t successful_sketches = 0;
+        for (const auto& [bucket, blob] : response.iblt_sketches) {
+            if (bucket >= num_buckets_) {
+                failed_sketch_buckets.push_back(bucket);
+                continue;
+            }
+            if (!std::binary_search(
+                    reconstructed_covered_buckets.begin(),
+                    reconstructed_covered_buckets.end(),
+                    bucket
+                )) {
+                failed_sketch_buckets.push_back(bucket);
+                continue;
+            }
+
+            std::vector<uint32_t> only_bucket{bucket};
+            std::vector<uint32_t> local_covered;
+            auto local_blob = collectMetadata(only_bucket, K_MAX_METADATA_BYTES, &local_covered);
+            auto local_rows = decodeMetaRows(local_blob);
+            auto remote_sketch = decodeIblt(blob);
+            std::optional<IbltSketch> local_sketch = local_rows.has_value()
+                ? buildIblt(*local_rows, K_IBLT_DEFAULT_CELLS)
+                : std::nullopt;
+
+            std::optional<IbltDiff> difference;
+            if (remote_sketch.has_value()
+                && local_sketch.has_value()
+                && std::binary_search(local_covered.begin(), local_covered.end(), bucket)) {
+                difference = decodeIbltDifference(*remote_sketch, *local_sketch, bucket);
+            }
+            if (!difference.has_value()) {
+                failed_sketch_buckets.push_back(bucket);
+                continue;
+            }
+            if (!std::binary_search(
+                    reconstructed_covered_buckets.begin(),
+                    reconstructed_covered_buckets.end(),
+                    bucket
+                )) {
+                reconstructed_covered_buckets.push_back(bucket);
+            }
+
+            auto remote_bucket = std::find_if(
+                response.bucket_hashes.begin(),
+                response.bucket_hashes.end(),
+                [bucket](const auto& item) { return item.first == bucket; }
+            );
+            if (remote_bucket
+                == response.bucket_hashes.end()
+                || (local[bucket]
+                    != remote_bucket->second
+                    && difference->remote_only.empty()
+                    && difference->local_only.empty())) {
+                failed_sketch_buckets.push_back(bucket);
+                continue;
+            }
+
+            ankerl::unordered_dense::set<uint64_t> removed;
+            removed.reserve(difference->local_only.size() * 2);
+            for (const auto& row : difference->local_only) {
+                removed.insert(row.key_hash);
+            }
+            for (const auto& row : *local_rows) {
+                if (!removed.contains(row.key_hash)) {
+                    reconstructed_remote_rows.push_back(row);
+                }
+            }
+
+            reconstructed_remote_rows.insert(
+                reconstructed_remote_rows.end(),
+                difference->remote_only.begin(),
+                difference->remote_only.end()
+            );
+            sketch_has_diff[bucket] =
+                !difference->remote_only.empty() || !difference->local_only.empty();
+            ++successful_sketches;
+        }
+
+        std::sort(failed_sketch_buckets.begin(), failed_sketch_buckets.end());
+        failed_sketch_buckets.erase(
+            std::unique(failed_sketch_buckets.begin(), failed_sketch_buckets.end()),
+            failed_sketch_buckets.end()
+        );
+        std::sort(reconstructed_covered_buckets.begin(), reconstructed_covered_buckets.end());
+        if (!failed_sketch_buckets.empty()) {
+            if (metrics_ != nullptr) {
+                metrics_->replicationMetrics().anti_entropy_iblt_fallbacks.fetch_add(
+                    failed_sketch_buckets.size(),
+                    std::memory_order_relaxed
+                );
+            }
+
+            BucketRefinement fallback;
+            fallback.force_metadata = true;
+            for (uint32_t bucket : failed_sketch_buckets) {
+                if (bucket < local.size()) {
+                    fallback.bucket_hashes.emplace_back(bucket, local[bucket]);
+                }
+            }
+
+            net::Request fallback_req;
+            fallback_req.opcode = net::Opcode::AntiEntropyDigest;
+            fallback_req.key = "bucket-refinement-v3";
+            fallback_req.value = encodeBucketRefinement(fallback);
+            fallback_req.trace_id = round_ctx.trace_id;
+            fallback_req.span_id = round_ctx.span_id;
+            transport_.sendRequestAsync(
+                partner,
+                fallback_req,
+                [this,
+                 partner,
+                 round_ctx,
+                 local,
+                 response,
+                 failed_sketch_buckets,
+                 reconstructed_covered_buckets,
+                 rows =
+                     std::move(reconstructed_remote_rows)](Result<net::Response> result) mutable {
+                if (!result.has_value()
+                    || result->status
+                    != Errc::OK
+                    || !result->value.has_value()) {
+                    CINDER_DEBUG("anti-entropy IBLT fallback failed", {"partner", partner});
+                    return;
+                }
+
+                const size_t groups =
+                    (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
+                auto fallback_response = decodeDigestResponse(*result->value, groups);
+                if (!fallback_response.has_value()) {
+                    CINDER_WARN("bad anti-entropy IBLT fallback", {"partner", partner});
+                    return;
+                }
+
+                DigestResponse merged = response;
+                merged.iblt_sketches.clear();
+                merged.covered_buckets = reconstructed_covered_buckets;
+                merged.covered_buckets.erase(
+                    std::remove_if(
+                        merged.covered_buckets.begin(),
+                        merged.covered_buckets.end(),
+                        [&failed_sketch_buckets](uint32_t bucket) {
+                    return std::binary_search(
+                        failed_sketch_buckets.begin(),
+                        failed_sketch_buckets.end(),
+                        bucket
+                    );
+                }
+                    ),
+                    merged.covered_buckets.end()
+                );
+
+                std::sort(
+                    reconstructed_covered_buckets.begin(),
+                    reconstructed_covered_buckets.end()
+                );
+                for (uint32_t bucket : reconstructed_covered_buckets) {
+                    if (!std::binary_search(
+                            failed_sketch_buckets.begin(),
+                            failed_sketch_buckets.end(),
+                            bucket
+                        )
+                        && !std::binary_search(
+                            merged.covered_buckets.begin(),
+                            merged.covered_buckets.end(),
+                            bucket
+                        )) {
+                        merged.covered_buckets.push_back(bucket);
+                    }
+                }
+
+                merged.rows = std::move(rows);
+                merged.rows.erase(
+                    std::remove_if(
+                        merged.rows.begin(),
+                        merged.rows.end(),
+                        [&failed_sketch_buckets](const MetaRow& row) {
+                    return std::binary_search(
+                        failed_sketch_buckets.begin(),
+                        failed_sketch_buckets.end(),
+                        row.bucket
+                    );
+                }
+                    ),
+                    merged.rows.end()
+                );
+                merged.rows.insert(
+                    merged.rows.end(),
+                    fallback_response->rows.begin(),
+                    fallback_response->rows.end()
+                );
+                merged.covered_buckets.insert(
+                    merged.covered_buckets.end(),
+                    fallback_response->covered_buckets.begin(),
+                    fallback_response->covered_buckets.end()
+                );
+
+                std::sort(merged.covered_buckets.begin(), merged.covered_buckets.end());
+                for (const auto& [bucket, hash] : fallback_response->bucket_hashes) {
+                    auto it = std::find_if(
+                        merged.bucket_hashes.begin(),
+                        merged.bucket_hashes.end(),
+                        [bucket](const auto& entry) { return entry.first == bucket; }
+                    );
+
+                    if (it == merged.bucket_hashes.end()) {
+                        merged.bucket_hashes.emplace_back(bucket, hash);
+                    } else {
+                        it->second = hash;
+                    }
+                }
+
+                std::sort(merged.covered_buckets.begin(), merged.covered_buckets.end());
+                merged.covered_buckets.erase(
+                    std::unique(merged.covered_buckets.begin(), merged.covered_buckets.end()),
+                    merged.covered_buckets.end()
+                );
+                finishRefinement(local, partner, round_ctx, merged);
+            }
+            );
+            return;
+        }
+        if (metrics_ != nullptr && !response.iblt_sketches.empty() && successful_sketches > 0) {
+            metrics_->replicationMetrics().anti_entropy_iblt_successes.fetch_add(
+                successful_sketches,
+                std::memory_order_relaxed
+            );
+        }
+
         std::vector<uint32_t> divergent_buckets;
         std::vector<uint64_t> remote_buckets(num_buckets_, 0);
         std::vector<char> has_remote_bucket(num_buckets_, 0);
@@ -1232,6 +1845,18 @@ namespace cinder {
 
             remote_buckets[bucket] = hash;
             has_remote_bucket[bucket] = 1;
+        }
+
+        std::vector<char> has_remote_sketch(num_buckets_, 0);
+        for (const auto& [bucket, blob] : response.iblt_sketches) {
+            (void)blob;
+            if (bucket >= num_buckets_ || has_remote_sketch[bucket]) {
+                CINDER_WARN("bad bucket IBLT response", {"from", partner});
+                result_span.setAttribute({"outcome", "bad-iblt-buckets"});
+                result_span.setStatus(SpanStatus::Error);
+                return;
+            }
+            has_remote_sketch[bucket] = 1;
         }
 
         const size_t group_count = (num_buckets_ + K_BUCKETS_PER_GROUP - 1) / K_BUCKETS_PER_GROUP;
@@ -1248,8 +1873,22 @@ namespace cinder {
                 divergent_groups.push_back(group);
             }
         }
+
+        std::vector<uint32_t> sorted_covered_buckets = reconstructed_covered_buckets;
+        std::sort(sorted_covered_buckets.begin(), sorted_covered_buckets.end());
         for (uint32_t bucket = 0; bucket < num_buckets_; ++bucket) {
-            if (has_remote_bucket[bucket] && local[bucket] != remote_buckets[bucket]) {
+            const bool bucket_differs = local[bucket] != remote_buckets[bucket];
+            if (has_remote_bucket[bucket] && bucket_differs) {
+                divergent_buckets.push_back(bucket);
+            } else if (
+                has_remote_sketch[bucket]
+                && std::binary_search(
+                    sorted_covered_buckets.begin(),
+                    sorted_covered_buckets.end(),
+                    bucket
+                )
+                && sketch_has_diff[bucket]
+            ) {
                 divergent_buckets.push_back(bucket);
             }
         }
@@ -1261,10 +1900,21 @@ namespace cinder {
             CINDER_INFO("round completed", {"partner", partner}, {"repaired", 0});
             return;
         }
+        for (uint32_t bucket = 0; bucket < num_buckets_; ++bucket) {
+            if (has_remote_sketch[bucket]
+                && !std::binary_search(
+                    reconstructed_covered_buckets.begin(),
+                    reconstructed_covered_buckets.end(),
+                    bucket
+                )) {
+                reconstructed_covered_buckets.push_back(bucket);
+            }
+        }
 
+        std::sort(reconstructed_covered_buckets.begin(), reconstructed_covered_buckets.end());
         std::vector<char> covered(num_buckets_, 0);
-        for (uint32_t bucket : response.covered_buckets) {
-            if (bucket >= num_buckets_ || covered[bucket]) {
+        for (uint32_t bucket : reconstructed_covered_buckets) {
+            if (bucket >= num_buckets_) {
                 CINDER_WARN("bad metadata coverage", {"from", partner});
                 result_span.setAttribute({"outcome", "bad-meta-coverage"});
                 result_span.setStatus(SpanStatus::Error);
@@ -1272,7 +1922,7 @@ namespace cinder {
             }
             covered[bucket] = 1;
         }
-        for (const auto& row : response.rows) {
+        for (const auto& row : reconstructed_remote_rows) {
             if (row.bucket
                 >= num_buckets_
                 || !covered[row.bucket]
@@ -1297,12 +1947,13 @@ namespace cinder {
                 std::memory_order_relaxed
             );
             metrics_->replicationMetrics().anti_entropy_meta_rows_recv.fetch_add(
-                response.rows.size(),
+                reconstructed_remote_rows.size(),
                 std::memory_order_relaxed
             );
         }
 
-        MetaDiff diff = diffRows(response.rows, divergent_buckets, response.covered_buckets);
+        MetaDiff diff =
+            diffRows(reconstructed_remote_rows, divergent_buckets, reconstructed_covered_buckets);
         SyncMessage sync;
         sync.entries = selectEntriesForPairs(diff.have, fetchBytes());
         sync.needs = std::move(diff.need);

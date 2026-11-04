@@ -12,7 +12,6 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/status.hpp"
-#include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -66,7 +65,7 @@ namespace {
         void onMessage(MessageHandler /*handler*/) override {}
     };
 
-    static auto makeEntry(FuzzedDataProvider& fdp, FuzzClock& clock) -> cinder::VersionedEntry {
+    auto makeEntry(FuzzedDataProvider& fdp, FuzzClock& clock) -> cinder::VersionedEntry {
         cinder::VersionedEntry e;
         e.value = fdp.ConsumeRandomLengthString(256);
         const bool has_ttl = fdp.ConsumeBool();
@@ -79,7 +78,7 @@ namespace {
         return e;
     }
 
-    static auto snapKey(const std::pair<std::string, cinder::VersionedEntry>& kv) -> std::string {
+    auto snapKey(const std::pair<std::string, cinder::VersionedEntry>& kv) -> std::string {
         return kv.first
             + '\x00'
             + kv.second.value
@@ -91,13 +90,14 @@ namespace {
             + (kv.second.hasTtl() ? "1" : "0");
     }
 
-    static auto snapshotOf(cinder::CacheStore& store) -> std::vector<std::string> {
+    auto snapshotOf(cinder::CacheStore& store) -> std::vector<std::string> {
         auto live = store.liveEntries();
         std::vector<std::string> out;
         out.reserve(live.size());
         for (const auto& kv : live) {
             out.push_back(snapKey(kv));
         }
+
         std::sort(out.begin(), out.end());
         return out;
     }
@@ -106,11 +106,12 @@ namespace {
     // rejects the digest. Meta rows and sync messages round-trip too, with
     // exact-size validation rejecting truncation and junk. Group digests and
     // the compact phase-1 / refinement codecs round-trip as well.
-    static void codecRoundtrip(FuzzedDataProvider& fdp) {
-        const int mode = fdp.ConsumeIntegralInRange<int>(0, 2);
+    void codecRoundtrip(FuzzedDataProvider& fdp) {
+        const int mode = fdp.ConsumeIntegralInRange<int>(0, 4);
         if (mode == 0) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
             std::vector<uint64_t> digest;
+            digest.reserve(n);
             for (size_t i = 0; i < n; ++i) {
                 digest.push_back(fdp.ConsumeIntegral<uint64_t>());
             }
@@ -125,20 +126,21 @@ namespace {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 32);
             std::vector<cinder::AntiEntropyManager::MetaRow> rows;
             for (size_t i = 0; i < n; ++i) {
-                rows.push_back(
-                    {fdp.ConsumeIntegral<uint32_t>(),
-                     fdp.ConsumeIntegral<uint64_t>(),
-                     fdp.ConsumeIntegral<uint64_t>(),
-                     fdp.ConsumeIntegral<uint64_t>()}
-                );
+                rows.push_back({
+                    fdp.ConsumeIntegral<uint32_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                });
             }
+
             FuzzClock clock;
             FuzzTransport transport;
             cinder::ConsistentHashRing ring;
             cinder::LruStore store(64 * 1024, &clock);
             cinder::AntiEntropyManager mgr(store, ring, "fuzz-self", clock, transport, 8);
-            auto blob = mgr.encodeMetaRows(rows);
-            auto back = mgr.decodeMetaRows(blob);
+            auto blob = cinder::AntiEntropyManager::encodeMetaRows(rows);
+            auto back = cinder::AntiEntropyManager::decodeMetaRows(blob);
             assert(back.has_value());
             assert(back->size() == rows.size());
             for (size_t i = 0; i < n; ++i) {
@@ -153,6 +155,7 @@ namespace {
             for (size_t i = 0; i < n; ++i) {
                 groups.push_back(fdp.ConsumeIntegral<uint64_t>());
             }
+
             auto blob = cinder::AntiEntropyManager::encodeGroupDigest(groups);
             auto back = cinder::AntiEntropyManager::decodeGroupDigest(blob, n);
             assert(back.has_value());
@@ -160,6 +163,7 @@ namespace {
             assert(!cinder::AntiEntropyManager::decodeGroupDigest(blob, n + 1).has_value());
 
             cinder::AntiEntropyManager::BucketRefinement req;
+            req.force_metadata = fdp.ConsumeBool();
             const size_t m = fdp.ConsumeIntegralInRange<size_t>(0, 8);
             for (size_t i = 0; i < m; ++i) {
                 // Keep indices in range: out-of-range buckets are (correctly)
@@ -173,13 +177,14 @@ namespace {
             auto req_back = cinder::AntiEntropyManager::decodeBucketRefinement(req_blob, 1024);
             assert(req_back.has_value());
             assert(req_back->bucket_hashes == req.bucket_hashes);
+            assert(req_back->force_metadata == req.force_metadata);
             // Truncation and out-of-range bucket indices are rejected.
             assert(!cinder::AntiEntropyManager::decodeBucketRefinement(
-                        req_blob.substr(0, req_blob.size() > 0 ? req_blob.size() - 1 : 0),
+                        req_blob.substr(0, !req_blob.empty() ? req_blob.size() - 1 : 0),
                         1024
             )
                         .has_value());
-        } else {
+        } else if (mode == 3) {
             const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 8);
             std::vector<uint64_t> groups;
             for (size_t i = 0; i < n; ++i) {
@@ -196,6 +201,33 @@ namespace {
             assert(back->rows.empty());
             std::string truncated = blob.substr(0, blob.size() - 1);
             assert(!cinder::AntiEntropyManager::decodeDigestResponse(truncated, n).has_value());
+        } else {
+            const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 80);
+            std::vector<cinder::AntiEntropyManager::MetaRow> rows;
+            rows.reserve(n);
+            for (size_t i = 0; i < n; ++i) {
+                rows.push_back({
+                    7,
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                });
+            }
+            const size_t cells = fdp.ConsumeIntegralInRange<size_t>(3, 128);
+            auto sketch = cinder::AntiEntropyManager::buildIblt(rows, cells);
+            assert(sketch.has_value());
+            auto blob = cinder::AntiEntropyManager::encodeIblt(*sketch);
+            auto decoded = cinder::AntiEntropyManager::decodeIblt(blob);
+            assert(decoded.has_value());
+            assert(decoded->cells.size() == cells);
+            auto diff = cinder::AntiEntropyManager::decodeIbltDifference(*decoded, *decoded, 7);
+            assert(diff.has_value());
+            assert(diff->remote_only.empty());
+            assert(diff->local_only.empty());
+            assert(!cinder::AntiEntropyManager::decodeIblt(
+                        std::string_view(blob).substr(0, blob.size() - 1)
+            )
+                        .has_value());
         }
     }
 
@@ -203,7 +235,7 @@ namespace {
     // diffs against an empty one, the needlist is served, and re-applying the
     // fetched entries is a no-op (LWW re-apply of identical versions changes
     // nothing observable).
-    static void collectApply(FuzzedDataProvider& fdp) {
+    void collectApply(FuzzedDataProvider& fdp) {
         FuzzClock clock;
         FuzzTransport transport;
         cinder::ConsistentHashRing ring;
@@ -227,7 +259,7 @@ namespace {
             ids.push_back(b);
         }
         auto meta = collect_mgr.collectMetadata(ids, 1U << 20U);
-        auto rows = collect_mgr.decodeMetaRows(meta);
+        auto rows = cinder::AntiEntropyManager::decodeMetaRows(meta);
         assert(rows.has_value());
         auto diff = apply_mgr.diffRows(*rows, ids);
         // Everything the source has, the empty destination needs.
@@ -256,7 +288,7 @@ namespace {
 
     // Raw protocol handlers: arbitrary payloads must never crash, and the
     // respond callback fires synchronously per the handler contract.
-    static void rawHandlers(FuzzedDataProvider& fdp) {
+    void rawHandlers(FuzzedDataProvider& fdp) {
         FuzzClock clock;
         FuzzTransport transport;
         cinder::ConsistentHashRing ring;
@@ -293,6 +325,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (size < 4) {
         return 0;
     }
+
     FuzzedDataProvider fdp(data, size);
     switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 2)) {
         case 0:

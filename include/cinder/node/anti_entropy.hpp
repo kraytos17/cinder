@@ -29,11 +29,14 @@ namespace cinder {
     // Periodic anti-entropy repair. Each round compares a compact digest with
     // a replica partner, then reconciles only the difference:
     //
-    //   Phase 1 (digest + metadata): initiator sends its digest (one xxHash
-    //   per bucket). Partner responds with its digest plus compact metadata
-    //   rows (key_hash, version, writer — 24 bytes each, no values) for
-    //   divergent buckets.
-    //   Phase 2 (targeted fetch): both sides derive the same divergent set.
+    //   Phase 1 (group digests): initiator sends one xxHash per group of 16
+    //   buckets (~150 bytes). Converged rounds end here.
+    //   Phase 2 (bucket refinement): for each divergent group the initiator
+    //   requests that group's bucket hashes; the responder answers with the
+    //   hashes plus an explicit covered-bucket set and metadata: full rows
+    //   for small buckets, fixed-size IBLT sketches for large ones (>= 32
+    //   rows). An unpeelable sketch retries as explicit P2 rows.
+    //   Phase 3 (targeted fetch): both sides derive the same divergent set.
     //   The initiator pushes full entries only where it wins and sends a
     //   needlist (key hashes) where it loses; the partner replies with full
     //   entries for the needlist. Values cross the wire solely for true
@@ -44,21 +47,26 @@ namespace cinder {
     // version) uniquely identifies a write (per-writer Lamport clock, single
     // store version authority), so hashing values is pure overhead.
     //
-    // Wire schema v2 (magic-prefixed blobs). The v1 layout (bare
-    // count-first blobs) is rejected: old peers read the magic as a count,
-    // fail the size check, and report InvalidArgument — a clean failed round
-    // that resumes once the cluster is homogeneous.
+    // Wire schema v5 (magic-prefixed blobs, AER5/AEB5 envelopes with optional
+    // AEI3 sketches). Older envelopes are rejected: old peers fail the magic
+    // check and report InvalidArgument — a clean failed round that resumes
+    // once the cluster is homogeneous.
     class AntiEntropyManager {
     public:
 
         // Schema magics (u32 LE) prefixing every anti-entropy payload.
         static constexpr uint32_t K_DIGEST_MAGIC = 0x41454D32; // "AEM2"
         static constexpr uint32_t K_GROUP_DIGEST_MAGIC = 0x41454D33; // "AEM3"
-        static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455233; // "AER3"
-        static constexpr uint32_t K_BUCKET_REFINEMENT_MAGIC = 0x41454233; // "AEB3"
+        static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455235; // "AER5"
+        static constexpr uint32_t K_BUCKET_REFINEMENT_MAGIC = 0x41454235; // "AEB5"
         static constexpr uint32_t K_SYNC_MAGIC = 0x41454D53; // "AEMS"
         static constexpr uint32_t K_NEED_MAGIC = 0x41454D4E; // "AEMN"
         static constexpr uint32_t K_BUCKETS_PER_GROUP = 16;
+        static constexpr uint32_t K_IBLT_MAGIC = 0x41454933; // "AEI3"
+        static constexpr size_t K_IBLT_HASH_COUNT = 3;
+        static constexpr size_t K_MAX_IBLT_CELLS = 4096;
+        static constexpr size_t K_IBLT_DEFAULT_CELLS = 64;
+        static constexpr size_t K_IBLT_MIN_ROWS = 32;
 
         // Upper bound on metadata rows per digest response. Buckets fill
         // atomically (a bucket's rows are all included or the bucket is
@@ -105,10 +113,33 @@ namespace cinder {
             std::vector<std::pair<uint32_t, uint64_t>> bucket_hashes;
             std::vector<uint32_t> covered_buckets;
             std::vector<MetaRow> rows;
+            std::vector<std::pair<uint32_t, std::string>> iblt_sketches;
         };
 
         struct BucketRefinement {
             std::vector<std::pair<uint32_t, uint64_t>> bucket_hashes;
+            bool force_metadata = false;
+        };
+
+        // Invertible Bloom lookup table. Each item is the full LWW identity
+        // tuple, so two versions of one key remain distinct until peeling.
+        // A subtraction that peels completely yields only the symmetric
+        // difference; failure is explicit and callers must use metadata sync.
+        struct IbltCell {
+            int64_t count = 0;
+            uint64_t key_hash_xor = 0;
+            uint64_t version_xor = 0;
+            uint64_t writer_xor = 0;
+            uint64_t checksum_xor = 0;
+        };
+
+        struct IbltSketch {
+            std::vector<IbltCell> cells;
+        };
+
+        struct IbltDiff {
+            std::vector<MetaRow> remote_only;
+            std::vector<MetaRow> local_only;
         };
 
         AntiEntropyManager(
@@ -221,6 +252,26 @@ namespace cinder {
         [[nodiscard]]
         static auto decodeDigestResponse(std::string_view data, size_t expected_groups)
             -> std::optional<DigestResponse>;
+
+        // Build/encode a bounded per-bucket IBLT. Difference decoding returns
+        // nullopt if either sketch is invalid or peeling cannot fully decode;
+        // the caller must then use the P2 metadata fallback.
+        [[nodiscard]]
+        static auto buildIblt(const std::vector<MetaRow>& rows, size_t cell_count)
+            -> std::optional<IbltSketch>;
+
+        [[nodiscard]]
+        static auto encodeIblt(const IbltSketch& sketch) -> std::string;
+
+        [[nodiscard]]
+        static auto decodeIblt(std::string_view data) -> std::optional<IbltSketch>;
+
+        [[nodiscard]]
+        static auto decodeIbltDifference(
+            const IbltSketch& remote,
+            const IbltSketch& local,
+            uint32_t bucket
+        ) -> std::optional<IbltDiff>;
 
         // Serialize metadata rows: [MAGIC][u32 count][rows...].
         [[nodiscard]]

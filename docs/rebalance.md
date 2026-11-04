@@ -328,6 +328,15 @@ so no per-bucket sort. Two nodes with identical data produce identical group
 hashes, so metadata is only exchanged for buckets inside divergent groups,
 and only true deltas exchange values.
 
+**IBLT refinement**: for divergent buckets with at least 32 metadata rows,
+the responder sends a 64-cell invertible Bloom lookup table rather than all
+rows. Cells encode the signed count and XORs of `(bucket, key_hash, version,
+writer)` plus an item checksum. The initiator subtracts its local sketch and
+peels pure cells to recover the exact symmetric difference of LWW identities.
+Small buckets continue using metadata rows; if any sketch fails to peel, that
+bucket is retried through the existing explicit-metadata path. This bounds
+the extra work and wire bytes while retaining as the correctness fallback.
+
 **Incremental digests**: stores maintain the per-bucket XOR on the write path
 (observed mutations), so converged rounds cost a 2 KiB copy instead of a full
 scan. A wall-clock backstop (`anti_entropy_full_rehash_interval_ms`, default

@@ -335,8 +335,8 @@ integers are little-endian (native byte order; the cluster is homogeneous).
 Every AE payload starts with a schema magic (`uint32`): `0x41454D33`
 ("AEM3", group digest request), `0x41454D32` ("AEM2", legacy full digest —
 accepted on decode for compatibility but no longer sent), `0x41454D53`
-("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455233` ("AER3",
-digest response), `0x41454233` ("AEB3", bucket refinement). Payloads
+("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455235` ("AER5",
+digest response), `0x41454235` ("AEB5", bucket refinement). Payloads
 without a recognized magic are rejected, so old peers fail a round cleanly
 and converge once the cluster is homogeneous.
 
@@ -358,13 +358,15 @@ The partner answers with its own group hashes only (no bucket data yet):
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41455233` (`uint32`) |
+| `magic`       | 4    | `0x41455235` (`uint32`) |
 | `group count` | 4    | `uint32` |
 | `group[0..G-1]` | 8 each | XOR-fold of the group's bucket hashes |
 | `bucket hash count` | 4 | always `0` in a phase-1 response |
 | `covered count` | 4 | always `0` in a phase-1 response |
 | `rows size`   | 4    | always `4` (empty metadata row list) |
 | rows          | 0    | empty |
+| `IBLT count`  | 4    | count of optional bucket sketches (`uint32`) |
+| sketches      | var  | repeated `[bucket u32][size u32][IBLT blob]` |
 
 ### Bucket Refinement (opcode 9 with key `"bucket-refinement-v3"`)
 
@@ -374,7 +376,8 @@ returns metadata only for buckets that actually differ:
 
 | Field           | Size | Description |
 |-----------------|------|--------------|
-| `magic`         | 4    | `0x41454233` (`uint32`) |
+| `magic`         | 4    | `0x41454235` (`uint32`) |
+| `flags`         | 4    | bit 0 forces P2 metadata fallback; other bits invalid |
 | `bucket count`  | 4    | `uint32` |
 | entries         | 12 each | `[bucket u32][hash u64]` (initiator's view) |
 
@@ -384,7 +387,7 @@ the covered-bucket set, and the metadata rows:
 
 | Field         | Size | Description |
 |---------------|------|--------------|
-| `magic`       | 4    | `0x41455233` (`uint32`) |
+| `magic`       | 4    | `0x41455235` (`uint32`) |
 | `group count` | 4    | `uint32` (full group vector, for validation) |
 | `group[0..G-1]` | 8 each | responder's group hashes |
 | `bucket hash count` | 4 | number of bucket hashes, `uint32` |
@@ -393,6 +396,19 @@ the covered-bucket set, and the metadata rows:
 | `covered`     | 4 each | `uint32` bucket ids with complete metadata |
 | `rows size`   | 4    | metadata bytes that follow, `uint32` |
 | rows          | var  | metadata rows (see below) |
+| `IBLT count`  | 4    | count of optional bucket sketches (`uint32`) |
+| sketches      | var  | repeated `[bucket u32][size u32][IBLT blob]` |
+
+An IBLT blob starts with `0x41454933` (`AEI3`), a cell count, then fixed
+40-byte cells: signed count (`i64`, two's-complement), key-hash XOR (`u64`),
+version XOR (`u64`), writer XOR (`u64`), and item-checksum XOR (`u64`). Three
+distinct cells are selected per `(key_hash, version, writer)` tuple; the
+enclosing refinement identifies the bucket. The initiator subtracts a local
+sketch and peels pure cells.
+Successful peeling yields the exact symmetric difference of LWW identities;
+failure triggers an explicit P2 metadata retry for that bucket. The current
+threshold is 32 rows per bucket with 64 cells. Smaller buckets carry metadata
+rows directly. Sketches are an optimization only; P2 remains the fallback.
 
 A metadata row is `[bucket u32][key_hash u64][version u64][writer u64]`:
 identity plus recency, no value. Rows are bucket-atomic (a bucket's rows are
