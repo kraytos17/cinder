@@ -1,5 +1,4 @@
 #include <chrono>
-#include <csignal>
 #include <filesystem>
 #include <gtest/gtest.h>
 #include <string>
@@ -18,7 +17,6 @@ using cinder::net::Request;
 using cinder::net::test::getKey;
 using cinder::net::test::NodeProc;
 using cinder::net::test::NodeProcGuard;
-using cinder::net::test::pickEphemeralPort;
 using cinder::net::test::pickHeldPort;
 using cinder::net::test::rawRequest;
 using cinder::net::test::scrapeMetric;
@@ -143,7 +141,7 @@ namespace cinder {
         TEST(ReplicaFailoverTest, HintedHandoffBoundedUnderOutage) {
             const uint16_t port1 = pickHeldPort();
             ASSERT_NE(port1, 0);
-            const uint16_t metrics1 = pickEphemeralPort();
+            const uint16_t metrics1 = pickHeldPort();
             ASSERT_NE(metrics1, 0);
             const uint16_t port2 = pickHeldPort();
             ASSERT_NE(port2, 0);
@@ -208,7 +206,7 @@ namespace cinder {
         TEST(ReplicaFailoverTest, HintedHandoffSurvivesNodeRestart) {
             const uint16_t port1 = pickHeldPort();
             ASSERT_NE(port1, 0);
-            const uint16_t metrics1 = pickEphemeralPort();
+            const uint16_t metrics1 = pickHeldPort();
             ASSERT_NE(metrics1, 0);
             const uint16_t port2 = pickHeldPort();
             ASSERT_NE(port2, 0);
@@ -273,12 +271,15 @@ namespace cinder {
                 ASSERT_EQ(::waitpid(node1.pid, &status, 0), node1.pid);
             }
 
-            // Restart with the same data directory (and metrics port — the first
-            // incarnation is SIGKILLed and reaped above, so the port is free):
+            // Restart with the same data directory but a fresh held metrics
+            // port (the first incarnation consumed metrics1's held fd; rebinding
+            // it would reopen the pick-close-bind race under parallel runs):
             // journaled hints recover before serving, then replay once node2
             // returns. The replayed counter gives a direct signal with a
             // generous budget for loaded CI runners.
             {
+                const uint16_t metrics1b = pickHeldPort();
+                ASSERT_NE(metrics1b, 0);
                 NodeProcGuard node1b{spawnNode(
                     port1,
                     "node1",
@@ -289,7 +290,7 @@ namespace cinder {
                     3000,
                     1000,
                     0,
-                    metrics1,
+                    metrics1b,
                     data_dir
                 )};
                 ASSERT_TRUE(waitForNode(port1, "node1")) << "node1 did not restart";
@@ -300,7 +301,7 @@ namespace cinder {
                 // when the runner is oversubscribed.
                 bool replayed = false;
                 for (int i = 0; i < 600 && !replayed; ++i) {
-                    auto count = scrapeMetric(metrics1, "cinder_replication_hints_replayed_total");
+                    auto count = scrapeMetric(metrics1b, "cinder_replication_hints_replayed_total");
                     replayed = count.has_value() && *count >= keys.size();
                     if (!replayed) {
                         std::this_thread::sleep_for(milliseconds(100));

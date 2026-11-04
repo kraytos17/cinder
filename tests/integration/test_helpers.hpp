@@ -107,6 +107,10 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
     // Looked up before fork: the child only execs, never touches the map.
     int held_fd = takeHeldFd(static_cast<uint16_t>(port));
     auto fd_str = std::to_string(held_fd);
+    // Same for the metrics port: when picked via pickHeldPort the daemon
+    // adopts the fd (--metrics-listen-fd); otherwise it binds normally.
+    int metrics_held_fd = metrics_port > 0 ? takeHeldFd(metrics_port) : -1;
+    auto metrics_fd_str = std::to_string(metrics_held_fd);
     pid_t pid = fork();
     if (pid == -1) {
         ADD_FAILURE() << "fork failed";
@@ -141,6 +145,10 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
         if (metrics_port > 0) {
             args.emplace_back("--metrics-port");
             args.emplace_back(metrics_str);
+            if (metrics_held_fd >= 0) {
+                args.emplace_back("--metrics-listen-fd");
+                args.emplace_back(metrics_fd_str);
+            }
         }
         if (!data_dir.empty()) {
             args.emplace_back("--enable-persistence");
@@ -160,6 +168,9 @@ spawnNode(int port, const std::string& id, const std::string& peer_list, bool qu
     if (held_fd >= 0) {
         // The child has its own copy, which survives exec into the daemon.
         ::close(held_fd);
+    }
+    if (metrics_held_fd >= 0) {
+        ::close(metrics_held_fd);
     }
     return {pid, port, id};
 }

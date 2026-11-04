@@ -23,6 +23,7 @@ auto main(int argc, char* argv[]) -> int {
 
     uint16_t port = 7000;
     int listen_fd = -1;
+    int metrics_listen_fd = -1;
     size_t capacity = 67'108'864;
     std::string node_id = "node1";
     std::string peers;
@@ -64,6 +65,11 @@ auto main(int argc, char* argv[]) -> int {
         "--listen-fd",
         listen_fd,
         "Pre-bound listen socket fd (test harness socket passing)"
+    );
+    app.add_option(
+        "--metrics-listen-fd",
+        metrics_listen_fd,
+        "Pre-bound metrics socket fd (test harness socket passing)"
     );
 
     app.add_option("-c,--capacity", capacity, "Per-node capacity in bytes");
@@ -154,6 +160,7 @@ auto main(int argc, char* argv[]) -> int {
     options.node_id = node_id;
     options.port = port;
     options.listen_fd = listen_fd;
+    options.metrics_listen_fd = metrics_listen_fd;
     options.capacity = capacity;
     options.replica_factor = replica_factor;
     options.mode =

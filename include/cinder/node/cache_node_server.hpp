@@ -82,6 +82,9 @@ namespace cinder {
         // Pre-bound listen socket fd (-1 = bind
         // port_ normally). Consumed by TcpServer at start().
         int listen_fd = -1;
+        // Pre-bound metrics socket fd (-1 = bind metrics_port normally).
+        // Same TOCTOU rationale as listen_fd.
+        int metrics_listen_fd = -1;
         uint16_t port = 0;
         // Metrics HTTP endpoint (Prometheus /metrics). 0 = disabled.
         uint16_t metrics_port = 0;

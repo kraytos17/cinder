@@ -279,6 +279,9 @@ namespace cinder {
         if (options.listen_fd >= 0) {
             server_.setListenFd(options.listen_fd);
         }
+        if (options.metrics_listen_fd >= 0) {
+            server_.setMetricsListenFd(options.metrics_listen_fd);
+        }
         if (options.persistence_enabled && !options.data_dir.empty()) {
             repl_.setHintJournal(options.data_dir + "/hints.journal");
         }

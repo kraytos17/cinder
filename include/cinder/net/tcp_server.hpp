@@ -91,6 +91,13 @@ namespace cinder::net {
             listen_fd_ = fd;
         }
 
+        // Pre-bound metrics socket. When set, start() adopts the fd instead
+        // of binding metrics_port_ itself. Same TOCTOU rationale as
+        // setListenFd: a held fd can never be stolen by another process.
+        void setMetricsListenFd(int fd) {
+            metrics_listen_fd_ = fd;
+        }
+
         // Hard cap on concurrent client connections. Beyond this the acceptor
         // rejects new sockets instead of buffering unbounded file descriptors.
         static constexpr size_t K_MAX_CONNECTIONS = 10'000;
@@ -121,6 +128,7 @@ namespace cinder::net {
         AdminCallbacks admin_callbacks_;
         TcpConnection::AddrResolver addr_resolver_;
         int listen_fd_ = -1;
+        int metrics_listen_fd_ = -1;
         std::vector<std::shared_ptr<TcpConnection>> connections_;
         std::unique_ptr<tcp::acceptor> metrics_acceptor_;
         std::string shared_secret_;

@@ -104,24 +104,39 @@ namespace cinder::net {
         }
         if (metrics_port_ > 0 && metrics_) {
             metrics_acceptor_ = std::make_unique<tcp::acceptor>(acceptor_.get_executor());
-            metrics_acceptor_->open(tcp::v4(), ec);
-            if (!ec) {
-                metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
-            }
-            if (!ec) {
-                metrics_acceptor_->bind(tcp::endpoint(tcp::v4(), metrics_port_), ec);
-            }
-            if (!ec) {
-                metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
-            }
-            if (ec) {
-                return err(Error(
-                    Errc::InternalError,
-                    "bind metrics port "
-                        + std::to_string(metrics_port_)
-                        + " failed: "
-                        + ec.message()
-                ));
+            if (metrics_listen_fd_ >= 0) {
+                metrics_acceptor_->assign(tcp::v4(), metrics_listen_fd_, ec);
+                metrics_listen_fd_ = -1;
+                if (!ec) {
+                    metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
+                }
+                if (ec) {
+                    return err(Error(
+                        Errc::InternalError,
+                        "adopt metrics listen socket failed: " + ec.message()
+                    ));
+                }
+                CINDER_DEBUG("adopted metrics listen socket", {"port", metrics_port_});
+            } else {
+                metrics_acceptor_->open(tcp::v4(), ec);
+                if (!ec) {
+                    metrics_acceptor_->set_option(tcp::acceptor::reuse_address(true), ec);
+                }
+                if (!ec) {
+                    metrics_acceptor_->bind(tcp::endpoint(tcp::v4(), metrics_port_), ec);
+                }
+                if (!ec) {
+                    metrics_acceptor_->listen(asio::socket_base::max_listen_connections, ec);
+                }
+                if (ec) {
+                    return err(Error(
+                        Errc::InternalError,
+                        "bind metrics port "
+                            + std::to_string(metrics_port_)
+                            + " failed: "
+                            + ec.message()
+                    ));
+                }
             }
         }
 
