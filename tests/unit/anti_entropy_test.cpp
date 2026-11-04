@@ -156,9 +156,9 @@ namespace cinder {
             Node a;
             AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
             std::vector<AntiEntropyManager::MetaRow> rows = {
-                {0, 11, 1, 7},
-                {0, 22, 2, 7},
-                {5, 33, 1, 9},
+                {0, false, 11, 1, 7},
+                {0, false, 22, 2, 7},
+                {5, false, 33, 1, 9},
             };
             auto blob = AntiEntropyManager::encodeMetaRows(rows);
             auto back = AntiEntropyManager::decodeMetaRows(blob);
@@ -808,10 +808,10 @@ namespace cinder {
             const uint64_t key_hash = XXH3_64bits("tie", 3);
             AntiEntropyManager::MetaRow live_row{
                 .bucket = live_bucket,
+                .tombstone = false,
                 .key_hash = key_hash,
                 .version = 4,
                 .writer = 7,
-                .tombstone = false,
             };
             AntiEntropyManager::MetaRow dead_row = live_row;
             dead_row.tombstone = true;
@@ -835,12 +835,12 @@ namespace cinder {
             constexpr uint32_t BUCKET = 7;
             // Same key, live v1 vs tombstone v2: distinct IBLT items.
             std::vector<Manager::MetaRow> local_rows{
-                {BUCKET, 10, 1, 100, false},
-                {BUCKET, 20, 1, 100, false},
+                {BUCKET, false, 10, 1, 100},
+                {BUCKET, false, 20, 1, 100},
             };
             std::vector<Manager::MetaRow> remote_rows{
-                {BUCKET, 10, 1, 100, false},
-                {BUCKET, 20, 2, 100, true},
+                {BUCKET, false, 10, 1, 100},
+                {BUCKET, true, 20, 2, 100},
             };
             auto local = Manager::buildIblt(local_rows, 64);
             auto remote = Manager::buildIblt(remote_rows, 64);
@@ -1045,7 +1045,7 @@ namespace cinder {
                 .group_hashes = groups,
                 .bucket_hashes = {{0, 1}, {1, 2}, {8, 9}},
                 .covered_buckets = {0, 1, 8},
-                .rows = {{0, 11, 1, 7}, {1, 22, 2, 7}},
+                .rows = {{0, false, 11, 1, 7}, {1, false, 22, 2, 7}},
             };
 
             auto blob = AntiEntropyManager::encodeDigestResponse(response);
@@ -1081,14 +1081,14 @@ namespace cinder {
             using Manager = AntiEntropyManager;
             constexpr uint32_t BUCKET = 7;
             std::vector<Manager::MetaRow> local_rows{
-                {BUCKET, 10, 1, 100},
-                {BUCKET, 20, 1, 100},
-                {BUCKET, 30, 4, 100},
+                {BUCKET, false, 10, 1, 100},
+                {BUCKET, false, 20, 1, 100},
+                {BUCKET, false, 30, 4, 100},
             };
             std::vector<Manager::MetaRow> remote_rows{
-                {BUCKET, 10, 1, 100},
-                {BUCKET, 20, 2, 100}, // same key, newer LWW identity
-                {BUCKET, 40, 1, 200},
+                {BUCKET, false, 10, 1, 100},
+                {BUCKET, false, 20, 2, 100}, // same key, newer LWW identity
+                {BUCKET, false, 40, 1, 200},
             };
             auto local = Manager::buildIblt(local_rows, 64);
             auto remote = Manager::buildIblt(remote_rows, 64);
@@ -1118,7 +1118,7 @@ namespace cinder {
             using Manager = AntiEntropyManager;
             std::vector<Manager::MetaRow> rows;
             for (uint64_t i = 0; i < 40; ++i) {
-                rows.push_back({3, i + 1, i + 2, i + 3});
+                rows.push_back({3, false, i + 1, i + 2, i + 3});
             }
             auto sketch = Manager::buildIblt(rows, 64);
             ASSERT_TRUE(sketch.has_value());
@@ -1135,8 +1135,8 @@ namespace cinder {
             std::vector<Manager::MetaRow> local_rows;
             std::vector<Manager::MetaRow> remote_rows;
             for (uint64_t i = 0; i < 80; ++i) {
-                local_rows.push_back({9, i + 1, 1, 5});
-                remote_rows.push_back({9, i + 1001, 1, 5});
+                local_rows.push_back({9, false, i + 1, 1, 5});
+                remote_rows.push_back({9, false, i + 1001, 1, 5});
             }
             auto local = Manager::buildIblt(local_rows, 64);
             auto remote = Manager::buildIblt(remote_rows, 64);

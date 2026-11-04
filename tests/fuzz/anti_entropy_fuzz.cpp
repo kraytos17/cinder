@@ -128,10 +128,10 @@ namespace {
             for (size_t i = 0; i < n; ++i) {
                 rows.push_back({
                     fdp.ConsumeIntegral<uint32_t>(),
-                    fdp.ConsumeIntegral<uint64_t>(),
-                    fdp.ConsumeIntegral<uint64_t>(),
-                    fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeBool(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
                 });
             }
 
@@ -210,10 +210,10 @@ namespace {
             for (size_t i = 0; i < n; ++i) {
                 rows.push_back({
                     7,
-                    fdp.ConsumeIntegral<uint64_t>(),
-                    fdp.ConsumeIntegral<uint64_t>(),
-                    fdp.ConsumeIntegral<uint64_t>(),
                     fdp.ConsumeBool(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
+                    fdp.ConsumeIntegral<uint64_t>(),
                 });
             }
             const size_t cells = fdp.ConsumeIntegralInRange<size_t>(3, 128);

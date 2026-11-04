@@ -171,7 +171,7 @@ namespace cinder {
             std::vector<AntiEntropyManager::MetaRow> rows;
             rows.reserve(256);
             for (uint64_t i = 0; i < 256; ++i) {
-                rows.push_back({3, i + 1, i + 2, 7});
+                rows.push_back({3, false, i + 1, i + 2, 7});
             }
             auto sketch = AntiEntropyManager::buildIblt(rows, 64);
             assert(sketch.has_value());

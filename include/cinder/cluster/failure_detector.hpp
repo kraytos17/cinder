@@ -68,20 +68,41 @@ namespace cinder {
         static constexpr int K_SUSPECT_THRESHOLD = 2;
 
         struct ProbeState {
-            bool pending = false;
             steady_clock::time_point sent_at{};
         };
 
         // Fused per-peer state: one hash lookup per peer per tick instead of
         // three (probes_ + suspect_since_ + consecutive_failures_). All fields
         // for a peer live on adjacent lines so sweep + probe + escalate touch
-        // one cache line instead of three scattered map nodes.
+        // one cache line instead of three scattered map nodes. The two
+        // one-bit conditions share a flags byte (bit 0 = probe pending,
+        // bit 1 = suspected) rather than two padded bools.
         struct PeerState {
             ProbeState probe;
             steady_clock::time_point suspect_since{};
-            bool suspected = false;
+            uint8_t flags = 0;
             int consecutive_failures = 0;
+
+            [[nodiscard]]
+            auto probePending() const -> bool {
+                return (flags & 0x01U) != 0;
+            }
+
+            void setProbePending(bool pending) {
+                flags = static_cast<uint8_t>((flags & ~0x01U) | (pending ? 0x01U : 0U));
+            }
+
+            [[nodiscard]]
+            auto isSuspected() const -> bool {
+                return (flags & 0x02U) != 0;
+            }
+
+            void setSuspected(bool suspected) {
+                flags = static_cast<uint8_t>((flags & ~0x02U) | (suspected ? 0x02U : 0U));
+            }
         };
+
+        static_assert(sizeof(PeerState) == 24, "PeerState must stay 24 bytes");
 
         void onProbeResult(const NodeId& peer, bool acked);
         void

@@ -226,8 +226,8 @@ namespace cinder {
                     .writer_node_hash = writer_hash.value(),
                     .expires_at_ms = expires_ms.value(),
                     .has_ttl = has_ttl.value() != 0,
-                    .freq = freq.value(),
                     .tombstone = tombstone,
+                    .freq = freq.value(),
                 }
             );
         }

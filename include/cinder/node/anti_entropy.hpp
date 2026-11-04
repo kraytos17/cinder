@@ -84,11 +84,13 @@ namespace cinder {
         // (version, writer) order as live writes.
         struct MetaRow {
             uint32_t bucket = 0;
+            bool tombstone = false;
             uint64_t key_hash = 0;
             uint64_t version = 0;
             uint64_t writer = 0;
-            bool tombstone = false;
         };
+
+        static_assert(sizeof(MetaRow) == 32, "MetaRow must stay 32 bytes");
 
         // A decoded sync message: full entries to apply plus key hashes the
         // sender needs back. Responses carry entries only (needs empty).

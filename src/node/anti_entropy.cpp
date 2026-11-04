@@ -835,10 +835,10 @@ namespace cinder {
             queued[pos] = 0;
             MetaRow row{
                 .bucket = bucket,
+                .tombstone = cell.tombstone_xor != 0,
                 .key_hash = cell.key_hash_xor,
                 .version = cell.version_xor,
                 .writer = cell.writer_xor,
-                .tombstone = cell.tombstone_xor != 0,
             };
 
             const bool is_remote = cell.count == 1;
@@ -1045,10 +1045,10 @@ namespace cinder {
             if (wanted[b]) {
                 per_bucket[b].push_back({
                     b,
+                    entry.isTombstone(),
                     XXH3_64bits(key.data(), key.size()),
                     entry.version(),
                     entry.writer_node_hash,
-                    entry.isTombstone(),
                 });
             }
         }
@@ -1537,10 +1537,10 @@ namespace cinder {
 
                 MetaRow row{
                     .bucket = bucket,
+                    .tombstone = entry.isTombstone(),
                     .key_hash = XXH3_64bits(key.data(), key.size()),
                     .version = entry.version(),
                     .writer = entry.writer_node_hash,
-                    .tombstone = entry.isTombstone(),
                 };
 
                 auto& build = *builds[bucket];

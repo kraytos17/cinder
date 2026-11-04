@@ -322,6 +322,7 @@ namespace cinder {
                     .writer_node_hash = 100,
                     .expires_at_ms = 9999,
                     .has_ttl = true,
+                    .tombstone = false,
                     .freq = 5,
                 }
             );
@@ -333,6 +334,7 @@ namespace cinder {
                     .writer_node_hash = 200,
                     .expires_at_ms = 0,
                     .has_ttl = false,
+                    .tombstone = false,
                     .freq = 0,
                 }
             );
@@ -344,8 +346,8 @@ namespace cinder {
                     .writer_node_hash = 300,
                     .expires_at_ms = 9999,
                     .has_ttl = true,
-                    .freq = 2,
                     .tombstone = true,
+                    .freq = 2,
                 }
             );
 

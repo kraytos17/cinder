@@ -124,7 +124,6 @@ namespace cinder {
             ++slot.generation;
             current_bytes_ += estimatedBytes(hint);
             slot.hint.emplace(std::move(hint));
-            slot.active = true;
 
             linkAtTail(index);
             ++size_;
@@ -182,7 +181,7 @@ namespace cinder {
             }
 
             Slot& slot = (*slots_)[handle.index];
-            if (!slot.active || slot.generation != handle.generation) {
+            if (!slot.hint.has_value() || slot.generation != handle.generation) {
                 return;
             }
 
@@ -258,8 +257,12 @@ namespace cinder {
             size_t next = K_NONE;
             size_t free_next = K_NONE;
             uint64_t generation = 0;
-            bool active = false;
         };
+
+        static_assert(
+            sizeof(Slot) <= sizeof(std::optional<Hint>) + 4 * sizeof(size_t),
+            "Slot must not carry per-slot flag overhead"
+        );
 
         static auto estimatedBytes(const Hint& hint) -> size_t {
             return static_cast<size_t>(estimatedPayloadBytes(hint));
@@ -337,7 +340,6 @@ namespace cinder {
             }
 
             slot.hint.reset();
-            slot.active = false;
             slot.prev = K_NONE;
             slot.next = K_NONE;
             slot.free_next = free_head_;

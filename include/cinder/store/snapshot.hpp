@@ -25,9 +25,11 @@ namespace cinder {
         uint64_t writer_node_hash = 0;
         uint64_t expires_at_ms = 0; // wall-clock ms since epoch, 0 if no TTL
         bool has_ttl = false;
-        size_t freq = 0; // 0 for LRU
         bool tombstone = false;
+        size_t freq = 0; // 0 for LRU
     };
+
+    static_assert(sizeof(SnapshotEntry) == 104, "SnapshotEntry must stay 104 bytes");
 
     struct SnapshotData {
         Version next_version = 0;

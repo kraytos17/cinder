@@ -66,11 +66,11 @@ namespace cinder {
             std::scoped_lock lock(state_mutex_);
             // Sweep pending probes for timeouts (covers blackholes that never ack).
             for (auto& [peer, state] : peer_state_) {
-                if (state.probe.pending
+                if (state.probePending()
                     && clock_.now()
                     - state.probe.sent_at
                     > suspect_timeout_.load()) {
-                    state.probe.pending = false;
+                    state.setProbePending(false);
                     timed_out.push_back(peer);
                 }
             }
@@ -86,7 +86,7 @@ namespace cinder {
                     }
 
                     auto it = peer_state_.find(peer);
-                    if (it != peer_state_.end() && it->second.probe.pending) {
+                    if (it != peer_state_.end() && it->second.probePending()) {
                         continue;
                     }
 
@@ -96,7 +96,7 @@ namespace cinder {
                     }
 
                     auto& state = peer_state_[peer];
-                    state.probe.pending = true;
+                    state.setProbePending(true);
                     state.probe.sent_at = clock_.now();
                     probe_target = peer;
                     has_probe = true;
@@ -155,16 +155,16 @@ namespace cinder {
                 return;
             }
 
-            it->second.probe.pending = false;
+            it->second.setProbePending(false);
             known_probe = true;
             if (acked) {
-                it->second.suspected = false;
+                it->second.setSuspected(false);
                 it->second.consecutive_failures = 0;
             } else {
                 auto& state = it->second;
                 failures = ++state.consecutive_failures;
-                if (!state.suspected) {
-                    state.suspected = true;
+                if (!state.isSuspected()) {
+                    state.setSuspected(true);
                     state.suspect_since = clock_.now();
                 }
             }
@@ -209,7 +209,7 @@ namespace cinder {
         // mutate MembershipTable without holding our lock.
         std::vector<NodeId> to_dead;
         for (auto& [peer, state] : peer_state_) {
-            if (!state.suspected) {
+            if (!state.isSuspected()) {
                 continue;
             }
 
@@ -225,7 +225,7 @@ namespace cinder {
             CINDER_INFO("suspect→dead", {"peer", peer});
             auto it = peer_state_.find(peer);
             if (it != peer_state_.end()) {
-                it->second.suspected = false;
+                it->second.setSuspected(false);
                 it->second.consecutive_failures = 0;
             }
         }
