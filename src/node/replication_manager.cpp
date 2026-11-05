@@ -233,11 +233,6 @@ namespace cinder {
 
         // Single-consumer quorum reduce: every completion (including stragglers
         // after the decision) enqueues hints for failures, exactly as the old
-        // per-callback code did. on_done fires once, at the decision. All state
-        // below lives in the coroutine frame -- resumptions serialize through
-        // the channel, so no mutex is needed.
-        // Single-consumer quorum reduce: every completion (including stragglers
-        // after the decision) enqueues hints for failures, exactly as the old
         // per-callback code did. on_done fires once, at the decision. State is
         // heap-owned so the async tail (if any) cannot dangle; the inline and
         // tail phases never read it concurrently.
