@@ -1,6 +1,8 @@
 version: v2
 modules:
   - path: .
+    excludes:
+      - build
 lint:
   use:
     - STANDARD

@@ -1,5 +1,6 @@
 #ifdef CINDER_ENABLE_GRPC
 
+#include <atomic>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -43,9 +44,52 @@ namespace cinder::grpc {
             return cinder::v1::STATUS_CODE_INTERNAL_ERROR;
         }
 
+        // Per-RPC reactor for the async Get/Set/Delete handlers. Heap-allocated
+        // per call, returned to gRPC, and destroyed in OnDone; the response
+        // proto is owned by gRPC until then, so holding the pointer is safe.
+        // Completion runs on whatever thread CacheOperations uses (inline for
+        // local operations, the replication executor otherwise), so Finish is
+        // guarded to fire exactly once: a client cancel races the operation
+        // result, and a cancelled RPC must still be Finished.
+        template <typename Response> class UnaryReactor final : public ::grpc::ServerUnaryReactor {
+        public:
+
+            explicit UnaryReactor(Response* resp) :
+                resp_(resp) {}
+
+            auto response() -> Response* {
+                return resp_;
+            }
+
+            void finishOnce(::grpc::Status status) {
+                bool expected = false;
+                if (finished_.compare_exchange_strong(expected, true)) {
+                    Finish(std::move(status));
+                }
+            }
+
+            void OnDone() override {
+                delete this;
+            }
+
+            void OnCancel() override {}
+
+        private:
+
+            Response* resp_;
+            std::atomic<bool> finished_{false};
+        };
+
         // Implements the CinderCacheService gRPC service, mirroring the dispatch
-        // logic in TcpConnection::handleRequest.
-        class CinderCacheServiceImpl final : public cinder::v1::CinderCacheService::Service {
+        // logic in TcpConnection::handleRequest. Get/Set/Delete use the callback
+        // API so replication waits never block a gRPC worker thread; the
+        // remaining local-read RPCs stay synchronous (hybrid server).
+        class CinderCacheServiceImpl final :
+            public cinder::v1::CinderCacheService::
+                WithCallbackMethod_Get<cinder::v1::CinderCacheService::WithCallbackMethod_Set<
+                    cinder::v1::CinderCacheService::
+                        WithCallbackMethod_Delete<cinder::v1::CinderCacheService::Service>
+                >> {
         public:
 
             explicit CinderCacheServiceImpl(
@@ -59,7 +103,7 @@ namespace cinder::grpc {
             // of the static client token (raw bytes are not valid metadata).
             // Returns OK when authorized, UNAUTHENTICATED otherwise. The
             // presented value is never logged.
-            auto checkAuth(const ::grpc::ServerContext* ctx) -> ::grpc::Status {
+            auto checkAuth(const ::grpc::ServerContextBase* ctx) -> ::grpc::Status {
                 if (client_shared_secret_.empty()) {
                     return ::grpc::Status::OK;
                 }
@@ -130,7 +174,7 @@ namespace cinder::grpc {
             // context and the RPC starts a fresh trace rather than failing.
             // Metadata keys are lowercase per gRPC convention; only the first
             // value of each key is honored. Never logs metadata contents.
-            static auto traceParentFromMetadata(const ::grpc::ServerContext* ctx)
+            static auto traceParentFromMetadata(const ::grpc::ServerContextBase* ctx)
                 -> cinder::SpanContext {
                 std::string_view trace_str;
                 std::string_view span_str;
@@ -147,81 +191,75 @@ namespace cinder::grpc {
                 return cinder::parseSpanContext(trace_str, span_str);
             }
 
-            ::grpc::Status Get(
-                ::grpc::ServerContext* ctx,
+            ::grpc::ServerUnaryReactor* Get(
+                ::grpc::CallbackServerContext* ctx,
                 const cinder::v1::GetRequest* req,
                 cinder::v1::GetResponse* resp
             ) override {
-                cinder::Span span("grpc.get", traceParentFromMetadata(ctx));
+                auto parent = traceParentFromMetadata(ctx);
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    cinder::Span span("grpc.get", parent);
                     span.setStatus(cinder::SpanStatus::Error);
-                    return auth;
+                    auto* reactor = new UnaryReactor<cinder::v1::GetResponse>(resp);
+                    reactor->finishOnce(auth);
+                    return reactor;
                 }
 
-                std::promise<CacheOperations::GetResult> promise;
-                auto future = promise.get_future();
+                auto* reactor = new UnaryReactor<cinder::v1::GetResponse>(resp);
                 handle_.operations
-                    .getAsync(req->key(), [&promise](CacheOperations::GetResult result) {
-                    promise.set_value(std::move(result));
-                }, span.traceId(), span.spanId());
-
-                auto result = future.get();
-                if (result.has_value()) {
-                    resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
-                    resp->set_value(*result);
-                    span.setStatus(cinder::SpanStatus::Ok);
-                } else {
-                    resp->set_status(toProtoStatus(result.error().code()));
-                    span.setStatus(cinder::SpanStatus::Error);
-                }
-                return ::grpc::Status::OK;
+                    .getAsync(req->key(), [reactor, parent](CacheOperations::GetResult result) {
+                    cinder::Span span("grpc.get", parent);
+                    auto* resp = reactor->response();
+                    if (result.has_value()) {
+                        resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
+                        resp->set_value(*result);
+                        span.setStatus(cinder::SpanStatus::Ok);
+                    } else {
+                        resp->set_status(toProtoStatus(result.error().code()));
+                        span.setStatus(cinder::SpanStatus::Error);
+                    }
+                    reactor->finishOnce(::grpc::Status::OK);
+                }, parent.trace_id, parent.span_id);
+                return reactor;
             }
 
-            ::grpc::Status Set(
-                ::grpc::ServerContext* ctx,
+            ::grpc::ServerUnaryReactor* Set(
+                ::grpc::CallbackServerContext* ctx,
                 const cinder::v1::SetRequest* req,
                 cinder::v1::SetResponse* resp
             ) override {
-                cinder::Span span("grpc.set", traceParentFromMetadata(ctx));
+                auto parent = traceParentFromMetadata(ctx);
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    cinder::Span span("grpc.set", parent);
                     span.setStatus(cinder::SpanStatus::Error);
-                    return auth;
+                    auto* reactor = new UnaryReactor<cinder::v1::SetResponse>(resp);
+                    reactor->finishOnce(auth);
+                    return reactor;
                 }
 
                 auto owner = handle_.ring.getNode(req->key());
                 if (owner != handle_.node_id) {
+                    cinder::Span span("grpc.set", parent);
                     resp->set_status(cinder::v1::STATUS_CODE_NOT_READY);
                     span.setStatus(cinder::SpanStatus::Ok);
-                    return ::grpc::Status::OK;
+                    auto* reactor = new UnaryReactor<cinder::v1::SetResponse>(resp);
+                    reactor->finishOnce(::grpc::Status::OK);
+                    return reactor;
                 }
 
                 std::optional<milliseconds> ttl;
                 if (req->ttl_ms() > 0) {
                     ttl = milliseconds(req->ttl_ms());
                 }
-                if (handle_.replica_factor > 1) {
-                    auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != handle_.node_id) {
-                            replicas.push_back(n);
-                        }
-                    }
 
-                    std::promise<Result<void>> promise;
-                    auto future = promise.get_future();
-                    handle_.repl.writeAsync(
-                        req->key(),
-                        req->value(),
-                        ttl,
-                        replicas,
-                        handle_.mode,
-                        [&promise](Result<void> result) { promise.set_value(std::move(result)); },
-                        span.traceId(),
-                        span.spanId()
-                    );
-
-                    auto result = future.get();
+                auto* reactor = new UnaryReactor<cinder::v1::SetResponse>(resp);
+                handle_.operations.setAsync(
+                    req->key(),
+                    req->value(),
+                    ttl,
+                    [reactor, parent](Result<void> result) {
+                    cinder::Span span("grpc.set", parent);
+                    auto* resp = reactor->response();
                     resp->set_status(
                         result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
                                            : toProtoStatus(result.error().code())
@@ -229,67 +267,42 @@ namespace cinder::grpc {
                     span.setStatus(
                         result.has_value() ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error
                     );
-                } else {
-                    auto result = handle_.store.put(req->key(), req->value(), ttl);
-                    resp->set_status(
-                        result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
-                                           : toProtoStatus(result.error().code())
-                    );
-                    span.setStatus(
-                        result.has_value() ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error
-                    );
-                }
-                return ::grpc::Status::OK;
+                    reactor->finishOnce(::grpc::Status::OK);
+                },
+                    parent.trace_id,
+                    parent.span_id
+                );
+                return reactor;
             }
 
-            ::grpc::Status Delete(
-                ::grpc::ServerContext* ctx,
+            ::grpc::ServerUnaryReactor* Delete(
+                ::grpc::CallbackServerContext* ctx,
                 const cinder::v1::DeleteRequest* req,
                 cinder::v1::DeleteResponse* resp
             ) override {
-                cinder::Span span("grpc.delete", traceParentFromMetadata(ctx));
+                auto parent = traceParentFromMetadata(ctx);
                 if (auto auth = checkAuth(ctx); !auth.ok()) {
+                    cinder::Span span("grpc.delete", parent);
                     span.setStatus(cinder::SpanStatus::Error);
-                    return auth;
+                    auto* reactor = new UnaryReactor<cinder::v1::DeleteResponse>(resp);
+                    reactor->finishOnce(auth);
+                    return reactor;
                 }
-                if (handle_.replica_factor > 1) {
-                    auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != handle_.node_id) {
-                            replicas.push_back(n);
-                        }
-                    }
 
-                    std::promise<Result<void>> promise;
-                    auto future = promise.get_future();
-                    handle_.repl.deleteAsync(
-                        req->key(),
-                        replicas,
-                        handle_.mode,
-                        [&promise](Result<void> result) { promise.set_value(std::move(result)); },
-                        span.traceId(),
-                        span.spanId()
-                    );
-
-                    auto result = future.get();
+                auto* reactor = new UnaryReactor<cinder::v1::DeleteResponse>(resp);
+                handle_.operations.deleteAsync(req->key(), [reactor, parent](Result<void> result) {
+                    cinder::Span span("grpc.delete", parent);
+                    auto* resp = reactor->response();
                     resp->set_status(
                         result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
                                            : toProtoStatus(result.error().code())
                     );
-                } else {
-                    // Standalone: versioned tombstone (writer 0, matching
-                    // local put()) so a later join heals via anti-entropy.
-                    auto result =
-                        handle_.store.removeVersioned(req->key(), handle_.store.mintVersion(), 0);
-                    resp->set_status(
-                        result.has_value() ? cinder::v1::STATUS_CODE_UNSPECIFIED
-                                           : toProtoStatus(result.error().code())
+                    span.setStatus(
+                        result.has_value() ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error
                     );
-                }
-
-                span.setStatus(cinder::SpanStatus::Ok);
-                return ::grpc::Status::OK;
+                    reactor->finishOnce(::grpc::Status::OK);
+                }, parent.trace_id, parent.span_id);
+                return reactor;
             }
 
             ::grpc::Status GetVersioned(

@@ -217,6 +217,15 @@ namespace cinder::net {
         void onPayload(std::error_code ec, size_t bytes);
 
         void handleRequest(const Request& req, std::string_view auth_token);
+        void onWriteComplete(
+            std::shared_ptr<TcpConnection> self,
+            std::string key,
+            Opcode opcode,
+            bool replicated,
+            uint64_t trace_id,
+            uint64_t span_id,
+            Result<void> result
+        );
         void sendResponse(const Response& res);
 
         // Ownership redirect value: "moved to <id>", with "@<host>:<port>"

@@ -40,6 +40,7 @@ jobs:
       attestations: write
     outputs:
       image-digest: ${{ steps.build.outputs.digest }}
+      image-name: ghcr.io/${{ github.repository }}-ci
       image-pushed: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v7
@@ -82,7 +83,7 @@ jobs:
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/kraytos17/cinder-ci
+          subject-name: ghcr.io/${{ github.repository }}-ci
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
@@ -92,7 +93,7 @@ jobs:
     if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -100,7 +101,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
+          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/**') }}
           restore-keys: |
             deps-
       - name: Configure (populate dependencies)
@@ -139,25 +140,15 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: ${{ matrix.label }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-${{ matrix.preset }}
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
-
+          ccache-key: ${{ matrix.preset }}
       - name: Configure
         run: just preset=${{ matrix.preset }} configure
 
@@ -169,12 +160,10 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-test-logs
         with:
           name: test-logs-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
-          retention-days: 7
 
   feature-flags:
     needs: [build-image]
@@ -191,25 +180,15 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: Feature Flags (${{ matrix.label }})
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v7
-
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-${{ matrix.preset }}
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: ${{ matrix.preset }}
 
       - name: Configure (TLS + gRPC)
         run: just preset=${{ matrix.preset }} configure
@@ -222,37 +201,26 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-test-logs
         with:
           name: test-logs-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
-          retention-days: 7
 
   sanitize:
     needs: [build-image]
     if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: Sanitizers (GCC)
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-ci-gcc
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: ci-gcc
 
       - name: Configure
         run: just preset=ci-gcc configure
@@ -265,12 +233,10 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-test-logs
         with:
           name: test-logs-sanitize
           path: build/ci-gcc/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
-          retention-days: 7
 
   tsan:
     needs: [build-image]
@@ -287,7 +253,7 @@ jobs:
             family: clang
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
       # TSan needs personality(ADDR_NO_RANDOMIZE), which Docker's default
       # seccomp profile blocks — without this every TSan binary (including
       # gtest discovery runs) dies at startup. Scoped to this job only.
@@ -297,19 +263,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-${{ matrix.preset }}
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: ${{ matrix.preset }}
 
       - name: Configure
         run: just preset=${{ matrix.preset }} configure
@@ -322,37 +279,26 @@ jobs:
 
       - name: Upload test logs
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/upload-test-logs
         with:
           name: test-logs-${{ matrix.preset }}
           path: build/${{ matrix.preset }}/Testing/Temporary/LastTest.log
-          if-no-files-found: ignore
-          retention-days: 7
 
   fuzz:
     needs: [build-image]
     if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: Fuzz smoke
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-fuzz
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: fuzz
 
       - name: Fuzz smoke (10s per target)
         run: just fuzz-test
@@ -371,32 +317,31 @@ jobs:
     if: needs.build-image.outputs.image-pushed == 'true'
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: Lint (Clang + cppcheck)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-lint
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: lint
 
       - name: Check hook syntax
         run: bash -n .githooks/pre-commit
 
       - name: Lint workflows
         run: actionlint
+
+      - name: Set up Buf
+        uses: bufbuild/buf-setup-action@v1
+        with:
+          version: v1.75.0
+          github_token: ${{ github.token }}
+
+      - name: Lint protos
+        run: buf lint
 
       - name: Configure (clang-tidy runs inline; benchmark sources enabled)
         run: just preset=ci-bench configure
@@ -426,7 +371,7 @@ jobs:
             label: TLS + gRPC
     runs-on: ubuntu-26.04
     container:
-      image: ghcr.io/kraytos17/cinder-ci@${{ needs.build-image.outputs.image-digest }}
+      image: ${{ needs.build-image.outputs.image-name }}@${{ needs.build-image.outputs.image-digest }}
     name: CodeQL (${{ matrix.label }})
     timeout-minutes: 180
     permissions:
@@ -435,19 +380,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore ccache
-        uses: hendrikmuhs/ccache-action@v1.2.24
+      - name: Restore caches
+        uses: ./.github/actions/ci-setup
         with:
-          key: ccache-${{ matrix.preset }}
-          max-size: 2G
-          save: ${{ github.ref == 'refs/heads/main' }}
-      - name: Restore dependency cache
-        uses: actions/cache/restore@v6
-        with:
-          path: ~/.cache/cinder/deps
-          key: deps-${{ hashFiles('CMakeLists.txt', 'cmake/CinderDepVersions.cmake') }}
-          restore-keys: |
-            deps-
+          ccache-key: ${{ matrix.preset }}
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

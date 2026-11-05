@@ -40,5 +40,5 @@ set(CINDER_DEP_benchmark_TAG   v1.9.5)
 
 # gRPC needs its submodules (abseil, protobuf, re2, c-ares, ...).
 set(CINDER_DEP_grpc_REPO       https://github.com/grpc/grpc.git)
-set(CINDER_DEP_grpc_TAG        v1.83.1)
+set(CINDER_DEP_grpc_TAG        v1.85.0)
 set(CINDER_DEP_grpc_SUBMODULES TRUE)

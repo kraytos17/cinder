@@ -60,8 +60,14 @@ namespace cinder::net {
         client_shared_secret_(std::move(client_shared_secret)),
         emfile_timer_(io),
         config_getter_(std::move(config_getter)) {
-        owned_operations_ =
-            std::make_unique<CacheOperations>(store_, ring_, node_id_, replica_factor_, repl_);
+        owned_operations_ = std::make_unique<CacheOperations>(
+            store_,
+            ring_,
+            node_id_,
+            replica_factor_,
+            repl_,
+            mode_
+        );
         operations_ = owned_operations_.get();
     }
 

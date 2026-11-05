@@ -1,6 +1,9 @@
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,14 +16,16 @@ namespace cinder {
 
     // Transport-independent cache operations for node-facing adapters.
     //
-    // Interface contract for getAsync:
+    // Interface contracts for asynchronous operations:
     // - Reads the local store for RF=1; for RF>1, asks the ReplicationManager
     //   to collect the configured read quorum and perform read repair.
     // - A winning tombstone is exposed as NotFound (never as a value).
-    // - Callback fires exactly once under ReplicationManager's callback
-    //   contract: inline for a synchronous quorum, otherwise on its completion
-    //   executor. Adapters must marshal the result to their own executor if
-    //   their response state is thread-affine.
+    // - Writes and reads use the same replica plan for a key. Writes apply
+    //   locally for RF=1 and delegate versioning, TTL conversion, and replica
+    //   completion to ReplicationManager for RF>1.
+    // - Completion fires once. It may run inline or on ReplicationManager's
+    //   completion executor; adapters marshal results to any thread-affine
+    //   response state themselves.
     // - Ownership redirects remain adapter policy. A miss here means NotFound;
     //   TCP may add its existing owner-miss redirect behavior at its seam.
     class CacheOperations {
@@ -28,22 +33,69 @@ namespace cinder {
 
         using GetResult = Result<std::string>;
         using GetCallback = std::move_only_function<void(GetResult)>;
+        using WriteCallback = std::move_only_function<void(Result<void>)>;
 
         CacheOperations(
             CacheStore& store,
             const ConsistentHashRing& ring,
             const NodeId& node_id,
             int replica_factor,
-            ReplicationManager* replication = nullptr
+            ReplicationManager* replication = nullptr,
+            ConsistencyMode mode = ConsistencyMode::Async
         ) :
             store_(store),
             ring_(ring),
             node_id_(node_id),
             replica_factor_(replica_factor),
-            replication_(replication) {}
+            replication_(replication),
+            mode_(mode) {}
 
         CacheOperations(const CacheOperations&) = delete;
         auto operator=(const CacheOperations&) -> CacheOperations& = delete;
+
+        void setAsync(
+            const std::string& key,
+            std::string value,
+            std::optional<std::chrono::milliseconds> ttl,
+            WriteCallback on_done,
+            uint64_t trace_id = 0,
+            uint64_t span_id = 0
+        ) const {
+            if (replica_factor_ <= 1 || replication_ == nullptr) {
+                on_done(store_.put(key, std::move(value), ttl));
+                return;
+            }
+            replication_->writeAsync(
+                key,
+                std::move(value),
+                ttl,
+                replicaNodesFor(key),
+                mode_,
+                std::move(on_done),
+                trace_id,
+                span_id
+            );
+        }
+
+        void deleteAsync(
+            const std::string& key,
+            WriteCallback on_done,
+            uint64_t trace_id = 0,
+            uint64_t span_id = 0
+        ) const {
+            if (replica_factor_ <= 1 || replication_ == nullptr) {
+                on_done(store_.removeVersioned(key, store_.mintVersion(), 0));
+                return;
+            }
+            replication_->deleteAsync(
+                key,
+                replicaNodesFor(key),
+                mode_,
+                std::move(on_done),
+                trace_id,
+                span_id
+            );
+        }
 
         void getAsync(
             const std::string& key,
@@ -60,19 +112,9 @@ namespace cinder {
                 }
                 return;
             }
-
-            const auto nodes = ring_.getNodes(key, replica_factor_);
-            std::vector<NodeId> replicas;
-            replicas.reserve(nodes.size());
-            for (const auto& node : nodes) {
-                if (node != node_id_) {
-                    replicas.push_back(node);
-                }
-            }
-
             replication_->readAsync(
                 key,
-                replicas,
+                replicaNodesFor(key),
                 static_cast<size_t>(replica_factor_),
                 [done = std::move(on_done)](Result<VersionedEntry> result) mutable {
                 if (!result) {
@@ -90,11 +132,24 @@ namespace cinder {
 
     private:
 
+        [[nodiscard]]
+        auto replicaNodesFor(const std::string& key) const -> std::vector<NodeId> {
+            const auto nodes = ring_.getNodes(key, replica_factor_);
+            std::vector<NodeId> replicas;
+            replicas.reserve(nodes.size());
+            for (const auto& node : nodes) {
+                if (node != node_id_) {
+                    replicas.push_back(node);
+                }
+            }
+            return replicas;
+        }
+
         CacheStore& store_;
         const ConsistentHashRing& ring_;
         NodeId node_id_;
         int replica_factor_;
         ReplicationManager* replication_;
+        ConsistencyMode mode_;
     };
-
 } // namespace cinder

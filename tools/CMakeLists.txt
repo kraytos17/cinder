@@ -1,29 +1,23 @@
-set(CINDER_TOOL_SOURCES cinderd_main.cpp cinder_cli.cpp cinder_admin.cpp)
+function(cinder_add_tool name source)
+    add_executable(${name} ${source})
+    target_link_libraries(${name} PRIVATE cinder::core CLI11::CLI11)
+    set_target_properties(${name} PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+        CXX_STANDARD 23
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF
+    )
+    _cinder_apply_debug_options(${name})
+    cinder_reuse_pch(${name})
+endfunction()
 
-add_executable(cinderd cinderd_main.cpp)
-target_link_libraries(cinderd PRIVATE cinder::core CLI11::CLI11)
+cinder_add_tool(cinderd cinderd_main.cpp)
 if(CINDER_ENABLE_GRPC)
     target_link_libraries(cinderd PRIVATE cinder_grpc cinder_proto)
 endif()
 
-add_executable(cinder-cli cinder_cli.cpp)
-target_link_libraries(cinder-cli PRIVATE cinder::core CLI11::CLI11)
+cinder_add_tool(cinder-cli cinder_cli.cpp)
+cinder_add_tool(cinder-admin cinder_admin.cpp)
 
-add_executable(cinder-admin cinder_admin.cpp)
-target_link_libraries(cinder-admin PRIVATE cinder::core CLI11::CLI11)
-
-set_target_properties(cinderd cinder-cli cinder-admin PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
-)
-_cinder_apply_debug_options(cinderd)
-_cinder_apply_debug_options(cinder-cli)
-_cinder_apply_debug_options(cinder-admin)
-cinder_reuse_pch(cinderd)
-cinder_reuse_pch(cinder-cli)
-cinder_reuse_pch(cinder-admin)
-
-list(TRANSFORM CINDER_TOOL_SOURCES PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/")
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tools FILES ${CINDER_TOOL_SOURCES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} PREFIX tools FILES
+    cinderd_main.cpp cinder_cli.cpp cinder_admin.cpp)

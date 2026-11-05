@@ -208,7 +208,7 @@ namespace cinder {
         gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
         detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
         repl_(*store_, options.node_id, clock_, transport_),
-        operations_(*store_, ring_, node_id_, options.replica_factor, &repl_),
+        operations_(*store_, ring_, node_id_, options.replica_factor, &repl_, options.mode),
         shard_(
             *store_,
             ring_,

@@ -744,124 +744,58 @@ namespace cinder::net {
                 break;
             }
             case Opcode::Set: {
-                if (repl_ != nullptr && replica_factor_ > 1) {
-                    auto nodes = ring_.getNodes(req.key, replica_factor_);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != node_id_) {
-                            replicas.push_back(n);
-                        }
-                    }
-
-                    ring_.incrementLoad(node_id_);
-                    auto self = shared_from_this();
-                    auto trace_id = req.trace_id;
-                    auto span_id = req.span_id;
-                    repl_->writeAsync(
-                        req.key,
-                        req.value,
-                        req.ttl,
-                        replicas,
-                        mode_,
-                        [this, self, trace_id, span_id](Result<void> result) {
-                        ring_.decrementLoad(node_id_);
-                        // Quorum completion lands on an arbitrary pool thread —
-                        // hop back onto this connection's strand.
-                        asio::post(strand_, [this, self, result, trace_id, span_id] {
-                            Span async_span(
-                                "replication.write.quorum",
-                                SpanContext{trace_id, span_id}
-                            );
-
-                            Response async_res{
-                                .status = result.has_value() ? Errc::OK : result.error().code(),
-                                .value = std::nullopt,
-                            };
-
-                            async_res.trace_id = trace_id;
-                            async_res.span_id = span_id;
-                            sendResponse(async_res);
-                            maybeRead();
-                        });
-                    },
+                ring_.incrementLoad(node_id_);
+                auto self = shared_from_this();
+                auto trace_id = req.trace_id;
+                auto span_id = req.span_id;
+                const bool replicated_write = replica_factor_ > 1 && repl_ != nullptr;
+                operations_.setAsync(
+                    req.key,
+                    req.value,
+                    req.ttl,
+                    [this, self, key = req.key, replicated_write, trace_id, span_id](
+                        Result<void> result
+                    ) {
+                    onWriteComplete(
+                        self,
+                        key,
+                        Opcode::Set,
+                        replicated_write,
                         trace_id,
-                        span_id
+                        span_id,
+                        std::move(result)
                     );
-                    return; // response sent asynchronously from the write callback
-                } else {
-                    ring_.incrementLoad(node_id_);
-                    auto result = store_.put(req.key, req.value, req.ttl);
-                    ring_.decrementLoad(node_id_);
-                    res.status = result.has_value() ? Errc::OK : result.error().code();
-                }
-
-                CINDER_TRACE(
-                    "opcode completed",
-                    {"opcode", static_cast<int>(req.opcode)},
-                    {"key", req.key},
-                    {"status", static_cast<int>(res.status)}
+                },
+                    trace_id,
+                    span_id
                 );
-                break;
+                return; // response is sent on the connection strand
             }
             case Opcode::Del: {
-                if (repl_ != nullptr && replica_factor_ > 1) {
-                    auto nodes = ring_.getNodes(req.key, replica_factor_);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != node_id_) {
-                            replicas.push_back(n);
-                        }
-                    }
-
-                    ring_.incrementLoad(node_id_);
-                    auto self = shared_from_this();
-                    auto trace_id = req.trace_id;
-                    auto span_id = req.span_id;
-                    repl_->deleteAsync(
-                        req.key,
-                        replicas,
-                        mode_,
-                        [this, self, trace_id, span_id](Result<void> result) {
-                        ring_.decrementLoad(node_id_);
-                        // Quorum completion lands on an arbitrary pool thread —
-                        // hop back onto this connection's strand.
-                        asio::post(strand_, [this, self, result, trace_id, span_id] {
-                            Span async_span(
-                                "replication.delete.quorum",
-                                SpanContext{trace_id, span_id}
-                            );
-
-                            Response async_res{
-                                .status = result.has_value() ? Errc::OK : result.error().code(),
-                                .value = std::nullopt,
-                            };
-
-                            async_res.trace_id = trace_id;
-                            async_res.span_id = span_id;
-                            sendResponse(async_res);
-                            maybeRead();
-                        });
-                    },
+                ring_.incrementLoad(node_id_);
+                auto self = shared_from_this();
+                auto trace_id = req.trace_id;
+                auto span_id = req.span_id;
+                const bool replicated_delete = replica_factor_ > 1 && repl_ != nullptr;
+                operations_.deleteAsync(
+                    req.key,
+                    [this, self, key = req.key, replicated_delete, trace_id, span_id](
+                        Result<void> result
+                    ) {
+                    onWriteComplete(
+                        self,
+                        key,
+                        Opcode::Del,
+                        replicated_delete,
                         trace_id,
-                        span_id
+                        span_id,
+                        std::move(result)
                     );
-                    return; // response sent asynchronously from the delete callback
-                } else {
-                    // Standalone node: versioned tombstone (writer 0, matching
-                    // local put()) so a later rebalance join heals via
-                    // anti-entropy instead of resurrecting the key.
-                    ring_.incrementLoad(node_id_);
-                    auto result = store_.removeVersioned(req.key, store_.mintVersion(), 0);
-                    ring_.decrementLoad(node_id_);
-                    res.status = result.has_value() ? Errc::OK : result.error().code();
-                }
-                CINDER_TRACE(
-                    "opcode completed",
-                    {"opcode", static_cast<int>(req.opcode)},
-                    {"key", req.key},
-                    {"status", static_cast<int>(res.status)}
+                },
+                    trace_id,
+                    span_id
                 );
-                break;
+                return; // response is sent on the connection strand
             }
             case Opcode::Ping: {
                 res.status = Errc::OK;
@@ -987,6 +921,57 @@ namespace cinder::net {
         res.span_id = req.span_id;
         sendResponse(res);
         maybeRead();
+    }
+
+    void TcpConnection::onWriteComplete(
+        std::shared_ptr<TcpConnection> self,
+        std::string key,
+        Opcode opcode,
+        bool replicated,
+        uint64_t trace_id,
+        uint64_t span_id,
+        Result<void> result
+    ) {
+        ring_.decrementLoad(node_id_);
+        // Replication completion may be inline or on another executor. Always
+        // marshal connection-state access to this connection's strand.
+        asio::post(
+            strand_,
+            [this,
+             self = std::move(self),
+             key = std::move(key),
+             opcode,
+             replicated,
+             trace_id,
+             span_id,
+             result = std::move(result)]() mutable {
+            const bool is_set = opcode == Opcode::Set;
+            Span async_span(
+                replicated ? (is_set ? "replication.write.quorum" : "replication.delete.quorum")
+                           : (is_set ? "tcp.set.local" : "tcp.delete.local"),
+                SpanContext{trace_id, span_id}
+            );
+
+            Response async_res{
+                .status = result.has_value() ? Errc::OK : result.error().code(),
+                .value = std::nullopt,
+            };
+
+            async_res.trace_id = trace_id;
+            async_res.span_id = span_id;
+            if (!replicated) {
+                CINDER_TRACE(
+                    "opcode completed",
+                    {"opcode", static_cast<int>(opcode)},
+                    {"key", key},
+                    {"status", static_cast<int>(async_res.status)}
+                );
+            }
+
+            sendResponse(async_res);
+            maybeRead();
+        }
+        );
     }
 
     void TcpConnection::sendResponse(const Response& res) {
