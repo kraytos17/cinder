@@ -335,7 +335,6 @@ namespace cinder {
         size_t msg_len = std::min(msg.size(), cap - len - 1);
         std::memcpy(buf + len, msg.data(), msg_len);
         len += msg_len;
-
         // Append structured fields: key=value. Integers and bools format
         // directly into the buffer via std::to_chars — no heap allocation.
         for (const auto& field : fields) {
@@ -682,6 +681,7 @@ namespace cinder {
                             return;
                         }
                     }
+
                     span.attributes.push_back(std::move(copied));
                     return;
                 }
@@ -787,11 +787,10 @@ namespace cinder {
         // The direct path relies on spdlog level filtering — but consult it
         // BEFORE formatting, so events the sink would drop cost a single
         // atomic load instead of a full format into a discarded buffer.
-        // (Profiled: formatting discarded Warn/Info records was ~35% of wall
-        // samples in a replay-heavy mix with level set to Error.)
         if (!spdlog::global_logger()->should_log(toSpdlogLevel(meta.level))) {
             return;
         }
+
         size_t len = formatRecordInto(
             buf.data(),
             K_BUF_SIZE,
