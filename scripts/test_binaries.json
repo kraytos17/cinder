@@ -1,0 +1,21 @@
+{
+  "all": [
+    "cinder_unit_store_tests",
+    "cinder_unit_ring_tests",
+    "cinder_unit_net_tests",
+    "cinder_unit_node_tests",
+    "cinder_sim_tests",
+    "cinder_cli_tests",
+    "cinder_integration_tests"
+  ],
+  "grpc": [
+    "cinder_unit_store_tests",
+    "cinder_unit_ring_tests",
+    "cinder_unit_net_tests",
+    "cinder_unit_node_tests",
+    "cinder_integration_tests"
+  ],
+  "node": [
+    "cinder_unit_node_tests"
+  ]
+}

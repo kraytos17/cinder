@@ -1,0 +1,33 @@
+[
+  {
+    "name": "protocol_decode",
+    "options": ["-max_len=8192", "-dict=tests/fuzz/corpus/protocol_decode/protocol.dict"]
+  },
+  {
+    "name": "gossip_parse",
+    "options": ["-max_len=1024", "-dict=tests/fuzz/corpus/gossip_parse/gossip.dict"]
+  },
+  {"name": "store_put", "options": ["-max_len=1024"]},
+  {
+    "name": "snapshot",
+    "options": ["-max_len=4096", "-dict=tests/fuzz/corpus/snapshot/snapshot.dict"]
+  },
+  {
+    "name": "wal",
+    "options": ["-max_len=4096", "-rss_limit_mb=512", "-dict=tests/fuzz/corpus/wal/wal.dict"]
+  },
+  {"name": "anti_entropy", "options": ["-max_len=8192"]},
+  {
+    "name": "http_parse",
+    "options": ["-max_len=2048", "-dict=tests/fuzz/corpus/http_parse/http.dict"]
+  },
+  {
+    "name": "redirect_parse",
+    "options": ["-max_len=256", "-dict=tests/fuzz/corpus/redirect_parse/redirect.dict"]
+  },
+  {"name": "byte_reader", "options": ["-max_len=512"]},
+  {"name": "ttl_wheel", "options": ["-max_len=2048"]},
+  {"name": "hint_queue", "options": ["-max_len=2048", "-rss_limit_mb=512"]},
+  {"name": "ring", "options": ["-max_len=1024"]},
+  {"name": "config", "options": ["-max_len=1024"]}
+]
