@@ -11,7 +11,8 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   transport + cluster subsystems). Tools: `cinderd`, `cinder-cli`, `cinder-admin`.
   `CacheClient` + `ConnectionPool` offer the same access in-process.
 * Details live in `docs/`: `architecture.md` (process model, request path, storage),
-  `protocol.md` (wire format), `rebalance.md` (membership, rebalance, persistence).
+  `protocol.md` (wire format), `rebalance.md` (membership, rebalance, persistence),
+  `profiling.md` (benchmarks, samply/perf/PGO workflow).
   Do not duplicate them here; link them.
 
 ## Architecture cheat sheet
