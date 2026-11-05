@@ -1,5 +1,6 @@
 set(CINDER_BENCH_SOURCES
     throughput_bench.cpp
+    replication_bench.cpp
     ring_lookup_bench.cpp
     allocator_bench.cpp
     lfu_bucket_bench.cpp
