@@ -37,27 +37,31 @@ namespace cinder {
         }
 
         // Completions arriving from other threads: exactly-once decision on
-        // the async tail.
+        // the async tail. Sender threads are joined, never detached: a
+        // detached sender that outlives the test would try_send into the
+        // process-global system_context while it is being torn down.
         TEST(FanOutTest, AsyncCompletionsDecideOnce) {
             std::promise<void> done;
             auto done_future = done.get_future();
             std::atomic<int> fires{0};
             std::atomic<int> fails{0};
+            std::atomic<size_t> processed{0};
+            std::vector<std::thread> senders;
 
-            fanOutQuorum<VoidResult>(3, [](auto report) {
-                std::thread([report]() mutable {
+            fanOutQuorum<VoidResult>(3, [&](auto report) {
+                senders.emplace_back([report] mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     report(0, ok());
-                }).detach();
-                std::thread([report]() mutable {
+                });
+                senders.emplace_back([report] mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(20));
                     report(1, ok());
-                }).detach();
-                std::thread([report]() mutable {
+                });
+                senders.emplace_back([report] mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(30));
                     report(2, ok());
-                }).detach();
-            }, [](std::size_t, VoidResult, bool) {}, [] { return true; }, [&] {
+                });
+            }, [&](std::size_t, VoidResult, bool) { ++processed; }, [] { return true; }, [&] {
                 ++fires;
                 done.set_value();
             }, [&] { ++fails; });
@@ -65,6 +69,15 @@ namespace cinder {
             ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
             EXPECT_EQ(fails.load(), 0);
+            for (auto& t : senders) {
+                t.join();
+            }
+            // Wait for the detached tail to consume every completion, so no
+            // pool work referencing test stack state outlives the test.
+            for (int i = 0; i < 1000 && processed.load() < 3; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            EXPECT_EQ(processed.load(), 3U);
         }
 
         // Duplicate reports for the same target are dropped before they can
@@ -94,18 +107,19 @@ namespace cinder {
             auto done_future = done.get_future();
             std::atomic<int> late_seen{0};
             std::atomic<int> fires{0};
+            std::vector<std::thread> senders;
 
             fanOutQuorum<VoidResult>(
                 3,
-                [](auto report) {
+                [&](auto report) {
                 // Quorum of 3 with w=3 impossible after 1 failure: report
                 // the failure only; the other two arrive late.
                 report(0, err<void>(Error(Errc::NotReady, "down")));
-                std::thread([report]() mutable {
+                senders.emplace_back([report] mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     report(1, ok());
                     report(2, ok());
-                }).detach();
+                });
             },
                 [&](std::size_t i, VoidResult, bool) {
                 if (i > 0) {
@@ -123,11 +137,15 @@ namespace cinder {
 
             ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
-            // Give the detached late sends a chance to land.
+            // Wait for the late sends to be consumed by the tail, then join
+            // the sender so no thread outlives the test.
             for (int i = 0; i < 100 && late_seen.load() < 2; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
             EXPECT_EQ(late_seen.load(), 2);
+            for (auto& t : senders) {
+                t.join();
+            }
         }
 
         // Mixed sync + async: inline drain handles what is ready, the tail
@@ -136,21 +154,30 @@ namespace cinder {
             std::promise<void> done;
             auto done_future = done.get_future();
             std::atomic<int> fires{0};
+            std::atomic<size_t> processed{0};
+            std::vector<std::thread> senders;
 
-            fanOutQuorum<VoidResult>(3, [](auto report) {
+            fanOutQuorum<VoidResult>(3, [&](auto report) {
                 report(0, ok());
-                std::thread([report]() mutable {
+                senders.emplace_back([report] mutable {
                     std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     report(1, ok());
                     report(2, ok());
-                }).detach();
-            }, [](std::size_t, VoidResult, bool) {}, [] { return true; }, [&] {
+                });
+            }, [&](std::size_t, VoidResult, bool) { ++processed; }, [] { return true; }, [&] {
                 ++fires;
                 done.set_value();
             }, [] { FAIL() << "fail must not run"; });
 
             ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
+            for (auto& t : senders) {
+                t.join();
+            }
+            for (int i = 0; i < 1000 && processed.load() < 3; ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+            EXPECT_EQ(processed.load(), 3U);
         }
 
     } // namespace

@@ -438,8 +438,8 @@ namespace cinder {
             read_flights_.finish(key, R, flight, std::move(r));
         };
 
-        // ReadQuorum state replaced by ReadReducer (see above): the reducer
-        // owns best/acks/pending and the LWW decision. Shared request and
+        // ReadQuorum state now lives in ReadReducer: the reducer owns
+        // best/acks/pending and the LWW decision. Shared request and
         // replica list are heap-held so the async tail never dangles.
         auto shared_req = std::make_shared<net::Request>(std::move(req));
         auto shared_replicas = std::make_shared<std::vector<NodeId>>(replica_nodes);
