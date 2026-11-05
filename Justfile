@@ -411,6 +411,22 @@ samply-repl:
     samply record ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_min_time=0.5 {{ args }}
 
 [group('misc')]
+[doc('PGO step 1: instrumented build + train on the full throughput bench (profiles land in build/pgo-data).')]
+pgo-train:
+    rm -rf build/pgo build/pgo-data
+    cmake --preset pgo-generate
+    cmake --build --preset pgo-generate -j{{ jobs }} --target cinder_throughput_bench
+    ./build/pgo/bin/cinder_throughput_bench --benchmark_min_time=0.1
+    @echo "PGO profiles in build/pgo-data — now run: just pgo-use"
+
+[group('misc')]
+[doc('PGO step 2: rebuild consuming build/pgo-data, then measure the bench binary directly.')]
+pgo-use:
+    cmake --preset pgo-use
+    cmake --build --preset pgo-use -j{{ jobs }} --target cinder_throughput_bench
+    @echo "PGO-optimized bench at build/pgo/bin/cinder_throughput_bench"
+
+[group('misc')]
 [doc('Install the current preset to the CMake prefix.')]
 install: build
     cmake --install build/{{ preset }}

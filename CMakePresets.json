@@ -68,6 +68,38 @@
       }
     },
     {
+      "name": "pgo-generate",
+      "inherits": "base",
+      "displayName": "PGO instrumented (GCC)",
+      "description": "Release+LTO build writing .gcda into build/pgo-data; train with the throughput bench, then switch to pgo-use (same build dir so profile paths match)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "binaryDir": "${sourceDir}/build/pgo",
+      "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON",
+        "CINDER_PGO": "Generate",
+        "CINDER_PGO_DIR": "${sourceDir}/build/pgo-data"
+      }
+    },
+    {
+      "name": "pgo-use",
+      "inherits": "base",
+      "displayName": "PGO optimized (GCC)",
+      "description": "Release+LTO build consuming build/pgo-data profiles (same build dir as pgo-generate)",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "binaryDir": "${sourceDir}/build/pgo",
+      "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "ON",
+        "CINDER_PGO": "Use",
+        "CINDER_PGO_DIR": "${sourceDir}/build/pgo-data"
+      }
+    },
+    {
       "name": "release-clang",
       "inherits": "base",
       "displayName": "Release (Clang)",
@@ -329,6 +361,8 @@
     { "name": "debug-clang",    "configurePreset": "debug-clang" },
     { "name": "release",        "configurePreset": "release" },
     { "name": "release-clang",  "configurePreset": "release-clang" },
+    { "name": "pgo-generate",   "configurePreset": "pgo-generate" },
+    { "name": "pgo-use",        "configurePreset": "pgo-use" },
     { "name": "asan",           "configurePreset": "asan" },
     { "name": "asan-clang",     "configurePreset": "asan-clang" },
     { "name": "msan",           "configurePreset": "msan" },

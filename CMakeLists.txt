@@ -280,6 +280,32 @@ if(CINDER_ENABLE_LTO)
 endif()
 
 # ---------------------------------------------------------------------------
+# PGO (GCC only): Generate instruments and writes .gcda into CINDER_PGO_DIR
+# when the workload runs; Use rebuilds consuming that data. Both phases
+# share one build dir (see the pgo-generate/pgo-use presets) so profile
+# paths match exactly. Train with the throughput bench, then measure.
+# ---------------------------------------------------------------------------
+set(CINDER_PGO "OFF" CACHE STRING "Profile-guided optimization: OFF, Generate or Use (GCC only)")
+set(CINDER_PGO_DIR "${CMAKE_BINARY_DIR}/../pgo-data" CACHE PATH "Directory for PGO profile data")
+if(NOT CINDER_PGO STREQUAL "OFF")
+    if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        message(FATAL_ERROR "Cinder: CINDER_PGO is GCC-only (got ${CMAKE_CXX_COMPILER_ID})")
+    endif()
+    file(MAKE_DIRECTORY "${CINDER_PGO_DIR}")
+    if(CINDER_PGO STREQUAL "Generate")
+        add_compile_options("-fprofile-generate=${CINDER_PGO_DIR}")
+        add_link_options("-fprofile-generate=${CINDER_PGO_DIR}")
+        message(STATUS "Cinder: PGO instrumentation -> ${CINDER_PGO_DIR}")
+    elseif(CINDER_PGO STREQUAL "Use")
+        add_compile_options("-fprofile-use=${CINDER_PGO_DIR}" -fprofile-correction -Wno-missing-profile)
+        add_link_options("-fprofile-use=${CINDER_PGO_DIR}" -fprofile-correction)
+        message(STATUS "Cinder: PGO consuming <- ${CINDER_PGO_DIR}")
+    else()
+        message(FATAL_ERROR "Cinder: CINDER_PGO must be OFF, Generate or Use (got ${CINDER_PGO})")
+    endif()
+endif()
+
+# ---------------------------------------------------------------------------
 # Compile-time optimizations
 # ---------------------------------------------------------------------------
 if(CINDER_USE_PIPE)
