@@ -1137,6 +1137,112 @@ namespace cinder {
             EXPECT_TRUE(store.getVersioned("k")->isTombstone());
         }
 
+        TEST(ReadReducerTest, TombstoneTieBreaksDeterministically) {
+            // Direct reducer test: equal (version, writer), one live local,
+            // one tombstone vote. The tombstone must win and flag repair.
+            RealClock clock;
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(5);
+            live.writer_node_hash = 7;
+            ReadReducer reducer(2, 1, std::move(live), clock);
+
+            net::Response vote;
+            vote.status = Errc::OK;
+            vote.value = std::nullopt;
+            vote.version = 5;
+            vote.writer_node_hash = 7;
+            vote.tombstone = true;
+            reducer.noteRemote(std::move(vote), true);
+
+            EXPECT_TRUE(reducer.shouldFire());
+            EXPECT_TRUE(reducer.needsRepair());
+            auto best = reducer.takeBest();
+            ASSERT_TRUE(best.has_value());
+            EXPECT_TRUE(best->isTombstone());
+            EXPECT_EQ(best->version(), 5U);
+        }
+
+        TEST(ReadReducerTest, StaleVoteDoesNotWinButFlagsRepair) {
+            RealClock clock;
+            VersionedEntry live;
+            live.value = "v";
+            live.setVersion(5);
+            live.writer_node_hash = 7;
+            // R=2 with two outstanding remotes: one stale vote leaves the
+            // reducer pending without a winner change.
+            ReadReducer reducer(2, 2, std::move(live), clock);
+
+            net::Response stale;
+            stale.status = Errc::OK;
+            stale.value = "old";
+            stale.version = 3;
+            stale.writer_node_hash = 7;
+            reducer.noteRemote(std::move(stale), true);
+
+            // Quorum met via local + stale vote (any response acks), but the
+            // winner is unchanged and the divergent replica is flagged.
+            EXPECT_TRUE(reducer.shouldFire());
+            EXPECT_TRUE(reducer.needsRepair());
+            auto best = reducer.takeBest();
+            ASSERT_TRUE(best.has_value());
+            EXPECT_FALSE(best->isTombstone());
+            EXPECT_EQ(best->version(), 5U);
+        }
+
+        TEST(ReadReducerTest, MissingVoteCountsNoAckButNeedsRepair) {
+            RealClock clock;
+            ReadReducer reducer(2, 1, std::nullopt, clock);
+
+            net::Response miss;
+            miss.status = Errc::NotFound;
+            reducer.noteRemote(std::move(miss), true);
+
+            EXPECT_EQ(reducer.acks(), 0U);
+            EXPECT_TRUE(reducer.needsRepair());
+            EXPECT_FALSE(reducer.takeBest().has_value());
+        }
+
+        TEST(ReadFlightRegistryTest, DifferentRGetsSeparateFlights) {
+            // Singleflight keys include the read quorum: different R values
+            // must not share a leader's outcome.
+            using Cb = std::function<void(int)>;
+            ReadFlightRegistry<Cb, int> registry;
+            bool first_called = false;
+            bool second_called = false;
+            auto [flight1, leader1] = registry.attach("k", 1, [&](int) { first_called = true; });
+            auto [flight2, leader2] = registry.attach("k", 2, [&](int) { second_called = true; });
+            EXPECT_TRUE(leader1);
+            EXPECT_TRUE(leader2);
+            EXPECT_NE(flight1, flight2);
+
+            registry.finish("k", 1, flight1, 1);
+            EXPECT_TRUE(first_called);
+            EXPECT_FALSE(second_called);
+            registry.finish("k", 2, flight2, 2);
+            EXPECT_TRUE(second_called);
+        }
+
+        TEST(ReadFlightRegistryTest, SameKeySameRCoalesces) {
+            using Cb = std::function<void(int)>;
+            ReadFlightRegistry<Cb, int> registry;
+            int calls = 0;
+            auto [flight1, leader1] = registry.attach("k", 2, [&](int) { ++calls; });
+            auto [flight2, leader2] = registry.attach("k", 2, [&](int) { ++calls; });
+            EXPECT_TRUE(leader1);
+            EXPECT_FALSE(leader2);
+            EXPECT_EQ(flight1, flight2);
+
+            // Finishing the wrong flight is a no-op for the table but still
+            // notifies the passed flight's waiters (defensive path).
+            registry.finish("k", 2, flight1, 7);
+            EXPECT_EQ(calls, 2);
+            // Entry erased: a later read begins a fresh flight.
+            auto [flight3, leader3] = registry.attach("k", 2, [&](int) { ++calls; });
+            EXPECT_TRUE(leader3);
+            EXPECT_NE(flight3, flight1);
+        }
+
         TEST(HintQueueTest, CoalesceTombstoneWinsExactStampTies) {
             // Equal (version, writer), contradictory delete state: the
             // tombstone must win regardless of arrival order, or a replayed

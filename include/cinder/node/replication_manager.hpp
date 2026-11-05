@@ -5,7 +5,6 @@
 #include <chrono>
 #include <functional>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -18,6 +17,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
+#include "cinder/node/read_quorum.hpp"
 #include "cinder/store/cache_store.hpp"
 
 namespace cinder {
@@ -178,21 +178,8 @@ namespace cinder {
             SpanContext parent
         );
 
-        // One in-flight coalesced read. Waiters share the leader's LWW result;
-        // the table holds one entry per distinct in-flight key.
-        struct ReadFlight {
-            std::vector<ReadCallback> waiters;
-        };
-
-        // Complete a coalesced read: erase-then-notify so a waiter that
-        // synchronously starts a new read for the same key begins a fresh
-        // flight instead of deadlocking on itself.
-        void finishReadFlight(
-            const std::string& key,
-            const std::shared_ptr<ReadFlight>& flight,
-            Result<VersionedEntry> result
-        );
-
+        // Read-flight state lives in ReadFlightRegistry (see read_quorum.hpp);
+        // the manager keeps only the registry.
         CacheStore& local_;
         NodeId self_;
         Clock& clock_;
@@ -203,10 +190,10 @@ namespace cinder {
         // Single-consumer guard for replayHints(): overlapping timer ticks (or
         // pool threads) must not run two replays concurrently.
         std::atomic<bool> replaying_{false};
-        // Coalesced reads: key -> in-flight flight. Leaf-level mutex, held
-        // only for map insert/find/erase — never across I/O or store locks.
-        std::mutex read_flights_mutex_;
-        ankerl::unordered_dense::map<std::string, std::shared_ptr<ReadFlight>> read_flights_;
+        // Coalesced reads: the registry owns the in-flight table (keyed by
+        // key + read quorum). Leaf-level mutex, held only for map
+        // insert/find/erase — never across I/O or store locks.
+        ReadFlightRegistry<ReadCallback, Result<VersionedEntry>> read_flights_;
         MetricsCollector* metrics_ = nullptr;
     };
 } // namespace cinder

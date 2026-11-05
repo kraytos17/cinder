@@ -8,6 +8,7 @@
 #include <asio/use_awaitable.hpp>
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <utility>
@@ -364,33 +365,6 @@ namespace cinder {
         }, [st] { st->on_done(err(Error(Errc::NotReady, "quorum fan-out failed"))); });
     }
 
-    void ReplicationManager::finishReadFlight(
-        const std::string& key,
-        const std::shared_ptr<ReadFlight>& flight,
-        Result<VersionedEntry> result
-    ) {
-        std::vector<ReadCallback> waiters;
-        {
-            std::scoped_lock lock(read_flights_mutex_);
-            auto it = read_flights_.find(key);
-            if (it != read_flights_.end() && it->second == flight) {
-                read_flights_.erase(it);
-            }
-            waiters = std::move(flight->waiters);
-        }
-
-        // All but the last waiter get a copy; the last takes the move. A
-        // single-waiter flight (the common case) moves with zero copies.
-        // (Structured without a conditional move inside the loop: the
-        // use-after-move check cannot prove a last-iteration-only move safe.)
-        for (size_t i = 0; i + 1 < waiters.size(); ++i) {
-            waiters[i](result);
-        }
-        if (!waiters.empty()) {
-            waiters.back()(std::move(result));
-        }
-    }
-
     void ReplicationManager::readAsync(
         const std::string& key,
         const std::vector<NodeId>& replica_nodes,
@@ -434,151 +408,85 @@ namespace cinder {
         // No blocking anywhere — completion is async. Safe against
         // self-deadlock: replica GetVersioned requests are served from the
         // local store only, so a flight never re-enters this table for its
-        // own key, and finishReadFlight erases before notifying (a waiter
+        // own key, and the registry erases before notifying (a waiter
         // that synchronously starts a new read begins a fresh flight).
-        std::shared_ptr<ReadFlight> flight;
-        {
-            std::scoped_lock lock(read_flights_mutex_);
-            auto it = read_flights_.find(key);
-            if (it == read_flights_.end()) {
-                flight = std::make_shared<ReadFlight>();
-                flight->waiters.push_back(std::move(on_done));
-                read_flights_.emplace(key, flight);
-            } else {
-                flight = it->second;
-                flight->waiters.push_back(std::move(on_done));
-                if (metrics_) {
-                    metrics_->replicationMetrics().reads_coalesced.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                }
-                return;
+        // Flights are keyed by (key, read quorum) via the registry: waiters
+        // with a different R never share a leader's outcome.
+        auto [flight, is_leader] = read_flights_.attach(key, R, std::move(on_done));
+        if (!is_leader) {
+            if (metrics_) {
+                metrics_->replicationMetrics().reads_coalesced.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
             }
+            return;
         }
 
-        // Single-consumer LWW reduce: best_* is a compound maximum updated by
-        // one reader at a time, so no mutex is needed. Post-decision arrivals
-        // are ignored (as the old early-return did); the loop still drains so
-        // no transport callback outlives the operation. Heap-owned for the
-        // async tail.
-        struct ReadQuorum {
-            std::vector<NodeId> replicas;
-            net::Request req;
-            ReadCallback on_done;
-            std::string key;
-            size_t r = 0;
-            Version best_version = 0;
-            uint64_t best_writer_hash = 0;
-            std::optional<VersionedEntry> best_entry;
-            bool needs_repair = false;
-            size_t acks = 0;
-            size_t pending = 0;
-        };
-
-        auto st = std::make_shared<ReadQuorum>();
-        st->replicas = replica_nodes;
-        st->req = std::move(req);
+        // Per-flight LWW reducer: single-consumer compound maximum, so no
+        // mutex is needed. Post-decision arrivals are ignored; the loop still
+        // drains so no transport callback outlives the operation. Heap-owned
+        // for the async tail.
+        auto reducer =
+            std::make_shared<ReadReducer>(R, replica_nodes.size(), std::move(local_entry), clock_);
         // Route the quorum decision through the flight: every waiter (leader
         // first) receives the LWW result, and the entry is erased before any
-        // waiter runs. Captures the key by value — capturing `st` here would
-        // form a shared_ptr cycle (st owns on_done owns st) and leak.
-        st->on_done = [this, key, flight](Result<VersionedEntry> r) mutable {
-            finishReadFlight(key, flight, std::move(r));
+        // waiter runs. std::function so the fire/fail closures below can each
+        // hold a copy and invoke it without themselves being mutable.
+        std::function<void(Result<VersionedEntry>)> complete =
+            [this, key, R, flight](Result<VersionedEntry> r) {
+            read_flights_.finish(key, R, flight, std::move(r));
         };
 
-        st->key = key;
-        st->r = R;
-        st->acks = local_entry.has_value() ? 1 : 0;
-        st->pending = st->replicas.size();
-        if (local_entry.has_value()) {
-            st->best_version = local_entry->version();
-            st->best_writer_hash = local_entry->writer_node_hash;
-            st->best_entry = std::move(*local_entry);
-        }
+        // ReadQuorum state replaced by ReadReducer (see above): the reducer
+        // owns best/acks/pending and the LWW decision. Shared request and
+        // replica list are heap-held so the async tail never dangles.
+        auto shared_req = std::make_shared<net::Request>(std::move(req));
+        auto shared_replicas = std::make_shared<std::vector<NodeId>>(replica_nodes);
 
         // Child spans below parent to this fanout (see the write path: the
         // fanout span is a stack local, so its identity is captured by value
         // for the async tail).
         SpanContext fanout = span.context();
-        fanOutQuorum<Result<net::Response>>(st->replicas.size(), [this, st](auto report) {
-            for (size_t i = 0; i < st->replicas.size(); ++i) {
+        fanOutQuorum<Result<net::Response>>(
+            shared_replicas->size(),
+            [this, shared_req, shared_replicas](auto report) {
+            for (size_t i = 0; i < shared_replicas->size(); ++i) {
                 transport_.sendRequestAsync(
-                    st->replicas[i],
-                    st->req,
+                    (*shared_replicas)[i],
+                    *shared_req,
                     [report, i](Result<net::Response> r) mutable { report(i, std::move(r)); }
                 );
             }
-        }, [this, st, fanout](std::size_t i, Result<net::Response> r, bool active) {
+        },
+            [reducer,
+             shared_replicas,
+             fanout](std::size_t i, Result<net::Response> r, bool active) {
             Span replica_span("replication.read.replica", fanout);
-            replica_span.setAttribute({"replica", st->replicas[i]});
+            replica_span.setAttribute({"replica", (*shared_replicas)[i]});
             if (!active) {
                 replica_span.setStatus(SpanStatus::Cancelled);
-                return;
-            }
-            if (!r.has_value()) {
+            } else if (!r.has_value()) {
                 replica_span.setStatus(SpanStatus::Error);
             } else {
                 replica_span.setStatus(SpanStatus::Ok);
             }
-            if (r.has_value() && r->status == Errc::OK && r->version != 0) {
-                ++st->acks;
-                // Single shared LWW rule (see compareLww): tombstone votes
-                // compete on equal footing, with tombstone winning
-                // exact-stamp ties so concurrent delete-vs-write resolves
-                // deterministically instead of by arrival order.
-                const LwwStamp remote{r->version, r->writer_node_hash, r->tombstone};
-                const LwwStamp best{
-                    st->best_version,
-                    st->best_writer_hash,
-                    st->best_entry.has_value() && st->best_entry->isTombstone(),
-                };
-                if (lwwWinsOver(remote, best)) {
-                    st->needs_repair = true;
-                    st->best_version = r->version;
-                    st->best_writer_hash = r->writer_node_hash;
-
-                    VersionedEntry entry;
-                    // Tombstone votes carry no value (GetVersioned omits it);
-                    // the marker itself is the vote.
-                    if (r->value.has_value()) {
-                        entry.value = std::move(*r->value);
-                    }
-
-                    entry.setVersion(r->version);
-                    entry.writer_node_hash = r->writer_node_hash;
-                    entry.setTombstone(r->tombstone);
-                    if (r->expires_at.has_value()) {
-                        entry.setHasTtl(true);
-                        entry.expires_at = toSteadyExpiry(clock_, *r->expires_at);
-                    }
-                    st->best_entry = std::move(entry);
-                } else if (
-                    r->version != st->best_version || r->writer_node_hash != st->best_writer_hash
-                ) {
-                    st->needs_repair = true;
-                }
-            } else if (r.has_value() && r->status == Errc::NotFound) {
-                // Replica doesn't have the key — stale, needs repair.
-                st->needs_repair = true;
-            }
-            --st->pending;
-        }, [st] -> bool { return st->acks >= st->r || st->pending == 0; }, [this, st, fanout] {
+            reducer->noteRemote(std::move(r), active);
+        },
+            [reducer] -> bool { return reducer->shouldFire(); },
+            [this, key, R, reducer, shared_replicas, fanout, complete] {
             Span decide_span("replication.read.quorum", fanout);
-            decide_span.setAttribute({"acks", st->acks});
-            decide_span.setAttribute({"needed", st->r});
-            decide_span.setAttribute({"needs_repair", st->needs_repair});
-            std::optional<VersionedEntry> result;
-            if (st->best_entry.has_value()) {
-                result = std::move(st->best_entry);
-            }
-            if (result.has_value() && st->needs_repair) {
+            decide_span.setAttribute({"acks", reducer->acks()});
+            decide_span.setAttribute({"needed", R});
+            decide_span.setAttribute({"needs_repair", reducer->needsRepair()});
+            auto result = reducer->takeBest();
+            if (result.has_value() && reducer->needsRepair()) {
                 // Self-heal local store: if local was behind a replica, update it.
-                auto heal = local_.putVersioned(st->key, *result);
+                auto heal = local_.putVersioned(key, *result);
                 if (!heal.has_value()) {
                     CINDER_DEBUG(
                         "local self-heal skipped",
-                        {"key", st->key},
+                        {"key", key},
                         {"reason", static_cast<int>(heal.error().code())}
                     );
                 }
@@ -588,20 +496,22 @@ namespace cinder {
                         std::memory_order_relaxed
                     );
                 }
-                sendRepairFanOut(st->key, st->replicas, *result, fanout);
+                sendRepairFanOut(key, *shared_replicas, *result, fanout);
             }
             if (result.has_value()) {
                 decide_span.setStatus(SpanStatus::Ok);
-                st->on_done(std::move(*result));
+                complete(std::move(*result));
             } else {
                 // Served miss, not a failure: the quorum answered, the key is
                 // simply absent everywhere.
                 decide_span.setStatus(SpanStatus::Ok);
-                st->on_done(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
+                complete(err<VersionedEntry>(Error(Errc::NotFound, "key not found")));
             }
-        }, [st] {
-            st->on_done(err<VersionedEntry>(Error(Errc::NotReady, "read fan-out failed")));
-        });
+        },
+            [complete] {
+            complete(err<VersionedEntry>(Error(Errc::NotReady, "read fan-out failed")));
+        }
+        );
     }
 
     auto ReplicationManager::hintCount() const -> size_t {
