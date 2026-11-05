@@ -404,6 +404,13 @@ bench:
     ./build/{{ bench_preset }}/bin/cinder_throughput_bench {{ args }}
 
 [group('misc')]
+[doc('Profile the replication fan-out benchmarks with samply (needs perf_event_paranoid<=1 and a runtime that allows perf_event_open).')]
+samply-repl:
+    cmake --preset {{ bench_preset }}
+    cmake --build --preset {{ bench_preset }} -j{{ jobs }} --target cinder_throughput_bench
+    samply record ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_min_time=0.5 {{ args }}
+
+[group('misc')]
 [doc('Install the current preset to the CMake prefix.')]
 install: build
     cmake --install build/{{ preset }}
