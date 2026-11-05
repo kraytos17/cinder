@@ -50,28 +50,67 @@ namespace cinder::net {
 
     static_assert(readBe32(K_NET_BE_BYTES.data()) == 0x01020304U);
 
-    // Reads a fixed-size field that the frame header check has already proven
-    // in-bounds, so the read cannot fail. Used ONLY for the header fields whose
-    // bytes are covered by the K_FRAME_HEADER_SIZE (== 7) guard at the top of
-    // decode()/decodeResponse(); a failure here means the guard is wrong, which
-    // is a programming error, not bad input.
-    //
-    // Length-driven reads (flags, key_len, val_len, ...) are NOT provable — a
-    // well-framed payload can still carry a length that runs past its end — so
-    // those keep the checked ByteReader::read/readBytes path directly.
-    template <typename T> static auto expectRead(ByteReader& r) -> T {
-        auto v = r.read<T>();
-        if (!v) {
-            std::unreachable();
+    // Validated, bounded view of one complete wire frame. The caller may pass
+    // a larger buffer (e.g. a coalesced read); payload never includes bytes
+    // beyond the declared length. Stream framing remains the TCP adapter's job.
+    struct FrameView {
+        uint8_t opcode = 0;
+        std::span<const std::byte> payload;
+    };
+
+    static auto parseFrame(std::span<const std::byte> frame) -> Result<FrameView> {
+        if (frame.size() < K_FRAME_HEADER_SIZE) {
+            return err<FrameView>(Error(Errc::InvalidArgument, "frame too small"));
         }
-        return *v;
+        if (frame[0] != std::byte{K_MAGIC}) {
+            return err<FrameView>(Error(Errc::InvalidArgument, "bad magic"));
+        }
+        if (frame[1] != std::byte{K_VERSION}) {
+            return err<FrameView>(Error(Errc::InvalidArgument, "bad version"));
+        }
+
+        const uint32_t payload_size = readBe32(&frame[3]);
+        constexpr size_t K_MAX_PAYLOAD_SIZE = K_MAX_MESSAGE_SIZE - K_FRAME_HEADER_SIZE;
+        if (payload_size > K_MAX_PAYLOAD_SIZE) {
+            return err<FrameView>(Error(Errc::InvalidArgument, "payload too large"));
+        }
+
+        const size_t payload_size_t = static_cast<size_t>(payload_size);
+        if (payload_size_t > frame.size() - K_FRAME_HEADER_SIZE) {
+            return err<FrameView>(Error(Errc::InvalidArgument, "truncated frame"));
+        }
+        return ok(
+            FrameView{
+                .opcode = std::to_integer<uint8_t>(frame[2]),
+                .payload = frame.subspan(K_FRAME_HEADER_SIZE, payload_size_t),
+            }
+        );
     }
 
-    // Reads a value whose availability depends on payload content (flags,
-    // lengths, key/value bodies), so it CAN fail on a well-framed but malformed
-    // payload. Returns the error for the caller to propagate.
-    template <typename T> static auto mustRead(ByteReader& r) -> Result<T> {
-        return r.read<T>();
+    static auto frameSizeForPayload(size_t payload_size) -> Result<size_t> {
+        constexpr size_t K_MAX_PAYLOAD_SIZE = K_MAX_MESSAGE_SIZE - K_FRAME_HEADER_SIZE;
+        if (payload_size > K_MAX_PAYLOAD_SIZE) {
+            return err<size_t>(Error(Errc::InvalidArgument, "message too large"));
+        }
+        return K_FRAME_HEADER_SIZE + payload_size;
+    }
+
+    constexpr size_t K_MAX_PAYLOAD_SIZE = K_MAX_MESSAGE_SIZE - K_FRAME_HEADER_SIZE;
+
+    // Add one encoded field size without overflowing or exceeding the wire
+    // message budget. Used by both encoders so their size calculation and
+    // frame validator share the same total-size invariant.
+    static auto addPayloadSize(size_t& payload_size, size_t field_size) -> bool {
+        if (payload_size > K_MAX_PAYLOAD_SIZE || field_size > K_MAX_PAYLOAD_SIZE - payload_size) {
+            return false;
+        }
+
+        payload_size += field_size;
+        return true;
+    }
+
+    template <typename T> static auto mustRead(ByteReader& reader) -> Result<T> {
+        return reader.read<T>();
     }
 
     auto encode(const Request& req, std::string_view auth_token) -> Result<std::vector<std::byte>> {
@@ -86,22 +125,27 @@ namespace cinder::net {
     auto encodeInto(const Request& req, std::vector<std::byte>& out, std::string_view auth_token)
         -> Result<void> {
         size_t payload_size = 0;
-        payload_size += sizeof(uint32_t) + req.key.size();
-        payload_size += sizeof(uint32_t) + req.value.size();
-        payload_size += sizeof(uint64_t); // version
-        payload_size += sizeof(uint64_t); // writer_node_hash
-        if (req.ttl.has_value()) {
-            payload_size += sizeof(uint32_t);
-        }
-
-        payload_size += sizeof(uint8_t);
-        if (req.expires_at.has_value()) {
-            payload_size += sizeof(uint64_t);
+        const auto add = [&](size_t n) {
+            return addPayloadSize(payload_size, n);
+        };
+        if (req.key.size()
+            > std::numeric_limits<uint32_t>::max()
+            || req.value.size()
+            > std::numeric_limits<uint32_t>::max()
+            || !add(sizeof(uint32_t))
+            || !add(req.key.size())
+            || !add(sizeof(uint32_t))
+            || !add(req.value.size())
+            || !add(sizeof(uint64_t) * 2)
+            || (req.ttl.has_value() && !add(sizeof(uint32_t)))
+            || !add(sizeof(uint8_t))
+            || (req.expires_at.has_value() && !add(sizeof(uint64_t)))) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
 
         bool has_trace = req.trace_id != 0;
-        if (has_trace) {
-            payload_size += sizeof(uint64_t) * 2; // trace_id + span_id
+        if (has_trace && !add(sizeof(uint64_t) * 2)) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
 
         bool has_auth = !auth_token.empty();
@@ -109,15 +153,17 @@ namespace cinder::net {
             if (auth_token.size() != 32) {
                 return err(Error(Errc::InvalidArgument, "auth token must be 32 bytes"));
             }
-            payload_size += 32; // HMAC-SHA256 digest
+            if (!add(32)) {
+                return err(Error(Errc::InvalidArgument, "message too large"));
+            }
         }
 
-        size_t total = K_FRAME_HEADER_SIZE + payload_size;
-        if (total > K_MAX_MESSAGE_SIZE) {
-            return err(Error(Errc::InvalidArgument, "message too large"));
+        auto total = frameSizeForPayload(payload_size);
+        if (!total) {
+            return err(total.error());
         }
 
-        out.resize(total); // reuses capacity across calls
+        out.resize(*total); // reuses capacity across calls
         ByteWriter w(out);
 
         w.writeByte(K_MAGIC);
@@ -169,36 +215,22 @@ namespace cinder::net {
         if (has_auth) {
             w.writeString(auth_token);
         }
+
+        assert(w.offset() == out.size());
         return ok();
     }
 
     auto decode(std::span<const std::byte> frame) -> Result<DecodedRequest> {
-        if (frame.size() < K_FRAME_HEADER_SIZE) {
-            return err<DecodedRequest>(Error(Errc::InvalidArgument, "frame too small"));
-        }
-        if (frame[0] != std::byte{K_MAGIC}) {
-            return err<DecodedRequest>(Error(Errc::InvalidArgument, "bad magic"));
-        }
-        if (frame[1] != std::byte{K_VERSION}) {
-            return err<DecodedRequest>(Error(Errc::InvalidArgument, "bad version"));
+        auto parsed_frame = parseFrame(frame);
+        if (!parsed_frame) {
+            return err<DecodedRequest>(parsed_frame.error());
         }
 
-        uint32_t payload_len = readBe32(&frame[3]);
-        if (payload_len > K_MAX_MESSAGE_SIZE) {
-            return err<DecodedRequest>(Error(Errc::InvalidArgument, "payload too large"));
-        }
-        if (K_FRAME_HEADER_SIZE + payload_len > frame.size()) {
-            return err<DecodedRequest>(Error(Errc::InvalidArgument, "truncated frame"));
-        }
-
-        ByteReader r(frame);
-        // Header fields below are within the 7 validated header bytes
-        (void)expectRead<uint8_t>(r); // magic
-        (void)expectRead<uint8_t>(r); // version
-
+        const FrameView& view = *parsed_frame;
+        ByteReader r(view.payload);
         DecodedRequest decoded;
         Request& req = decoded.req;
-        uint8_t raw_opcode = expectRead<uint8_t>(r);
+        const uint8_t raw_opcode = view.opcode;
         if (raw_opcode
             < std::to_underlying(Opcode::Get)
             || raw_opcode
@@ -207,8 +239,6 @@ namespace cinder::net {
         }
 
         req.opcode = static_cast<Opcode>(raw_opcode);
-        (void)expectRead<uint32_t>(r); // payload_len
-
         auto flags = mustRead<uint8_t>(r);
         if (!flags) {
             return err<DecodedRequest>(flags.error());
@@ -229,6 +259,7 @@ namespace cinder::net {
             if (!expires_at) {
                 return err<DecodedRequest>(expires_at.error());
             }
+
             // Guard against overflow when milliseconds → nanoseconds (×1'000'000)
             // inside the system_clock::time_point conversion.
             constexpr auto K_MAX_MS = std::numeric_limits<int64_t>::max() / 1'000'000;
@@ -322,25 +353,35 @@ namespace cinder::net {
             flags |= K_FLAG_HAS_TRACE;
         }
 
-        size_t payload_size = sizeof(uint8_t); // status
-        payload_size += sizeof(uint8_t); // flags
-        payload_size += sizeof(uint32_t); // has_val
-        if (has_version_meta) {
-            payload_size += sizeof(uint64_t); // version
-            payload_size += sizeof(uint64_t); // writer_node_hash
+        size_t payload_size = 0;
+        const auto add = [&](size_t n) {
+            return addPayloadSize(payload_size, n);
+        };
+        if (!add(sizeof(uint8_t) * 2 + sizeof(uint32_t))) { // status, flags, has_val
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
-        if (res.expires_at.has_value()) {
-            payload_size += sizeof(uint64_t);
+        if (has_version_meta && !add(sizeof(uint64_t) * 2)) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
-        if (res.value.has_value()) {
-            payload_size += res.value->size();
+        if (res.expires_at.has_value() && !add(sizeof(uint64_t))) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
-        if (has_trace) {
-            payload_size += sizeof(uint64_t) * 2;
+        if (res.value.has_value()
+            && (res.value->size()
+                > std::numeric_limits<uint32_t>::max()
+                || !add(res.value->size()))) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
+        }
+        if (has_trace && !add(sizeof(uint64_t) * 2)) {
+            return err(Error(Errc::InvalidArgument, "message too large"));
         }
 
-        size_t total = K_FRAME_HEADER_SIZE + payload_size;
-        out.resize(total); // reuses capacity across calls
+        auto total = frameSizeForPayload(payload_size);
+        if (!total) {
+            return err(total.error());
+        }
+
+        out.resize(*total); // reuses capacity across calls
         ByteWriter w(out);
 
         w.writeByte(K_MAGIC);
@@ -370,31 +411,19 @@ namespace cinder::net {
             w.write(res.trace_id);
             w.write(res.span_id);
         }
+
+        assert(w.offset() == out.size());
         return ok();
     }
 
     auto decodeResponse(std::span<const std::byte> frame) -> Result<Response> {
-        if (frame.size() < K_FRAME_HEADER_SIZE) {
-            return err<Response>(Error(Errc::InvalidArgument, "frame too small"));
-        }
-        if (frame[0] != std::byte{K_MAGIC}) {
-            return err<Response>(Error(Errc::InvalidArgument, "bad magic"));
-        }
-        if (frame[1] != std::byte{K_VERSION}) {
-            return err<Response>(Error(Errc::InvalidArgument, "bad version"));
+        auto parsed_frame = parseFrame(frame);
+        if (!parsed_frame) {
+            return err<Response>(parsed_frame.error());
         }
 
-        uint32_t payload_len = readBe32(&frame[3]);
-        if (K_FRAME_HEADER_SIZE + payload_len > frame.size()) {
-            return err<Response>(Error(Errc::InvalidArgument, "truncated frame"));
-        }
-
-        ByteReader r(frame);
-        (void)expectRead<uint8_t>(r); // magic
-        (void)expectRead<uint8_t>(r); // version
-        (void)expectRead<uint8_t>(r); // opcode (unused for responses)
-        (void)expectRead<uint32_t>(r); // payload_len
-
+        const FrameView& view = *parsed_frame;
+        ByteReader r(view.payload);
         Response res;
         auto status = mustRead<uint8_t>(r);
         if (!status) {
@@ -447,7 +476,10 @@ namespace cinder::net {
             // Account for trace context bytes that follow the value.
             size_t trace_size = (flags & K_FLAG_HAS_TRACE) ? (sizeof(uint64_t) * 2) : 0;
             size_t remaining = r.remaining();
-            size_t val_len = (remaining > trace_size) ? (remaining - trace_size) : 0;
+            // Bytes after payload_len are already excluded by FrameView. Keep
+            // the legacy short-trace rule: reserve trace bytes only when the
+            // complete 16-byte field is present; otherwise value length is 0.
+            size_t val_len = remaining > trace_size ? remaining - trace_size : 0;
             // Materialize even when empty: has_val set with zero bytes means
             // "present but empty", which must survive as value="" rather
             // than collapsing to nullopt (missing).

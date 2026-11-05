@@ -60,7 +60,9 @@ namespace cinder::net {
         client_shared_secret_(std::move(client_shared_secret)),
         emfile_timer_(io),
         config_getter_(std::move(config_getter)) {
-        // Binds happen in start() so failures return errors instead of throwing.
+        owned_operations_ =
+            std::make_unique<CacheOperations>(store_, ring_, node_id_, replica_factor_, repl_);
+        operations_ = owned_operations_.get();
     }
 
     TcpServer::~TcpServer() {
@@ -206,6 +208,7 @@ namespace cinder::net {
                         ring_,
                         node_id_,
                         clock_,
+                        *operations_,
                         repl_,
                         replica_factor_,
                         mode_,

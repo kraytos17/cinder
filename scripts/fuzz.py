@@ -57,7 +57,7 @@ def run_fuzzers(seconds: str, only: str, extra: list[str]) -> None:
 
         corpus = ROOT / "tests" / "fuzz" / "corpus" / name
         corpus.mkdir(parents=True, exist_ok=True)
-        binary = ROOT / "build" / "fuzz" / "tests" / f"{name}_fuzz"
+        binary = ROOT / "build" / "fuzz" / "tests" / entry["binary"]
         command = [
             str(binary),
             f"-max_total_time={seconds}",
@@ -97,7 +97,7 @@ def merge_corpus(name: str) -> None:
     minimal.mkdir(parents=True, exist_ok=True)
     run(
         [
-            str(ROOT / "build" / "fuzz" / "tests" / f"{name}_fuzz"),
+            str(ROOT / "build" / "fuzz" / "tests" / require_target(name)["binary"]),
             "-merge=1",
             str(minimal),
             str(ROOT / "tests" / "fuzz" / "corpus" / name),
@@ -112,7 +112,7 @@ def coverage_collect(name: str) -> None:
             sys.executable,
             "tests/fuzz/collect_coverage.py",
             "--fuzzer",
-            f"build/fuzz-coverage/tests/{name}_cov",
+            f"build/fuzz-coverage/tests/{require_target(name)['binary'].removesuffix('_fuzz')}_cov",
             "--corpus",
             f"tests/fuzz/corpus/{name}",
             "--output",
@@ -128,7 +128,7 @@ def coverage_minimize(name: str) -> None:
             sys.executable,
             "tests/fuzz/minimize_corpus.py",
             "--fuzzer",
-            f"build/fuzz-coverage/tests/{name}_cov",
+            f"build/fuzz-coverage/tests/{require_target(name)['binary'].removesuffix('_fuzz')}_cov",
             "--corpus",
             f"tests/fuzz/corpus/{name}",
             "--profdata",
@@ -147,7 +147,13 @@ def coverage_report(name: str) -> None:
         [
             "llvm-cov",
             "show",
-            str(ROOT / "build" / "fuzz-coverage" / "tests" / f"{name}_cov"),
+            str(
+                ROOT
+                / "build"
+                / "fuzz-coverage"
+                / "tests"
+                / f"{require_target(name)['binary'].removesuffix('_fuzz')}_cov"
+            ),
             "--instr-profile",
             f"tests/fuzz/coverage/{name}/merged.profdata",
             "--ignore-filename-regex=_deps/",

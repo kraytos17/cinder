@@ -36,7 +36,9 @@
 #   CINDER_PRESET              preset for build/test/run/format/clean     [debug]
 #   CINDER_BENCH_PRESET        preset for bench/perf recipes             [release]
 #   CINDER_JOBS                parallel build/test jobs                  [#cpus]
-#   CINDER_INTEGRATION_JOBS    ctest parallelism for integration tests   [= jobs]
+#   CINDER_BUILD_JOBS          CMake compile/link parallelism [= min(jobs,4)]
+#   CINDER_TEST_JOBS           ctest unit/sim/cli parallelism [= jobs]
+#   CINDER_INTEGRATION_JOBS    ctest integration parallelism [= test_jobs]
 #   CINDER_REPL_FILTER         replication benchmark regex [Quorum|ReplayBatch]
 #   CINDER_BENCH_REPETITIONS   reps for bench-repl             [11]
 #   CINDER_BENCH_MIN_TIME      seconds per bench-repl repetition [0.05]
@@ -60,19 +62,21 @@ set dotenv-load
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 preset := env('CINDER_PRESET', 'debug')
-
 # Must be a preset with CINDER_BUILD_BENCHMARKS=ON: release, release-clang,
 # release-unity, profile, pgo-generate, pgo-use (ci-bench / ci-gcc-bench too).
 bench_preset := env('CINDER_BENCH_PRESET', 'release')
 jobs := env('CINDER_JOBS', num_cpus())
-# `verify`'s comment calls integration "parallel-flaky"; lower this to serialise.
-integration_jobs := env('CINDER_INTEGRATION_JOBS', jobs)
-
+# Unity/sanitizer debug translation units are memory-heavy; use a conservative
+# default and allow explicit machine-specific overrides.
+build_jobs := env('CINDER_BUILD_JOBS', '4')
+test_jobs := env('CINDER_TEST_JOBS', jobs)
+# All ctest labels use parallel workers by default. Override integration
+# separately only when you need to tune socket/process pressure on one host.
+integration_jobs := env('CINDER_INTEGRATION_JOBS', test_jobs)
 # Resolve effective binaryDir (including inherited CMake preset settings) from
 # CMakePresets.json; avoid maintaining a parallel build-dir/PGO special case.
 build_dir := shell('python3 scripts/presets.py "$1" --build-dir', preset)
 bench_dir := shell('python3 scripts/presets.py "$1" --build-dir', bench_preset)
-
 # This justfile, for the few recipes that re-invoke it with another preset.
 just_self := quote(just_executable()) + ' --justfile ' + quote(justfile())
 repl_filter := env('CINDER_REPL_FILTER', 'Quorum|ReplayBatch')
@@ -130,7 +134,7 @@ fast *targets:
 [group('test')]
 [positional-arguments]
 test *args: (_need-preset 'test' preset) (_build preset)
-    ctest --preset {{ quote(preset) }} --parallel {{ jobs }} --no-tests=error "$@"
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error "$@"
 
 # Integration is excluded: it spawns daemons and is slow, so run `just
 # test-integration` separately before pushing. Dependencies share this
@@ -153,30 +157,38 @@ test-scripts:
 [positional-arguments]
 test-suite label *args: (_need-preset 'test' preset) (_build preset)
     : {{ quote(args) }}
-    ctest --preset {{ quote(preset) }} --no-tests=error -L "$1" "${@:2}"
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error -L "$1" "${@:2}"
 
 # Unit tests.
 [group('test')]
 [positional-arguments]
 test-unit *args: (_need-preset 'test' preset) (_build preset)
-    ctest --preset {{ quote(preset) }} --no-tests=error -L unit "$@"
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error -L unit "$@"
 
 # Simulation tests.
 [group('test')]
 [positional-arguments]
 test-sim *args: (_need-preset 'test' preset) (_build preset)
-    ctest --preset {{ quote(preset) }} --no-tests=error -L sim "$@"
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error -L sim "$@"
 
 # CLI tests.
 [group('test')]
 [positional-arguments]
 test-cli *args: (_need-preset 'test' preset) (_build preset)
-    ctest --preset {{ quote(preset) }} --no-tests=error -L cli "$@"
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error -L cli "$@"
 
 # Integration tests (spawn real cinderd processes; kills strays first).
 [group('test')]
 [positional-arguments]
 test-integration *args: (_need-preset 'test' preset) (_build preset) kill-stale
+    ctest --preset {{ quote(preset) }} --parallel {{ integration_jobs }} --no-tests=error -L integration "$@"
+
+# Parallel test set for CI presets, with integration kept serial unless the
+# caller explicitly opts in to safe parallelism on its machine.
+[group('test')]
+test-ci *args: (_need-preset 'test' preset) (_build preset) kill-stale
+    : {{ quote(args) }}
+    ctest --preset {{ quote(preset) }} --parallel {{ test_jobs }} --no-tests=error -L "unit|sim|cli" "$@"
     ctest --preset {{ quote(preset) }} --parallel {{ integration_jobs }} --no-tests=error -L integration "$@"
 
 # Run every test binary directly, including DISABLED_ tests (current preset).
@@ -314,7 +326,8 @@ fuzz-long *args: (_build 'fuzz')
 [group('fuzz')]
 [positional-arguments]
 fuzz-one target seconds='60' *args: (_build 'fuzz')
-    python3 scripts/fuzz.py run {{ quote(seconds) }} {{ quote(target) }} "$@"
+    : {{ quote(args) }}
+    python3 scripts/fuzz.py run {{ quote(seconds) }} {{ quote(target) }} "${@:3}"
 
 # Regenerate fuzz seed corpora and the tracked libFuzzer dictionaries.
 [group('fuzz')]
@@ -396,6 +409,7 @@ pgo: pgo-train pgo-use
 
 # PGO step 1: wipe build/pgo + build/pgo-data, build pgo-generate, train on the full bench.
 [group('perf')]
+[positional-arguments]
 pgo-train *args: _pgo-clean (_build 'pgo-generate' 'cinder_throughput_bench')
     ./build/pgo/bin/cinder_throughput_bench --benchmark_min_time={{ pgo_train_min_time }} "$@"
     @echo "PGO profiles in build/pgo-data — now run: just pgo-use"
@@ -525,7 +539,7 @@ _configure p: (_need-preset 'configure' p)
 
 # Configure + build `p`, optionally only the given targets.
 _build p *targets: (_configure p)
-    cmake --build --preset {{ quote(p) }} --parallel {{ jobs }}{{ if targets == '' { '' } else { ' --target ' + targets } }}
+    cmake --build --preset {{ quote(p) }} --parallel {{ build_jobs }}{{ if targets == '' { '' } else { ' --target ' + targets } }}
 
 # Fail with a helpful list unless `name` is a <kind> preset (configure | test).
 [positional-arguments]

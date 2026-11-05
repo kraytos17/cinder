@@ -208,6 +208,7 @@ namespace cinder {
         gossip_(clock_, transport_, table_, options.node_id, options.gossip_interval),
         detector_(clock_, transport_, table_, options.node_id, options.suspect_timeout),
         repl_(*store_, options.node_id, clock_, transport_),
+        operations_(*store_, ring_, node_id_, options.replica_factor, &repl_),
         shard_(
             *store_,
             ring_,
@@ -277,6 +278,7 @@ namespace cinder {
         mode_(options.mode),
         client_shared_secret_(options.client_shared_secret),
         tls_enabled_(options.tls_enabled) {
+        server_.setCacheOperations(operations_);
         seedCluster(options);
         wireMetrics();
         installAdminCallbacks();

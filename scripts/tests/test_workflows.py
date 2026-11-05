@@ -38,6 +38,9 @@ class TestFuzzRegistry(unittest.TestCase):
         self.assertEqual(len(names), len(set(names)))
         for entry in entries:
             self.assertRegex(entry["name"], r"^[a-z0-9_]+$")
+            self.assertTrue(entry["binary"].endswith("_fuzz"))
+            source = entry["binary"].removesuffix("_fuzz") + "_fuzz.cpp"
+            self.assertTrue((ROOT / "tests" / "fuzz" / source).is_file())
             self.assertIsInstance(entry["options"], list)
 
     def test_known_targets_present(self) -> None:
@@ -98,7 +101,13 @@ class TestFuzzRun(unittest.TestCase):
         self.mock_run.assert_not_called()
 
     def test_missing_dict_is_dropped(self) -> None:
-        entries = [{"name": "ring", "options": ["-max_len=64", "-dict=/nonexistent/x.dict"]}]
+        entries = [
+            {
+                "name": "ring",
+                "binary": "ring_fuzz",
+                "options": ["-max_len=64", "-dict=/nonexistent/x.dict"],
+            }
+        ]
         with mock.patch.object(fuzz, "targets", return_value=entries):
             with contextlib.redirect_stdout(io.StringIO()):
                 fuzz.run_fuzzers("1", "ring", [])

@@ -22,7 +22,7 @@ namespace cinder::net {
             data_(data) {}
 
         template <typename T> auto read() -> Result<T> {
-            if (off_ + sizeof(T) > data_.size()) {
+            if (sizeof(T) > remaining()) {
                 return err<T>(Error(Errc::InvalidArgument, "truncated"));
             }
 
@@ -45,7 +45,7 @@ namespace cinder::net {
         }
 
         auto readBytes(size_t n) -> Result<std::span<const std::byte>> {
-            if (off_ + n > data_.size()) {
+            if (n > remaining()) {
                 return err<std::span<const std::byte>>(Error(Errc::InvalidArgument, "truncated"));
             }
 
@@ -77,7 +77,7 @@ namespace cinder::net {
 
         [[nodiscard]]
         auto remaining() const -> size_t {
-            return data_.size() - off_;
+            return off_ <= data_.size() ? data_.size() - off_ : 0;
         }
 
     private:

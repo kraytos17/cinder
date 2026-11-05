@@ -1,6 +1,5 @@
 #ifdef CINDER_ENABLE_GRPC
 
-#include <future>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -158,49 +157,23 @@ namespace cinder::grpc {
                     span.setStatus(cinder::SpanStatus::Error);
                     return auth;
                 }
-                if (handle_.replica_factor > 1) {
-                    auto nodes = handle_.ring.getNodes(req->key(), handle_.replica_factor);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != handle_.node_id) {
-                            replicas.push_back(n);
-                        }
-                    }
 
-                    std::promise<Result<VersionedEntry>> promise;
-                    auto future = promise.get_future();
-                    handle_.repl.readAsync(
-                        req->key(),
-                        replicas,
-                        static_cast<size_t>(handle_.replica_factor),
-                        [&promise](Result<VersionedEntry> result) {
-                        promise.set_value(std::move(result));
-                    },
-                        span.traceId(),
-                        span.spanId()
-                    );
+                std::promise<CacheOperations::GetResult> promise;
+                auto future = promise.get_future();
+                handle_.operations
+                    .getAsync(req->key(), [&promise](CacheOperations::GetResult result) {
+                    promise.set_value(std::move(result));
+                }, span.traceId(), span.spanId());
 
-                    auto result = future.get();
-                    if (result.has_value()) {
-                        resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
-                        resp->set_value(result->value);
-                        span.setStatus(cinder::SpanStatus::Ok);
-                    } else {
-                        resp->set_status(toProtoStatus(result.error().code()));
-                        span.setStatus(cinder::SpanStatus::Error);
-                    }
-                    return ::grpc::Status::OK;
-                }
-
-                auto val = handle_.store.get(req->key());
-                if (val.has_value()) {
+                auto result = future.get();
+                if (result.has_value()) {
                     resp->set_status(cinder::v1::STATUS_CODE_UNSPECIFIED);
-                    resp->set_value(*val);
+                    resp->set_value(*result);
+                    span.setStatus(cinder::SpanStatus::Ok);
                 } else {
-                    resp->set_status(cinder::v1::STATUS_CODE_NOT_FOUND);
+                    resp->set_status(toProtoStatus(result.error().code()));
+                    span.setStatus(cinder::SpanStatus::Error);
                 }
-
-                span.setStatus(cinder::SpanStatus::Ok);
                 return ::grpc::Status::OK;
             }
 

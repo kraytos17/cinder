@@ -48,6 +48,7 @@ cinder_add_test(cinder_unit_net_tests
 gtest_discover_tests(cinder_unit_net_tests PROPERTIES LABELS "unit")
 
 cinder_add_test(cinder_unit_node_tests
+    unit/cache_operations_test.cpp
     unit/cache_node_server_test.cpp
     unit/fanout_test.cpp
     unit/metrics_test.cpp

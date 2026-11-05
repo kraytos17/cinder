@@ -28,6 +28,7 @@
 #include "cinder/net/tcp_server.hpp"
 #include "cinder/net/tcp_transport.hpp"
 #include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/cache_operations.hpp"
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/cache_store.hpp"
@@ -157,6 +158,7 @@ namespace cinder {
             CacheStore& store;
             ConsistentHashRing& ring;
             ReplicationManager& repl;
+            CacheOperations& operations;
             MembershipTable& table;
             const MetricsCollector& metrics;
             const Config& config;
@@ -176,6 +178,7 @@ namespace cinder {
                 .store = *store_,
                 .ring = ring_,
                 .repl = repl_,
+                .operations = operations_,
                 .table = table_,
                 .metrics = metrics_,
                 .config = current_config_,
@@ -287,6 +290,7 @@ namespace cinder {
         GossipManager gossip_;
         FailureDetector detector_;
         ReplicationManager repl_;
+        CacheOperations operations_;
         ShardManager shard_;
         AntiEntropyManager anti_entropy_;
         PersistenceManager persistence_;

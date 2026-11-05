@@ -7,7 +7,8 @@ testable/readable without turning the Justfile into a shell program.
 ## Customize the workflows
 
 - **Fuzz targets:** edit `fuzz_targets.json` (one object per target, with the
-  exact binary suffix and libFuzzer options). `fuzz.py` uses this registry for
+  public target name, exact CMake executable name, and libFuzzer options).
+  `fuzz.py` uses this registry for
   run-all, run-one validation, missing-dictionary handling, per-target
   `merge` / `coverage-collect` / `coverage-minimize` / `coverage-report`, and
   `coverage-all`. New subcommands go there so every entry point validates the

@@ -29,6 +29,7 @@ namespace cinder::net {
         const ConsistentHashRing& ring,
         std::string_view node_id,
         Clock& clock,
+        CacheOperations& operations,
         ReplicationManager* repl,
         int replica_factor,
         ConsistencyMode mode,
@@ -50,6 +51,7 @@ namespace cinder::net {
         store_(store),
         ring_(ring),
         clock_(clock),
+        operations_(operations),
         repl_(repl),
         gossip_(gossip),
         anti_entropy_(anti_entropy),
@@ -619,43 +621,60 @@ namespace cinder::net {
         Response res;
         switch (req.opcode) {
             case Opcode::Get: {
-                if (repl_ != nullptr && replica_factor_ > 1 && !is_internal) {
-                    auto nodes = ring_.getNodes(req.key, replica_factor_);
-                    std::vector<NodeId> replicas;
-                    for (const auto& n : nodes) {
-                        if (n != node_id_) {
-                            replicas.push_back(n);
-                        }
-                    }
-
-                    ring_.incrementLoad(node_id_);
+                if (!is_internal) {
                     auto self = shared_from_this();
                     auto trace_id = req.trace_id;
                     auto span_id = req.span_id;
-                    repl_->readAsync(
+                    const bool quorum_read = replica_factor_ > 1 && repl_ != nullptr;
+                    if (quorum_read) {
+                        ring_.incrementLoad(node_id_);
+                    }
+
+                    operations_.getAsync(
                         req.key,
-                        replicas,
-                        static_cast<size_t>(replica_factor_),
-                        [this, self, trace_id, span_id](Result<VersionedEntry> result) {
-                        ring_.decrementLoad(node_id_);
-                        // Quorum completion lands on an arbitrary pool thread —
-                        // hop back onto this connection's strand.
+                        [this, self, key = req.key, trace_id, span_id, quorum_read](
+                            Result<std::string> result
+                        ) {
+                        if (quorum_read) {
+                            ring_.decrementLoad(node_id_);
+                        }
+                        // Operation completion may be inline or on the
+                        // replication completion executor. Marshal to the
+                        // connection strand before touching its state.
                         asio::post(
                             strand_,
-                            [this, self, result = std::move(result), trace_id, span_id] mutable {
+                            [this,
+                             self,
+                             key,
+                             result = std::move(result),
+                             trace_id,
+                             span_id,
+                             quorum_read] mutable {
                             Span async_span(
-                                "replication.read.quorum",
+                                quorum_read ? "replication.read.quorum" : "tcp.get.local",
                                 SpanContext{trace_id, span_id}
                             );
 
                             Response async_res;
-                            if (result.has_value() && !result->isTombstone()) {
+                            if (result.has_value()) {
                                 async_res.status = Errc::OK;
-                                async_res.value = std::move(result->value);
-                            } else if (result.has_value()) {
-                                // Quorum winner is a delete marker: the key is
-                                // gone. Tombstones never surface values.
-                                async_res.status = Errc::NotFound;
+                                async_res.value = std::move(*result);
+                            } else if (
+                                result.error().code()
+                                == Errc::NotFound
+                                && !quorum_read
+                                && ring_.getNode(key)
+                                != node_id_
+                            ) {
+                                const auto owner = ring_.getNode(key);
+                                async_res.status = Errc::NotReady;
+                                async_res.value = redirectValue(owner);
+                                if (metrics_) {
+                                    metrics_->connectionMetrics().redirects.fetch_add(
+                                        1,
+                                        std::memory_order_relaxed
+                                    );
+                                }
                             } else {
                                 async_res.status = result.error().code();
                             }

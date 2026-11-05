@@ -70,6 +70,26 @@ just test
 
 Or directly with CMake: `cmake --preset fast && cmake --build --preset fast`.
 
+### Parallel builds and tests
+
+`just build` and CI use `CINDER_BUILD_JOBS=4` by default to
+bound peak compiler memory (especially for unity and sanitizer builds).
+CTest unit/sim/CLI and integration cases all run in parallel by default. CI
+sets both worker counts to four. On machines with enough resources, override
+the counts in `.env`, through exported `CINDER_*` variables, or as Just
+variables:
+
+```bash
+just build_jobs=8 build
+just test_jobs=8 test-unit
+just integration_jobs=8 test-integration
+```
+
+`CINDER_JOBS` remains the general fallback; `CINDER_BUILD_JOBS`,
+`CINDER_TEST_JOBS` and `CINDER_INTEGRATION_JOBS` independently override it;
+integration defaults to the test worker count. Reduce it if the host becomes
+unstable under multi-node integration load.
+
 ### Presets
 
 | Preset | Compiler | Config | Use |

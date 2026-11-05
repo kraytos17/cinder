@@ -1,5 +1,11 @@
 name: CI
 
+env:
+  CINDER_JOBS: "4"
+  CINDER_BUILD_JOBS: "4"
+  CINDER_TEST_JOBS: "4"
+  CINDER_INTEGRATION_JOBS: "4"
+
 on:
   push:
     branches: [main]
@@ -67,8 +73,8 @@ jobs:
           push: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=cinder-ci-image
+          cache-to: type=gha,scope=cinder-ci-image,mode=max
           provenance: true
           sbom: true
 
@@ -153,22 +159,13 @@ jobs:
             deps-
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: just preset=${{ matrix.preset }} configure
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+        run: just preset=${{ matrix.preset }} build
 
-      - name: Unit tests
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
-
-      - name: Sim tests
-        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
-
-      - name: CLI tests
-        run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
-
-      - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
+      - name: Tests (parallel)
+        run: just preset=${{ matrix.preset }} test-ci
 
       - name: Upload test logs
         if: failure()
@@ -215,16 +212,13 @@ jobs:
             deps-
 
       - name: Configure (TLS + gRPC)
-        run: cmake --preset ${{ matrix.preset }}
+        run: just preset=${{ matrix.preset }} configure
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+        run: just preset=${{ matrix.preset }} build
 
-      - name: Unit tests
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
-
-      - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
+      - name: Tests (parallel)
+        run: just preset=${{ matrix.preset }} test-ci
 
       - name: Upload test logs
         if: failure()
@@ -261,22 +255,13 @@ jobs:
             deps-
 
       - name: Configure
-        run: cmake --preset ci-gcc
+        run: just preset=ci-gcc configure
 
       - name: Build
-        run: cmake --build --preset ci-gcc -j"$(nproc)"
+        run: just preset=ci-gcc build
 
-      - name: Unit tests
-        run: ctest --preset ci-gcc -L unit --output-on-failure
-
-      - name: Sim tests
-        run: ctest --preset ci-gcc -L sim --output-on-failure
-
-      - name: CLI tests
-        run: ctest --preset ci-gcc -L cli --output-on-failure
-
-      - name: Integration tests
-        run: ctest --preset ci-gcc -L integration --output-on-failure -j"$(nproc)"
+      - name: Tests (parallel)
+        run: just preset=ci-gcc test-ci
 
       - name: Upload test logs
         if: failure()
@@ -327,22 +312,13 @@ jobs:
             deps-
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: just preset=${{ matrix.preset }} configure
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+        run: just preset=${{ matrix.preset }} build
 
-      - name: Unit tests
-        run: ctest --preset ${{ matrix.preset }} -L unit --output-on-failure
-
-      - name: Sim tests
-        run: ctest --preset ${{ matrix.preset }} -L sim --output-on-failure
-
-      - name: CLI tests
-        run: ctest --preset ${{ matrix.preset }} -L cli --output-on-failure
-
-      - name: Integration tests
-        run: ctest --preset ${{ matrix.preset }} -L integration --output-on-failure -j"$(nproc)"
+      - name: Tests (parallel)
+        run: just preset=${{ matrix.preset }} test-ci
 
       - name: Upload test logs
         if: failure()
@@ -435,7 +411,7 @@ jobs:
         run: just preset=ci-gcc-bench configure
 
       - name: cppcheck (including benchmarks)
-        run: cmake --build build/ci-gcc-bench --target cppcheck
+        run: just preset=ci-gcc-bench build cppcheck
 
   codeql:
     needs: [build-image]
@@ -479,10 +455,10 @@ jobs:
           languages: cpp
 
       - name: Configure
-        run: cmake --preset ${{ matrix.preset }}
+        run: just preset=${{ matrix.preset }} configure
 
       - name: Build
-        run: cmake --build --preset ${{ matrix.preset }} -j"$(nproc)"
+        run: just preset=${{ matrix.preset }} build
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

@@ -54,12 +54,13 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   **not** perf-representative) or `just build` (`debug`: per-file, best for
   indexing/incremental work). Direct CMake equivalent:
   `cmake --preset fast && cmake --build --preset fast`.
-* Build parallelism: `just jobs=N <recipe>` (default `nproc`). Unity TUs for the
-  test/core targets peak ~700 MB compiler RSS each, so on a 16 GB / 8-core box
-  the default 8 jobs is near the ceiling; drop to `jobs=4` if the OOM killer
-  or heavy swapping appears. `CINDER_UNITY_BATCH_SIZE` (default 8, matching
-  CMake's own default) is the other memory knob — raise it only on a
-  big-memory machine, since batch size dominates peak compiler RSS.
+* Parallelism: `just jobs=N <recipe>` (default `nproc`) is the general override.
+  CMake builds use `build_jobs` (default `min(jobs,4)`); ctest unit/sim/cli use
+  `test_jobs` (default `jobs`). Override independently with `CINDER_BUILD_JOBS`
+  / `CINDER_TEST_JOBS` or `just build_jobs=N ...`. Unity TUs for test/core
+  targets peak ~700 MB compiler RSS each, so keep the default build cap unless
+  memory permits more. `CINDER_UNITY_BATCH_SIZE` (default 8) is another
+  compiler-memory knob.
 * Benchmarks are **OFF by default** (`CINDER_BUILD_BENCHMARKS`); only
   `release`, `release-clang`, `release-unity` and `profile` enable them.
   `just bench` re-configures with them ON, so it works from any preset.
@@ -85,14 +86,16 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   binaries split by area: `cinder_unit_{store,ring,net,node}_tests`, so an edit
   to one area no longer rebuilds all unit tests),
   `just test-sim` → `-L sim` (8 files), `just test-cli` → `-L cli`,
-  `just test-integration` (12 files, kills stale `cinderd` first) → 24 tests,
+  `just test-integration` (12 files, kills stale `cinderd` first) → 34 tests,
   `just test-all` runs every binary with `--gtest_also_run_disabled_tests`,
   `just grpc-test` for `debug-grpc` builds.
   `just verify` is the fast pre-push gate (format + cppcheck + workflow
   script tests + unit + sim + cli, no integration).
   Integration tests `fork`+`execl` real `cinderd` processes via `spawnNode`
-  (up to 3 per test), but an idle daemon is only ~2 MB RSS, so parallel
-  integration runs are bounded by fd/cpu contention, not memory. Every
+  (up to 3 per test). Unit/sim/CLI/integration suites run in parallel by
+  default (`test_jobs` / `integration_jobs`); lower
+  `CINDER_INTEGRATION_JOBS` if shared-host socket/timing contention flakes.
+  Every
   integration test has a 300s ctest `TIMEOUT`, so a hung test fails fast
   instead of burning the CI job.
 * Fuzz: `just fuzz-test` (10s per target: protocol_decode gossip_parse wal

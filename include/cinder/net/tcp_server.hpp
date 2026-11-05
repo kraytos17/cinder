@@ -18,6 +18,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_connection.hpp"
+#include "cinder/node/cache_operations.hpp"
 
 using asio::io_context;
 using asio::ip::tcp;
@@ -75,6 +76,11 @@ namespace cinder::net {
         auto start() -> Result<void>;
         void shutdown();
 
+        void setCacheOperations(CacheOperations& operations) noexcept {
+            owned_operations_.reset();
+            operations_ = &operations;
+        }
+
         void setAdminCallbacks(AdminCallbacks cb) {
             admin_callbacks_ = std::move(cb);
         }
@@ -116,7 +122,9 @@ namespace cinder::net {
         const ConsistentHashRing& ring_;
         Clock& clock_;
         std::string node_id_;
-        ReplicationManager* repl_;
+        std::unique_ptr<CacheOperations> owned_operations_;
+        CacheOperations* operations_ = nullptr;
+        ReplicationManager* repl_ = nullptr;
         int replica_factor_;
         ConsistencyMode mode_;
         GossipManager* gossip_;

@@ -25,6 +25,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
+#include "cinder/node/cache_operations.hpp"
 #include "cinder/store/cache_store.hpp"
 
 using asio::ip::tcp;
@@ -96,6 +97,7 @@ namespace cinder::net {
             const ConsistentHashRing& ring,
             std::string_view node_id,
             Clock& clock,
+            CacheOperations& operations,
             ReplicationManager* repl = nullptr,
             int replica_factor = 1,
             ConsistencyMode mode = ConsistencyMode::Async,
@@ -264,6 +266,7 @@ namespace cinder::net {
         CacheStore& store_;
         const ConsistentHashRing& ring_;
         Clock& clock_;
+        CacheOperations& operations_;
         ReplicationManager* repl_;
         GossipManager* gossip_;
         AntiEntropyManager* anti_entropy_ = nullptr;

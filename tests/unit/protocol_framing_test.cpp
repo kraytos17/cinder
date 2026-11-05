@@ -1,6 +1,9 @@
+#include <array>
 #include <gtest/gtest.h>
+#include <limits>
 #include <vector>
 
+#include "cinder/net/byte_reader.hpp"
 #include "cinder/net/protocol.hpp"
 
 using std::chrono::milliseconds;
@@ -8,6 +11,24 @@ using std::chrono::system_clock;
 
 namespace cinder::net {
     namespace {
+
+        TEST(ByteReaderTest, OversizedLengthsFailWithoutAdvancing) {
+            const std::array<std::byte, 1> data{std::byte{0x2A}};
+            ByteReader reader(data);
+
+            auto value = reader.read<uint64_t>();
+            EXPECT_FALSE(value.has_value());
+            EXPECT_EQ(reader.offset(), 0U);
+
+            auto bytes = reader.readBytes(std::numeric_limits<size_t>::max());
+            EXPECT_FALSE(bytes.has_value());
+            EXPECT_EQ(reader.offset(), 0U);
+
+            auto string = reader.readStringView(std::numeric_limits<size_t>::max());
+            EXPECT_FALSE(string.has_value());
+            EXPECT_EQ(reader.offset(), 0U);
+            EXPECT_EQ(reader.remaining(), 1U);
+        }
 
         TEST(ProtocolTest, EncodeGetRequest) {
             Request req;
@@ -356,6 +377,53 @@ namespace cinder::net {
             auto result = decode(frame);
             EXPECT_FALSE(result.has_value());
             EXPECT_EQ(result.error().code(), Errc::InvalidArgument);
+        }
+
+        TEST(ProtocolTest, RequestDecoderIgnoresBytesPastDeclaredFrame) {
+            Request request;
+            request.opcode = Opcode::Get;
+            request.key = "k";
+            auto encoded = encode(request);
+            ASSERT_TRUE(encoded.has_value());
+
+            // TCP passes one complete frame, but the public span decoder is
+            // deliberately frame-oriented too: a larger caller buffer must
+            // not make trailing bytes part of this message.
+            encoded->push_back(std::byte{0xAA});
+            encoded->push_back(std::byte{0xBB});
+            auto decoded = decode(*encoded);
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->req.key, "k");
+        }
+
+        TEST(ProtocolTest, ResponseDecoderIgnoresBytesPastDeclaredFrame) {
+            Response response;
+            response.status = Errc::OK;
+            response.value = "v";
+            auto encoded = encode(response);
+            ASSERT_TRUE(encoded.has_value());
+
+            encoded->push_back(std::byte{0xAA});
+            auto decoded = decodeResponse(*encoded);
+            ASSERT_TRUE(decoded.has_value());
+            ASSERT_TRUE(decoded->value.has_value());
+            EXPECT_EQ(*decoded->value, "v");
+        }
+
+        TEST(ProtocolTest, ResponseDecoderRejectsOversizedDeclaredPayload) {
+            std::vector<std::byte> frame(K_FRAME_HEADER_SIZE);
+            frame[0] = std::byte{K_MAGIC};
+            frame[1] = std::byte{K_VERSION};
+            frame[2] = std::byte{0};
+            // Network-order 0xFFFFFFFF in payload_len.
+            frame[3] = std::byte{0xFF};
+            frame[4] = std::byte{0xFF};
+            frame[5] = std::byte{0xFF};
+            frame[6] = std::byte{0xFF};
+
+            auto decoded = decodeResponse(frame);
+            ASSERT_FALSE(decoded.has_value());
+            EXPECT_EQ(decoded.error().code(), Errc::InvalidArgument);
         }
 
         TEST(ProtocolTest, EncodeEmptyKey) {
