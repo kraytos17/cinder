@@ -22,6 +22,11 @@ just bench_preset=release bench -- --benchmark_filter='Quorum|ReplayBatch'
 
 # Profile build (RelWithDebInfo + frame pointers) for sampling profilers:
 just bench_preset=profile bench -- --benchmark_filter='WriteQuorumSync'
+
+# Replication fan-out benches with the reference flags (11 reps):
+just bench-repl
+# ...plus CSV output for percentile math:
+just bench-repl -- --benchmark_out=/tmp/repl.csv --benchmark_out_format=csv
 ```
 
 Current families in `benchmarks/`: store put/get (`lrU`/`lfu`), ring
@@ -71,12 +76,16 @@ call replays one batch, the remainder drains on later ticks.
 ## CPU profiling with samply
 
 `just samply-repl` builds the bench for `bench_preset` (default
-`release`) and records the replication benches:
+`release`) and records the replication benches, saving
+`build/<preset>/repl_profile.json.gz` and exiting (`--save-only` —
+without it `samply record` starts a local web server and waits):
 
 ```bash
 just samply-repl
 # custom filter / longer sampling:
 just samply-repl -- --benchmark_filter='WriteQuorumSync/5' --benchmark_min_time=2
+# symbols: record the profile-preset binary instead of release:
+just bench_preset=profile samply-repl
 ```
 
 Requirements: `perf_event_paranoid <= 1`
@@ -123,13 +132,16 @@ call trees**. The last full analysis is a worked example:
 ## Hardware counters with `perf stat`
 
 When `perf_event_open` works at all, `perf stat` is the cheapest way to
-classify a workload (CPU-bound vs cache/branch-bound):
+classify a workload (CPU-bound vs cache/branch-bound). Recipe form:
 
 ```bash
-perf stat -r 10 -d -- taskset -c 2 \
-  ./build/release/bin/cinder_throughput_bench \
-  --benchmark_filter='WriteQuorumSync/5' --benchmark_min_time=5
+just perf-stat-repl
+# explicit events instead of -d groups:
+just perf-stat-repl -- -e cycles,instructions,branches,branch-misses,cache-references,cache-misses
 ```
+
+which runs `perf stat -r 3 -d` pinned via `taskset -c 2` around the
+replication benches (`--benchmark_min_time=2`; extend via args).
 
 `-d` adds L1/LLC groups (`-d -d` adds TLB, `-d -d -d` prefetch).
 Explicit events when you want a fixed set:

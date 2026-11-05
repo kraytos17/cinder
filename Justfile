@@ -1,7 +1,7 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set quiet := true
 
-presets := `jq -r '.configurePresets[] | select(.hidden != true) | .name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-gcc tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
+presets := `jq -r '.configurePresets[] | select(.hidden != true) | .name' CMakePresets.json 2>/dev/null | tr '\n' ' ' || echo "debug debug-tls debug-tls-clang debug-clang release pgo-generate pgo-use release-clang asan asan-clang msan tsan tsan-clang ubsan ci ci-bench ci-gcc ci-gcc-bench tls-grpc tls-grpc-clang fast release-unity profile analyze iwyu fuzz fuzz-coverage debug-grpc"`
 
 preset := "debug"
 # Preset used by `just bench` (must have CINDER_BUILD_BENCHMARKS=ON).
@@ -395,7 +395,9 @@ proto-breaking:
 
 # Benchmarks use a preset that already enables them (release by default), so no
 # preset's CMake cache is ever mutated with -D. Override with
-# `just bench_preset=profile bench`.
+# `just bench_preset=profile bench`. The perf group below holds the
+# measurement workflow from docs/profiling.md: focused benches, samply
+# profiles, perf counters, and PGO training.
 [group('misc')]
 [doc('Run the throughput benchmark (bench_preset, default: release).')]
 bench:
@@ -403,14 +405,28 @@ bench:
     cmake --build --preset {{ bench_preset }} -j{{ jobs }}
     ./build/{{ bench_preset }}/bin/cinder_throughput_bench {{ args }}
 
-[group('misc')]
-[doc('Profile the replication fan-out benchmarks with samply (needs perf_event_paranoid<=1 and a runtime that allows perf_event_open).')]
+[group('perf')]
+[doc('Replication fan-out benches with reference flags (11 reps, CSV-ready via args).')]
+bench-repl:
+    cmake --preset {{ bench_preset }}
+    cmake --build --preset {{ bench_preset }} -j{{ jobs }} --target cinder_throughput_bench
+    ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_repetitions=11 --benchmark_min_time=0.05 {{ args }}
+
+[group('perf')]
+[doc('Profile the replication benches with samply; saves build/<preset>/repl_profile.json.gz (needs perf_event_paranoid<=1 and a runtime that allows perf_event_open; use bench_preset=profile for symbols).')]
 samply-repl:
     cmake --preset {{ bench_preset }}
     cmake --build --preset {{ bench_preset }} -j{{ jobs }} --target cinder_throughput_bench
-    samply record ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_min_time=0.5 {{ args }}
+    samply record --save-only -o build/{{ bench_preset }}/repl_profile.json.gz -- ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_min_time=0.5 {{ args }}
 
-[group('misc')]
+[group('perf')]
+[doc('Hardware counters (cycles, IPC, branches, cache) around the replication benches.')]
+perf-stat-repl:
+    cmake --preset {{ bench_preset }}
+    cmake --build --preset {{ bench_preset }} -j{{ jobs }} --target cinder_throughput_bench
+    perf stat -r 3 -d -- taskset -c 2 ./build/{{ bench_preset }}/bin/cinder_throughput_bench --benchmark_filter='Quorum|ReplayBatch' --benchmark_min_time=2 {{ args }}
+
+[group('perf')]
 [doc('PGO step 1: instrumented build + train on the full throughput bench (profiles land in build/pgo-data).')]
 pgo-train:
     rm -rf build/pgo build/pgo-data
@@ -419,7 +435,7 @@ pgo-train:
     ./build/pgo/bin/cinder_throughput_bench --benchmark_min_time=0.1
     @echo "PGO profiles in build/pgo-data — now run: just pgo-use"
 
-[group('misc')]
+[group('perf')]
 [doc('PGO step 2: rebuild consuming build/pgo-data, then measure the bench binary directly.')]
 pgo-use:
     cmake --preset pgo-use
