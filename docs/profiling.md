@@ -29,6 +29,11 @@ just bench-repl
 just bench-repl -- --benchmark_out=/tmp/repl.csv --benchmark_out_format=csv
 ```
 
+All `CINDER_*` tuning knobs (`CINDER_BENCH_PRESET`, `CINDER_REPL_FILTER`,
+`CINDER_BENCH_REPETITIONS`, … — see the `ENVIRONMENT` block at the top of
+`Justfile`, or copy `.env.example` to `.env`) also work from the
+environment or as `just VAR=value` overrides.
+
 Current families in `benchmarks/`: store put/get (`lrU`/`lfu`), ring
 lookup, slab allocator, tracing overhead, anti-entropy, WAL/snapshot,
 hint-queue snapshot/remove, and `replication_bench.cpp` (quorum

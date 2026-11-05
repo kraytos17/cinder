@@ -6,6 +6,8 @@
 #   2. YAML syntax check on staged *.yml/*.yaml (catches workflow typos pre-push).
 #   3. ci.yml / ci-skip.yaml trigger-paths sync (documented invariant: the skip
 #      workflow must fire on exactly the paths the main workflow ignores).
+#   4. Justfile formatting (`just --fmt --check`) plus Python syntax of staged
+#      *.py files (what `just test-scripts` executes).
 # Slow checks (inline clang-tidy build, cppcheck, actionlint, tests) stay in CI
 # and `just verify` — run that before pushing. Install with `just hooks-install`;
 # run manually with `just hooks-run`. This hook is local-only by design: CI runs
@@ -26,6 +28,8 @@ fi
 # --- collect staged files once, classify by extension ---
 staged_cpp=()
 staged_yml=()
+staged_py=()
+staged_justfile=0
 check_sync=0
 while IFS= read -r -d '' f; do
     case "$f" in
@@ -37,6 +41,12 @@ while IFS= read -r -d '' f; do
             ;;
         *.yml | *.yaml)
             staged_yml+=("$f")
+            ;;
+        Justfile)
+            staged_justfile=1
+            ;;
+        *.py)
+            staged_py+=("$f")
             ;;
     esac
     if [[ "$f" == .github/workflows/ci.yml || "$f" == .github/workflows/ci-skip.yaml ]]; then
@@ -116,6 +126,30 @@ if [ "$check_sync" -ne 0 ]; then
     fi
 fi
 
+# --- 4. Justfile formatting + staged Python syntax (what `test-scripts` runs) ---
+if [ "$staged_justfile" -ne 0 ]; then
+    if command -v just >/dev/null 2>&1; then
+        if ! just --fmt --check >/dev/null 2>&1; then
+            fail=1
+            echo "pre-commit: Justfile needs formatting (run: just --fmt)" >&2
+        fi
+    else
+        echo "pre-commit: note: just not found — skipping Justfile format check" >&2
+    fi
+fi
+if [ "${#staged_py[@]}" -gt 0 ]; then
+    if command -v python3 >/dev/null 2>&1; then
+        for f in "${staged_py[@]}"; do
+            if ! git show ":$f" | python3 -c \
+                "import sys; compile(sys.stdin.read(), sys.argv[1], 'exec')" "$f" 2>/dev/null; then
+                fail=1
+                echo "pre-commit: Python syntax error in staged file: $f" >&2
+            fi
+        done
+    else
+        echo "pre-commit: note: python3 not found — skipping Python syntax check" >&2
+    fi
+fi
 if [ "$fail" -ne 0 ]; then
     echo "pre-commit: FAILED — fix the above, re-stage, and retry (or: git commit --no-verify)" >&2
     exit 1

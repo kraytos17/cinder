@@ -31,7 +31,8 @@
 #   just run --config cinder.yaml         flags for cinderd
 #   just bench --benchmark_filter=Quorum
 #
-# ENVIRONMENT (each is also a plain just variable: `just jobs=4 build`)
+# ENVIRONMENT (each is also a plain just variable: `just jobs=4 build`;
+# or put them in a git-ignored `.env` file — see .env.example)
 #   CINDER_PRESET              preset for build/test/run/format/clean     [debug]
 #   CINDER_BENCH_PRESET        preset for bench/perf recipes             [release]
 #   CINDER_JOBS                parallel build/test jobs                  [#cpus]
@@ -51,6 +52,11 @@
 
 set shell := ['bash', '-euo', 'pipefail', '-c']
 set script-interpreter := ['bash', '-euo', 'pipefail']
+
+# Load ./.env if present (see .env.example). Lets `CINDER_*` overrides live in
+# a file instead of the environment; a missing .env is fine. Plain `NAME=value`
+# lines only — no `export` needed.
+set dotenv-load
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 preset := env('CINDER_PRESET', 'debug')
@@ -130,10 +136,16 @@ test *args: (_need-preset 'test' preset) (_build preset)
 # test-integration` separately before pushing. Dependencies share this
 # invocation's preset/jobs overrides.
 
-# Fast pre-push gate: format, cppcheck, unit, sim, cli (no integration).
+# Fast pre-push gate: format, cppcheck, workflow script tests, unit, sim,
+# cli (no integration).
 [group('test')]
-verify: check-format cppcheck test-unit test-sim test-cli
-    @echo "VERIFY PASSED ({{ preset }}): format, cppcheck, unit, sim, cli"
+verify: check-format cppcheck test-scripts test-unit test-sim test-cli
+    @echo "VERIFY PASSED ({{ preset }}): format, cppcheck, scripts, unit, sim, cli"
+
+# Workflow script unit tests (stdlib unittest, no build needed).
+[group('test')]
+test-scripts:
+    python3 scripts/tests/test_workflows.py
 
 # Run one ctest label: unit | sim | cli | integration.
 [arg('label', pattern='unit|sim|cli|integration')]
@@ -319,39 +331,25 @@ fuzz-dicts:
 [arg('target', pattern='[a-z0-9_]+')]
 [group('fuzz')]
 fuzz-merge target: (_build 'fuzz')
-    mkdir -p tests/fuzz/corpus_minimal/{{ target }}
-    build/fuzz/tests/{{ target }}_fuzz -merge=1 tests/fuzz/corpus_minimal/{{ target }} tests/fuzz/corpus/{{ target }}
+    python3 scripts/fuzz.py merge {{ quote(target) }}
 
 # Collect line coverage for one target's corpus (fuzz-coverage preset).
 [arg('target', pattern='[a-z0-9_]+')]
 [group('fuzz')]
 fuzz-coverage-collect target: (_build 'fuzz-coverage')
-    python3 tests/fuzz/collect_coverage.py \
-        --fuzzer build/fuzz-coverage/tests/{{ target }}_cov \
-        --corpus tests/fuzz/corpus/{{ target }} \
-        --output tests/fuzz/coverage/{{ target }}
+    python3 scripts/fuzz.py coverage-collect {{ quote(target) }}
 
 # Minimise one target's corpus by line coverage (run fuzz-coverage-collect first).
 [arg('target', pattern='[a-z0-9_]+')]
 [group('fuzz')]
 fuzz-coverage-minimize target: (_build 'fuzz-coverage')
-    python3 tests/fuzz/minimize_corpus.py \
-        --fuzzer build/fuzz-coverage/tests/{{ target }}_cov \
-        --corpus tests/fuzz/corpus/{{ target }} \
-        --profdata tests/fuzz/coverage/{{ target }}/merged.profdata \
-        --output tests/fuzz/corpus_minimal/{{ target }}
+    python3 scripts/fuzz.py coverage-minimize {{ quote(target) }}
 
 # Render an HTML coverage report for one target (needs merged.profdata).
 [arg('target', pattern='[a-z0-9_]+')]
 [group('fuzz')]
 fuzz-coverage-report target: (_need 'llvm-cov') (_build 'fuzz-coverage')
-    mkdir -p tests/fuzz/coverage/{{ target }}/html
-    llvm-cov show build/fuzz-coverage/tests/{{ target }}_cov \
-        --instr-profile=tests/fuzz/coverage/{{ target }}/merged.profdata \
-        --ignore-filename-regex='_deps/' \
-        --format=html \
-        --output-dir=tests/fuzz/coverage/{{ target }}/html
-    @echo "Report: tests/fuzz/coverage/{{ target }}/html/index.html"
+    python3 scripts/fuzz.py coverage-report {{ quote(target) }}
 
 # Collect coverage + minimise the corpus for every fuzz target.
 [group('fuzz')]

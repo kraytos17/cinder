@@ -83,36 +83,87 @@ def run_fuzzers(seconds: str, only: str, extra: list[str]) -> None:
         print(f"Fuzz target {only} passed ({seconds}s).")
 
 
+def require_target(name: str) -> dict[str, object]:
+    for entry in targets():
+        if entry["name"] == name:
+            return entry
+    validate_target(name)
+    raise SystemExit(2)
+
+
+def merge_corpus(name: str) -> None:
+    require_target(name)
+    minimal = ROOT / "tests" / "fuzz" / "corpus_minimal" / name
+    minimal.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            str(ROOT / "build" / "fuzz" / "tests" / f"{name}_fuzz"),
+            "-merge=1",
+            str(minimal),
+            str(ROOT / "tests" / "fuzz" / "corpus" / name),
+        ]
+    )
+
+
+def coverage_collect(name: str) -> None:
+    require_target(name)
+    run(
+        [
+            sys.executable,
+            "tests/fuzz/collect_coverage.py",
+            "--fuzzer",
+            f"build/fuzz-coverage/tests/{name}_cov",
+            "--corpus",
+            f"tests/fuzz/corpus/{name}",
+            "--output",
+            f"tests/fuzz/coverage/{name}",
+        ]
+    )
+
+
+def coverage_minimize(name: str) -> None:
+    require_target(name)
+    run(
+        [
+            sys.executable,
+            "tests/fuzz/minimize_corpus.py",
+            "--fuzzer",
+            f"build/fuzz-coverage/tests/{name}_cov",
+            "--corpus",
+            f"tests/fuzz/corpus/{name}",
+            "--profdata",
+            f"tests/fuzz/coverage/{name}/merged.profdata",
+            "--output",
+            f"tests/fuzz/corpus_minimal/{name}",
+        ]
+    )
+
+
+def coverage_report(name: str) -> None:
+    require_target(name)
+    html = ROOT / "tests" / "fuzz" / "coverage" / name / "html"
+    html.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "llvm-cov",
+            "show",
+            str(ROOT / "build" / "fuzz-coverage" / "tests" / f"{name}_cov"),
+            "--instr-profile",
+            f"tests/fuzz/coverage/{name}/merged.profdata",
+            "--ignore-filename-regex=_deps/",
+            "--format=html",
+            f"--output-dir={html}",
+        ]
+    )
+    print(f"Report: tests/fuzz/coverage/{name}/html/index.html")
+
+
 def coverage_all() -> None:
     for entry in targets():
         name = entry["name"]
         print(f"\n==> {name} coverage...\n────────────────────────────────────────", flush=True)
-        run(
-            [
-                sys.executable,
-                "tests/fuzz/collect_coverage.py",
-                "--fuzzer",
-                f"build/fuzz-coverage/tests/{name}_cov",
-                "--corpus",
-                f"tests/fuzz/corpus/{name}",
-                "--output",
-                f"tests/fuzz/coverage/{name}",
-            ]
-        )
-        run(
-            [
-                sys.executable,
-                "tests/fuzz/minimize_corpus.py",
-                "--fuzzer",
-                f"build/fuzz-coverage/tests/{name}_cov",
-                "--corpus",
-                f"tests/fuzz/corpus/{name}",
-                "--profdata",
-                f"tests/fuzz/coverage/{name}/merged.profdata",
-                "--output",
-                f"tests/fuzz/corpus_minimal/{name}",
-            ]
-        )
+        coverage_collect(name)
+        coverage_minimize(name)
     print("\n════════════════════════════════════════\nCoverage minimization complete.")
 
 
@@ -127,8 +178,10 @@ def main() -> None:
 
     check_parser = subparsers.add_parser("check-target", help="validate a target name")
     check_parser.add_argument("target")
-
     subparsers.add_parser("coverage-all", help="collect and minimize every target's coverage")
+    for action in ("merge", "coverage-collect", "coverage-minimize", "coverage-report"):
+        action_parser = subparsers.add_parser(action, help=f"{action} for one target")
+        action_parser.add_argument("target")
 
     args = parser.parse_args()
     if args.action == "run":
@@ -137,6 +190,14 @@ def main() -> None:
     elif args.action == "check-target":
         if not validate_target(args.target):
             raise SystemExit(2)
+    elif args.action == "merge":
+        merge_corpus(args.target)
+    elif args.action == "coverage-collect":
+        coverage_collect(args.target)
+    elif args.action == "coverage-minimize":
+        coverage_minimize(args.target)
+    elif args.action == "coverage-report":
+        coverage_report(args.target)
     else:
         coverage_all()
 

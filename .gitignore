@@ -77,12 +77,6 @@ Testing/
 # -dict=.../protocol.dict and -dict=.../gossip.dict, and libFuzzer aborts the
 # whole run with "file does not exist or is empty" when one is missing — which
 # is what happened on every fresh clone.
-#
-# The dance below is required by gitignore semantics: a `!` rule
-# cannot re-include a file whose PARENT DIRECTORY is excluded, so we must
-# re-include the dictionary-carrying subdirectories first, then ignore their
-# contents, then un-ignore the *.dict files inside. Collapsing this to
-# `tests/fuzz/corpus` + `!..../x.dict` silently fails.
 tests/fuzz/corpus/*/
 tests/fuzz/corpus/*
 !tests/fuzz/corpus/gossip_parse/
@@ -109,3 +103,5 @@ tests/fuzz/corpus_minimal
 *.profraw
 __pycache__/
 *.py[cod]
+# Local developer overrides loaded by `just` (see .env.example).
+.env
