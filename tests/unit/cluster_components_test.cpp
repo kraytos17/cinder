@@ -314,6 +314,34 @@ namespace cinder {
             EXPECT_EQ(q.size(), 1U);
         }
 
+        TEST(HintQueueTest, BoundedSnapshotStopsAtCapAndLeavesRemainder) {
+            HintQueue q;
+            const auto now = steady_clock::now();
+            constexpr size_t kTotal = 300;
+            constexpr size_t kCap = 256;
+            for (size_t i = 0; i < kTotal; ++i) {
+                auto h = cctMakeHint("n2", "k" + std::to_string(i));
+                h.expires_at = now + milliseconds(1000);
+                ASSERT_TRUE(q.push(std::move(h)));
+            }
+
+            // FIFO from the head, exactly cap entries; the queue is untouched.
+            auto first = q.snapshot(now, kCap);
+            ASSERT_EQ(first.size(), kCap);
+            EXPECT_EQ(first.front().hint.req.key, "k0");
+            EXPECT_EQ(first.back().hint.req.key, "k255");
+            EXPECT_EQ(q.size(), kTotal);
+
+            // Removing the batch exposes the remainder on the next call.
+            for (const auto& entry : first) {
+                q.remove(entry.handle);
+            }
+            EXPECT_EQ(q.size(), kTotal - kCap);
+            auto second = q.snapshot(now, kCap);
+            ASSERT_EQ(second.size(), kTotal - kCap);
+            EXPECT_EQ(second.front().hint.req.key, "k256");
+        }
+
         TEST(HintQueueTest, EstimatedPayloadBytesTrackQueueRetention) {
             HintQueue q;
             std::atomic<uint64_t> entries{0};
@@ -706,6 +734,37 @@ namespace cinder {
             void onMessage(MessageHandler /*handler*/) override {}
         };
 
+        // Toggleable variant of FailingTransport: fail closed while `fail`
+        // is set (to build a backlog), then ack everything inline (to
+        // replay it).
+        class FailThenAckTransport : public Transport {
+        public:
+
+            std::atomic<bool> fail{true};
+
+            void sendAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                SendCallback on_done
+            ) override {
+                if (fail.load(std::memory_order_relaxed)) {
+                    on_done(err<void>(Error(Errc::NotReady, "peer down")));
+                } else {
+                    on_done(ok());
+                }
+            }
+
+            void sendRequestAsync(
+                const NodeId& /*to*/,
+                const net::Request& /*req*/,
+                RequestCallback on_done
+            ) override {
+                on_done(err<net::Response>(Error(Errc::NotReady, "peer down")));
+            }
+
+            void onMessage(MessageHandler /*handler*/) override {}
+        };
+
         // -----------------------------------------------------------------
         // HintJournal durability
         // -----------------------------------------------------------------
@@ -919,6 +978,45 @@ namespace cinder {
                 static_cast<uint64_t>(20)
             );
             EXPECT_EQ(metrics.replicationMetrics().hints_dropped.load(), repl.hintsDropped());
+        }
+
+        TEST(ReplicationHintBoundTest, ReplayReplaysAtMostOneBatchPerCall) {
+            RealClock clock;
+            LruStore store(1U << 20U);
+            FailThenAckTransport transport;
+            ReplicationManager repl(store, "n1", clock, transport);
+
+            const size_t total = ReplicationManager::K_REPLAY_BATCH + 44;
+            transport.fail.store(true, std::memory_order_relaxed);
+            for (size_t i = 0; i < total; ++i) {
+                bool done = false;
+                repl.writeAsync(
+                    "k" + std::to_string(i),
+                    "v",
+                    std::nullopt,
+                    {"n2"},
+                    ConsistencyMode::Async,
+                    [&](Result<void> r) {
+                    EXPECT_TRUE(r.has_value());
+                    done = true;
+                }
+                );
+                EXPECT_TRUE(done);
+            }
+            ASSERT_EQ(repl.hintCount(), total);
+
+            // One call replays one batch; the remainder stays queued for
+            // the next tick instead of fanning out hundreds of concurrent
+            // sends at once.
+            transport.fail.store(false, std::memory_order_relaxed);
+            size_t replayed = 0;
+            repl.replayHints([&](size_t n) { replayed = n; });
+            EXPECT_EQ(replayed, ReplicationManager::K_REPLAY_BATCH);
+            EXPECT_EQ(repl.hintCount(), total - ReplicationManager::K_REPLAY_BATCH);
+
+            repl.replayHints([&](size_t n) { replayed = n; });
+            EXPECT_EQ(replayed, total - ReplicationManager::K_REPLAY_BATCH);
+            EXPECT_EQ(repl.hintCount(), 0U);
         }
 
         // Transport that records Replicate/Delete fan-out requests and acks ok

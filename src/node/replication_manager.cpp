@@ -596,7 +596,10 @@ namespace cinder {
         }
 
         auto now = clock_.now();
-        auto batch = hints_.snapshot(now);
+        // Bounded batch: one tick replays at most K_REPLAY_BATCH hints, so a
+        // full backlog cannot turn a single tick into a 1024-wide fan-out.
+        // The remainder stays queued; the 1-second timer picks it up next.
+        auto batch = hints_.snapshot(now, K_REPLAY_BATCH);
         uint64_t snapshot_bytes = 0;
         for (const auto& entry : batch) {
             snapshot_bytes += HintQueue::estimatedPayloadBytes(entry.hint);

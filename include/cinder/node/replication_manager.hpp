@@ -59,6 +59,12 @@ namespace cinder {
         using ReadCallback = std::move_only_function<void(Result<VersionedEntry>)>;
         using ReplayCallback = std::move_only_function<void(size_t)>;
 
+        // Bound on hints replayed per replayHints call (FIFO from the queue
+        // head). A full 1024-slot backlog drains in four 1-second ticks
+        // instead of one 1024-wide fan-out, bounding per-tick sends, channel
+        // memory, and lock hold time.
+        static constexpr size_t K_REPLAY_BATCH = 256;
+
         // Async write: commits locally, then fans out to replicas.
         //   Async  — `on_done` runs inline after local commit (fan-out is
         //            best-effort).
@@ -114,6 +120,8 @@ namespace cinder {
 
         // Retry queued hints against now-healthy replicas. Invokes `on_done` with
         // the count replayed (expired hints are dropped). Call periodically.
+        // Bounded: at most K_REPLAY_BATCH hints per call, FIFO; the remainder
+        // stays queued for the next call.
         void replayHints(ReplayCallback on_done);
         auto hintCount() const -> size_t;
 

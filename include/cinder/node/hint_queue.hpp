@@ -135,13 +135,19 @@ namespace cinder {
         // network sends operate on the snapshot after the lock is released.
         // Expired entries are removed while scanning. Hints remain queued
         // until a successful completion removes their corresponding handle.
-        auto snapshot(steady_clock::time_point now) -> std::vector<SnapshotEntry> {
+        // Bounded variant: collect at most max_entries live hints, FIFO from
+        // the head, expiring entries along the way. Entries past the bound —
+        // live or expired — are left for a later call, which also bounds the
+        // lock hold time. A capped replay tick picks up the remainder next
+        // time.
+        auto snapshot(steady_clock::time_point now, size_t max_entries)
+            -> std::vector<SnapshotEntry> {
             std::vector<SnapshotEntry> live;
             {
                 std::scoped_lock lock(mutex_);
-                live.reserve(size_);
+                live.reserve(std::min(size_, max_entries));
                 size_t index = head_;
-                while (index != K_NONE) {
+                while (index != K_NONE && live.size() < max_entries) {
                     Slot& slot = (*slots_)[index];
                     const size_t next = slot.next;
                     if (slot.hint->expires_at <= now) {
@@ -159,6 +165,11 @@ namespace cinder {
                 publishMetrics();
             }
             return live;
+        }
+
+        auto snapshot(steady_clock::time_point now) -> std::vector<SnapshotEntry> {
+            // At most size_ (<= K_CAPACITY) entries are ever live.
+            return snapshot(now, K_CAPACITY);
         }
 
         // Compatibility snapshot visitor. Invoked outside the lock, so a
