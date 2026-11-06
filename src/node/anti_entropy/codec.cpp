@@ -1,5 +1,3 @@
-#include "cinder/node/anti_entropy_codec.hpp"
-
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -12,6 +10,8 @@
 #include <utility>
 #include <vector>
 #include <xxhash.h>
+
+#include "cinder/node/anti_entropy_codec.hpp"
 
 namespace cinder {
     namespace {

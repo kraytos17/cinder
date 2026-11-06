@@ -125,7 +125,7 @@ call trees**. The last full analysis is a worked example:
 
 - ~35% of wall samples in `Event::dispatchEvent` / `formatRecordInto`:
   the no-subscriber direct path formatted every log record and *then*
-  dropped it in spdlog level filtering. Fix (`src/common/tracing.cpp`):
+  dropped it in spdlog level filtering. Fix (`src/common/tracing/spdlog.cpp`):
   consult `should_log` before formatting. Behavior-preserving (dropped
   stays dropped); write quorum 1.19 → 0.69µs.
 - Post-fix top: `writeAsync`/`fanOutWrite`/transport invoke,

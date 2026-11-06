@@ -639,6 +639,10 @@ namespace cinder {
     // The currently installed subscriber, or null when none is set.
     auto globalSubscriber() -> std::shared_ptr<Subscriber>;
 
+    // Fast path for the per-event subscriber lookup (see tracing.cpp):
+    // thread-local cache revalidated against the interest generation.
+    auto cachedSubscriber() -> std::shared_ptr<Subscriber>;
+
     // Unified event-based tracing. Events are emitted via the CINDER_* macros,
     // which gate on cached callsite interest and dispatch here. Output format:
     //   [t=trace.span|p=parent] [operation] message key=value

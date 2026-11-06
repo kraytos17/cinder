@@ -1,5 +1,7 @@
 set(CINDER_CORE_SOURCES
-    common/tracing.cpp
+    common/tracing/core.cpp
+    common/tracing/spdlog.cpp
+    common/tracing/subscribers.cpp
     common/config.cpp
     common/hmac.cpp
     common/metrics.cpp
@@ -13,16 +15,16 @@ set(CINDER_CORE_SOURCES
     node/shard_manager.cpp
     node/replication_manager.cpp
     node/hint_journal.cpp
-    node/anti_entropy.cpp
-    node/anti_entropy_codec.cpp
+    node/anti_entropy/core.cpp
+    node/anti_entropy/codec.cpp
     cluster/membership.cpp
     cluster/gossip.cpp
     cluster/failure_detector.cpp
     net/protocol.cpp
     net/http_parser.cpp
-    net/tcp_server.cpp
-    net/tcp_connection.cpp
-    net/tcp_transport.cpp
+    net/tcp/server.cpp
+    net/tcp/connection.cpp
+    net/tcp/transport.cpp
     client/cache_client.cpp
     client/connection_pool.cpp
 )

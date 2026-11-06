@@ -99,6 +99,7 @@ cinder_add_test(cinder_sim_tests
     sim/sim_clock.cpp
     sim/sim_transport.cpp
     sim/replication_sim_test.cpp
+    sim/read_repair_sim_test.cpp
     sim/gossip_partition_sim_test.cpp
     sim/rebalance_sim_test.cpp
     sim/concurrent_rebalance_sim_test.cpp

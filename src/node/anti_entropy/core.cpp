@@ -1,5 +1,3 @@
-#include "cinder/node/anti_entropy.hpp"
-
 #include <algorithm>
 #include <ankerl/unordered_dense.h>
 #include <chrono>
@@ -10,6 +8,7 @@
 #include <xxhash.h>
 
 #include "cinder/common/tracing.hpp"
+#include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/anti_entropy_codec.hpp"
 
 using std::chrono::duration_cast;
