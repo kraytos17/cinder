@@ -10,6 +10,7 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/anti_entropy_codec.hpp"
+#include "cinder/node/iblt.hpp"
 
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
@@ -262,17 +263,52 @@ namespace cinder {
         return ae_codec::decodeDigestResponse(data, expected_groups);
     }
 
+    namespace {
+        // The IBLT core speaks items (bucket lives outside the sketch);
+        // the manager speaks metadata rows. Convert at the boundary.
+        auto toIbltItems(const std::vector<AntiEntropyManager::MetaRow>& rows)
+            -> std::vector<iblt::Item> {
+            std::vector<iblt::Item> items;
+            items.reserve(rows.size());
+            for (const auto& row : rows) {
+                items.push_back({
+                    .key_hash = row.key_hash,
+                    .version = row.version,
+                    .writer = row.writer,
+                    .tombstone = row.tombstone,
+                });
+            }
+            return items;
+        }
+
+        auto toMetaRows(uint32_t bucket, const std::vector<iblt::Item>& items)
+            -> std::vector<AntiEntropyManager::MetaRow> {
+            std::vector<AntiEntropyManager::MetaRow> rows;
+            rows.reserve(items.size());
+            for (const auto& item : items) {
+                rows.push_back({
+                    .bucket = bucket,
+                    .tombstone = item.tombstone,
+                    .key_hash = item.key_hash,
+                    .version = item.version,
+                    .writer = item.writer,
+                });
+            }
+            return rows;
+        }
+    } // namespace
+
     auto AntiEntropyManager::buildIblt(const std::vector<MetaRow>& rows, size_t cell_count)
         -> std::optional<IbltSketch> {
-        return ae_codec::buildIblt(rows, cell_count);
+        return iblt::build(toIbltItems(rows), cell_count);
     }
 
     auto AntiEntropyManager::encodeIblt(const IbltSketch& sketch) -> std::string {
-        return ae_codec::encodeIblt(sketch);
+        return iblt::encode(sketch);
     }
 
     auto AntiEntropyManager::decodeIblt(std::string_view data) -> std::optional<IbltSketch> {
-        return ae_codec::decodeIblt(data);
+        return iblt::decode(data);
     }
 
     auto AntiEntropyManager::decodeIbltDifference(
@@ -280,7 +316,15 @@ namespace cinder {
         const IbltSketch& local,
         uint32_t bucket
     ) -> std::optional<IbltDiff> {
-        return ae_codec::decodeIbltDifference(remote, local, bucket);
+        auto diff = iblt::difference(remote, local);
+        if (!diff.has_value()) {
+            return std::nullopt;
+        }
+
+        IbltDiff tagged;
+        tagged.remote_only = toMetaRows(bucket, diff->remote_only);
+        tagged.local_only = toMetaRows(bucket, diff->local_only);
+        return tagged;
     }
 
     auto AntiEntropyManager::encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string {
@@ -799,7 +843,7 @@ namespace cinder {
                         }
                     }
                 } else {
-                    ae_codec::ibltInsert(
+                    iblt::insert(
                         build.sketch,
                         row.key_hash,
                         row.version,

@@ -17,6 +17,7 @@ set(CINDER_CORE_SOURCES
     node/hint_journal.cpp
     node/anti_entropy/core.cpp
     node/anti_entropy/codec.cpp
+    node/anti_entropy/iblt.cpp
     cluster/membership.cpp
     cluster/gossip.cpp
     cluster/failure_detector.cpp

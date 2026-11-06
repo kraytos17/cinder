@@ -20,6 +20,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
+#include "cinder/node/iblt.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 
@@ -63,10 +64,10 @@ namespace cinder {
         static constexpr uint32_t K_SYNC_MAGIC = 0x41454D53; // "AEMS"
         static constexpr uint32_t K_NEED_MAGIC = 0x41454D4E; // "AEMN"
         static constexpr uint32_t K_BUCKETS_PER_GROUP = 16;
-        static constexpr uint32_t K_IBLT_MAGIC = 0x41454934; // "AEI4"
-        static constexpr size_t K_IBLT_HASH_COUNT = 3;
-        static constexpr size_t K_MAX_IBLT_CELLS = 4096;
-        static constexpr size_t K_IBLT_DEFAULT_CELLS = 64;
+        static constexpr uint32_t K_IBLT_MAGIC = iblt::K_MAGIC; // "AEI4"
+        static constexpr size_t K_IBLT_HASH_COUNT = iblt::K_HASH_COUNT;
+        static constexpr size_t K_MAX_IBLT_CELLS = iblt::K_MAX_CELLS;
+        static constexpr size_t K_IBLT_DEFAULT_CELLS = iblt::K_DEFAULT_CELLS;
         static constexpr size_t K_IBLT_MIN_ROWS = 32;
 
         // Upper bound on metadata rows per digest response. Buckets fill
@@ -130,19 +131,13 @@ namespace cinder {
         // tuple, so two versions of one key remain distinct until peeling.
         // A subtraction that peels completely yields only the symmetric
         // difference; failure is explicit and callers must use metadata sync.
-        struct IbltCell {
-            int64_t count = 0;
-            uint64_t key_hash_xor = 0;
-            uint64_t version_xor = 0;
-            uint64_t writer_xor = 0;
-            uint64_t tombstone_xor = 0;
-            uint64_t checksum_xor = 0;
-        };
+        // Owned by cinder::iblt; aliased here so existing call sites keep
+        // compiling through the manager.
+        using IbltCell = iblt::Cell;
+        using IbltSketch = iblt::Sketch;
 
-        struct IbltSketch {
-            std::vector<IbltCell> cells;
-        };
-
+        // Difference result at the manager layer: metadata rows (bucket
+        // tagged by decodeIbltDifference), unlike iblt::Diff's items.
         struct IbltDiff {
             std::vector<MetaRow> remote_only;
             std::vector<MetaRow> local_only;

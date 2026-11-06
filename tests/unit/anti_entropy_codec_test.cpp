@@ -465,6 +465,24 @@ namespace cinder {
             EXPECT_EQ(*reason, "truncated entry");
         }
 
+        TEST(AntiEntropyEncodeTest, DigestResponseAcceptsUnsortedCoveredBuckets) {
+            // covered_buckets arrives in encode order, which need not be
+            // sorted; validation must go by content, not by order. (With
+            // {2,1,0} the old order-dependent binary_search missed 0.)
+            AntiEntropyManager::DigestResponse response{
+                .group_hashes = {},
+                .bucket_hashes = {},
+                .covered_buckets = {2, 1, 0},
+                .rows = {{0, false, 11, 1, 7}},
+            };
+            auto blob = AntiEntropyManager::encodeDigestResponse(response);
+            auto decoded = AntiEntropyManager::decodeDigestResponse(blob, 0);
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->covered_buckets, (std::vector<uint32_t>{2, 1, 0}));
+            ASSERT_EQ(decoded->rows.size(), 1U);
+            EXPECT_EQ(decoded->rows[0].key_hash, 11U);
+        }
+
         TEST(AntiEntropyEncodeTest, DigestResponseRejectsCorruptRows) {
             AntiEntropyManager::DigestResponse response{
                 .group_hashes = {},

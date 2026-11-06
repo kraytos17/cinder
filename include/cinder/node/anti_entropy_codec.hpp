@@ -28,9 +28,6 @@ namespace cinder::ae_codec {
     using SyncMessage = AntiEntropyManager::SyncMessage;
     using DigestResponse = AntiEntropyManager::DigestResponse;
     using BucketRefinement = AntiEntropyManager::BucketRefinement;
-    using IbltSketch = AntiEntropyManager::IbltSketch;
-    using IbltCell = AntiEntropyManager::IbltCell;
-    using IbltDiff = AntiEntropyManager::IbltDiff;
 
     [[nodiscard]]
     auto encodeDigest(const std::vector<uint64_t>& digest) -> std::string;
@@ -62,31 +59,6 @@ namespace cinder::ae_codec {
     [[nodiscard]]
     auto decodeDigestResponse(std::string_view data, size_t expected_groups)
         -> std::optional<DigestResponse>;
-
-    [[nodiscard]]
-    auto buildIblt(const std::vector<MetaRow>& rows, size_t cell_count)
-        -> std::optional<IbltSketch>;
-
-    // Single-item insert into an existing sketch (streaming builds, e.g. the
-    // bucket-refinement responder, which switches from row sampling to a
-    // sketch mid-scan).
-    void ibltInsert(
-        IbltSketch& sketch,
-        uint64_t key_hash,
-        uint64_t version,
-        uint64_t writer,
-        bool tombstone
-    );
-
-    [[nodiscard]]
-    auto encodeIblt(const IbltSketch& sketch) -> std::string;
-
-    [[nodiscard]]
-    auto decodeIblt(std::string_view data) -> std::optional<IbltSketch>;
-
-    [[nodiscard]]
-    auto decodeIbltDifference(const IbltSketch& remote, const IbltSketch& local, uint32_t bucket)
-        -> std::optional<IbltDiff>;
 
     [[nodiscard]]
     auto encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string;

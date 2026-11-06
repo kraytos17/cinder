@@ -1,9 +1,6 @@
 #include <algorithm>
-#include <array>
-#include <bit>
 #include <chrono>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -11,90 +8,14 @@
 #include <xxhash.h>
 
 #include "cinder/node/anti_entropy_codec.hpp"
+#include "cinder/node/iblt.hpp"
 
 namespace cinder {
     namespace {
 
         using detail::BufferReader;
         using detail::BufferWriter;
-
-        // Encode paths pre-size their buffer exactly (BufferWriter's debug
-        // assert verifies the budget); the wire API stays std::string.
-        auto toWireString(const std::vector<std::byte>& buf) -> std::string {
-            return {reinterpret_cast<const char*>(buf.data()), buf.size()};
-        }
-
-        auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer, bool tombstone)
-            -> uint64_t {
-            std::array<uint64_t, 4> words{key_hash, version, writer, tombstone ? 1U : 0U};
-            return XXH3_64bits(words.data(), sizeof(words));
-        }
-
-        auto ibltPositions(
-            uint64_t key_hash,
-            uint64_t version,
-            uint64_t writer,
-            bool tombstone,
-            size_t count
-        ) -> std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> {
-            std::array<size_t, AntiEntropyManager::K_IBLT_HASH_COUNT> positions{};
-            std::array<uint64_t, 4> words{key_hash, version, writer, tombstone ? 1U : 0U};
-            uint64_t hash = XXH3_64bits(words.data(), sizeof(words));
-            for (size_t i = 0; i < positions.size(); ++i) {
-                uint64_t candidate = hash + (i + 1) * 0x9E3779B97F4A7C15ULL;
-                candidate ^= candidate >> 30U;
-                candidate *= 0xBF58476D1CE4E5B9ULL;
-                candidate ^= candidate >> 27U;
-                candidate *= 0x94D049BB133111EBULL;
-                candidate ^= candidate >> 31U;
-                positions[i] = static_cast<size_t>(candidate % count);
-                while (std::ranges::find(
-                           positions.begin(),
-                           positions.begin() + static_cast<ptrdiff_t>(i),
-                           positions[i]
-                       )
-                       != positions.begin()
-                       + static_cast<ptrdiff_t>(i)) {
-                    ++positions[i];
-                    if (positions[i] == count) {
-                        positions[i] = 0;
-                    }
-                }
-            }
-            return positions;
-        }
-
-        void ibltApply(
-            AntiEntropyManager::IbltCell& cell,
-            int64_t sign,
-            uint64_t key_hash,
-            uint64_t version,
-            uint64_t writer,
-            bool tombstone
-        ) {
-            cell.count += sign;
-            cell.key_hash_xor ^= key_hash;
-            cell.version_xor ^= version;
-            cell.writer_xor ^= writer;
-            cell.tombstone_xor ^= tombstone ? 1U : 0U;
-            cell.checksum_xor ^= ibltItemChecksum(key_hash, version, writer, tombstone);
-        }
-
-        auto ibltPure(const AntiEntropyManager::IbltCell& cell) -> bool {
-            if (cell.count != 1 && cell.count != -1) {
-                return false;
-            }
-            if (cell.tombstone_xor != 0 && cell.tombstone_xor != 1) {
-                return false;
-            }
-            return cell.checksum_xor
-                == ibltItemChecksum(
-                       cell.key_hash_xor,
-                       cell.version_xor,
-                       cell.writer_xor,
-                       cell.tombstone_xor != 0
-                );
-        }
+        using detail::toWireString;
     } // namespace
 
     namespace ae_codec {
@@ -404,7 +325,7 @@ namespace cinder {
                 if (!in.read(bucket)
                     || !in.read(sketch_size)
                     || !in.readString(sketch_size, sketch_blob)
-                    || !decodeIblt(sketch_blob).has_value()) {
+                    || !iblt::decode(sketch_blob).has_value()) {
                     return std::nullopt;
                 }
                 response.iblt_sketches.emplace_back(bucket, std::move(sketch_blob));
@@ -412,21 +333,21 @@ namespace cinder {
             if (in.remaining() != 0) {
                 return std::nullopt;
             }
+            // covered_buckets arrives in encode order; sort one copy so the
+            // membership searches below validate by content, not by order.
+            std::vector<uint32_t> sorted_covered = response.covered_buckets;
+            std::ranges::sort(sorted_covered);
             for (const auto& row : response.rows) {
-                if (!std::ranges::binary_search(response.covered_buckets, row.bucket)) {
+                if (!std::ranges::binary_search(sorted_covered, row.bucket)) {
                     return std::nullopt;
                 }
             }
 
             std::vector<char> sketch_bucket_seen(
-                response.covered_buckets.empty()
-                    ? 0
-                    : static_cast<size_t>(response.covered_buckets.back()) + 1,
+                sorted_covered.empty() ? 0 : static_cast<size_t>(sorted_covered.back()) + 1,
                 0
             );
 
-            std::vector<uint32_t> sorted_covered = response.covered_buckets;
-            std::ranges::sort(sorted_covered);
             std::vector<uint32_t> sketch_buckets;
             sketch_buckets.reserve(response.iblt_sketches.size());
             for (const auto& [bucket, _] : response.iblt_sketches) {
@@ -451,206 +372,6 @@ namespace cinder {
                 }
             }
             return response;
-        }
-
-        auto buildIblt(const std::vector<MetaRow>& rows, size_t cell_count)
-            -> std::optional<IbltSketch> {
-            using M = AntiEntropyManager;
-            if (cell_count < M::K_IBLT_HASH_COUNT || cell_count > M::K_MAX_IBLT_CELLS) {
-                return std::nullopt;
-            }
-
-            IbltSketch sketch;
-            sketch.cells.resize(cell_count);
-            for (const auto& row : rows) {
-                ibltInsert(sketch, row.key_hash, row.version, row.writer, row.tombstone);
-            }
-            return sketch;
-        }
-
-        void ibltInsert(
-            IbltSketch& sketch,
-            uint64_t key_hash,
-            uint64_t version,
-            uint64_t writer,
-            bool tombstone
-        ) {
-            const auto positions =
-                ibltPositions(key_hash, version, writer, tombstone, sketch.cells.size());
-            for (size_t pos : positions) {
-                ibltApply(sketch.cells[pos], 1, key_hash, version, writer, tombstone);
-            }
-        }
-
-        auto encodeIblt(const IbltSketch& sketch) -> std::string {
-            using M = AntiEntropyManager;
-            if (sketch.cells.size()
-                < M::K_IBLT_HASH_COUNT
-                || sketch.cells.size()
-                > M::K_MAX_IBLT_CELLS) {
-                return {};
-            }
-
-            std::vector<std::byte> buf(
-                2 * sizeof(uint32_t) + sketch.cells.size() * 6 * sizeof(uint64_t)
-            );
-
-            BufferWriter out(buf);
-            out.write(M::K_IBLT_MAGIC);
-            out.write(static_cast<uint32_t>(sketch.cells.size()));
-            for (const auto& cell : sketch.cells) {
-                out.write(std::bit_cast<uint64_t>(cell.count));
-                out.write(cell.key_hash_xor);
-                out.write(cell.version_xor);
-                out.write(cell.writer_xor);
-                out.write(cell.tombstone_xor);
-                out.write(cell.checksum_xor);
-            }
-            return toWireString(buf);
-        }
-
-        auto decodeIblt(std::string_view data) -> std::optional<IbltSketch> {
-            using M = AntiEntropyManager;
-            BufferReader in(data);
-            uint32_t magic = 0;
-            uint32_t count = 0;
-            constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 5 * sizeof(uint64_t);
-            if (!in.read(magic)
-                || magic
-                != M::K_IBLT_MAGIC
-                || !in.read(count)
-                || count
-                < M::K_IBLT_HASH_COUNT
-                || count
-                > M::K_MAX_IBLT_CELLS
-                || in.remaining()
-                != static_cast<size_t>(count)
-                * K_CELL_BYTES) {
-                return std::nullopt;
-            }
-
-            IbltSketch sketch;
-            sketch.cells.reserve(count);
-            for (uint32_t i = 0; i < count; ++i) {
-                uint64_t count_bits = 0;
-                IbltCell cell;
-                if (!in.read(count_bits)
-                    || !in.read(cell.key_hash_xor)
-                    || !in.read(cell.version_xor)
-                    || !in.read(cell.writer_xor)
-                    || !in.read(cell.tombstone_xor)
-                    || !in.read(cell.checksum_xor)) {
-                    return std::nullopt;
-                }
-                if (count_bits < (uint64_t{1} << 63U) && count_bits > (uint64_t{1} << 40U)) {
-                    return std::nullopt;
-                }
-                if (count_bits
-                    >= (uint64_t{1} << 63U)
-                    && (std::numeric_limits<uint64_t>::max() - count_bits)
-                    >= (uint64_t{1} << 40U)) {
-                    return std::nullopt;
-                }
-
-                cell.count = std::bit_cast<int64_t>(count_bits);
-                sketch.cells.push_back(cell);
-            }
-            return sketch;
-        }
-
-        auto decodeIbltDifference(
-            const IbltSketch& remote,
-            const IbltSketch& local,
-            uint32_t bucket
-        ) -> std::optional<IbltDiff> {
-            using M = AntiEntropyManager;
-            if (remote.cells.size()
-                != local.cells.size()
-                || remote.cells.size()
-                < M::K_IBLT_HASH_COUNT
-                || remote.cells.size()
-                > M::K_MAX_IBLT_CELLS) {
-                return std::nullopt;
-            }
-
-            IbltSketch difference = remote;
-            for (size_t i = 0; i < difference.cells.size(); ++i) {
-                difference.cells[i].count -= local.cells[i].count;
-                difference.cells[i].key_hash_xor ^= local.cells[i].key_hash_xor;
-                difference.cells[i].version_xor ^= local.cells[i].version_xor;
-                difference.cells[i].writer_xor ^= local.cells[i].writer_xor;
-                difference.cells[i].tombstone_xor ^= local.cells[i].tombstone_xor;
-                difference.cells[i].checksum_xor ^= local.cells[i].checksum_xor;
-            }
-
-            IbltDiff decoded;
-            std::vector<size_t> queue;
-            std::vector<char> queued(difference.cells.size(), 0);
-            queue.reserve(difference.cells.size());
-            for (size_t i = 0; i < difference.cells.size(); ++i) {
-                if (ibltPure(difference.cells[i])) {
-                    queue.push_back(i);
-                    queued[i] = 1;
-                }
-            }
-            for (size_t cursor = 0; cursor < queue.size(); ++cursor) {
-                const size_t pos = queue[cursor];
-                const IbltCell cell = difference.cells[pos];
-                if (!ibltPure(cell)) {
-                    queued[pos] = 0;
-                    continue;
-                }
-
-                queued[pos] = 0;
-                MetaRow row{
-                    .bucket = bucket,
-                    .tombstone = cell.tombstone_xor != 0,
-                    .key_hash = cell.key_hash_xor,
-                    .version = cell.version_xor,
-                    .writer = cell.writer_xor,
-                };
-
-                const bool is_remote = cell.count == 1;
-                (is_remote ? decoded.remote_only : decoded.local_only).push_back(row);
-                const auto positions = ibltPositions(
-                    row.key_hash,
-                    row.version,
-                    row.writer,
-                    row.tombstone,
-                    difference.cells.size()
-                );
-                for (size_t target : positions) {
-                    ibltApply(
-                        difference.cells[target],
-                        is_remote ? -1 : 1,
-                        row.key_hash,
-                        row.version,
-                        row.writer,
-                        row.tombstone
-                    );
-                    if (!queued[target] && ibltPure(difference.cells[target])) {
-                        queue.push_back(target);
-                        queued[target] = 1;
-                    }
-                }
-            }
-            for (const auto& cell : difference.cells) {
-                if (cell.count
-                    != 0
-                    || cell.key_hash_xor
-                    != 0
-                    || cell.version_xor
-                    != 0
-                    || cell.writer_xor
-                    != 0
-                    || cell.tombstone_xor
-                    != 0
-                    || cell.checksum_xor
-                    != 0) {
-                    return std::nullopt;
-                }
-            }
-            return decoded;
         }
 
         auto encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string {

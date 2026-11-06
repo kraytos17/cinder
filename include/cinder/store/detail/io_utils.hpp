@@ -225,6 +225,13 @@ namespace cinder::detail {
         size_t pos_ = 0;
     };
 
+    // Wire-string sink for BufferWriter users whose API stays std::string:
+    // copies the pre-sized buffer out. Native-endian bytes, matching the
+    // on-disk LE layout.
+    inline auto toWireString(const std::vector<std::byte>& buf) -> std::string {
+        return {reinterpret_cast<const char*>(buf.data()), buf.size()};
+    }
+
     // Stream sink for the few header writes that do not go through a scratch
     // buffer (e.g. WalWriter's file header).
     template <typename T>
