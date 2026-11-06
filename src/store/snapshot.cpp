@@ -1,6 +1,5 @@
 #include "cinder/store/snapshot.hpp"
 
-#include <filesystem>
 #include <fstream>
 #include <limits>
 
@@ -25,11 +24,14 @@ namespace cinder {
 
         // Header in one write: magic + version + next_version + entry_count.
         scratch_.resize(sizeof(uint32_t) * 3 + sizeof(uint64_t));
-        size_t off = 0;
-        writeLE(scratch_, off, K_SNAPSHOT_MAGIC);
-        writeLE(scratch_, off, K_SNAPSHOT_FORMAT_VERSION);
-        writeLE(scratch_, off, next_version);
-        writeLE(scratch_, off, static_cast<uint32_t>(entries.size()));
+        {
+            BufferWriter header(scratch_);
+            header.write(K_SNAPSHOT_MAGIC);
+            header.write(K_SNAPSHOT_FORMAT_VERSION);
+            header.write(next_version);
+            header.write(static_cast<uint32_t>(entries.size()));
+        }
+
         out.write(
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
@@ -60,17 +62,17 @@ namespace cinder {
                 + sizeof(uint8_t); // has_ttl + tombstone
 
             scratch_.resize(size);
-            off = 0;
-            writeLE(scratch_, off, key_len);
-            writeBytes(scratch_, off, entry.key.data(), key_len);
-            writeLE(scratch_, off, val_len);
-            writeBytes(scratch_, off, entry.value.data(), val_len);
-            writeLE(scratch_, off, entry.version);
-            writeLE(scratch_, off, entry.writer_node_hash);
-            writeLE(scratch_, off, entry.expires_at_ms);
-            writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
-            writeLE(scratch_, off, entry.freq);
-            writeLE(scratch_, off, entry.tombstone ? uint8_t{1} : uint8_t{0});
+            BufferWriter body(scratch_);
+            body.write(key_len);
+            body.writeString(entry.key);
+            body.write(val_len);
+            body.writeString(entry.value);
+            body.write(entry.version);
+            body.write(entry.writer_node_hash);
+            body.write(entry.expires_at_ms);
+            body.write(entry.has_ttl ? uint8_t{1} : uint8_t{0});
+            body.write(entry.freq);
+            body.write(entry.tombstone ? uint8_t{1} : uint8_t{0});
             out.write(
                 reinterpret_cast<const char*>(scratch_.data()),
                 static_cast<std::streamsize>(scratch_.size())
@@ -88,24 +90,10 @@ namespace cinder {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::InternalError, "snapshot close failed"));
         }
-
-        // Crash safety: persist file contents before exposing the rename,
-        // then persist the directory entry itself (file-then-dir fsync).
-        const std::string tmp_path = path_ + ".tmp";
-        if (!syncFileContents(tmp_path)) {
+        if (auto published = publishTempFile(path_ + ".tmp", path_, "snapshot");
+            !published.has_value()) {
             span.setStatus(SpanStatus::Error);
-            return err(Error(Errc::InternalError, "snapshot fsync failed"));
-        }
-
-        std::error_code ec;
-        std::filesystem::rename(tmp_path, path_, ec);
-        if (ec) {
-            span.setStatus(SpanStatus::Error);
-            return err(Error(Errc::InternalError, "snapshot rename failed: " + ec.message()));
-        }
-        if (!syncDirectory(path_)) {
-            span.setStatus(SpanStatus::Error);
-            return err(Error(Errc::InternalError, "snapshot dir fsync failed"));
+            return err(published.error());
         }
 
         span.setAttribute({"entries", entries.size()});

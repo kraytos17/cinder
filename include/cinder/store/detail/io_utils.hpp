@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <concepts>
 #include <cstddef>
 #include <cstring>
@@ -7,8 +8,11 @@
 #include <iostream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
+
+#include "cinder/common/status.hpp"
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -61,27 +65,114 @@ namespace cinder::detail {
 #endif
     }
 
-    // Little-endian scalar codec, one template per sink instead of N
-    // near-identical overloads. Native-endian bytes, matching the on-disk
-    // WAL0/CSNP layout; use ByteWriter/ByteReader for big-endian wire data.
+    // Pre-sized little-endian buffer writer: one constrained template
+    // instead of N near-identical writeU* overloads plus manual offset
+    // threading at every call site. The caller pre-sizes the buffer to the
+    // exact byte count (encode paths guarantee this); overflow is a debug
+    // assert, matching net::ByteWriter. Native-endian bytes, matching the
+    // on-disk WAL0/CSNP layout; use net::ByteWriter for big-endian wire data.
+    class BufferWriter {
+    public:
+
+        explicit BufferWriter(std::vector<std::byte>& buf) :
+            buf_(buf) {}
+
+        template <typename T>
+            requires std::unsigned_integral<T>
+        void write(T v) {
+            assert(offset_ + sizeof(T) <= buf_.size());
+            std::memcpy(&buf_[offset_], &v, sizeof(v));
+            offset_ += sizeof(v);
+        }
+
+        void writeBytes(const void* data, size_t len) {
+            assert(offset_ + len <= buf_.size());
+            if (len > 0) {
+                std::memcpy(&buf_[offset_], data, len);
+            }
+            offset_ += len;
+        }
+
+        void writeString(std::string_view s) {
+            writeBytes(s.data(), s.size());
+        }
+
+        [[nodiscard]]
+        auto offset() const -> size_t {
+            return offset_;
+        }
+
+        [[nodiscard]]
+        auto bytes() const -> std::span<const std::byte> {
+            return {buf_.data(), buf_.size()};
+        }
+
+    private:
+
+        std::vector<std::byte>& buf_;
+        size_t offset_ = 0;
+    };
+
+    // Bounded little-endian buffer reader: replaces hand-rolled cursor
+    // structs and (p, end, out) free-function pairs. Bool-style reads compose
+    // in validation chains; string reads refuse to allocate past the end
+    // (fuzzed length prefixes must yield false, not a huge allocation).
+    class BufferReader {
+    public:
+
+        BufferReader(const char* data, size_t size) :
+            data_(data),
+            size_(size) {}
+
+        template <typename T>
+            requires std::unsigned_integral<T>
+        auto read(T& out) -> bool {
+            if (pos_ + sizeof(T) > size_) {
+                return false;
+            }
+
+            std::memcpy(&out, data_ + pos_, sizeof(T));
+            pos_ += sizeof(T);
+            return true;
+        }
+
+        auto readString(size_t len, std::string& out) -> bool {
+            if (len > size_ - pos_) {
+                return false;
+            }
+
+            out.assign(data_ + pos_, len);
+            pos_ += len;
+            return true;
+        }
+
+        [[nodiscard]]
+        auto pos() const -> size_t {
+            return pos_;
+        }
+
+        void seek(size_t pos) {
+            pos_ = std::min(pos, size_);
+        }
+
+        [[nodiscard]]
+        auto remaining() const -> size_t {
+            return size_ - pos_;
+        }
+
+    private:
+
+        const char* data_ = nullptr;
+        size_t size_ = 0;
+        size_t pos_ = 0;
+    };
+
+    // Stream sink for the few header writes that do not go through a scratch
+    // buffer (e.g. WalWriter's file header).
     template <typename T>
         requires std::unsigned_integral<T>
     inline void writeLE(std::ostream& out, T v) {
         out.write(reinterpret_cast<const char*>(&v), sizeof(v));
-    }
-
-    // Buffer variant for pre-sized scratch encoding (e.g. WalWriter::append).
-    // Caller must ensure buf.size() >= off + sizeof(v).
-    template <typename T>
-        requires std::unsigned_integral<T>
-    inline void writeLE(std::vector<std::byte>& buf, size_t& off, T v) {
-        std::memcpy(&buf[off], &v, sizeof(v));
-        off += sizeof(v);
-    }
-
-    inline void writeBytes(std::vector<std::byte>& buf, size_t& off, const void* data, size_t len) {
-        std::memcpy(&buf[off], data, len);
-        off += len;
     }
 
     template <typename T>
@@ -92,5 +183,35 @@ namespace cinder::detail {
             return std::nullopt;
         }
         return v;
+    }
+
+    // Atomic file publish: fsync the staged tmp file, rename over the final
+    // path, fsync the directory so the rename itself survives an OS crash.
+    // Shared by snapshot, WAL rotation, CURRENT, and hint-journal compaction
+    // (whose old hand-rolled sequence skipped the dir fsync). Removes tmp on
+    // failure. The `what` label identifies the caller in error messages.
+    inline auto publishTempFile(
+        const std::string& tmp_path,
+        const std::string& final_path,
+        std::string_view what
+    ) -> Result<void> {
+        if (!syncFileContents(tmp_path)) {
+            std::error_code ec;
+            std::filesystem::remove(tmp_path, ec);
+            return err(Error(Errc::InternalError, std::string(what) + " tmp fsync failed"));
+        }
+
+        std::error_code ec;
+        std::filesystem::rename(tmp_path, final_path, ec);
+        if (ec) {
+            std::filesystem::remove(tmp_path, ec);
+            return err(
+                Error(Errc::InternalError, std::string(what) + " rename failed: " + ec.message())
+            );
+        }
+        if (!syncDirectory(final_path)) {
+            return err(Error(Errc::InternalError, std::string(what) + " dir fsync failed"));
+        }
+        return ok();
     }
 } // namespace cinder::detail

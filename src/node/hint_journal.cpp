@@ -236,11 +236,17 @@ namespace cinder {
             return;
         }
 
+        // Atomic publish also fsyncs the directory, which the old hand-rolled
+        // sequence skipped: a crash could previously lose the compact.
+        // fd_ is closed first: Windows cannot rename an open file.
         ::close(fd_);
-        std::error_code ec;
-        std::filesystem::rename(tmp_path, path_, ec);
-        if (ec) {
-            CINDER_WARN("hint journal compact rename failed", {"err", ec.message()});
+        if (auto published = detail::publishTempFile(tmp_path, path_, "hint journal");
+            !published.has_value()) {
+            CINDER_WARN(
+                "hint journal compact publish failed",
+                {"reason", published.error().message()}
+            );
+
             fd_ = ::open(path_.c_str(), O_RDWR | O_CREAT, 0644);
             span.setStatus(SpanStatus::Error);
             return;
@@ -256,21 +262,21 @@ namespace cinder {
     auto HintJournal::encodeAdd(const HintQueue::Hint& hint, uint64_t sys_expiry_ms)
         -> std::vector<std::byte> {
         std::vector<std::byte> payload;
-        size_t off = 0;
         auto reserve =
             hint.target.size() + hint.req.key.size() + hint.req.value.size() + 64 + 8 + 1;
 
         payload.resize(reserve);
-        detail::writeLE(payload, off, K_OP_ADD);
-        detail::writeLE(payload, off, sys_expiry_ms);
-        detail::writeLE(payload, off, static_cast<uint32_t>(hint.target.size()));
-        detail::writeBytes(payload, off, hint.target.data(), hint.target.size());
-        detail::writeLE(payload, off, static_cast<uint32_t>(hint.req.key.size()));
-        detail::writeBytes(payload, off, hint.req.key.data(), hint.req.key.size());
-        detail::writeLE(payload, off, static_cast<uint32_t>(hint.req.value.size()));
-        detail::writeBytes(payload, off, hint.req.value.data(), hint.req.value.size());
-        detail::writeLE(payload, off, hint.req.version);
-        detail::writeLE(payload, off, hint.req.writer_node_hash);
+        detail::BufferWriter out(payload);
+        out.write(K_OP_ADD);
+        out.write(sys_expiry_ms);
+        out.write(static_cast<uint32_t>(hint.target.size()));
+        out.writeString(hint.target);
+        out.write(static_cast<uint32_t>(hint.req.key.size()));
+        out.writeString(hint.req.key);
+        out.write(static_cast<uint32_t>(hint.req.value.size()));
+        out.writeString(hint.req.value);
+        out.write(hint.req.version);
+        out.write(hint.req.writer_node_hash);
         // Trailing entry-expiry (absolute wall-clock ms, 0 = none) and
         // tombstone marker. TTL writes and delete markers keep their
         // deadlines across a journal recovery; without these, a replayed
@@ -283,25 +289,25 @@ namespace cinder {
             );
         }
 
-        detail::writeLE(payload, off, entry_expiry_ms);
-        detail::writeLE(payload, off, hint.req.tombstone ? uint8_t{1} : uint8_t{0});
-        payload.resize(off);
+        out.write(entry_expiry_ms);
+        out.write(hint.req.tombstone ? uint8_t{1} : uint8_t{0});
+        payload.resize(out.offset());
         return payload;
     }
 
     auto HintJournal::encodeDel(std::string_view target, std::string_view key, uint64_t version)
         -> std::vector<std::byte> {
         std::vector<std::byte> payload;
-        size_t off = 0;
-
         payload.resize(target.size() + key.size() + 32);
-        detail::writeLE(payload, off, K_OP_DEL);
-        detail::writeLE(payload, off, static_cast<uint32_t>(target.size()));
-        detail::writeBytes(payload, off, target.data(), target.size());
-        detail::writeLE(payload, off, static_cast<uint32_t>(key.size()));
-        detail::writeBytes(payload, off, key.data(), key.size());
-        detail::writeLE(payload, off, version);
-        payload.resize(off);
+
+        detail::BufferWriter out(payload);
+        out.write(K_OP_DEL);
+        out.write(static_cast<uint32_t>(target.size()));
+        out.writeString(target);
+        out.write(static_cast<uint32_t>(key.size()));
+        out.writeString(key);
+        out.write(version);
+        payload.resize(out.offset());
         return payload;
     }
 
@@ -310,70 +316,34 @@ namespace cinder {
             return false;
         }
 
-        size_t off = 0;
-        auto read_u8 = [&] -> std::optional<uint8_t> {
-            if (off >= payload.size()) {
-                return std::nullopt;
-            }
-            return static_cast<uint8_t>(payload[off++]);
-        };
-        auto read_u32 = [&] -> std::optional<uint32_t> {
-            if (off + 4 > payload.size()) {
-                return std::nullopt;
-            }
-
-            uint32_t v = 0;
-            std::memcpy(&v, payload.data() + off, 4);
-            off += 4;
-            return v;
-        };
-        auto read_u64 = [&] -> std::optional<uint64_t> {
-            if (off + 8 > payload.size()) {
-                return std::nullopt;
-            }
-
-            uint64_t v = 0;
-            std::memcpy(&v, payload.data() + off, 8);
-            off += 8;
-            return v;
-        };
-        auto read_str = [&](size_t len) -> std::optional<std::string> {
-            if (off + len > payload.size()) {
-                return std::nullopt;
-            }
-
-            std::string s(payload.substr(off, len));
-            off += len;
-            return s;
-        };
-
-        auto op = read_u8();
-        if (!op.has_value()) {
+        detail::BufferReader in(payload.data(), payload.size());
+        uint8_t op = 0;
+        if (!in.read(op)) {
             return false;
         }
-        if (*op == K_OP_ADD) {
-            auto exp = read_u64();
-            auto tlen = read_u32();
-            if (!exp.has_value() || !tlen.has_value()) {
+        if (op == K_OP_ADD) {
+            uint64_t exp = 0;
+            uint32_t tlen = 0;
+            if (!in.read(exp) || !in.read(tlen)) {
                 return false;
             }
 
-            auto target = read_str(*tlen);
-            auto klen = read_u32();
-            if (!target.has_value() || !klen.has_value()) {
+            std::string target;
+            uint32_t klen = 0;
+            if (!in.readString(tlen, target) || !in.read(klen)) {
                 return false;
             }
 
-            auto key = read_str(*klen);
-            auto vlen = read_u32();
-            if (!key.has_value() || !vlen.has_value()) {
+            std::string key;
+            uint32_t vlen = 0;
+            if (!in.readString(klen, key) || !in.read(vlen)) {
                 return false;
             }
 
-            auto value = read_str(*vlen);
-            auto version = read_u64();
-            auto writer = read_u64();
-            if (!value.has_value() || !version.has_value() || !writer.has_value()) {
+            std::string value;
+            uint64_t version = 0;
+            uint64_t writer = 0;
+            if (!in.readString(vlen, value) || !in.read(version) || !in.read(writer)) {
                 return false;
             }
 
@@ -382,58 +352,58 @@ namespace cinder {
             // decode as live writes, matching their original semantics.
             bool tombstone = false;
             std::optional<system_clock::time_point> entry_expiry;
-            if (off != payload.size()) {
-                auto exp_ms = read_u64();
-                auto tombstone_byte = read_u8();
-                if (!exp_ms.has_value()
-                    || !tombstone_byte.has_value()
-                    || tombstone_byte.value()
+            if (in.remaining() != 0) {
+                uint64_t exp_ms = 0;
+                uint8_t tombstone_byte = 0;
+                if (!in.read(exp_ms)
+                    || !in.read(tombstone_byte)
+                    || tombstone_byte
                     > 1
-                    || off
-                    != payload.size()) {
+                    || in.remaining()
+                    != 0) {
                     return false;
                 }
-                if (exp_ms.value() != 0) {
-                    entry_expiry = system_clock::time_point(milliseconds(exp_ms.value()));
+                if (exp_ms != 0) {
+                    entry_expiry = system_clock::time_point(milliseconds(exp_ms));
                 }
-                tombstone = tombstone_byte.value() != 0;
+                tombstone = tombstone_byte != 0;
             }
 
             out.is_add = true;
-            out.sys_expiry_ms = *exp;
-            out.hint.target = std::move(*target);
+            out.sys_expiry_ms = exp;
+            out.hint.target = std::move(target);
             out.hint.req.opcode = net::Opcode::Replicate;
-            out.hint.req.key = std::move(*key);
-            out.hint.req.value = std::move(*value);
-            out.hint.req.version = *version;
-            out.hint.req.writer_node_hash = *writer;
+            out.hint.req.key = std::move(key);
+            out.hint.req.value = std::move(value);
+            out.hint.req.version = version;
+            out.hint.req.writer_node_hash = writer;
             out.hint.req.expires_at = entry_expiry;
             out.hint.req.tombstone = tombstone;
             out.hint.expires_at = steady_clock::now() + milliseconds(30'000);
             return true;
         }
-        if (*op == K_OP_DEL) {
-            auto tlen = read_u32();
-            if (!tlen.has_value()) {
+        if (op == K_OP_DEL) {
+            uint32_t tlen = 0;
+            if (!in.read(tlen)) {
                 return false;
             }
 
-            auto target = read_str(*tlen);
-            auto klen = read_u32();
-            if (!target.has_value() || !klen.has_value()) {
+            std::string target;
+            uint32_t klen = 0;
+            if (!in.readString(tlen, target) || !in.read(klen)) {
                 return false;
             }
 
-            auto key = read_str(*klen);
-            auto version = read_u64();
-            if (!key.has_value() || !version.has_value() || off != payload.size()) {
+            std::string key;
+            uint64_t version = 0;
+            if (!in.readString(klen, key) || !in.read(version) || in.remaining() != 0) {
                 return false;
             }
 
             out.is_add = false;
-            out.target = std::move(*target);
-            out.key = std::move(*key);
-            out.version = *version;
+            out.target = std::move(target);
+            out.key = std::move(key);
+            out.version = version;
             return true;
         }
         return false;

@@ -56,22 +56,7 @@ namespace cinder {
                     return err(Error(Errc::InternalError, "CURRENT close failed"));
                 }
             }
-            if (!detail::syncFileContents(tmp_path.string())) {
-                std::error_code ec;
-                std::filesystem::remove(tmp_path, ec);
-                return err(Error(Errc::InternalError, "CURRENT fsync failed"));
-            }
-
-            std::error_code ec;
-            std::filesystem::rename(tmp_path, current_path, ec);
-            if (ec) {
-                std::filesystem::remove(tmp_path, ec);
-                return err(Error(Errc::InternalError, "CURRENT rename failed"));
-            }
-            if (!detail::syncDirectory(current_path.string())) {
-                return err(Error(Errc::InternalError, "CURRENT dir fsync failed"));
-            }
-            return ok();
+            return detail::publishTempFile(tmp_path.string(), current_path.string(), "CURRENT");
         }
 
         // Read the CURRENT pointer, returning the snapshot filename or empty.
@@ -120,6 +105,36 @@ namespace cinder {
             }
             return seq;
         }
+
+        // True for snapshot_<something>.dat names (strictly more than just
+        // prefix+suffix, so the bare affixes never match).
+        auto isSnapshotFile(std::string_view name) -> bool {
+            std::string_view prefix(K_SNAPSHOT_PREFIX);
+            std::string_view suffix(K_SNAPSHOT_SUFFIX);
+            return name.size()
+                > prefix.size()
+                + suffix.size()
+                && name.starts_with(prefix)
+                && name.ends_with(suffix);
+        }
+
+        // All snapshots in a directory, lexicographically sorted (oldest
+        // first; timestamp names sort chronologically).
+        auto listSnapshotFiles(const std::filesystem::path& dir)
+            -> std::vector<std::filesystem::path> {
+            std::vector<std::filesystem::path> snaps;
+            if (!std::filesystem::exists(dir)) {
+                return snaps;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                if (isSnapshotFile(entry.path().filename().string())) {
+                    snaps.push_back(entry.path());
+                }
+            }
+
+            std::ranges::sort(snaps);
+            return snaps;
+        }
     } // namespace
 
     PersistenceManager::PersistenceManager(Options opts, CacheStore& store, Clock* clock) :
@@ -143,32 +158,13 @@ namespace cinder {
             size_t snap_count = 0;
             Version unused_next = 0;
             auto result = reader.readStream(unused_next, [&](SnapshotEntry& entry) {
-                VersionedEntry ve;
-                ve.value = std::move(entry.value);
-                ve.setVersion(entry.version);
-                ve.writer_node_hash = entry.writer_node_hash;
-                ve.setHasTtl(entry.has_ttl);
-                ve.setTombstone(entry.tombstone);
-                if (entry.has_ttl && entry.expires_at_ms > 0) {
-                    // Preserve the entry's remaining wall-clock lifetime across
-                    // restart: convert the stored absolute expiry back onto the
-                    // local (possibly simulated) steady basis instead of expiring
-                    // it immediately.
-                    const uint64_t now_ms = nowSystemMs(clock_);
-                    if (entry.expires_at_ms <= now_ms) {
-                        return; // skip expired
-                    }
-
-                    auto remaining_ms =
-                        milliseconds{static_cast<int64_t>(entry.expires_at_ms - now_ms)};
-                    if (remaining_ms.count() < 1) {
-                        remaining_ms = milliseconds{1};
-                    }
-                    ve.expires_at = clock().now() + remaining_ms;
+                auto ve = versionedFromSnapshot(entry);
+                if (!ve.has_value()) {
+                    return; // skip expired
                 }
 
                 [[maybe_unused]]
-                auto res = store_.putVersioned(entry.key, std::move(ve));
+                auto res = store_.putVersioned(entry.key, std::move(ve.value()));
                 // WAL records carry no freq (frozen v2 framing): only the
                 // snapshot restores policy state; WAL-only keys start at 1.
                 if (entry.freq > 1) {
@@ -393,6 +389,75 @@ namespace cinder {
         span.setStatus(SpanStatus::Ok);
     }
 
+    // Rebase an absolute wall-clock expiry onto the local (possibly
+    // simulated) steady basis instead of expiring it immediately. Returns
+    // false when already expired: the caller skips the entry.
+    static auto rebaseExpiry(
+        VersionedEntry& ve,
+        bool has_ttl,
+        uint64_t expires_at_ms,
+        const Clock& clock
+    ) -> bool {
+        if (!has_ttl || expires_at_ms == 0) {
+            return true;
+        }
+
+        const uint64_t now_ms = nowSystemMs(&clock);
+        if (expires_at_ms <= now_ms) {
+            return false; // skip expired
+        }
+
+        auto remaining_ms = milliseconds{static_cast<int64_t>(expires_at_ms - now_ms)};
+        if (remaining_ms.count() < 1) {
+            remaining_ms = milliseconds{1};
+        }
+        ve.expires_at = clock.now() + remaining_ms;
+        return true;
+    }
+
+    auto PersistenceManager::toSnapshotEntry(std::string key, VersionedEntry entry)
+        -> SnapshotEntry {
+        SnapshotEntry se;
+        // Query LFU policy state before moving the key: liveEntries() drops
+        // it, and a restart would otherwise reset hot entries.
+        se.freq = store_.entryFreq(key);
+        se.key = std::move(key);
+        se.value = std::move(entry.value);
+        se.version = entry.version();
+        se.writer_node_hash = entry.writer_node_hash;
+        se.has_ttl = entry.hasTtl();
+        se.tombstone = entry.isTombstone();
+        se.expires_at_ms = entry.hasTtl() ? toSystemMsOrDefault(&clock(), entry.expires_at) : 0;
+        return se;
+    }
+
+    auto PersistenceManager::versionedFromSnapshot(SnapshotEntry& entry)
+        -> std::optional<VersionedEntry> {
+        VersionedEntry ve;
+        ve.value = std::move(entry.value);
+        ve.setVersion(entry.version);
+        ve.writer_node_hash = entry.writer_node_hash;
+        ve.setHasTtl(entry.has_ttl);
+        ve.setTombstone(entry.tombstone);
+        if (!rebaseExpiry(ve, entry.has_ttl, entry.expires_at_ms, clock())) {
+            return std::nullopt;
+        }
+        return ve;
+    }
+
+    auto PersistenceManager::versionedFromWal(WalEntry& entry) -> std::optional<VersionedEntry> {
+        VersionedEntry ve;
+        ve.value = std::move(entry.value);
+        ve.setVersion(entry.version);
+        ve.writer_node_hash = entry.writer_node_hash;
+        ve.setHasTtl(entry.has_ttl);
+        ve.setTombstone(entry.is_tombstone);
+        if (!rebaseExpiry(ve, entry.has_ttl, entry.expires_at_ms, clock())) {
+            return std::nullopt;
+        }
+        return ve;
+    }
+
     auto PersistenceManager::createSnapshot() -> Result<void> {
         auto filename = K_SNAPSHOT_PREFIX
             + std::to_string(system_clock::now().time_since_epoch().count())
@@ -407,26 +472,10 @@ namespace cinder {
         auto live = store_.liveEntries();
         all_entries.reserve(live.size());
         for (auto& [key, ve] : live) {
-            SnapshotEntry se;
-            // Query LFU policy state before moving the key: liveEntries()
-            // drops it, and a restart would otherwise reset hot entries.
-            se.freq = store_.entryFreq(key);
-            se.key = std::move(key);
-            se.value = std::move(ve.value);
-            se.version = ve.version();
-            se.writer_node_hash = ve.writer_node_hash;
-            se.has_ttl = ve.hasTtl();
-            se.tombstone = ve.isTombstone();
-            if (ve.hasTtl()) {
-                se.expires_at_ms = toSystemMsOrDefault(clock_, ve.expires_at);
-            } else {
-                se.expires_at_ms = 0;
-            }
-
             if (ve.version() >= next_version) {
                 next_version = ve.version() + 1;
             }
-            all_entries.push_back(std::move(se));
+            all_entries.push_back(toSnapshotEntry(std::move(key), std::move(ve)));
         }
 
         SnapshotWriter writer(snap_path.string());
@@ -461,35 +510,18 @@ namespace cinder {
             }
 
             ++decoded;
-            VersionedEntry ve;
-
-            ve.value = std::move(entry->value);
-            ve.setVersion(entry->version);
-            ve.writer_node_hash = entry->writer_node_hash;
-            ve.setHasTtl(entry->has_ttl);
-            ve.setTombstone(entry->is_tombstone);
-            if (entry->has_ttl && entry->expires_at_ms > 0) {
-                // Preserve remaining wall-clock lifetime across restart (see
-                // recover()).
-                const uint64_t now_ms = nowSystemMs(clock_);
-                if (entry->expires_at_ms <= now_ms) {
-                    CINDER_TRACE("skipped expired WAL entry", {"key", entry->key});
-                    continue; // skip expired
-                }
-
-                auto remaining_ms =
-                    milliseconds{static_cast<int64_t>(entry->expires_at_ms - now_ms)};
-                if (remaining_ms.count() < 1) {
-                    remaining_ms = milliseconds{1};
-                }
-                ve.expires_at = clock().now() + remaining_ms;
+            WalEntry& wal_entry = entry.value();
+            auto ve = versionedFromWal(wal_entry);
+            if (!ve.has_value()) {
+                CINDER_TRACE("skipped expired WAL entry", {"key", wal_entry.key});
+                continue; // skip expired
             }
-            if (entry->op == WalEntry::Op::Set) {
+            if (wal_entry.op == WalEntry::Op::Set) {
                 [[maybe_unused]]
-                auto put_res = store_.putVersioned(entry->key, std::move(ve));
-            } else if (entry->op == WalEntry::Op::Del) {
+                auto put_res = store_.putVersioned(wal_entry.key, std::move(ve.value()));
+            } else if (wal_entry.op == WalEntry::Op::Del) {
                 [[maybe_unused]]
-                auto del_res = store_.remove(entry->key);
+                auto del_res = store_.remove(wal_entry.key);
             }
             ++replayed;
         }
@@ -511,64 +543,23 @@ namespace cinder {
         // exact under clock skew, whereas lexicographic order assumes
         // monotonic timestamps.
         const auto current_name = readCurrent(opts_.data_dir);
-        if (!current_name.empty()) {
-            std::string_view prefix(K_SNAPSHOT_PREFIX);
-            std::string_view suffix(K_SNAPSHOT_SUFFIX);
-            if (current_name.starts_with(prefix)
-                && current_name.size()
-                >= suffix.size()
-                && current_name.substr(current_name.size() - suffix.size())
-                == suffix) {
-                const auto candidate = std::filesystem::path(opts_.data_dir) / current_name;
-                if (std::filesystem::exists(candidate)) {
-                    return candidate.string();
-                }
+        if (!current_name.empty() && isSnapshotFile(current_name)) {
+            const auto candidate = std::filesystem::path(opts_.data_dir) / current_name;
+            if (std::filesystem::exists(candidate)) {
+                return candidate.string();
             }
         }
 
-        std::string latest;
-        std::string_view prefix(K_SNAPSHOT_PREFIX);
-        std::string_view suffix(K_SNAPSHOT_SUFFIX);
-        for (const auto& entry : std::filesystem::directory_iterator(opts_.data_dir)) {
-            auto name = entry.path().filename().string();
-            if (name.size()
-                > prefix.size()
-                + suffix.size()
-                && name.starts_with(prefix)
-                && name.substr(name.size() - suffix.size())
-                == suffix) {
-                if (latest.empty() || name > latest) {
-                    latest = entry.path().string();
-                }
-            }
-        }
-        return latest;
+        const auto snaps = listSnapshotFiles(opts_.data_dir);
+        return snaps.empty() ? std::string{} : snaps.back().string();
     }
 
     void PersistenceManager::pruneOldSnapshots() const {
-        if (!std::filesystem::exists(opts_.data_dir)) {
-            return;
-        }
-
-        std::string_view prefix(K_SNAPSHOT_PREFIX);
-        std::string_view suffix(K_SNAPSHOT_SUFFIX);
-        std::vector<std::filesystem::path> snaps;
-        for (const auto& entry : std::filesystem::directory_iterator(opts_.data_dir)) {
-            auto name = entry.path().filename().string();
-            if (name.size()
-                > prefix.size()
-                + suffix.size()
-                && name.starts_with(prefix)
-                && name.substr(name.size() - suffix.size())
-                == suffix) {
-                snaps.push_back(entry.path());
-            }
-        }
+        auto snaps = listSnapshotFiles(opts_.data_dir);
         if (snaps.size() <= K_SNAPSHOTS_TO_KEEP) {
             return;
         }
 
-        std::ranges::sort(snaps);
         // Never delete the CURRENT target: a crash between snapshot write
         // and prune must not remove the only pointer recovery trusts.
         const auto protected_name = readCurrent(opts_.data_dir);
@@ -626,30 +617,16 @@ namespace cinder {
     }
 
     auto PersistenceManager::replaceWalLocked(const std::filesystem::path& path) -> Result<void> {
-        // Stage the fresh WAL at <path>.tmp, fsync it, rename over <path>,
-        // fsync the directory — then adopt it. The old writer stays open
-        // across the rename so wal_ is never null; resetting it afterwards
-        // just closes the unlinked pre-rotation inode.
+        // Stage the fresh WAL at <path>.tmp and atomically publish it, then
+        // adopt it. The old writer stays open across the rename so wal_ is
+        // never null; resetting it afterwards just closes the unlinked
+        // pre-rotation inode.
         auto tmp = std::filesystem::path(std::string(path.string()) + ".tmp");
         auto fresh = std::make_unique<WalWriter>(tmp.string());
         fresh->flush();
-        if (!detail::syncFileContents(tmp.string())) {
-            std::error_code ec;
-            std::filesystem::remove(tmp, ec);
-            return err(Error(Errc::InternalError, "WAL rotate fsync failed"));
-        }
-
-        {
-            std::error_code ec;
-            std::filesystem::rename(tmp, path, ec);
-            if (ec) {
-                std::filesystem::remove(tmp, ec);
-                return err(Error(Errc::InternalError, "WAL rotate failed: " + ec.message()));
-            }
-        }
-
-        if (!detail::syncDirectory(path.string())) {
-            return err(Error(Errc::InternalError, "WAL dir fsync failed"));
+        if (auto published = detail::publishTempFile(tmp.string(), path.string(), "WAL rotate");
+            !published.has_value()) {
+            return err(published.error());
         }
 
         wal_.reset();

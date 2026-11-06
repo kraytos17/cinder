@@ -1,6 +1,5 @@
 #include "cinder/store/wal.hpp"
 
-#include <concepts>
 #include <cstring>
 #include <limits>
 #ifndef _WIN32
@@ -31,120 +30,87 @@ namespace cinder {
             uint8_t tombstone = 0;
         };
 
-        // Little-endian buffer cursor: bounds-checked takes straight out of
-        // the slurped file image, one memcpy per scalar and zero syscalls.
-        struct BufferCursor {
-            const char* data = nullptr;
-            size_t size = 0;
-            size_t pos = 0;
-
-            // One constrained template instead of three near-identical takes.
-            template <typename T>
-                requires std::unsigned_integral<T>
-            auto take() -> std::optional<T> {
-                if (pos + sizeof(T) > size) {
-                    return std::nullopt;
-                }
-
-                T v = 0;
-                std::memcpy(&v, data + pos, sizeof(v));
-                pos += sizeof(v);
-                return v;
-            }
-
-            auto takeString(size_t len) -> std::optional<std::string> {
-                // Bounds-check before allocating: a corrupt length prefix
-                // must yield nullopt, not a huge allocation (fuzz inputs).
-                if (len > size - pos) {
-                    return std::nullopt;
-                }
-
-                std::string s(data + pos, len);
-                pos += len;
-                return s;
-            }
-        };
-
         // v2 records carry a trailing tombstone byte after has_ttl; v1
         // records end at has_ttl. The caller gates on the file version.
         // Sets invalid=true when bytes were present but semantically bad
         // (unknown op, tombstone > 1). Truncation (end of image mid-record)
         // leaves invalid=false so callers treat it as a torn tail, not corruption.
-        auto readEntryFields(BufferCursor& in, bool is_v2, bool& invalid)
+        auto readEntryFields(BufferReader& in, bool is_v2, bool& invalid)
             -> std::optional<ParsedEntry> {
             invalid = false;
-            auto op_byte = in.take<uint8_t>();
-            if (!op_byte.has_value()) {
+            uint8_t op_byte = 0;
+            if (!in.read(op_byte)) {
                 return std::nullopt;
             }
 
-            auto op = static_cast<WalEntry::Op>(op_byte.value());
+            auto op = static_cast<WalEntry::Op>(op_byte);
             if (op != WalEntry::Op::Set && op != WalEntry::Op::Del) {
                 invalid = true;
                 return std::nullopt;
             }
 
-            auto key_len = in.take<uint32_t>();
-            if (!key_len.has_value()) {
+            uint32_t key_len = 0;
+            if (!in.read(key_len)) {
                 return std::nullopt;
             }
 
-            auto key = in.takeString(key_len.value());
-            if (!key.has_value()) {
+            std::string key;
+            if (!in.readString(key_len, key)) {
                 return std::nullopt;
             }
 
-            auto val_len = in.take<uint32_t>();
-            if (!val_len.has_value()) {
+            uint32_t val_len = 0;
+            if (!in.read(val_len)) {
                 return std::nullopt;
             }
 
-            auto value = in.takeString(val_len.value());
-            if (!value.has_value()) {
+            std::string value;
+            if (!in.readString(val_len, value)) {
                 return std::nullopt;
             }
 
-            auto version = in.take<uint64_t>();
-            if (!version.has_value()) {
+            uint64_t version = 0;
+            if (!in.read(version)) {
                 return std::nullopt;
             }
 
-            auto writer_hash = in.take<uint64_t>();
-            if (!writer_hash.has_value()) {
+            uint64_t writer_hash = 0;
+            if (!in.read(writer_hash)) {
                 return std::nullopt;
             }
 
-            auto expires_ms = in.take<uint64_t>();
-            if (!expires_ms.has_value()) {
+            uint64_t expires_ms = 0;
+            if (!in.read(expires_ms)) {
                 return std::nullopt;
             }
 
-            auto has_ttl = in.take<uint8_t>();
-            if (!has_ttl.has_value()) {
+            uint8_t has_ttl = 0;
+            if (!in.read(has_ttl)) {
                 return std::nullopt;
             }
 
             uint8_t tombstone = 0;
             if (is_v2) {
-                auto tombstone_byte = in.take<uint8_t>();
-                if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
-                    if (tombstone_byte.has_value()) {
-                        invalid = true;
-                    }
+                uint8_t tombstone_byte = 0;
+                if (!in.read(tombstone_byte)) {
+                    return std::nullopt; // truncated entry
+                }
+                if (tombstone_byte > 1) {
+                    invalid = true;
                     return std::nullopt;
                 }
-                tombstone = tombstone_byte.value();
+                tombstone = tombstone_byte;
             }
             return ParsedEntry{
                 .op = op,
-                .key_len = key_len.value(),
-                .key = std::move(key.value()),
-                .val_len = val_len.value(),
-                .value = std::move(value.value()),
-                .version = version.value(),
-                .writer_node_hash = writer_hash.value(),
-                .expires_ms = expires_ms.value(),
-                .has_ttl = has_ttl.value(),
+                .key_len = key_len,
+                .key = std::move(key),
+                .val_len = val_len,
+                .value = std::move(value),
+                .version = version,
+                .writer_node_hash = writer_hash,
+                .expires_ms = expires_ms,
+                .has_ttl = has_ttl,
                 .tombstone = tombstone,
             };
         }
@@ -183,6 +149,46 @@ namespace cinder {
                 .has_ttl = e.has_ttl != 0,
                 .is_tombstone = e.tombstone != 0,
             };
+        }
+    } // namespace
+
+    namespace {
+        // Encoded record length including the trailing checksum. Must stay
+        // exact: append paths pre-size the scratch buffer from it.
+        auto encodedRecordSize(const WalEntry& entry) -> size_t {
+            return 1
+                + 4
+                + entry.key.size()
+                + 4
+                + entry.value.size()
+                + 8
+                + 8
+                + 8
+                + 1
+                + 1
+                + sizeof(uint64_t);
+        }
+
+        // Single record encoder shared by append() and appendBatch(): one
+        // layout definition, so the two paths cannot drift. The checksum
+        // covers the record bytes written so far and is appended in-buffer,
+        // keeping the on-disk bytes identical to the historic per-field
+        // stream writes (plus the v2 tombstone byte).
+        void encodeWalRecord(BufferWriter& out, const WalEntry& entry) {
+            const size_t record_start = out.offset();
+            out.write(std::to_underlying(entry.op));
+            out.write(static_cast<uint32_t>(entry.key.size()));
+            out.writeString(entry.key);
+            out.write(static_cast<uint32_t>(entry.value.size()));
+            out.writeString(entry.value);
+            out.write(entry.version);
+            out.write(entry.writer_node_hash);
+            out.write(entry.expires_at_ms);
+            out.write(entry.has_ttl ? uint8_t{1} : uint8_t{0});
+            out.write(entry.is_tombstone ? uint8_t{1} : uint8_t{0});
+            auto digest =
+                XXH3_64bits(out.bytes().data() + record_start, out.offset() - record_start);
+            out.write(digest);
         }
     } // namespace
 
@@ -252,28 +258,13 @@ namespace cinder {
             return err(Error(Errc::InvalidArgument, "WAL entry too large"));
         }
 
-        // Pre-size scratch buffer: 1(op) + 4(key_len) + key + 4(val_len) + value
-        // + 8(version) + 8(writer_node_hash) + 8(expires_at_ms) + 1(has_ttl)
-        // + 1(tombstone) + 8(checksum). Digest appended in-buffer so the
-        // record lands with a single stream write; on-disk bytes are unchanged
-        // apart from the appended tombstone byte (v2).
-        const size_t size = 1 + 4 + entry.key.size() + 4 + entry.value.size() + 8 + 8 + 8 + 1 + 1;
-        scratch_.resize(size + sizeof(uint64_t));
+        // Pre-size scratch buffer from the exact encoded size; the digest is
+        // appended in-buffer so the record lands with a single stream write.
+        const size_t size = encodedRecordSize(entry);
+        scratch_.resize(size);
 
-        size_t off = 0;
-        writeLE(scratch_, off, std::to_underlying(entry.op));
-        writeLE(scratch_, off, static_cast<uint32_t>(entry.key.size()));
-        writeBytes(scratch_, off, entry.key.data(), entry.key.size());
-        writeLE(scratch_, off, static_cast<uint32_t>(entry.value.size()));
-        writeBytes(scratch_, off, entry.value.data(), entry.value.size());
-        writeLE(scratch_, off, entry.version);
-        writeLE(scratch_, off, entry.writer_node_hash);
-        writeLE(scratch_, off, entry.expires_at_ms);
-        writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
-        writeLE(scratch_, off, entry.is_tombstone ? uint8_t{1} : uint8_t{0});
-
-        auto digest = XXH3_64bits(scratch_.data(), size);
-        writeLE(scratch_, off, digest);
+        BufferWriter out(scratch_);
+        encodeWalRecord(out, entry);
         out_.write(
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
@@ -283,24 +274,6 @@ namespace cinder {
         }
         return ok();
     }
-
-    namespace {
-        // Encoded record length including the trailing checksum, mirroring
-        // WalWriter::append so batch sizing stays exact.
-        auto encodedRecordSize(const WalEntry& entry) -> size_t {
-            return 1
-                + 4
-                + entry.key.size()
-                + 4
-                + entry.value.size()
-                + 8
-                + 8
-                + 8
-                + 1
-                + 1
-                + sizeof(uint64_t);
-        }
-    } // namespace
 
     auto WalWriter::appendBatch(std::span<const WalEntry> entries) -> Result<size_t> {
         if (!out_.is_open()) {
@@ -324,24 +297,9 @@ namespace cinder {
         }
 
         scratch_.resize(total);
-        size_t off = 0;
+        BufferWriter out(scratch_);
         for (const auto& entry : entries) {
-            const size_t record_start = off;
-            writeLE(scratch_, off, std::to_underlying(entry.op));
-            writeLE(scratch_, off, static_cast<uint32_t>(entry.key.size()));
-            writeBytes(scratch_, off, entry.key.data(), entry.key.size());
-            writeLE(scratch_, off, static_cast<uint32_t>(entry.value.size()));
-            writeBytes(scratch_, off, entry.value.data(), entry.value.size());
-            writeLE(scratch_, off, entry.version);
-            writeLE(scratch_, off, entry.writer_node_hash);
-            writeLE(scratch_, off, entry.expires_at_ms);
-            writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
-            writeLE(scratch_, off, entry.is_tombstone ? uint8_t{1} : uint8_t{0});
-            auto digest = XXH3_64bits(
-                static_cast<const void*>(scratch_.data() + record_start),
-                off - record_start
-            );
-            writeLE(scratch_, off, digest);
+            encodeWalRecord(out, entry);
         }
 
         out_.write(
@@ -395,17 +353,19 @@ namespace cinder {
             return;
         }
 
-        BufferCursor header{data_.data(), data_.size(), 0};
-        const auto magic = header.take<uint32_t>();
-        if (magic.has_value() && magic.value() == K_WAL_MAGIC) {
-            const auto version = header.take<uint32_t>();
-            if (version.has_value()
-                && (version.value()
-                    == K_WAL_FORMAT_VERSION
-                    || version.value()
-                    == K_WAL_FORMAT_VERSION_V1)) {
-                format_version_ = version.value();
-                pos_ = header.pos;
+        BufferReader header{data_.data(), data_.size()};
+        uint32_t magic = 0;
+        if (!header.read(magic)) {
+            return; // empty image: nothing to decode
+        }
+        if (magic == K_WAL_MAGIC) {
+            uint32_t version = 0;
+            if (!header.read(version)) {
+                return; // torn header: nothing to decode
+            }
+            if (version == K_WAL_FORMAT_VERSION || version == K_WAL_FORMAT_VERSION_V1) {
+                format_version_ = version;
+                pos_ = header.pos();
                 return;
             }
             // Unknown version — fall through to legacy decoding from 0.
@@ -415,7 +375,8 @@ namespace cinder {
     }
 
     auto WalReader::next() -> std::optional<WalEntry> {
-        BufferCursor in{data_.data(), data_.size(), pos_};
+        BufferReader in{data_.data(), data_.size()};
+        in.seek(pos_);
         const bool is_v2 = format_version_ == K_WAL_FORMAT_VERSION;
         bool invalid = false;
         auto fields = readEntryFields(in, is_v2, invalid);
@@ -426,27 +387,27 @@ namespace cinder {
                 corrupted_ = true;
             }
 
-            pos_ = in.pos;
+            pos_ = in.pos();
             return std::nullopt;
         }
         if (format_version_ == 0) {
-            pos_ = in.pos;
+            pos_ = in.pos();
             return toWalEntry(fields.value());
         }
 
-        const auto stored_checksum = in.take<uint64_t>();
-        if (!stored_checksum.has_value()) {
-            pos_ = in.pos;
+        uint64_t stored_checksum = 0;
+        if (!in.read(stored_checksum)) {
+            pos_ = in.pos();
             return std::nullopt; // truncated entry
         }
-        if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum.value()) {
+        if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum) {
             CINDER_WARN("checksum mismatch at entry — corrupt data");
             corrupted_ = true;
-            pos_ = in.pos;
+            pos_ = in.pos();
             return std::nullopt;
         }
 
-        pos_ = in.pos;
+        pos_ = in.pos();
         return toWalEntry(fields.value());
     }
 

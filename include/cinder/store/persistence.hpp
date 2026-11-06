@@ -7,11 +7,14 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/status.hpp"
+#include "cinder/common/types.hpp"
+#include "cinder/store/snapshot.hpp"
 #include "cinder/store/wal.hpp"
 
 namespace cinder {
@@ -102,6 +105,14 @@ namespace cinder {
         };
 
         auto createSnapshot() -> Result<void>;
+        // Store-entry conversions shared by snapshot write and both replay
+        // paths. The remaining-lifetime computation lives in exactly one
+        // place (rebaseExpiry) so a TTL edge-case fix cannot land in one
+        // path and miss the other. Converters return nullopt for already
+        // expired entries, which the caller skips instead of resurrecting.
+        auto toSnapshotEntry(std::string key, VersionedEntry entry) -> SnapshotEntry;
+        auto versionedFromSnapshot(SnapshotEntry& entry) -> std::optional<VersionedEntry>;
+        auto versionedFromWal(WalEntry& entry) -> std::optional<VersionedEntry>;
         // Replays the WAL, returning the number of physically decoded records
         // (including expired-skipped ones still occupying the file) so the
         // caller can seed its byte/entry accounting.
