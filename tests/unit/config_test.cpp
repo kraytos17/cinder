@@ -90,6 +90,46 @@ server:
             EXPECT_EQ(cfg.log_level, "info"); // default
         }
 
+        TEST(ConfigTest, TuningSectionsParse) {
+            test::ScratchFile path_file("cinder_test_tuning", ".yaml");
+            const std::string path = path_file.string();
+            {
+                std::ofstream f(path);
+                f << R"(
+anti_entropy:
+  interval_ms: 5000
+  buckets: 64
+  fetch_bytes: 4096
+  full_rehash_interval_ms: 60000
+
+persistence:
+  enabled: true
+  data_dir: /tmp/cinder-test
+  snapshot_interval_s: 30
+  max_wal_entries: 500
+  max_wal_bytes: 8192
+  max_wal_segment_bytes: 1024
+  wal_fsync: true
+)";
+            }
+
+            auto result = loadConfig(path);
+            ASSERT_TRUE(result.has_value());
+            const auto& cfg = result.value();
+
+            EXPECT_EQ(cfg.anti_entropy.interval, milliseconds{5000});
+            EXPECT_EQ(cfg.anti_entropy.buckets, 64U);
+            EXPECT_EQ(cfg.anti_entropy.fetch_bytes, 4096U);
+            EXPECT_EQ(cfg.anti_entropy.full_rehash_interval, milliseconds{60'000});
+            EXPECT_TRUE(cfg.persistence_enabled);
+            EXPECT_EQ(cfg.data_dir, "/tmp/cinder-test");
+            EXPECT_EQ(cfg.persistence.snapshot_interval_s, 30U);
+            EXPECT_EQ(cfg.persistence.max_wal_entries, 500U);
+            EXPECT_EQ(cfg.persistence.max_wal_bytes, 8192U);
+            EXPECT_EQ(cfg.persistence.max_wal_segment_bytes, 1024U);
+            EXPECT_TRUE(cfg.persistence.wal_fsync);
+        }
+
         TEST(ConfigTest, EmptyFileUsesAllDefaults) {
             test::ScratchFile path_file("cinder_test_empty", ".yaml");
             const std::string path = path_file.string();

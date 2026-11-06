@@ -78,27 +78,8 @@ static auto runMultiSet(
 auto main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder cache client"};
 
-    std::string host = "127.0.0.1";
-    uint16_t port = 7000;
-    bool verbose = false;
-    bool tls_enabled = false;
-    std::string tls_cert_file;
-    std::string tls_key_file;
-    std::string tls_ca_file;
-    std::string client_secret;
-
-    app.add_option("--host", host, "Server host");
-    app.add_option("-p,--port", port, "Server port");
-    app.add_flag("-v,--verbose", verbose, "Enable verbose (debug) logging");
-    app.add_flag("--tls", tls_enabled, "Enable TLS encryption");
-    app.add_option("--tls-cert", tls_cert_file, "Path to TLS certificate chain (PEM)");
-    app.add_option("--tls-key", tls_key_file, "Path to TLS private key (PEM)");
-    app.add_option("--tls-ca", tls_ca_file, "Path to CA certificate for peer verification (PEM)");
-    app.add_option(
-        "--client-secret",
-        client_secret,
-        "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"
-    );
+    cinder::tools::ClientEndpoint endpoint;
+    cinder::tools::addClientEndpointOptions(app, endpoint);
 
     std::string cmd;
     std::string key;
@@ -106,19 +87,30 @@ auto main(int argc, char* argv[]) -> int {
     std::vector<std::string> extra_keys;
     int ttl_ms = 0;
 
-    app.add_option("command", cmd, "get|set|del|ping|info|cluster|ring|mget|mset|get-versioned")
+    cinder::tools::bindFlag(
+        app,
+        "command",
+        cmd,
+        "get|set|del|ping|info|cluster|ring|mget|mset|get-versioned"
+    )
         ->required();
 
-    app.add_option("key", key, "Key (first key for mget, k1 for mset)");
-    app.add_option("value", value, "Value (set only, v1 for mset)");
-    app.add_option("extra_keys", extra_keys, "Additional keys (mget) or k2/v2/... (mset)")
+    cinder::tools::bindFlag(app, "key", key, "Key (first key for mget, k1 for mset)");
+    cinder::tools::bindFlag(app, "value", value, "Value (set only, v1 for mset)");
+    cinder::tools::bindFlag(
+        app,
+        "extra_keys",
+        extra_keys,
+        "Additional keys (mget) or k2/v2/... (mset)"
+    )
         ->take_all();
-    app.add_option("--ttl", ttl_ms, "TTL in ms (set/mset only)");
+
+    cinder::tools::bindFlag(app, "--ttl", ttl_ms, "TTL in ms (set/mset only)");
 
     CLI11_PARSE(app, argc, argv);
     cinder::initLogger(
         "cinder-cli",
-        verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
+        endpoint.verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
         cinder::LogSink::Stderr
     );
 
@@ -126,38 +118,14 @@ auto main(int argc, char* argv[]) -> int {
     // keys, values, or the client secret). pool.send children join it via
     // thread-local context, so the server joins the CLI trace. The finish
     // helper reports the exit outcome at every return below.
-    cinder::Span cli_span("cli.command");
-    cli_span.setAttribute({"tool", "cinder-cli"});
-    cli_span.setAttribute({"cmd", cmd});
-    cli_span.setAttribute({"host", host});
-    cli_span.setAttribute({"port", port});
-    auto finish = [&](cinder::SpanStatus status, int code) {
-        cli_span.setStatus(status);
-        cli_span.setAttribute({"exit_code", code});
-        return code;
-    };
-
+    cinder::tools::CliSpan cli_span("cinder-cli", cmd, endpoint);
     cinder::ClusterConfig config;
-    config.nodes.push_back({"server", host, port});
-    config.client_shared_secret = cinder::tools::resolveClientSecret(client_secret);
+
+    config.nodes.push_back({"server", endpoint.host, endpoint.port});
+    config.client_shared_secret = cinder::tools::resolveClientSecret(endpoint.client_secret);
 
 #ifdef CINDER_ENABLE_TLS
-    std::optional<asio::ssl::context> ssl_ctx;
-    if (tls_enabled) {
-        ssl_ctx.emplace(asio::ssl::context(asio::ssl::context::tlsv12_client));
-        if (!tls_cert_file.empty()) {
-            ssl_ctx->use_certificate_chain_file(tls_cert_file);
-        }
-        if (!tls_key_file.empty()) {
-            ssl_ctx->use_private_key_file(tls_key_file, asio::ssl::context::pem);
-        }
-        if (!tls_ca_file.empty()) {
-            ssl_ctx->load_verify_file(tls_ca_file);
-            ssl_ctx->set_verify_mode(asio::ssl::verify_peer);
-        } else {
-            ssl_ctx->set_verify_mode(asio::ssl::verify_none);
-        }
-    }
+    auto ssl_ctx = cinder::tools::makeClientSslContext(endpoint);
 #endif
 
     io_context io;
@@ -219,12 +187,12 @@ auto main(int argc, char* argv[]) -> int {
         if (keys.empty()) {
             CINDER_ERROR("mget requires at least one key");
             io.stop();
-            return finish(cinder::SpanStatus::Error, 1);
+            return cli_span.finish(cinder::SpanStatus::Error, 1);
         }
 
         int rc = runMultiGet(pool, keys);
         io.stop();
-        return finish(rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error, rc);
+        return cli_span.finish(rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error, rc);
     } else if (cmd == "mset") {
         // Pairs arrive through every positional slot: `key` (k1), then
         // `value` (v1), then the take_all `extra_keys` (k2, v2, ...).
@@ -241,7 +209,7 @@ auto main(int argc, char* argv[]) -> int {
         if (args.empty() || args.size() % 2 != 0) {
             CINDER_ERROR("mset requires key/value pairs");
             io.stop();
-            return finish(cinder::SpanStatus::Error, 1);
+            return cli_span.finish(cinder::SpanStatus::Error, 1);
         }
 
         std::vector<std::string> mset_keys;
@@ -253,19 +221,22 @@ auto main(int argc, char* argv[]) -> int {
 
         int mset_rc = runMultiSet(pool, mset_keys, mset_values, ttl_ms);
         io.stop();
-        return finish(mset_rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error, mset_rc);
+        return cli_span.finish(
+            mset_rc == 0 ? cinder::SpanStatus::Ok : cinder::SpanStatus::Error,
+            mset_rc
+        );
     } else {
         CINDER_ERROR("unknown command", {"cmd", cmd});
         io.stop();
-        return finish(cinder::SpanStatus::Error, 1);
+        return cli_span.finish(cinder::SpanStatus::Error, 1);
     }
 
-    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", host}, {"port", port});
+    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", endpoint.host}, {"port", endpoint.port});
     auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
         CINDER_ERROR("request failed", {"reason", res.error().message()});
-        return finish(cinder::SpanStatus::Error, 1);
+        return cli_span.finish(cinder::SpanStatus::Error, 1);
     }
 
     auto& response = res.value();
@@ -275,7 +246,7 @@ auto main(int argc, char* argv[]) -> int {
         // print-to-stdout behavior.
         CINDER_ERROR("permission denied", {"cmd", cmd});
         std::println(stderr, "error: permission denied");
-        return finish(cinder::SpanStatus::Error, 1);
+        return cli_span.finish(cinder::SpanStatus::Error, 1);
     }
     if (cmd == "ping") {
         std::println("pong");
@@ -301,5 +272,5 @@ auto main(int argc, char* argv[]) -> int {
     } else {
         std::println("{}", cinder::toString(response.status));
     }
-    return finish(cinder::SpanStatus::Ok, 0);
+    return cli_span.finish(cinder::SpanStatus::Ok, 0);
 }

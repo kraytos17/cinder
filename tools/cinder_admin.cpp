@@ -20,72 +20,26 @@ using std::chrono::milliseconds;
 auto main(int argc, char* argv[]) -> int {
     CLI::App app{"Cinder admin CLI"};
 
-    std::string host = "127.0.0.1";
-    uint16_t port = 7000;
-    bool verbose = false;
-    bool tls_enabled = false;
-    std::string tls_cert_file;
-    std::string tls_key_file;
-    std::string tls_ca_file;
-    std::string client_secret;
-
-    app.add_option("--host", host, "Server host");
-    app.add_option("-p,--port", port, "Server port");
-    app.add_flag("-v,--verbose", verbose, "Enable verbose logging");
-    app.add_flag("--tls", tls_enabled, "Enable TLS");
-    app.add_option("--tls-cert", tls_cert_file, "TLS cert chain (PEM)");
-    app.add_option("--tls-key", tls_key_file, "TLS private key (PEM)");
-    app.add_option("--tls-ca", tls_ca_file, "CA cert for verification (PEM)");
-    app.add_option(
-        "--client-secret",
-        client_secret,
-        "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"
-    );
-
+    cinder::tools::ClientEndpoint endpoint;
+    cinder::tools::addClientEndpointOptions(app, endpoint);
     std::string cmd;
-    app.add_option("command", cmd, "info|cluster|ring|compact|config-reload|shutdown")->required();
+    cinder::tools::bindFlag(app, "command", cmd, "info|cluster|ring|compact|config-reload|shutdown")
+        ->required();
 
     CLI11_PARSE(app, argc, argv);
     cinder::initLogger(
         "cinder-admin",
-        verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
+        endpoint.verbose ? cinder::LogLevel::Debug : cinder::LogLevel::Warn,
         cinder::LogSink::Stderr
     );
 
-    // Same per-invocation root as cinder-cli (see cinder_cli.cpp):
-    // command/host/port attributes, exit outcome at every return.
-    cinder::Span admin_span("cli.command");
-    admin_span.setAttribute({"tool", "cinder-admin"});
-    admin_span.setAttribute({"cmd", cmd});
-    admin_span.setAttribute({"host", host});
-    admin_span.setAttribute({"port", port});
-    auto finish = [&](cinder::SpanStatus status, int code) {
-        admin_span.setStatus(status);
-        admin_span.setAttribute({"exit_code", code});
-        return code;
-    };
-
+    cinder::tools::CliSpan admin_span("cinder-admin", cmd, endpoint);
     cinder::ClusterConfig config;
-    config.nodes.push_back({"server", host, port});
-    config.client_shared_secret = cinder::tools::resolveClientSecret(client_secret);
+    config.nodes.push_back({"server", endpoint.host, endpoint.port});
+    config.client_shared_secret = cinder::tools::resolveClientSecret(endpoint.client_secret);
 
 #ifdef CINDER_ENABLE_TLS
-    std::optional<asio::ssl::context> ssl_ctx;
-    if (tls_enabled) {
-        ssl_ctx.emplace(asio::ssl::context(asio::ssl::context::tlsv12_client));
-        if (!tls_cert_file.empty()) {
-            ssl_ctx->use_certificate_chain_file(tls_cert_file);
-        }
-        if (!tls_key_file.empty()) {
-            ssl_ctx->use_private_key_file(tls_key_file, asio::ssl::context::pem);
-        }
-        if (!tls_ca_file.empty()) {
-            ssl_ctx->load_verify_file(tls_ca_file);
-            ssl_ctx->set_verify_mode(asio::ssl::verify_peer);
-        } else {
-            ssl_ctx->set_verify_mode(asio::ssl::verify_none);
-        }
-    }
+    auto ssl_ctx = cinder::tools::makeClientSslContext(endpoint);
 #endif
 
     cinder::net::Request req;
@@ -108,7 +62,7 @@ auto main(int argc, char* argv[]) -> int {
             stderr,
             "available commands: info, cluster, ring, compact, config-reload, shutdown"
         );
-        return finish(cinder::SpanStatus::Error, 1);
+        return admin_span.finish(cinder::SpanStatus::Error, 1);
     }
 
     io_context io;
@@ -129,18 +83,18 @@ auto main(int argc, char* argv[]) -> int {
         io.run();
     });
 
-    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", host}, {"port", port});
+    CINDER_DEBUG("sending", {"cmd", cmd}, {"host", endpoint.host}, {"port", endpoint.port});
     auto res = pool.send("server", req);
     io.stop();
     if (!res.has_value()) {
         CINDER_ERROR("request failed", {"reason", res.error().message()});
         std::println(stderr, "error: {}", res.error().message());
-        return finish(cinder::SpanStatus::Error, 1);
+        return admin_span.finish(cinder::SpanStatus::Error, 1);
     }
     if (res->status == cinder::Errc::PermissionDenied) {
         CINDER_ERROR("permission denied", {"cmd", cmd});
         std::println(stderr, "error: permission denied");
-        return finish(cinder::SpanStatus::Error, 1);
+        return admin_span.finish(cinder::SpanStatus::Error, 1);
     }
     if (res->value.has_value()) {
         std::println("{}", res->value.value());
@@ -149,5 +103,5 @@ auto main(int argc, char* argv[]) -> int {
     } else {
         std::println("{}", cinder::toString(res->status));
     }
-    return finish(cinder::SpanStatus::Ok, 0);
+    return admin_span.finish(cinder::SpanStatus::Ok, 0);
 }

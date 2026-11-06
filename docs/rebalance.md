@@ -409,7 +409,7 @@ write with `NotReady`. E.g. with 2 replicas (`total = 3`), `W = 2`
 
 Optional disk persistence via snapshot + write-ahead log (WAL).
 
-**Snapshot format** — magic `0x43534E50` ("CSNP"), format version 1. All
+**Snapshot format** — magic `0x43534E50` ("CSNP"), format version 2. All
 integers are **native byte order** (little-endian on x86).
 
 | Field              | Size | Description |
@@ -428,26 +428,36 @@ integers are **native byte order** (little-endian on x86).
 | `expires_at_ms`     | 8    | `uint64`, `0` = no TTL |
 | `has_ttl`           | 1    | `0` or `1` |
 | `freq`              | 8    | access frequency for LFU, `uint64` (`0` for LRU) |
+| `tombstone`         | 1    | `0` or `1` (v2: delete markers survive restarts) |
 
-Writes are atomic: data is written to `path.tmp`, then renamed to `path` on
-success.
+Writes are atomic: data is written to `path.tmp`, fsync'd, then renamed to
+`path`, followed by a directory fsync.
 
-**WAL format** — magic `0x57414C30` ("WAL0"), format version 1. All integers
+**WAL format** — magic `0x57414C30` ("WAL0"), format version 2. All integers
 are **native byte order** (little-endian on x86). Each entry records a `Set` or
-`Del` with version metadata, followed by an 8-byte XXH3-64 checksum of the
-entry payload for integrity verification.
+`Del` with version metadata, a trailing tombstone byte (v2), and an 8-byte
+XXH3-64 checksum of the entry payload for integrity verification. A batch of
+entries is encoded identically to N sequential appends and landed with a
+single write (group commit). The active log is `wal.log`; once it passes
+`max_wal_segment_bytes` it is sealed into `wal_<seq>.log` (zero-padded, so
+lexicographic order is chronological) and a fresh active log starts.
 
 **Recovery** (`PersistenceManager::recover()`, on startup):
-1. Find the latest snapshot in `data_dir`.
-2. Load it into the store (entries + version counter).
-3. Replay the WAL from after the snapshot timestamp, applying each entry via
-   LWW.
+1. Find the latest snapshot in `data_dir` (via the `CURRENT` pointer file,
+   falling back to a lexicographic scan).
+2. Stream it into the store (entries + version counter + LFU frequencies).
+3. Replay sealed segments in sequence order, then the active log, applying
+   each entry via LWW; a checksum mismatch aborts with `CorruptData`, while a
+   torn tail (crash mid-append) is truncated so later appends cannot poison
+   the framing. The log is kept in append mode, so a crash before the next
+   snapshot loses nothing already replayed.
 
 The snapshot gives a consistent base; the WAL captures writes since.
 
 **Compaction** — `PersistenceManager::compact()` snapshots current store
-state and truncates the WAL, triggered by `snapshot_interval_s` or once the
-WAL exceeds `max_wal_entries`.
+state, deletes the now-covered sealed segments, and rotates to a fresh active
+WAL. Triggered by `snapshot_interval_s`, or out-of-cycle once the WAL exceeds
+`max_wal_entries` or `max_wal_bytes` (sealed + active combined).
 
 ## Edge Cases
 
@@ -502,9 +512,13 @@ both sides of the partition are reconciled by LWW.
 | `--data-dir` | (empty) | Directory for snapshot and WAL files |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots |
 | `--max-wal-entries` | `10000` | Max WAL entries before forced compaction |
+| `--max-wal-bytes` | `67108864` | Max WAL bytes (sealed + active) before forced compaction (`0` = disabled) |
+| `--max-wal-segment-bytes` | `16777216` | Seal the active WAL into `wal_<seq>.log` past this size (`0` = disabled) |
+| `--wal-fsync` | `false` | fdatasync on every WAL flush (survives OS crashes, costs throughput) |
 
-All parameters can be set via CLI flags or the YAML config file; CLI flags
-take precedence.
+All parameters can be set via CLI flags or the YAML config file; an
+explicitly passed CLI flag wins, otherwise the YAML value (or its default)
+applies.
 
 ```yaml
 server:
@@ -545,6 +559,9 @@ persistence:
   data_dir: /var/lib/cinder/data
   snapshot_interval_s: 60
   max_wal_entries: 10000
+  max_wal_bytes: 67108864
+  max_wal_segment_bytes: 16777216
+  wal_fsync: false
 
 tls:
   enabled: false

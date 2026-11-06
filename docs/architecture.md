@@ -80,10 +80,13 @@ auto `min(4, hardware_concurrency)`).
 - **Persistence** — append-only WAL (`WAL0` header, per-entry XXH3-64) plus
   periodic snapshots (`CSNP` header, atomic write-to-temp + rename). Writes queue
   in memory and drain to the WAL on the ~1s housekeeping tick; crossing
-  `max_wal_entries` triggers an out-of-cycle compact (snapshot + truncate).
-  `wal_fsync: false` by default: drained data is page-cache durable — enable it
+  `max_wal_entries`/`max_wal_bytes` triggers an out-of-cycle compact (snapshot,
+  delete sealed segments, rotate to a fresh WAL). Oversized active logs are
+  sealed into `wal_<seq>.log` past `max_wal_segment_bytes`. `wal_fsync: false`
+  by default: drained data is page-cache durable — enable it
   for fdatasync-on-flush (survives OS crashes) at a throughput cost. Crash
-  recovery loads the latest snapshot and replays the tail. See `rebalance.md`.
+  recovery loads the latest snapshot (via `CURRENT`, with scan fallback) and
+  replays sealed + active segments, healing torn tails. See `rebalance.md`.
 - **Observability** — Prometheus `/metrics` (counters, gauges, per-opcode
   latency summaries with p50–p999) and `/config` (live config as JSON);
   spdlog-backed structured `Event`/`Span` tracing with wire trace-id

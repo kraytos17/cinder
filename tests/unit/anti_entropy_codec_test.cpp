@@ -5,6 +5,7 @@
 #include <xxhash.h>
 
 #include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy_codec.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "unit/anti_entropy_fixtures.hpp"
 
@@ -127,6 +128,44 @@ namespace cinder {
             );
             EXPECT_FALSE(AntiEntropyManager::decodeMetaRows("").has_value());
             EXPECT_FALSE(AntiEntropyManager::decodeMetaRows("garbage-blob").has_value());
+        }
+
+        TEST(AntiEntropyEncodeTest, SyncWireSizeMatchesEncoding) {
+            // syncEntryWireSize() budgets fetches in core.cpp; it must stay
+            // byte-identical to what encodeSync() emits, entry for entry
+            // (including the conditional TTL expiry field).
+            Node a;
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+            AntiEntropyManager::SyncMessage msg;
+            msg.entries.push_back({"k1", makeEntry("v1", 3)});
+            VersionedEntry tomb;
+            tomb.setVersion(4);
+            tomb.writer_node_hash = 7;
+            tomb.setTombstone(true);
+            msg.entries.push_back({"k2", std::move(tomb)});
+            VersionedEntry ttl;
+            ttl.value = "v3";
+            ttl.setVersion(5);
+            ttl.writer_node_hash = 7;
+            ttl.setHasTtl(true);
+            ttl.expires_at = steady_clock::now() + seconds{600};
+            msg.entries.push_back({"k3", std::move(ttl)});
+            msg.needs = {11, 22};
+
+            const auto blob = ma.encodeSync(msg);
+
+            // Layout: magic u32 + entry-count u32, per-entry records,
+            // need-count u32, then one u64 per need.
+            size_t expect = sizeof(uint32_t) * 3 + msg.needs.size() * sizeof(uint64_t);
+            for (const auto& item : msg.entries) {
+                expect += ae_codec::syncEntryWireSize(item.key, item.entry);
+            }
+            EXPECT_EQ(blob.size(), expect);
+
+            // And it still decodes: size match alone could hide framing drift.
+            auto back = ma.decodeSync(blob);
+            ASSERT_TRUE(back.has_value());
+            EXPECT_EQ(back->entries.size(), 3U);
         }
 
         TEST(AntiEntropyEncodeTest, SyncRoundTrip) {
