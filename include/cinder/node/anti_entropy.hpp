@@ -21,6 +21,7 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 
 using std::chrono::milliseconds;
 
@@ -422,11 +423,10 @@ namespace cinder {
             bool removed
         );
 
-        // Parse one entry from [p,end), advancing p. Returns failure reason or
-        // nullopt on success; key/entry are valid only on success.
+        // Parse one entry from the reader, advancing past it. Returns failure
+        // reason or nullopt on success; key/entry are valid only on success.
         auto parseSingleEntry(
-            const char*& p,
-            const char* end,
+            detail::BufferReader& in,
             std::string& key,
             VersionedEntry& entry
         ) const -> std::optional<std::string_view>;

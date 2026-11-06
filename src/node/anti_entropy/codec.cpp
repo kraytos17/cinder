@@ -28,27 +28,7 @@ namespace cinder {
             out.append(buf.data(), buf.size());
         }
 
-        template <typename T>
-            requires std::unsigned_integral<T>
-        auto readLE(const char*& p, const char* end, T& out) -> bool {
-            if (static_cast<size_t>(end - p) < sizeof(T)) {
-                return false;
-            }
-
-            std::memcpy(&out, p, sizeof(out));
-            p += sizeof(out);
-            return true;
-        }
-
-        auto readBytes(const char*& p, const char* end, size_t n, std::string& out) -> bool {
-            if (n > static_cast<size_t>(end - p)) {
-                return false;
-            }
-
-            out.assign(p, n);
-            p += n;
-            return true;
-        }
+        using detail::BufferReader;
 
         auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer, bool tombstone)
             -> uint64_t {
@@ -141,17 +121,16 @@ namespace cinder {
         auto decodeDigest(std::string_view data, size_t expected_buckets)
             -> std::optional<std::vector<uint64_t>> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
             uint32_t n = 0;
-            if (!readLE(p, end, magic) || magic != M::K_DIGEST_MAGIC) {
+            if (!in.read(magic) || magic != M::K_DIGEST_MAGIC) {
                 return std::nullopt;
             }
-            if (!readLE(p, end, n) || n != expected_buckets) {
+            if (!in.read(n) || n != expected_buckets) {
                 return std::nullopt;
             }
-            if (static_cast<size_t>(end - p) != static_cast<size_t>(n) * sizeof(uint64_t)) {
+            if (in.remaining() != static_cast<size_t>(n) * sizeof(uint64_t)) {
                 return std::nullopt;
             }
 
@@ -159,7 +138,7 @@ namespace cinder {
             digest.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
                 uint64_t h = 0;
-                if (!readLE(p, end, h)) {
+                if (!in.read(h)) {
                     return std::nullopt;
                 }
                 digest.push_back(h);
@@ -203,17 +182,16 @@ namespace cinder {
         auto decodeGroupDigest(std::string_view data, size_t expected_groups)
             -> std::optional<std::vector<uint64_t>> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
             uint32_t count = 0;
-            if (!readLE(p, end, magic)
+            if (!in.read(magic)
                 || magic
                 != M::K_GROUP_DIGEST_MAGIC
-                || !readLE(p, end, count)
+                || !in.read(count)
                 || count
                 != expected_groups
-                || static_cast<size_t>(end - p)
+                || in.remaining()
                 != static_cast<size_t>(count)
                 * sizeof(uint64_t)) {
                 return std::nullopt;
@@ -223,7 +201,7 @@ namespace cinder {
             result.reserve(count);
             for (uint32_t i = 0; i < count; ++i) {
                 uint64_t hash = 0;
-                if (!readLE(p, end, hash)) {
+                if (!in.read(hash)) {
                     return std::nullopt;
                 }
                 result.push_back(hash);
@@ -247,19 +225,18 @@ namespace cinder {
         auto decodeBucketRefinement(std::string_view data, size_t expected_groups)
             -> std::optional<BucketRefinement> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
             uint32_t flags = 0;
             uint32_t bucket_count = 0;
-            if (!readLE(p, end, magic)
+            if (!in.read(magic)
                 || magic
                 != M::K_BUCKET_REFINEMENT_MAGIC
-                || !readLE(p, end, flags)
+                || !in.read(flags)
                 || (flags & ~1U)
                 != 0
-                || !readLE(p, end, bucket_count)
-                || static_cast<size_t>(end - p)
+                || !in.read(bucket_count)
+                || in.remaining()
                 != static_cast<size_t>(bucket_count)
                 * (sizeof(uint32_t) + sizeof(uint64_t))) {
                 return std::nullopt;
@@ -271,7 +248,7 @@ namespace cinder {
             for (uint32_t i = 0; i < bucket_count; ++i) {
                 uint32_t bucket = 0;
                 uint64_t hash = 0;
-                if (!readLE(p, end, bucket) || bucket >= expected_groups || !readLE(p, end, hash)) {
+                if (!in.read(bucket) || bucket >= expected_groups || !in.read(hash)) {
                     return std::nullopt;
                 }
                 request.bucket_hashes.emplace_back(bucket, hash);
@@ -328,14 +305,13 @@ namespace cinder {
         auto decodeDigestResponse(std::string_view data, size_t expected_groups)
             -> std::optional<DigestResponse> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
             uint32_t group_count = 0;
-            if (!readLE(p, end, magic)
+            if (!in.read(magic)
                 || magic
                 != M::K_DIGEST_RESPONSE_MAGIC
-                || !readLE(p, end, group_count)
+                || !in.read(group_count)
                 || group_count
                 != expected_groups) {
                 return std::nullopt;
@@ -345,15 +321,15 @@ namespace cinder {
             response.group_hashes.reserve(group_count);
             for (uint32_t i = 0; i < group_count; ++i) {
                 uint64_t hash = 0;
-                if (!readLE(p, end, hash)) {
+                if (!in.read(hash)) {
                     return std::nullopt;
                 }
                 response.group_hashes.push_back(hash);
             }
 
             uint32_t bucket_hash_count = 0;
-            if (!readLE(p, end, bucket_hash_count)
-                || static_cast<size_t>(end - p)
+            if (!in.read(bucket_hash_count)
+                || in.remaining()
                 < static_cast<size_t>(bucket_hash_count)
                 * (sizeof(uint32_t) + sizeof(uint64_t))) {
                 return std::nullopt;
@@ -363,15 +339,15 @@ namespace cinder {
             for (uint32_t i = 0; i < bucket_hash_count; ++i) {
                 uint32_t bucket = 0;
                 uint64_t hash = 0;
-                if (!readLE(p, end, bucket) || !readLE(p, end, hash)) {
+                if (!in.read(bucket) || !in.read(hash)) {
                     return std::nullopt;
                 }
                 response.bucket_hashes.emplace_back(bucket, hash);
             }
 
             uint32_t covered_count = 0;
-            if (!readLE(p, end, covered_count)
-                || static_cast<size_t>(end - p)
+            if (!in.read(covered_count)
+                || in.remaining()
                 < static_cast<size_t>(covered_count)
                 * sizeof(uint32_t)
                 + sizeof(uint32_t)) {
@@ -381,31 +357,31 @@ namespace cinder {
             response.covered_buckets.reserve(covered_count);
             for (uint32_t i = 0; i < covered_count; ++i) {
                 uint32_t bucket = 0;
-                if (!readLE(p, end, bucket)) {
+                if (!in.read(bucket)) {
                     return std::nullopt;
                 }
                 response.covered_buckets.push_back(bucket);
             }
 
             uint32_t rows_size = 0;
-            if (!readLE(p, end, rows_size)
-                || static_cast<size_t>(end - p)
-                < rows_size
-                + sizeof(uint32_t)) {
+            if (!in.read(rows_size) || in.remaining() < rows_size + sizeof(uint32_t)) {
                 return std::nullopt;
             }
 
-            auto rows = decodeMetaRows(std::string_view(p, rows_size));
+            auto rows_view = in.tryView(rows_size);
+            if (!rows_view.has_value()) {
+                return std::nullopt;
+            }
+            auto rows = decodeMetaRows(*rows_view);
             if (!rows.has_value()) {
                 return std::nullopt;
             }
 
             response.rows = std::move(*rows);
-            p += rows_size;
             uint32_t sketch_count = 0;
-            if (!readLE(p, end, sketch_count)
+            if (!in.read(sketch_count)
                 || static_cast<size_t>(sketch_count)
-                > static_cast<size_t>(end - p)
+                > in.remaining()
                 / (2 * sizeof(uint32_t))) {
                 return std::nullopt;
             }
@@ -415,15 +391,15 @@ namespace cinder {
                 uint32_t bucket = 0;
                 uint32_t sketch_size = 0;
                 std::string sketch_blob;
-                if (!readLE(p, end, bucket)
-                    || !readLE(p, end, sketch_size)
-                    || !readBytes(p, end, sketch_size, sketch_blob)
+                if (!in.read(bucket)
+                    || !in.read(sketch_size)
+                    || !in.readString(sketch_size, sketch_blob)
                     || !decodeIblt(sketch_blob).has_value()) {
                     return std::nullopt;
                 }
                 response.iblt_sketches.emplace_back(bucket, std::move(sketch_blob));
             }
-            if (p != end) {
+            if (in.remaining() != 0) {
                 return std::nullopt;
             }
             for (const auto& row : response.rows) {
@@ -522,20 +498,19 @@ namespace cinder {
 
         auto decodeIblt(std::string_view data) -> std::optional<IbltSketch> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
             uint32_t count = 0;
             constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 5 * sizeof(uint64_t);
-            if (!readLE(p, end, magic)
+            if (!in.read(magic)
                 || magic
                 != M::K_IBLT_MAGIC
-                || !readLE(p, end, count)
+                || !in.read(count)
                 || count
                 < M::K_IBLT_HASH_COUNT
                 || count
                 > M::K_MAX_IBLT_CELLS
-                || static_cast<size_t>(end - p)
+                || in.remaining()
                 != static_cast<size_t>(count)
                 * K_CELL_BYTES) {
                 return std::nullopt;
@@ -546,12 +521,12 @@ namespace cinder {
             for (uint32_t i = 0; i < count; ++i) {
                 uint64_t count_bits = 0;
                 IbltCell cell;
-                if (!readLE(p, end, count_bits)
-                    || !readLE(p, end, cell.key_hash_xor)
-                    || !readLE(p, end, cell.version_xor)
-                    || !readLE(p, end, cell.writer_xor)
-                    || !readLE(p, end, cell.tombstone_xor)
-                    || !readLE(p, end, cell.checksum_xor)) {
+                if (!in.read(count_bits)
+                    || !in.read(cell.key_hash_xor)
+                    || !in.read(cell.version_xor)
+                    || !in.read(cell.writer_xor)
+                    || !in.read(cell.tombstone_xor)
+                    || !in.read(cell.checksum_xor)) {
                     return std::nullopt;
                 }
                 if (count_bits < (uint64_t{1} << 63U) && count_bits > (uint64_t{1} << 40U)) {
@@ -680,13 +655,12 @@ namespace cinder {
         }
 
         auto decodeMetaRows(std::string_view data) -> std::optional<std::vector<MetaRow>> {
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t n = 0;
-            if (!readLE(p, end, n)) {
+            if (!in.read(n)) {
                 return std::nullopt;
             }
-            if (static_cast<size_t>(end - p) != static_cast<size_t>(n) * K_META_ROW_BYTES) {
+            if (in.remaining() != static_cast<size_t>(n) * K_META_ROW_BYTES) {
                 return std::nullopt;
             }
 
@@ -694,17 +668,16 @@ namespace cinder {
             rows.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
                 MetaRow r;
-                if (!readLE(p, end, r.bucket)
-                    || !readLE(p, end, r.key_hash)
-                    || !readLE(p, end, r.version)
-                    || !readLE(p, end, r.writer)
-                    || p
-                    >= end) {
+                uint8_t tombstone = 0;
+                if (!in.read(r.bucket)
+                    || !in.read(r.key_hash)
+                    || !in.read(r.version)
+                    || !in.read(r.writer)
+                    || !in.read(tombstone)) {
                     return std::nullopt;
                 }
-
-                // Exact-size validation above bounds p: one flag byte remains.
-                const auto tombstone = static_cast<uint8_t>(*p++);
+                // Exact-size validation above bounds the reader: one flag
+                // byte remains here.
                 if (tombstone > 1) {
                     return std::nullopt;
                 }
@@ -753,16 +726,15 @@ namespace cinder {
 
         auto decodeSync(std::string_view data, const Clock& clock) -> std::optional<SyncMessage> {
             using M = AntiEntropyManager;
-            const char* p = data.data();
-            const char* end = p + data.size();
+            BufferReader in(data);
             uint32_t magic = 0;
-            if (!readLE(p, end, magic) || magic != M::K_SYNC_MAGIC) {
+            if (!in.read(magic) || magic != M::K_SYNC_MAGIC) {
                 return std::nullopt;
             }
 
             SyncMessage msg;
             uint32_t entry_count = 0;
-            if (!readLE(p, end, entry_count)) {
+            if (!in.read(entry_count)) {
                 return std::nullopt;
             }
 
@@ -771,7 +743,7 @@ namespace cinder {
                 SyncMessage::Item item;
                 std::string key;
                 VersionedEntry entry;
-                if (auto reason = parseSingleEntry(p, end, key, entry, clock); reason.has_value()) {
+                if (auto reason = parseSingleEntry(in, key, entry, clock); reason.has_value()) {
                     return std::nullopt;
                 }
 
@@ -781,19 +753,17 @@ namespace cinder {
             }
 
             uint32_t need_count = 0;
-            if (!readLE(p, end, need_count)) {
+            if (!in.read(need_count)) {
                 return std::nullopt;
             }
-            if (static_cast<size_t>(end - p)
-                != static_cast<size_t>(need_count)
-                * sizeof(uint64_t)) {
+            if (in.remaining() != static_cast<size_t>(need_count) * sizeof(uint64_t)) {
                 return std::nullopt;
             }
 
             msg.needs.reserve(need_count);
             for (uint32_t i = 0; i < need_count; ++i) {
                 uint64_t h = 0;
-                if (!readLE(p, end, h)) {
+                if (!in.read(h)) {
                     return std::nullopt;
                 }
                 msg.needs.push_back(h);
@@ -802,8 +772,7 @@ namespace cinder {
         }
 
         auto parseSingleEntry(
-            const char*& p,
-            const char* end,
+            BufferReader& in,
             std::string& key,
             VersionedEntry& entry,
             const Clock& clock
@@ -813,27 +782,29 @@ namespace cinder {
             uint64_t writer_hash = 0;
             uint32_t val_len = 0;
             std::string value;
-            if (!readLE(p, end, key_len)
-                || !readBytes(p, end, key_len, key)
-                || !readLE(p, end, version)
-                || !readLE(p, end, writer_hash)
-                || static_cast<size_t>(end - p)
+            if (!in.read(key_len)
+                || !in.readString(key_len, key)
+                || !in.read(version)
+                || !in.read(writer_hash)
+                || in.remaining()
                 < 1) {
                 return "truncated entry";
             }
 
-            uint8_t entry_flags = static_cast<uint8_t>(*p);
-            ++p;
+            uint8_t entry_flags = 0;
+            if (!in.read(entry_flags)) {
+                return "truncated entry";
+            }
             if ((entry_flags & uint8_t{3}) != entry_flags) {
                 return "bad entry flags";
             }
 
             const bool has_ttl = (entry_flags & 1U) != 0;
             uint64_t expires_ms = 0;
-            if (has_ttl && !readLE(p, end, expires_ms)) {
+            if (has_ttl && !in.read(expires_ms)) {
                 return "truncated expiry";
             }
-            if (!readLE(p, end, val_len) || !readBytes(p, end, val_len, value)) {
+            if (!in.read(val_len) || !in.readString(val_len, value)) {
                 return "truncated value";
             }
 

@@ -15,6 +15,7 @@
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/node/anti_entropy.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 
 namespace cinder::ae_codec {
 
@@ -99,11 +100,10 @@ namespace cinder::ae_codec {
     [[nodiscard]]
     auto decodeSync(std::string_view data, const Clock& clock) -> std::optional<SyncMessage>;
 
-    // Parse one entry from [p,end), advancing p. Returns failure reason or
-    // nullopt on success; key/entry are valid only on success.
+    // Parse one entry from the reader, advancing past it. Returns failure
+    // reason or nullopt on success; key/entry are valid only on success.
     auto parseSingleEntry(
-        const char*& p,
-        const char* end,
+        detail::BufferReader& in,
         std::string& key,
         VersionedEntry& entry,
         const Clock& clock

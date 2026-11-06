@@ -165,6 +165,10 @@ namespace cinder::detail {
             data_(data),
             size_(size) {}
 
+        explicit BufferReader(std::string_view data) :
+            data_(data.data()),
+            size_(data.size()) {}
+
         template <typename T>
             requires std::unsigned_integral<T>
         auto read(T& out) -> bool {
@@ -185,6 +189,19 @@ namespace cinder::detail {
             out.assign(data_ + pos_, len);
             pos_ += len;
             return true;
+        }
+
+        // Zero-copy borrow of the next n bytes, advancing past them.
+        // Lets large embedded blobs (meta-row blocks, sketches) decode
+        // in place instead of copying through a scratch string.
+        auto tryView(size_t len) -> std::optional<std::string_view> {
+            if (len > size_ - pos_) {
+                return std::nullopt;
+            }
+
+            std::string_view view(data_ + pos_, len);
+            pos_ += len;
+            return view;
         }
 
         [[nodiscard]]

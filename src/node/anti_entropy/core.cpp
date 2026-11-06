@@ -556,12 +556,11 @@ namespace cinder {
     }
 
     auto AntiEntropyManager::parseSingleEntry(
-        const char*& p,
-        const char* end,
+        detail::BufferReader& in,
         std::string& key,
         VersionedEntry& entry
     ) const -> std::optional<std::string_view> {
-        return ae_codec::parseSingleEntry(p, end, key, entry, clock_);
+        return ae_codec::parseSingleEntry(in, key, entry, clock_);
     }
 
     auto AntiEntropyManager::isNewer(

@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <string>
 #include <vector>
@@ -6,6 +8,7 @@
 
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/node/anti_entropy_codec.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "unit/anti_entropy_fixtures.hpp"
 
@@ -360,5 +363,162 @@ namespace cinder {
             EXPECT_EQ(changed, 1U);
         }
 
+        TEST(BufferReaderTest, StringViewCtorAndTryView) {
+            std::string data = "abcdefgh";
+            detail::BufferReader in{std::string_view(data)};
+            EXPECT_EQ(in.remaining(), 8U);
+            auto first = in.tryView(3);
+            ASSERT_TRUE(first.has_value());
+            EXPECT_EQ(*first, "abc");
+            EXPECT_EQ(in.pos(), 3U);
+            // Overrun borrows nothing and does not advance.
+            EXPECT_FALSE(in.tryView(6).has_value());
+            EXPECT_EQ(in.pos(), 3U);
+            auto rest = in.tryView(5);
+            ASSERT_TRUE(rest.has_value());
+            EXPECT_EQ(*rest, "defgh");
+            EXPECT_EQ(in.remaining(), 0U);
+            uint8_t b = 0;
+            EXPECT_FALSE(in.read(b));
+        }
+
+        TEST(BufferReaderTest, ReadStringRefusesHugePrefix) {
+            std::string data("\x05\x00", 2);
+            detail::BufferReader in{std::string_view(data)};
+            uint16_t n = 0;
+            ASSERT_TRUE(in.read(n));
+            EXPECT_EQ(n, 5U);
+            // Only 0 bytes remain: the length prefix must fail, not allocate.
+            std::string out = "untouched";
+            EXPECT_FALSE(in.readString(n, out));
+            EXPECT_EQ(out, "untouched");
+        }
+
+        TEST(AntiEntropyEncodeTest, SyncRejectsCorruptEntryFlags) {
+            Node a;
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+            AntiEntropyManager::SyncMessage msg;
+            msg.entries.push_back({"k1", makeEntry("v1", 3)});
+            auto blob = ma.encodeSync(msg);
+            ASSERT_TRUE(ma.decodeSync(blob).has_value());
+            // Entry layout: magic u32, count u32, key_len u32, key,
+            // version u64, writer u64, flags u8, ...
+            const size_t flags_at =
+                sizeof(uint32_t) * 3 + std::string("k1").size() + sizeof(uint64_t) * 2;
+            ASSERT_LT(flags_at, blob.size());
+            std::string bad_flags = blob;
+            bad_flags[flags_at] = static_cast<char>(0x04); // unknown bit
+            EXPECT_FALSE(ma.decodeSync(bad_flags).has_value());
+            // Trailing junk after the need list is rejected too.
+            EXPECT_FALSE(ma.decodeSync(blob + "x").has_value());
+        }
+
+        TEST(AntiEntropyEncodeTest, SyncRejectsTruncatedTtlAndInflatedNeeds) {
+            Node a;
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+            AntiEntropyManager::SyncMessage msg;
+            VersionedEntry ttl;
+            ttl.value = "v3";
+            ttl.setVersion(5);
+            ttl.writer_node_hash = 7;
+            ttl.setHasTtl(true);
+            ttl.expires_at = steady_clock::now() + seconds{600};
+            msg.entries.push_back({"k3", std::move(ttl)});
+            auto blob = ma.encodeSync(msg);
+            ASSERT_TRUE(ma.decodeSync(blob).has_value());
+            const size_t flags_at =
+                sizeof(uint32_t) * 3 + std::string("k3").size() + sizeof(uint64_t) * 2;
+            // Keep the flags byte, drop half the 8-byte expiry.
+            EXPECT_FALSE(ma.decodeSync(blob.substr(0, flags_at + 1 + 4)).has_value());
+            // need_count sits in the last 4 bytes (needs empty here).
+            ASSERT_GE(blob.size(), sizeof(uint32_t));
+            std::string bad_needs = blob;
+            const size_t need_count_at = bad_needs.size() - sizeof(uint32_t);
+            uint32_t inflated = 7;
+            std::memcpy(bad_needs.data() + need_count_at, &inflated, sizeof(inflated));
+            EXPECT_FALSE(ma.decodeSync(bad_needs).has_value());
+        }
+
+        TEST(AntiEntropyEncodeTest, ParseSingleEntryRoundTripAndTruncation) {
+            Node a;
+            AntiEntropyManager ma(a.store, a.ring, "n1", a.clock, a.transport, 8);
+            AntiEntropyManager::SyncMessage msg;
+            msg.entries.push_back({"k1", makeEntry("v1", 3)});
+            auto blob = ma.encodeSync(msg);
+            // Lone entry slice: encodeSync emits magic u32 + count u32 first.
+            const size_t entry_len = ae_codec::syncEntryWireSize("k1", msg.entries[0].entry);
+            std::string_view slice(blob.data() + 2 * sizeof(uint32_t), entry_len);
+            detail::BufferReader in(slice);
+            std::string key;
+            VersionedEntry entry;
+            EXPECT_FALSE(ae_codec::parseSingleEntry(in, key, entry, a.clock).has_value());
+            EXPECT_EQ(key, "k1");
+            EXPECT_EQ(entry.value, "v1");
+            EXPECT_EQ(entry.version(), 3U);
+            EXPECT_EQ(in.remaining(), 0U);
+            // A truncated tail reports a reason instead of decoding.
+            detail::BufferReader short_in(std::string_view(blob.data() + 2 * sizeof(uint32_t), 4));
+            std::string bad_key;
+            VersionedEntry bad_entry;
+            auto reason = ae_codec::parseSingleEntry(short_in, bad_key, bad_entry, a.clock);
+            ASSERT_TRUE(reason.has_value());
+            EXPECT_EQ(*reason, "truncated entry");
+        }
+
+        TEST(AntiEntropyEncodeTest, DigestResponseRejectsCorruptRows) {
+            AntiEntropyManager::DigestResponse response{
+                .group_hashes = {},
+                .bucket_hashes = {},
+                .covered_buckets = {0},
+                .rows = {{0, false, 11, 1, 7}},
+            };
+
+            auto blob = AntiEntropyManager::encodeDigestResponse(response);
+            ASSERT_TRUE(AntiEntropyManager::decodeDigestResponse(blob, 0).has_value());
+            // Layout: magic u32, group_count u32, bucket_hash_count u32,
+            // covered_count u32, covered u32, rows_size u32, rows(count u32
+            // + row: bucket u32, key_hash/version/writer u64, tombstone u8).
+            constexpr size_t K_ROWS_SIZE_AT = sizeof(uint32_t) * 5;
+            constexpr size_t K_TOMBSTONE_AT =
+                sizeof(uint32_t) * 6 + sizeof(uint32_t) + sizeof(uint32_t) + 3 * sizeof(uint64_t);
+            ASSERT_LT(K_TOMBSTONE_AT, blob.size());
+            // Inflate rows_size: the embedded block no longer matches.
+            std::string bad_size = blob;
+            bad_size[K_ROWS_SIZE_AT] = static_cast<char>(bad_size[K_ROWS_SIZE_AT] + 1);
+            EXPECT_FALSE(AntiEntropyManager::decodeDigestResponse(bad_size, 0).has_value());
+            // Tombstone flag > 1 is rejected.
+            std::string bad_flag = blob;
+            bad_flag[K_TOMBSTONE_AT] = static_cast<char>(2);
+            EXPECT_FALSE(AntiEntropyManager::decodeDigestResponse(bad_flag, 0).has_value());
+            // Sketch-count inflation is rejected by the per-entry bound.
+            std::string bad_sketches = blob;
+            bad_sketches.back() = static_cast<char>(1);
+            EXPECT_FALSE(AntiEntropyManager::decodeDigestResponse(bad_sketches, 0).has_value());
+        }
+
+        TEST(AntiEntropyEncodeTest, MetaRowsRejectsBadTombstone) {
+            std::vector<AntiEntropyManager::MetaRow> rows = {{0, false, 11, 1, 7}};
+            auto blob = AntiEntropyManager::encodeMetaRows(rows);
+            ASSERT_TRUE(AntiEntropyManager::decodeMetaRows(blob).has_value());
+            // count u32, then bucket u32 + 3x u64: the flag byte follows.
+            constexpr size_t K_TOMBSTONE_AT =
+                sizeof(uint32_t) + sizeof(uint32_t) + 3 * sizeof(uint64_t);
+            ASSERT_LT(K_TOMBSTONE_AT, blob.size());
+            std::string bad = blob;
+            bad[K_TOMBSTONE_AT] = static_cast<char>(2);
+            EXPECT_FALSE(AntiEntropyManager::decodeMetaRows(bad).has_value());
+        }
+
+        TEST(AntiEntropyIbltTest, CodecRejectsBadMagic) {
+            using Manager = AntiEntropyManager;
+            std::vector<Manager::MetaRow> rows{{3, false, 1, 2, 3}};
+            auto sketch = Manager::buildIblt(rows, 64);
+            ASSERT_TRUE(sketch.has_value());
+            auto blob = Manager::encodeIblt(*sketch);
+            ASSERT_TRUE(Manager::decodeIblt(blob).has_value());
+            std::string bad = blob;
+            bad[0] = static_cast<char>(bad[0] == 0 ? 1 : 0);
+            EXPECT_FALSE(Manager::decodeIblt(bad).has_value());
+        }
     } // namespace
 } // namespace cinder
