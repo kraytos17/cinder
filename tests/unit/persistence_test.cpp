@@ -530,7 +530,10 @@ namespace cinder {
                 },
                 store
             );
-
+            // Production boots with recover() before serving; without it wal_
+            // is null and the pre-compact drain is skipped, leaving the
+            // queued entry for the post-rotation drain instead.
+            ASSERT_TRUE(pm.recover().has_value());
             ASSERT_TRUE(store.put("k1", "v1").has_value());
             pm.onWrite(
                 WalEntry{

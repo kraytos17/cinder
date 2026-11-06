@@ -19,6 +19,8 @@
 #include <unistd.h>
 #endif
 
+#include <cerrno>
+
 namespace cinder::detail {
 
     // Durability helpers shared by WAL/snapshot/journal rotation.
@@ -64,6 +66,45 @@ namespace cinder::detail {
         return ok;
 #endif
     }
+
+#ifndef _WIN32
+    // Complete short writes, retrying on EINTR. Returns false on any hard
+    // error (true for zero-length writes). Shared by the WAL writer and the
+    // hint journal; both previously hand-rolled this loop.
+    inline auto writeAll(int fd, const void* data, size_t len) -> bool {
+        const auto* in = static_cast<const char*>(data);
+        size_t done = 0;
+        while (done < len) {
+            const auto n = ::write(fd, in + done, len - done);
+            if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
+            if (n == 0) {
+                return false;
+            }
+            done += static_cast<size_t>(n);
+        }
+        return true;
+    }
+
+    // Complete short reads; false on EOF or error (torn tail ⇒ heal by
+    // truncation, never by allocating).
+    inline auto readExactly(int fd, void* data, size_t len) -> bool {
+        auto* out = static_cast<char*>(data);
+        size_t done = 0;
+        while (done < len) {
+            const auto n = ::read(fd, out + done, len - done);
+            if (n <= 0) {
+                return false;
+            }
+            done += static_cast<size_t>(n);
+        }
+        return true;
+    }
+#endif
 
     // Pre-sized little-endian buffer writer: one constrained template
     // instead of N near-identical writeU* overloads plus manual offset

@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <fstream>
 #include <span>
 #include <string>
 #include <vector>
@@ -74,13 +73,21 @@ namespace cinder {
 
     private:
 
-        std::ofstream out_;
+        // Lands the scratch buffer with one fd write (POSIX) or stream write
+        // (Windows legacy path).
+        auto writeScratch() -> Result<void>;
+        [[nodiscard]]
+        auto isOpen() const -> bool;
+
+        // Single handle for appends and fdatasync (O_APPEND keeps
+        // positioning atomic; no userspace buffering, so every append is in
+        // the kernel the moment it returns). -1 = open failed.
         std::vector<std::byte> scratch_; // reused buffer for record encoding
 #ifndef _WIN32
-        // Companion fd for fdatasync: opened O_APPEND on the same path, so it
-        // shares the file offset with the stream. ofstream exposes no portable
-        // file descriptor, hence the second handle. -1 = open failed.
-        int sync_fd_ = -1;
+        int fd_ = -1;
+#else
+        // Legacy buffered path (Windows): ofstream + flush-only durability.
+        std::ofstream out_;
 #endif
     };
 

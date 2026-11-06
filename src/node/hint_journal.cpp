@@ -36,37 +36,6 @@ namespace cinder {
             return XXH3_64bits(payload.data(), payload.size());
         }
 
-        auto readExactly(int fd, void* dst, size_t len) -> bool {
-            auto* out = static_cast<char*>(dst);
-            size_t done = 0;
-            while (done < len) {
-                auto n = ::read(fd, out + done, len - done);
-                if (n <= 0) {
-                    return false;
-                }
-                done += static_cast<size_t>(n);
-            }
-            return true;
-        }
-
-        auto writeAll(int fd, const void* src, size_t len) -> bool {
-            const auto* in = static_cast<const char*>(src);
-            size_t done = 0;
-            while (done < len) {
-                auto n = ::write(fd, in + done, len - done);
-                if (n < 0) {
-                    if (errno == EINTR) {
-                        continue;
-                    }
-                    return false;
-                }
-                if (n == 0) {
-                    return false;
-                }
-                done += static_cast<size_t>(n);
-            }
-            return true;
-        }
     } // namespace
 
     HintJournal::~HintJournal() {
@@ -101,7 +70,7 @@ namespace cinder {
         // allocating: a corrupt prefix must not cause a huge allocation.
         while (true) {
             uint32_t len = 0;
-            if (!readExactly(fd_, &len, sizeof(len))) {
+            if (!detail::readExactly(fd_, &len, sizeof(len))) {
                 break; // clean EOF
             }
 
@@ -120,8 +89,8 @@ namespace cinder {
 
             uint64_t expected = 0;
             std::string payload(len, '\0');
-            if (!readExactly(fd_, &expected, sizeof(expected))
-                || !readExactly(fd_, payload.data(), payload.size())
+            if (!detail::readExactly(fd_, &expected, sizeof(expected))
+                || !detail::readExactly(fd_, payload.data(), payload.size())
                 || checksum(payload)
                 != expected) {
                 break; // torn tail
@@ -216,9 +185,9 @@ namespace cinder {
             auto payload = encodeAdd(entry.hint, now_ms + static_cast<uint64_t>(remaining_ms));
             uint32_t len = static_cast<uint32_t>(payload.size());
             uint64_t sum = checksum(asChars(payload));
-            ok = writeAll(tmp, &len, sizeof(len))
-                && writeAll(tmp, &sum, sizeof(sum))
-                && writeAll(tmp, payload.data(), payload.size());
+            ok = detail::writeAll(tmp, &len, sizeof(len))
+                && detail::writeAll(tmp, &sum, sizeof(sum))
+                && detail::writeAll(tmp, payload.data(), payload.size());
             if (!ok) {
                 break;
             }
@@ -412,8 +381,8 @@ namespace cinder {
     auto HintJournal::writeRecord(const std::vector<std::byte>& payload) const -> bool {
         uint32_t len = static_cast<uint32_t>(payload.size());
         uint64_t sum = checksum(asChars(payload));
-        return writeAll(fd_, &len, sizeof(len))
-            && writeAll(fd_, &sum, sizeof(sum))
-            && writeAll(fd_, payload.data(), payload.size());
+        return detail::writeAll(fd_, &len, sizeof(len))
+            && detail::writeAll(fd_, &sum, sizeof(sum))
+            && detail::writeAll(fd_, payload.data(), payload.size());
     }
 } // namespace cinder

@@ -192,13 +192,16 @@ namespace cinder {
         }
     } // namespace
 
-    WalWriter::WalWriter(const std::string& path, WalOpenMode mode) :
-        out_(
+    WalWriter::WalWriter(const std::string& path, WalOpenMode mode) {
+#ifdef _WIN32
+        // Legacy buffered path: ofstream truncates or appends, then a header
+        // is written for fresh files. Unchanged behavior.
+        out_.open(
             path,
             std::ios::binary
                 | std::ios::out
                 | (mode == WalOpenMode::Truncate ? std::ios::trunc : std::ios::app)
-        ) {
+        );
         bool needs_header = mode == WalOpenMode::Truncate;
         if (mode == WalOpenMode::Append) {
             // Probe the existing file: valid header → resume after it;
@@ -228,27 +231,99 @@ namespace cinder {
             writeLE(out_, K_WAL_MAGIC);
             writeLE(out_, K_WAL_FORMAT_VERSION);
         }
-#ifndef _WIN32
-        sync_fd_ = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
-        if (sync_fd_ < 0) {
-            CINDER_ERROR("WAL sync fd open failed; sync() will be a no-op", {"path", path});
+#else
+        const int flags =
+            O_WRONLY | O_CREAT | O_CLOEXEC | (mode == WalOpenMode::Truncate ? O_TRUNC : O_APPEND);
+        fd_ = ::open(path.c_str(), flags, 0644);
+        if (fd_ < 0) {
+            CINDER_ERROR("WAL open failed; appends will fail", {"path", path});
+            return;
+        }
+
+        bool needs_header = mode == WalOpenMode::Truncate;
+        if (mode == WalOpenMode::Append) {
+            // Probe the existing file: valid header → resume after it;
+            // missing/empty → fresh header; present-but-invalid → the file is
+            // garbage, so fall back to a truncated fresh log.
+            uint32_t header[2] = {};
+            const int probe = ::open(path.c_str(), O_RDONLY);
+            const bool have_header =
+                probe >= 0 && detail::readExactly(probe, header, sizeof(header));
+            if (probe >= 0) {
+                ::close(probe);
+            }
+
+            const bool valid = have_header
+                && header[0]
+                == K_WAL_MAGIC
+                && (header[1] == K_WAL_FORMAT_VERSION || header[1] == K_WAL_FORMAT_VERSION_V1);
+            if (!have_header) {
+                needs_header = true; // missing or empty file
+            } else if (!valid) {
+                CINDER_WARN("WAL header invalid; starting fresh log", {"path", path});
+                ::close(fd_);
+                fd_ = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+                if (fd_ < 0) {
+                    CINDER_ERROR("WAL reopen failed; appends will fail", {"path", path});
+                    return;
+                }
+                needs_header = true;
+            }
+        }
+        if (needs_header && fd_ >= 0) {
+            scratch_.resize(sizeof(uint32_t) * 2);
+            BufferWriter header_out(scratch_);
+            header_out.write(K_WAL_MAGIC);
+            header_out.write(K_WAL_FORMAT_VERSION);
+            if (!detail::writeAll(fd_, scratch_.data(), scratch_.size())) {
+                CINDER_ERROR("WAL header write failed; appends will fail", {"path", path});
+                ::close(fd_);
+                fd_ = -1;
+            }
         }
 #endif
     }
 
     WalWriter::~WalWriter() {
+#ifdef _WIN32
         if (out_.is_open()) {
             out_.flush();
         }
-#ifndef _WIN32
-        if (sync_fd_ >= 0) {
-            ::close(sync_fd_);
+#else
+        if (fd_ >= 0) {
+            ::close(fd_);
         }
 #endif
     }
 
+    auto WalWriter::isOpen() const -> bool {
+#ifdef _WIN32
+        return out_.is_open();
+#else
+        return fd_ >= 0;
+#endif
+    }
+
+    auto WalWriter::writeScratch() -> Result<void> {
+#ifdef _WIN32
+        out_.write(
+            reinterpret_cast<const char*>(scratch_.data()),
+            static_cast<std::streamsize>(scratch_.size())
+        );
+        if (!out_.good()) {
+            return err(Error(Errc::InternalError, "WAL write failed"));
+        }
+        return ok();
+#else
+        if (!detail::writeAll(fd_, scratch_.data(), scratch_.size())) {
+            return err(Error(Errc::InternalError, "WAL write failed"));
+        }
+        return ok();
+#endif
+    }
+
     auto WalWriter::append(const WalEntry& entry) -> Result<void> {
-        if (!out_.is_open()) {
+        if (!isOpen()) {
             return err(Error(Errc::InternalError, "WAL file not open"));
         }
         if (entry.key.size()
@@ -265,18 +340,11 @@ namespace cinder {
 
         BufferWriter out(scratch_);
         encodeWalRecord(out, entry);
-        out_.write(
-            reinterpret_cast<const char*>(scratch_.data()),
-            static_cast<std::streamsize>(scratch_.size())
-        );
-        if (!out_.good()) {
-            return err(Error(Errc::InternalError, "WAL write failed"));
-        }
-        return ok();
+        return writeScratch();
     }
 
     auto WalWriter::appendBatch(std::span<const WalEntry> entries) -> Result<size_t> {
-        if (!out_.is_open()) {
+        if (!isOpen()) {
             return err<size_t>(Error(Errc::InternalError, "WAL file not open"));
         }
         if (entries.empty()) {
@@ -301,21 +369,22 @@ namespace cinder {
         for (const auto& entry : entries) {
             encodeWalRecord(out, entry);
         }
-
-        out_.write(
-            reinterpret_cast<const char*>(scratch_.data()),
-            static_cast<std::streamsize>(scratch_.size())
-        );
-        if (!out_.good()) {
-            return err<size_t>(Error(Errc::InternalError, "WAL write failed"));
+        if (auto written = writeScratch(); !written.has_value()) {
+            return err<size_t>(written.error());
         }
         return total;
     }
 
     void WalWriter::flush() {
+#ifdef _WIN32
         if (out_.is_open()) {
             out_.flush();
         }
+#else
+        // No userspace buffering: every append is already in the kernel, so
+        // flush is a no-op. Process-crash durability is immediate; OS-crash
+        // durability still needs sync().
+#endif
     }
 
     auto WalWriter::sync() -> Result<void> {
@@ -323,10 +392,10 @@ namespace cinder {
 #ifdef _WIN32
         return ok();
 #else
-        if (sync_fd_ < 0) {
+        if (fd_ < 0) {
             return err(Error(Errc::InternalError, "WAL sync fd not open"));
         }
-        if (::fdatasync(sync_fd_) != 0) {
+        if (::fdatasync(fd_) != 0) {
             return err(Error(Errc::InternalError, "WAL fdatasync failed"));
         }
         return ok();
