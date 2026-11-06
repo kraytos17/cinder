@@ -35,6 +35,9 @@ Checks: [
   '-bugprone-sizeof-expression',                # too aggressive
 
   # --- cert ---
+  '-cert-dcl03-c',                              # twin of misc-static-assert: false-positives on runtime
+                                                # asserts (fuzz harnesses); constant cases already use
+                                                # static_assert directly
   '-cert-dcl16-c',
   '-cert-arr39-c',                              # alias of bugprone-sizeof-expression
   '-cert-err58-cpp',                            # noisy for static/global objects that can throw

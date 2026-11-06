@@ -1,5 +1,6 @@
 #include "cinder/store/wal.hpp"
 
+#include <limits>
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
@@ -30,7 +31,12 @@ namespace cinder {
 
         // v2 records carry a trailing tombstone byte after has_ttl; v1
         // records end at has_ttl. The caller gates on the file version.
-        auto readEntryFields(std::istream& in, bool is_v2) -> std::optional<ParsedEntry> {
+        // Sets invalid=true when bytes were present but semantically bad
+        // (unknown op, tombstone > 1). Truncation (EOF mid-record) leaves
+        // invalid=false so callers treat it as a torn tail, not corruption.
+        auto readEntryFields(std::istream& in, bool is_v2, bool& invalid)
+            -> std::optional<ParsedEntry> {
+            invalid = false;
             auto op_byte = readU8(in);
             if (!op_byte.has_value()) {
                 return std::nullopt;
@@ -38,6 +44,7 @@ namespace cinder {
 
             auto op = static_cast<WalEntry::Op>(op_byte.value());
             if (op != WalEntry::Op::Set && op != WalEntry::Op::Del) {
+                invalid = true;
                 return std::nullopt;
             }
 
@@ -85,6 +92,9 @@ namespace cinder {
             if (is_v2) {
                 auto tombstone_byte = readU8(in);
                 if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
+                    if (tombstone_byte.has_value()) {
+                        invalid = true;
+                    }
                     return std::nullopt;
                 }
                 tombstone = tombstone_byte.value();
@@ -140,10 +150,42 @@ namespace cinder {
         }
     } // namespace
 
-    WalWriter::WalWriter(const std::string& path) :
-        out_(path, std::ios::binary | std::ios::trunc) {
-        writeU32(out_, K_WAL_MAGIC);
-        writeU32(out_, K_WAL_FORMAT_VERSION);
+    WalWriter::WalWriter(const std::string& path, WalOpenMode mode) :
+        out_(
+            path,
+            std::ios::binary
+                | std::ios::out
+                | (mode == WalOpenMode::Truncate ? std::ios::trunc : std::ios::app)
+        ) {
+        bool needs_header = mode == WalOpenMode::Truncate;
+        if (mode == WalOpenMode::Append) {
+            // Probe the existing file: valid header → resume after it;
+            // missing/empty → fresh header; present-but-invalid → the file is
+            // garbage, so fall back to a truncated fresh log.
+            std::ifstream probe(path, std::ios::binary);
+            auto magic = readU32(probe);
+            auto version = readU32(probe);
+            const bool valid = magic.has_value()
+                && magic.value()
+                == K_WAL_MAGIC
+                && version.has_value()
+                && (version.value()
+                    == K_WAL_FORMAT_VERSION
+                    || version.value()
+                    == K_WAL_FORMAT_VERSION_V1);
+            if (!magic.has_value()) {
+                needs_header = true; // missing or empty file
+            } else if (!valid) {
+                CINDER_WARN("WAL header invalid; starting fresh log", {"path", path});
+                out_.close();
+                out_.open(path, std::ios::binary | std::ios::out | std::ios::trunc);
+                needs_header = true;
+            }
+        }
+        if (needs_header && out_.is_open()) {
+            writeU32(out_, K_WAL_MAGIC);
+            writeU32(out_, K_WAL_FORMAT_VERSION);
+        }
 #ifndef _WIN32
         sync_fd_ = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
         if (sync_fd_ < 0) {
@@ -166,6 +208,12 @@ namespace cinder {
     auto WalWriter::append(const WalEntry& entry) -> Result<void> {
         if (!out_.is_open()) {
             return err(Error(Errc::InternalError, "WAL file not open"));
+        }
+        if (entry.key.size()
+            > std::numeric_limits<uint32_t>::max()
+            || entry.value.size()
+            > std::numeric_limits<uint32_t>::max()) {
+            return err(Error(Errc::InvalidArgument, "WAL entry too large"));
         }
 
         // Pre-size scratch buffer: 1(op) + 4(key_len) + key + 4(val_len) + value
@@ -198,6 +246,77 @@ namespace cinder {
             return err(Error(Errc::InternalError, "WAL write failed"));
         }
         return ok();
+    }
+
+    namespace {
+        // Encoded record length including the trailing checksum, mirroring
+        // WalWriter::append so batch sizing stays exact.
+        auto encodedRecordSize(const WalEntry& entry) -> size_t {
+            return 1
+                + 4
+                + entry.key.size()
+                + 4
+                + entry.value.size()
+                + 8
+                + 8
+                + 8
+                + 1
+                + 1
+                + sizeof(uint64_t);
+        }
+    } // namespace
+
+    auto WalWriter::appendBatch(std::span<const WalEntry> entries) -> Result<size_t> {
+        if (!out_.is_open()) {
+            return err<size_t>(Error(Errc::InternalError, "WAL file not open"));
+        }
+        if (entries.empty()) {
+            return size_t{0};
+        }
+        for (const auto& entry : entries) {
+            if (entry.key.size()
+                > std::numeric_limits<uint32_t>::max()
+                || entry.value.size()
+                > std::numeric_limits<uint32_t>::max()) {
+                return err<size_t>(Error(Errc::InvalidArgument, "WAL entry too large"));
+            }
+        }
+
+        size_t total = 0;
+        for (const auto& entry : entries) {
+            total += encodedRecordSize(entry);
+        }
+
+        scratch_.resize(total);
+        size_t off = 0;
+        for (const auto& entry : entries) {
+            const size_t record_start = off;
+            writeU8(scratch_, off, std::to_underlying(entry.op));
+            writeU32(scratch_, off, static_cast<uint32_t>(entry.key.size()));
+            writeBytes(scratch_, off, entry.key.data(), entry.key.size());
+            writeU32(scratch_, off, static_cast<uint32_t>(entry.value.size()));
+            writeBytes(scratch_, off, entry.value.data(), entry.value.size());
+            writeU64(scratch_, off, entry.version);
+            writeU64(scratch_, off, entry.writer_node_hash);
+            writeU64(scratch_, off, entry.expires_at_ms);
+            writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
+            writeU8(scratch_, off, entry.is_tombstone ? 1 : 0);
+
+            auto digest = XXH3_64bits(
+                static_cast<const void*>(scratch_.data() + record_start),
+                off - record_start
+            );
+            writeU64(scratch_, off, digest);
+        }
+
+        out_.write(
+            reinterpret_cast<const char*>(scratch_.data()),
+            static_cast<std::streamsize>(scratch_.size())
+        );
+        if (!out_.good()) {
+            return err<size_t>(Error(Errc::InternalError, "WAL write failed"));
+        }
+        return total;
     }
 
     void WalWriter::flush() {
@@ -247,8 +366,14 @@ namespace cinder {
         }
 
         const bool is_v2 = format_version_ == K_WAL_FORMAT_VERSION;
-        auto fields = readEntryFields(in_, is_v2);
+        bool invalid = false;
+        auto fields = readEntryFields(in_, is_v2, invalid);
         if (!fields.has_value()) {
+            // Structurally invalid bytes (bad op / bad tombstone) signal
+            // mid-file corruption; short reads are a torn crash tail.
+            if (invalid) {
+                corrupted_ = true;
+            }
             return std::nullopt;
         }
         if (format_version_ == 0) {
@@ -261,6 +386,7 @@ namespace cinder {
         }
         if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum.value()) {
             CINDER_WARN("checksum mismatch at entry — corrupt data");
+            corrupted_ = true;
             return std::nullopt;
         }
         return toWalEntry(fields.value());

@@ -3,12 +3,63 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace cinder::detail {
+
+    // Durability helpers shared by WAL/snapshot/journal rotation.
+    // POSIX: fsync the file, then fsync the containing directory so the
+    // rename itself survives an OS crash. Windows: best-effort no-op
+    // (ofstream flush is the durability story there).
+    inline auto syncFileContents(const std::string& path) -> bool {
+#ifdef _WIN32
+        (void)path;
+        return true;
+#else
+        int fd = ::open(path.c_str(), O_RDONLY);
+        if (fd < 0) {
+            return false;
+        }
+
+        const bool ok = ::fsync(fd) == 0;
+        ::close(fd);
+        return ok;
+#endif
+    }
+
+    inline auto syncDirectory(const std::string& dir_or_file_path) -> bool {
+#ifdef _WIN32
+        (void)dir_or_file_path;
+        return true;
+#else
+        std::error_code ec;
+        auto dir = std::filesystem::is_directory(dir_or_file_path, ec)
+            ? std::filesystem::path(dir_or_file_path)
+            : std::filesystem::path(dir_or_file_path).parent_path();
+        if (ec || dir.empty()) {
+            dir = ".";
+        }
+
+        int fd = ::open(dir.c_str(), O_RDONLY);
+        if (fd < 0) {
+            return false;
+        }
+
+        const bool ok = ::fsync(fd) == 0;
+        ::close(fd);
+        return ok;
+#endif
+    }
 
     inline void writeU32(std::ostream& out, uint32_t v) {
         out.write(reinterpret_cast<const char*>(&v), sizeof(v));

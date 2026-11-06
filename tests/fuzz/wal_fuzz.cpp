@@ -87,7 +87,7 @@ namespace {
     // fallback (no checksums, shifted framing), so only crash-freedom applies.
     constexpr size_t K_HEADER_SIZE = 8;
 
-    static auto makeEntry(FuzzedDataProvider& fdp) -> cinder::WalEntry {
+    auto makeEntry(FuzzedDataProvider& fdp) -> cinder::WalEntry {
         cinder::WalEntry e;
         e.op = fdp.PickValueInArray({cinder::WalEntry::Op::Set, cinder::WalEntry::Op::Del});
         e.key = fdp.ConsumeRandomLengthString(256);
@@ -101,7 +101,7 @@ namespace {
         return e;
     }
 
-    static void roundtrip(FuzzedDataProvider& fdp) {
+    void roundtrip(FuzzedDataProvider& fdp) {
         const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 16);
         std::vector<cinder::WalEntry> entries;
         entries.reserve(n);
@@ -125,9 +125,19 @@ namespace {
         }
         // No trailing garbage: the writer's bytes decode to exactly N entries.
         assert(!reader.next().has_value());
+
+        // Group commit must be byte-identical to sequential appends, so the
+        // drain fast path cannot diverge from the tested framing.
+        auto batch_guard = nextPath();
+        {
+            cinder::WalWriter writer(batch_guard.path());
+            auto res = writer.appendBatch(entries);
+            assert(res.has_value());
+        }
+        assert(slurp(guard.path()) == slurp(batch_guard.path()));
     }
 
-    static void mutate(FuzzedDataProvider& fdp) {
+    void mutate(FuzzedDataProvider& fdp) {
         const size_t n = fdp.ConsumeIntegralInRange<size_t>(1, 16);
         std::vector<cinder::WalEntry> entries;
         entries.reserve(n);
@@ -183,7 +193,7 @@ namespace {
         assert(returned <= entries.size());
     }
 
-    static void raw(FuzzedDataProvider& fdp) {
+    void raw(FuzzedDataProvider& fdp) {
         // Direct passthrough: arbitrary bytes (bad magic, truncations, lying
         // lengths) must never crash and never yield an invalid op.
         auto bytes = fdp.ConsumeRemainingBytes<uint8_t>();

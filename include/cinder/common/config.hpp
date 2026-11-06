@@ -71,6 +71,8 @@ namespace cinder {
         std::string data_dir;
         int snapshot_interval_s = 60;
         int max_wal_entries = 10'000;
+        // WAL byte budget before auto-compact (0 = disabled).
+        size_t max_wal_bytes = 64U << 20U;
         // fdatasync on every WAL flush (durability vs throughput).
         // Restart-only like the other persistence knobs.
         bool wal_fsync = false;

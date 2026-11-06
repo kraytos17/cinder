@@ -552,10 +552,11 @@ namespace cinder {
 
             ASSERT_TRUE(pm.compact().has_value());
 
-            // WAL should be empty after compact
+            // WAL should be empty after compact (header only, no entries)
             auto wal_path = scratch_.path() / "wal.log";
             WalReader reader(wal_path.string());
-            EXPECT_FALSE(reader.hasMore());
+            EXPECT_FALSE(reader.next().has_value());
+            EXPECT_FALSE(reader.corrupted());
 
             // Snapshot should exist
             bool found_snapshot = false;
@@ -836,6 +837,340 @@ namespace cinder {
             auto entry = reader.next();
             ASSERT_TRUE(entry.has_value());
             EXPECT_EQ(entry->key, "k");
+        }
+
+        TEST_F(PersistenceTest, WalCorruptReplayReportsError) {
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(pm.recover().has_value());
+            ASSERT_TRUE(store.put("k1", "v1").has_value());
+            pm.onWrite(
+                WalEntry{
+                    .op = WalEntry::Op::Set,
+                    .key = "k1",
+                    .value = "v1",
+                    .version = 1,
+                    .writer_node_hash = 0,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                }
+            );
+            pm.flush();
+
+            // Corrupt the payload byte of the single WAL record so its
+            // checksum mismatches: replay must report CorruptData instead of
+            // silently stopping with Ok.
+            {
+                auto wal_path = scratch_.path() / "wal.log";
+                std::fstream f(wal_path, std::ios::binary | std::ios::in | std::ios::out);
+                // header(8) + op(1) + key_len(4) + key(2) + val_len(4) = 19
+                f.seekp(8 + 11);
+                char byte = 0;
+                f.get(byte);
+                f.seekp(8 + 11);
+                f.put(static_cast<char>(0xFFU ^ static_cast<unsigned char>(byte)));
+            }
+
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            EXPECT_FALSE(pm2.recover().has_value());
+        }
+
+        TEST_F(PersistenceTest, SnapshotPruneKeepsTwo) {
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(store.put("k", "v").has_value());
+            for (int i = 0; i < 4; ++i) {
+                ASSERT_TRUE(pm.compact().has_value());
+            }
+            size_t snaps = 0;
+            for (const auto& entry : std::filesystem::directory_iterator(scratch_.path())) {
+                auto name = entry.path().filename().string();
+                if (name.starts_with("snapshot_") && name.ends_with(".dat")) {
+                    ++snaps;
+                }
+            }
+            EXPECT_LE(snaps, 2U);
+            EXPECT_GE(snaps, 1U);
+        }
+
+        TEST_F(PersistenceTest, CompactPreservesPendingWrites) {
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(store.put("pre", "1").has_value());
+            pm.onWrite(
+                WalEntry{
+                    .op = WalEntry::Op::Set,
+                    .key = "pre",
+                    .value = "1",
+                    .version = 1,
+                    .writer_node_hash = 0,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                }
+            );
+            // Entries queued before compact must survive the WAL rotation:
+            // they are either in the new snapshot or replayed from the fresh WAL.
+            ASSERT_TRUE(pm.compact().has_value());
+
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_TRUE(store2.get("pre").has_value());
+        }
+
+        TEST_F(PersistenceTest, WalAppendModeResumesExistingLog) {
+            auto wal_path = (scratch_.path() / "wal.log").string();
+            {
+                WalWriter writer(wal_path, WalOpenMode::Append);
+                ASSERT_TRUE(writer
+                                .append(
+                                    WalEntry{
+                                        .op = WalEntry::Op::Set,
+                                        .key = "a",
+                                        .value = "1",
+                                        .version = 1,
+                                    }
+                                )
+                                .has_value());
+            }
+            {
+                // Reopen in Append: must not emit a second header.
+                WalWriter writer(wal_path, WalOpenMode::Append);
+                ASSERT_TRUE(writer
+                                .append(
+                                    WalEntry{
+                                        .op = WalEntry::Op::Set,
+                                        .key = "b",
+                                        .value = "2",
+                                        .version = 2,
+                                    }
+                                )
+                                .has_value());
+            }
+            WalReader reader(wal_path);
+            auto e1 = reader.next();
+            ASSERT_TRUE(e1.has_value());
+            EXPECT_EQ(e1->key, "a");
+            auto e2 = reader.next();
+            ASSERT_TRUE(e2.has_value());
+            EXPECT_EQ(e2->key, "b");
+            EXPECT_FALSE(reader.next().has_value());
+            EXPECT_FALSE(reader.corrupted());
+        }
+
+        TEST_F(PersistenceTest, WalAppendModeHealsBadHeader) {
+            auto wal_path = (scratch_.path() / "wal.log").string();
+            {
+                std::ofstream garbage(wal_path, std::ios::binary | std::ios::trunc);
+                garbage << "NOT-A-WAL-HEADER!!!!!!!!";
+            }
+            {
+                WalWriter writer(wal_path, WalOpenMode::Append);
+                ASSERT_TRUE(writer
+                                .append(
+                                    WalEntry{
+                                        .op = WalEntry::Op::Set,
+                                        .key = "k",
+                                        .value = "v",
+                                        .version = 1,
+                                    }
+                                )
+                                .has_value());
+            }
+            WalReader reader(wal_path);
+            auto e = reader.next();
+            ASSERT_TRUE(e.has_value());
+            EXPECT_EQ(e->key, "k");
+        }
+
+        TEST_F(PersistenceTest, RecoverTwiceWithoutCompactLosesNothing) {
+            // Crash window: entries replayed by recover() used to live only
+            // in memory (the WAL was truncated). A crash before the next
+            // compact lost them. Now the log is kept, so a second restart
+            // replays them again.
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            {
+                PersistenceManager pm(opts, store);
+                ASSERT_TRUE(pm.recover().has_value());
+                ASSERT_TRUE(store.put("k", "v").has_value());
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = "k",
+                        .value = "v",
+                        .version = 1,
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+                pm.flush();
+            } // no shutdown, no compact: simulates a crash after serving
+
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            // Crash again before any compact: entries must still replay.
+            LruStore store3(1'000'000);
+            PersistenceManager pm3(opts, store3);
+            ASSERT_TRUE(pm3.recover().has_value());
+            EXPECT_TRUE(store3.get("k").has_value());
+        }
+
+        TEST_F(PersistenceTest, WalBatchAppendMatchesSequentialBytes) {
+            // Group commit must be byte-identical to N sequential appends so
+            // readers, checksums, and fuzz corpora are unaffected.
+            std::vector<WalEntry> entries;
+            for (int i = 0; i < 8; ++i) {
+                entries.push_back(
+                    WalEntry{
+                        .op = i % 3 == 2 ? WalEntry::Op::Del : WalEntry::Op::Set,
+                        .key = "k" + std::to_string(i),
+                        .value = std::string(static_cast<size_t>(i) * 7, 'x'),
+                        .version = static_cast<uint64_t>(i + 1),
+                        .writer_node_hash = static_cast<uint64_t>(i * 11),
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                        .is_tombstone = i % 4 == 3,
+                    }
+                );
+            }
+
+            const auto seq_path = (scratch_.path() / "seq.wal").string();
+            const auto batch_path = (scratch_.path() / "batch.wal").string();
+            size_t batch_bytes = 0;
+            {
+                WalWriter seq(seq_path);
+                for (const auto& e : entries) {
+                    ASSERT_TRUE(seq.append(e).has_value());
+                }
+            }
+            {
+                WalWriter batch(batch_path);
+                auto res = batch.appendBatch(entries);
+                ASSERT_TRUE(res.has_value());
+                batch_bytes = res.value();
+            }
+
+            std::ifstream seq_in(seq_path, std::ios::binary);
+            std::ifstream batch_in(batch_path, std::ios::binary);
+            std::string seq_bytes(
+                (std::istreambuf_iterator<char>(seq_in)),
+                std::istreambuf_iterator<char>()
+            );
+            std::string batch_bytes_str(
+                (std::istreambuf_iterator<char>(batch_in)),
+                std::istreambuf_iterator<char>()
+            );
+            EXPECT_EQ(seq_bytes, batch_bytes_str);
+            EXPECT_EQ(batch_bytes, batch_bytes_str.size() - 8U); // minus header
+
+            WalReader reader(batch_path);
+            for (const auto& expected : entries) {
+                auto got = reader.next();
+                ASSERT_TRUE(got.has_value());
+                EXPECT_EQ(got->key, expected.key);
+                EXPECT_EQ(got->value, expected.value);
+                EXPECT_EQ(got->version, expected.version);
+            }
+            EXPECT_FALSE(reader.next().has_value());
+        }
+
+        TEST_F(PersistenceTest, WalNeedsCompactBytesThreshold) {
+            LruStore store(1'000'000);
+            PersistenceManager pm(
+                PersistenceManager::Options{
+                    .data_dir = scratch_.path().string(),
+                    .enabled = true,
+                    .snapshot_interval_s = 3600,
+                    .max_wal_entries = 0, // entries disabled: bytes alone trigger
+                    .max_wal_bytes = 256,
+                },
+                store
+            );
+            ASSERT_TRUE(pm.recover().has_value());
+            EXPECT_FALSE(pm.walNeedsCompact());
+            pm.onWrite(
+                WalEntry{
+                    .op = WalEntry::Op::Set,
+                    .key = "k",
+                    .value = std::string(512, 'v'),
+                    .version = 1,
+                    .writer_node_hash = 0,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                }
+            );
+            pm.flush();
+            EXPECT_TRUE(pm.walNeedsCompact());
+            ASSERT_TRUE(pm.compact().has_value());
+            EXPECT_FALSE(pm.walNeedsCompact());
+        }
+
+        TEST_F(PersistenceTest, SnapshotStreamMatchesReadAll) {
+            auto snap_path = (scratch_.path() / "snap.dat").string();
+            std::vector<SnapshotEntry> entries;
+            for (int i = 0; i < 10; ++i) {
+                entries.push_back(
+                    SnapshotEntry{
+                        .key = "k" + std::to_string(i),
+                        .value = "v" + std::to_string(i),
+                        .version = static_cast<uint64_t>(i),
+                        .freq = static_cast<size_t>(i),
+                    }
+                );
+            }
+            {
+                SnapshotWriter writer(snap_path);
+                ASSERT_TRUE(writer.write(11, entries).has_value());
+            }
+            SnapshotReader full(snap_path);
+            auto all = full.readAll();
+            ASSERT_TRUE(all.has_value());
+
+            SnapshotReader streamed(snap_path);
+            Version next = 0;
+            std::vector<SnapshotEntry> got;
+            ASSERT_TRUE(streamed
+                            .readStream(next, [&](SnapshotEntry& e) {
+                got.push_back(std::move(e));
+            }).has_value());
+            EXPECT_EQ(next, all->next_version);
+            ASSERT_EQ(got.size(), all->entries.size());
+            for (size_t i = 0; i < got.size(); ++i) {
+                EXPECT_EQ(got[i].key, all->entries[i].key);
+                EXPECT_EQ(got[i].value, all->entries[i].value);
+            }
+        }
+
+        TEST_F(PersistenceTest, CurrentPointerSurvivesNewerGarbage) {
+            // A newer-but-unpublished snapshot file (crash between write and
+            // CURRENT publish) must not shadow the published one: recovery
+            // prefers CURRENT over lexicographic order.
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(store.put("live", "v").has_value());
+            ASSERT_TRUE(pm.compact().has_value());
+
+            // Plant a lexicographically newer snapshot file with no entries
+            // and no CURRENT update.
+            {
+                SnapshotWriter writer(
+                    (scratch_.path() / "snapshot_9999999999999999999.dat").string()
+                );
+                ASSERT_TRUE(writer.write(1, {}).has_value());
+            }
+
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_TRUE(store2.get("live").has_value());
         }
 
         struct SpanGuard {

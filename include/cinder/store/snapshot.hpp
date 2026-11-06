@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <functional>
 #include <span>
 #include <string>
 #include <vector>
@@ -70,6 +71,11 @@ namespace cinder {
         auto operator=(SnapshotReader&&) -> SnapshotReader& = delete;
 
         auto readAll() -> Result<SnapshotData>;
+        // Streaming read: invokes fn per entry without accumulating the full
+        // vector, so large snapshots recover in O(1) memory. next_version is
+        // delivered first via the out-param once the header validates.
+        auto readStream(Version& next_version, std::move_only_function<void(SnapshotEntry&)> fn)
+            -> Result<void>;
 
     private:
 

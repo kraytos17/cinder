@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 #include "cinder/common/tracing.hpp"
 #include "cinder/store/detail/io_utils.hpp"
@@ -39,6 +40,14 @@ namespace cinder {
         // stay byte-identical (WAL0/CSNP magic, fuzz corpora still decode).
         // v2 appends a trailing tombstone byte after freq.
         for (const auto& entry : entries) {
+            if (entry.key.size()
+                > std::numeric_limits<uint32_t>::max()
+                || entry.value.size()
+                > std::numeric_limits<uint32_t>::max()) {
+                span.setStatus(SpanStatus::Error);
+                return err(Error(Errc::InvalidArgument, "snapshot entry too large"));
+            }
+
             auto key_len = static_cast<uint32_t>(entry.key.size());
             auto val_len = static_cast<uint32_t>(entry.value.size());
             const size_t size = sizeof(uint32_t)
@@ -74,11 +83,29 @@ namespace cinder {
             return err(Error(Errc::InternalError, "snapshot write failed"));
         }
 
+        out.close();
+        if (!out.good()) {
+            span.setStatus(SpanStatus::Error);
+            return err(Error(Errc::InternalError, "snapshot close failed"));
+        }
+
+        // Crash safety: persist file contents before exposing the rename,
+        // then persist the directory entry itself (file-then-dir fsync).
+        const std::string tmp_path = path_ + ".tmp";
+        if (!syncFileContents(tmp_path)) {
+            span.setStatus(SpanStatus::Error);
+            return err(Error(Errc::InternalError, "snapshot fsync failed"));
+        }
+
         std::error_code ec;
-        std::filesystem::rename(path_ + ".tmp", path_, ec);
+        std::filesystem::rename(tmp_path, path_, ec);
         if (ec) {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::InternalError, "snapshot rename failed: " + ec.message()));
+        }
+        if (!syncDirectory(path_)) {
+            span.setStatus(SpanStatus::Error);
+            return err(Error(Errc::InternalError, "snapshot dir fsync failed"));
         }
 
         span.setAttribute({"entries", entries.size()});
@@ -89,17 +116,20 @@ namespace cinder {
     SnapshotReader::SnapshotReader(const std::string& path) :
         in_(path, std::ios::binary) {}
 
-    auto SnapshotReader::readAll() -> Result<SnapshotData> {
+    auto SnapshotReader::readStream(
+        Version& next_version,
+        std::move_only_function<void(SnapshotEntry&)> fn
+    ) -> Result<void> {
         Span span("snapshot.read", captureTraceContext());
         if (!in_.is_open()) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(Error(Errc::InternalError, "snapshot file not open"));
+            return err(Error(Errc::InternalError, "snapshot file not open"));
         }
 
         auto magic = readU32(in_);
         if (!magic.has_value() || magic.value() != K_SNAPSHOT_MAGIC) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(Error(Errc::CorruptData, "invalid snapshot magic"));
+            return err(Error(Errc::CorruptData, "invalid snapshot magic"));
         }
 
         auto format_ver = readU32(in_);
@@ -109,21 +139,19 @@ namespace cinder {
             format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION_V1;
         if (!is_v1 && !is_v2) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(
-                Error(Errc::CorruptData, "unsupported snapshot format version")
-            );
+            return err(Error(Errc::CorruptData, "unsupported snapshot format version"));
         }
 
         auto next_ver = readU64(in_);
         if (!next_ver.has_value()) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot header"));
+            return err(Error(Errc::CorruptData, "truncated snapshot header"));
         }
 
         auto entry_count = readU32(in_);
         if (!entry_count.has_value()) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot entry count"));
+            return err(Error(Errc::CorruptData, "truncated snapshot entry count"));
         }
 
         // Validate entry_count against remaining file bytes. Each entry requires
@@ -141,69 +169,64 @@ namespace cinder {
         auto remaining = static_cast<uint64_t>(file_size - pos);
         if (static_cast<uint64_t>(entry_count.value()) > remaining / min_entry_bytes) {
             span.setStatus(SpanStatus::Error);
-            return err<SnapshotData>(Error(Errc::InvalidArgument, "entry_count exceeds file size"));
+            return err(Error(Errc::InvalidArgument, "entry_count exceeds file size"));
         }
 
-        SnapshotData data;
-        data.next_version = next_ver.value();
-        data.entries.reserve(entry_count.value());
+        next_version = next_ver.value();
+        size_t streamed = 0;
         for (uint32_t i = 0; i < entry_count.value(); ++i) {
             auto key_len = readU32(in_);
             if (!key_len.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key"));
+                return err(Error(Errc::CorruptData, "truncated snapshot key"));
             }
 
             auto key = readString(in_, key_len.value());
             if (!key.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot key data"));
+                return err(Error(Errc::CorruptData, "truncated snapshot key data"));
             }
 
             auto val_len = readU32(in_);
             if (!val_len.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value"));
+                return err(Error(Errc::CorruptData, "truncated snapshot value"));
             }
 
             auto value = readString(in_, val_len.value());
             if (!value.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot value data"));
+                return err(Error(Errc::CorruptData, "truncated snapshot value data"));
             }
 
             auto version = readU64(in_);
             if (!version.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot version"));
+                return err(Error(Errc::CorruptData, "truncated snapshot version"));
             }
 
             auto writer_hash = readU64(in_);
             if (!writer_hash.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(
-                    Error(Errc::CorruptData, "truncated snapshot writer_hash")
-                );
+                return err(Error(Errc::CorruptData, "truncated snapshot writer_hash"));
             }
 
             auto expires_ms = readU64(in_);
             if (!expires_ms.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(
-                    Error(Errc::CorruptData, "truncated snapshot expires_at_ms")
-                );
+                return err(Error(Errc::CorruptData, "truncated snapshot expires_at_ms"));
             }
 
             auto has_ttl = readU8(in_);
             if (!has_ttl.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
+                return err(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
             }
 
             auto freq = readU64(in_);
             if (!freq.has_value()) {
                 span.setStatus(SpanStatus::Error);
-                return err<SnapshotData>(Error(Errc::CorruptData, "truncated snapshot freq"));
+                return err(Error(Errc::CorruptData, "truncated snapshot freq"));
             }
 
             bool tombstone = false;
@@ -211,29 +234,39 @@ namespace cinder {
                 auto tombstone_byte = readU8(in_);
                 if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
                     span.setStatus(SpanStatus::Error);
-                    return err<SnapshotData>(
-                        Error(Errc::CorruptData, "truncated snapshot tombstone")
-                    );
+                    return err(Error(Errc::CorruptData, "truncated snapshot tombstone"));
                 }
                 tombstone = tombstone_byte.value() != 0;
             }
 
-            data.entries.push_back(
-                SnapshotEntry{
-                    .key = std::move(key.value()),
-                    .value = std::move(value.value()),
-                    .version = version.value(),
-                    .writer_node_hash = writer_hash.value(),
-                    .expires_at_ms = expires_ms.value(),
-                    .has_ttl = has_ttl.value() != 0,
-                    .tombstone = tombstone,
-                    .freq = freq.value(),
-                }
-            );
+            SnapshotEntry entry{
+                .key = std::move(key.value()),
+                .value = std::move(value.value()),
+                .version = version.value(),
+                .writer_node_hash = writer_hash.value(),
+                .expires_at_ms = expires_ms.value(),
+                .has_ttl = has_ttl.value() != 0,
+                .tombstone = tombstone,
+                .freq = freq.value(),
+            };
+
+            fn(entry);
+            ++streamed;
         }
 
-        span.setAttribute({"entries", data.entries.size()});
+        span.setAttribute({"entries", streamed});
         span.setStatus(SpanStatus::Ok);
+        return ok();
+    }
+
+    auto SnapshotReader::readAll() -> Result<SnapshotData> {
+        SnapshotData data;
+        auto result = readStream(data.next_version, [&](SnapshotEntry& entry) {
+            data.entries.push_back(std::move(entry));
+        });
+        if (!result.has_value()) {
+            return err<SnapshotData>(result.error());
+        }
         return data;
     }
 } // namespace cinder

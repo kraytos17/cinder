@@ -53,6 +53,10 @@ namespace cinder {
         milliseconds quarantine_interval{10'000};
         size_t snapshot_interval_s = 60;
         size_t max_wal_entries = 10'000;
+        // WAL byte budget before auto-compact (0 = disabled). Entry counts
+        // alone under-trigger on large values; bytes alone under-trigger on
+        // many tiny tombstones — hence both limits.
+        size_t max_wal_bytes = 64U << 20U;
         // RPC deadline — max time for a single peer RPC before cancellation.
         milliseconds rpc_timeout{5000};
         // Anti-entropy: background repair between replica partners (0 = disabled).

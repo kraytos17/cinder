@@ -238,6 +238,7 @@ namespace cinder {
                 .enabled = options.persistence_enabled,
                 .snapshot_interval_s = options.snapshot_interval_s,
                 .max_wal_entries = options.max_wal_entries,
+                .max_wal_bytes = options.max_wal_bytes,
                 .wal_fsync = options.wal_fsync,
             },
             *store_,

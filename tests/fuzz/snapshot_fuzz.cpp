@@ -90,7 +90,7 @@ namespace {
     // normalizes has_ttl to 0/1, so roundtripped entries compare exactly.
     constexpr size_t K_HEADER_SIZE = 20;
 
-    static auto makeEntry(FuzzedDataProvider& fdp) -> cinder::SnapshotEntry {
+    auto makeEntry(FuzzedDataProvider& fdp) -> cinder::SnapshotEntry {
         cinder::SnapshotEntry e;
         e.key = fdp.ConsumeRandomLengthString(256);
         // Occasional large value exercises the size paths.
@@ -104,7 +104,7 @@ namespace {
         return e;
     }
 
-    static void roundtrip(FuzzedDataProvider& fdp) {
+    void roundtrip(FuzzedDataProvider& fdp) {
         const size_t n = fdp.ConsumeIntegralInRange<size_t>(0, 16);
         std::vector<cinder::SnapshotEntry> entries;
         entries.reserve(n);
@@ -127,9 +127,23 @@ namespace {
         for (size_t i = 0; i < entries.size(); ++i) {
             assert(got->entries[i] == entries[i]);
         }
+
+        // Streaming read must deliver exactly what readAll does.
+        cinder::SnapshotReader streamed(guard.path());
+        cinder::Version streamed_next = 0;
+        std::vector<cinder::SnapshotEntry> streamed_entries;
+        auto stream_res = streamed.readStream(streamed_next, [&](cinder::SnapshotEntry& e) {
+            streamed_entries.push_back(e);
+        });
+        assert(stream_res.has_value());
+        assert(streamed_next == next_version);
+        assert(streamed_entries.size() == entries.size());
+        for (size_t i = 0; i < entries.size(); ++i) {
+            assert(streamed_entries[i] == entries[i]);
+        }
     }
 
-    static void mutate(FuzzedDataProvider& fdp) {
+    void mutate(FuzzedDataProvider& fdp) {
         const size_t n = fdp.ConsumeIntegralInRange<size_t>(1, 16);
         std::vector<cinder::SnapshotEntry> entries;
         entries.reserve(n);
@@ -180,7 +194,7 @@ namespace {
         }
     }
 
-    static void raw(FuzzedDataProvider& fdp) {
+    void raw(FuzzedDataProvider& fdp) {
         // Direct passthrough: arbitrary bytes (bad magic, lying counts,
         // truncations) must never crash — only return errors.
         auto bytes = fdp.ConsumeRemainingBytes<uint8_t>();
