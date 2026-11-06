@@ -461,6 +461,7 @@ namespace cinder {
         }
         if (format_version_ == 0) {
             pos_ = in.pos();
+            commit_pos_ = pos_;
             return toWalEntry(fields.value());
         }
 
@@ -477,6 +478,7 @@ namespace cinder {
         }
 
         pos_ = in.pos();
+        commit_pos_ = pos_;
         return toWalEntry(fields.value());
     }
 

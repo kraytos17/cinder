@@ -94,6 +94,14 @@ namespace cinder {
     class WalReader {
     public:
 
+        // Outcome of replaying one WAL file: physically decoded records plus
+        // the end offset of the last fully decoded record (for torn-tail
+        // truncation; see WalReader::validSize).
+        struct ReplayStats {
+            size_t records = 0;
+            uint64_t valid_bytes = 0;
+        };
+
         explicit WalReader(const std::string& path);
         ~WalReader() = default;
 
@@ -104,6 +112,15 @@ namespace cinder {
 
         auto next() -> std::optional<WalEntry>;
         auto hasMore() -> bool;
+
+        // End offset of the last fully decoded record. A torn tail (crash
+        // mid-append) leaves validSize() < file size; recovery truncates
+        // the file there before appending again, otherwise the next replay
+        // misframes past the partial record and reports corruption.
+        [[nodiscard]]
+        auto validSize() const -> uint64_t {
+            return commit_pos_;
+        }
 
         // True once next() has seen a structurally invalid record
         // (bad op, bad tombstone byte, checksum mismatch). Clean EOF and
@@ -121,6 +138,8 @@ namespace cinder {
         // string. Segment rotation bounds the image by max_wal_segment_bytes.
         std::vector<char> data_;
         size_t pos_ = 0;
+        // End offset of the last fully decoded record (see validSize()).
+        uint64_t commit_pos_ = 0;
         // File format version: 0 = pre-magic legacy (no checksums), 1 = v1
         // checksummed records, 2 = v2 records with trailing tombstone byte.
         uint32_t format_version_ = 0;

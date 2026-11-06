@@ -205,21 +205,35 @@ namespace cinder {
         for (const auto& wal_file : findWalFiles()) {
             const bool is_active = wal_file.filename() == K_WAL_FILENAME;
             std::error_code size_ec;
-            const uint64_t file_bytes = std::filesystem::file_size(wal_file, size_ec);
+            const uint64_t file_size = std::filesystem::file_size(wal_file, size_ec);
             auto wal_result = replayWal(wal_file);
             if (!wal_result.has_value()) {
                 loading_ = false;
                 span.setStatus(SpanStatus::Error);
                 return err(wal_result.error());
             }
-            if (is_active) {
-                active_records = wal_result.value();
-                active_bytes = size_ec ? 0 : file_bytes;
-            } else {
-                sealed_records += wal_result.value();
-                if (!size_ec) {
-                    sealed_bytes += file_bytes;
+
+            const auto& stats = wal_result.value();
+            // Heal torn tails: append-mode recovery keeps the file, so a
+            // partial record at EOF must go before new appends land past it.
+            // Otherwise the next replay misframes and reports corruption.
+            uint64_t file_bytes = size_ec ? 0 : file_size;
+            if (!size_ec && stats.valid_bytes < file_bytes) {
+                std::error_code truncate_ec;
+                std::filesystem::resize_file(wal_file, stats.valid_bytes, truncate_ec);
+                if (truncate_ec || !detail::syncFileContents(wal_file.string())) {
+                    loading_ = false;
+                    span.setStatus(SpanStatus::Error);
+                    return err(Error(Errc::InternalError, "WAL torn-tail truncate failed"));
                 }
+                file_bytes = stats.valid_bytes;
+            }
+            if (is_active) {
+                active_records = stats.records;
+                active_bytes = file_bytes;
+            } else {
+                sealed_records += stats.records;
+                sealed_bytes += file_bytes;
                 if (auto seq = parseWalSegmentSeq(wal_file.filename().string())) {
                     have_sealed = true;
                     max_sealed_seq = std::max(max_sealed_seq, seq.value());
@@ -506,7 +520,8 @@ namespace cinder {
         return ok();
     }
 
-    auto PersistenceManager::replayWal(const std::filesystem::path& wal_path) -> Result<size_t> {
+    auto PersistenceManager::replayWal(const std::filesystem::path& wal_path)
+        -> Result<WalReader::ReplayStats> {
         Span span("persistence.replay", captureTraceContext());
         WalReader reader(wal_path.string());
         size_t replayed = 0;
@@ -516,7 +531,9 @@ namespace cinder {
             if (!entry.has_value()) {
                 if (reader.corrupted()) {
                     span.setStatus(SpanStatus::Error);
-                    return err<size_t>(Error(Errc::CorruptData, "WAL checksum mismatch"));
+                    return err<WalReader::ReplayStats>(
+                        Error(Errc::CorruptData, "WAL checksum mismatch")
+                    );
                 }
                 break; // torn tail: clean crash artifact, stop with Ok
             }
@@ -543,7 +560,7 @@ namespace cinder {
 
         span.setAttribute({"entries", replayed});
         span.setStatus(SpanStatus::Ok);
-        return decoded;
+        return WalReader::ReplayStats{decoded, reader.validSize()};
     }
 
     auto PersistenceManager::findLatestSnapshot() const -> std::string {

@@ -100,10 +100,10 @@ namespace cinder {
         auto toSnapshotEntry(std::string key, VersionedEntry entry) -> SnapshotEntry;
         auto versionedFromSnapshot(SnapshotEntry& entry) -> std::optional<VersionedEntry>;
         auto versionedFromWal(WalEntry& entry) -> std::optional<VersionedEntry>;
-        // Replays the WAL, returning the number of physically decoded records
-        // (including expired-skipped ones still occupying the file) so the
-        // caller can seed its byte/entry accounting.
-        auto replayWal(const std::filesystem::path& path) -> Result<size_t>;
+        // Replays the WAL, returning per-file stats: physically decoded
+        // records (including expired-skipped ones still occupying the file)
+        // plus the valid-bytes watermark for torn-tail truncation.
+        auto replayWal(const std::filesystem::path& path) -> Result<WalReader::ReplayStats>;
         auto findLatestSnapshot() const -> std::string;
         // Sealed segments in seq order plus the active wal.log last (if it
         // exists). A crash between seal-rename and fresh-file creation leaves

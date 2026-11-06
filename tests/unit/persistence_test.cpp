@@ -1018,6 +1018,60 @@ namespace cinder {
             EXPECT_TRUE(store3.get("k").has_value());
         }
 
+        TEST_F(PersistenceTest, RecoverHealsTornTailBeforeAppending) {
+            // Crash mid-append leaves a partial record at EOF. Append-mode
+            // recovery must truncate it: otherwise the next append lands past
+            // garbage and the following replay misframes into corruption.
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            auto write = [&](PersistenceManager& pm, LruStore& s, const std::string& k) {
+                EXPECT_TRUE(s.put(k, "v").has_value());
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = k,
+                        .value = "v",
+                        .version = 1,
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+                pm.flush();
+            };
+            {
+                PersistenceManager pm(opts, store);
+                ASSERT_TRUE(pm.recover().has_value());
+                write(pm, store, "k1");
+                write(pm, store, "k2");
+            }
+            // Simulate the crash: cut the last record's checksum tail off.
+            const auto wal_path = scratch_.path() / "wal.log";
+            const auto full_size = std::filesystem::file_size(wal_path);
+            ASSERT_GT(full_size, 16U);
+            std::filesystem::resize_file(wal_path, full_size - 5);
+
+            // First restart replays k1, heals the torn tail, and appends k3
+            // where the partial record used to be.
+            {
+                LruStore store2(1'000'000);
+                PersistenceManager pm2(opts, store2);
+                ASSERT_TRUE(pm2.recover().has_value());
+                EXPECT_TRUE(store2.get("k1").has_value());
+                write(pm2, store2, "k3");
+            }
+            // Second restart must see k1 + k3 with no corruption error (k2
+            // never finished appending, so it is legitimately gone).
+            {
+                LruStore store3(1'000'000);
+                PersistenceManager pm3(opts, store3);
+                ASSERT_TRUE(pm3.recover().has_value());
+                EXPECT_TRUE(store3.get("k1").has_value());
+                EXPECT_TRUE(store3.get("k3").has_value());
+                EXPECT_FALSE(store3.get("k2").has_value());
+            }
+        }
+
         TEST_F(PersistenceTest, WalBatchAppendMatchesSequentialBytes) {
             // Group commit must be byte-identical to N sequential appends so
             // readers, checksums, and fuzz corpora are unaffected.
