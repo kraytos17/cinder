@@ -33,8 +33,11 @@ cinder_add_test(cinder_unit_ring_tests
     unit/consistent_hash_ring_test.cpp
     unit/membership_test.cpp
     unit/gossip_test.cpp
+    unit/anti_entropy_codec_test.cpp
     unit/anti_entropy_test.cpp
-    unit/cluster_components_test.cpp
+    unit/hint_queue_test.cpp
+    unit/hint_journal_test.cpp
+    unit/replication_manager_test.cpp
 )
 gtest_discover_tests(cinder_unit_ring_tests PROPERTIES LABELS "unit")
 

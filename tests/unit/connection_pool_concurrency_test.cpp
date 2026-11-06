@@ -146,7 +146,7 @@ namespace cinder {
             io_context io;
             DelayingServer server(io, K_DELAY);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             // The pool's io_context needs its own thread while the test thread
@@ -155,7 +155,7 @@ namespace cinder {
             std::thread io_thread([&io] { io.run(); });
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = 10'000;
 
             ConnectionPool pool(config, io);

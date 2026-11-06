@@ -428,6 +428,181 @@ namespace cinder::net {
         return value;
     }
 
+    auto TcpConnection::classifyOpcode(Opcode op) -> OpcodeClass {
+        switch (op) {
+            case Opcode::Replicate:
+            case Opcode::Hint:
+            case Opcode::Gossip:
+            case Opcode::AntiEntropyDigest:
+            case Opcode::AntiEntropySync:
+                return OpcodeClass::Replication;
+            case Opcode::AdminInfo:
+            case Opcode::AdminCluster:
+            case Opcode::AdminRing:
+            case Opcode::AdminCompact:
+            case Opcode::AdminConfigReload:
+            case Opcode::AdminShutdown:
+                return OpcodeClass::Admin;
+            default:
+                return OpcodeClass::Client;
+        }
+    }
+
+    void TcpConnection::recordOpcodeMetric(Opcode op) {
+        if (metrics_ == nullptr) {
+            return;
+        }
+        switch (op) {
+            case Opcode::Get:
+                metrics_->opcodeMetrics().client.gets.fetchAdd(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Set:
+                metrics_->opcodeMetrics().client.sets.fetchAdd(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Del:
+                metrics_->opcodeMetrics().client.dels.fetchAdd(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Ping:
+                metrics_->opcodeMetrics().client.pings.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Replicate:
+                metrics_->opcodeMetrics().repl.replicates.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::Hint:
+                metrics_->opcodeMetrics().repl.hints.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::GetVersioned:
+                metrics_->opcodeMetrics().repl.gets_versioned.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
+                break;
+            case Opcode::AntiEntropyDigest:
+                metrics_->opcodeMetrics().repl.anti_entropy_digest.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
+                break;
+            case Opcode::AntiEntropySync:
+                metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
+                break;
+            case Opcode::AdminInfo:
+                metrics_->opcodeMetrics().admin.info.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminCluster:
+                metrics_->opcodeMetrics().admin.cluster.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminRing:
+                metrics_->opcodeMetrics().admin.ring.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminCompact:
+                metrics_->opcodeMetrics().admin.compact.fetch_add(1, std::memory_order_relaxed);
+                break;
+            case Opcode::AdminConfigReload:
+                metrics_->opcodeMetrics().admin.config_reload.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
+                break;
+            case Opcode::AdminShutdown:
+                metrics_->opcodeMetrics().admin.shutdown.fetch_add(1, std::memory_order_relaxed);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void TcpConnection::denyRequest(const Request& req) {
+        CINDER_WARN("auth failed", {"opcode", static_cast<int>(req.opcode)}, {"node", node_id_});
+        if (metrics_) {
+            metrics_->connectionMetrics().connections_closed.fetch_add(
+                1,
+                std::memory_order_relaxed
+            );
+        }
+
+        // Status-only: a value body here would surface as fake data
+        // through CacheClient::get(), which returns res.value directly.
+        // Denials still echo the request trace so the caller can correlate.
+        sendResponse({
+            .status = Errc::PermissionDenied,
+            .value = std::nullopt,
+            .trace_id = req.trace_id,
+            .span_id = req.span_id,
+        });
+        maybeRead();
+    }
+
+    auto TcpConnection::checkAuth(const Request& req, std::string_view auth_token, OpcodeClass cls)
+        -> bool {
+        const bool client_auth_enabled = !client_shared_secret_.empty();
+        // Node authentication — validate auth token on internal opcodes when a
+        // shared_secret is configured. Client opcodes (Get/Set/Del/Ping)
+        // require the client credential only when client auth is enabled.
+        if (cls == OpcodeClass::Replication && !shared_secret_.empty()) {
+            if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
+                denyRequest(req);
+                return false;
+            }
+        } else if (cls == OpcodeClass::Admin) {
+            if (client_auth_enabled) {
+                if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
+                    denyRequest(req);
+                    return false;
+                }
+            } else if (!shared_secret_.empty()) {
+                if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
+                    denyRequest(req);
+                    return false;
+                }
+            }
+        } else if (client_auth_enabled) {
+            // All remaining opcodes are client-facing (Get/GetVersioned/Set/Del/Ping).
+            if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
+                denyRequest(req);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    auto TcpConnection::checkWriteOwnership(const Request& req) -> bool {
+        // Reads are served from the local store when present — a replica holds a
+        // copy and can keep serving reads after the primary fails (failover read).
+        // Ownership only matters for writes and for read misses (redirect the
+        // client to the ring owner).
+        bool is_read = req.opcode == Opcode::Get || req.opcode == Opcode::GetVersioned;
+        if (req.opcode == Opcode::Ping || is_read) {
+            return true;
+        }
+
+        auto owner = ring_.getNode(req.key);
+        if (owner == node_id_) {
+            return true;
+        }
+
+        CINDER_DEBUG("redirect", {"key", req.key}, {"to", owner});
+        sendRedirect(owner, req.trace_id, req.span_id);
+        maybeRead();
+        return false;
+    }
+
+    void TcpConnection::sendRedirect(const NodeId& owner, uint64_t trace_id, uint64_t span_id) {
+        if (metrics_) {
+            metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        sendResponse({
+            .status = Errc::NotReady,
+            .value = redirectValue(owner),
+            .trace_id = trace_id,
+            .span_id = span_id,
+        });
+    }
+
     void TcpConnection::handleRequest(const Request& req, std::string_view auth_token) {
         // Entire request-handling chain (including the AntiEntropyManager
         // callbacks, which respond synchronously) runs here. All of
@@ -443,477 +618,21 @@ namespace cinder::net {
             {"key", req.key}
         );
 
-        if (metrics_) {
-            switch (req.opcode) {
-                case Opcode::Get:
-                    metrics_->opcodeMetrics().client.gets.fetchAdd(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::Set:
-                    metrics_->opcodeMetrics().client.sets.fetchAdd(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::Del:
-                    metrics_->opcodeMetrics().client.dels.fetchAdd(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::Ping:
-                    metrics_->opcodeMetrics().client.pings.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::Replicate:
-                    metrics_->opcodeMetrics().repl.replicates.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                case Opcode::Hint:
-                    metrics_->opcodeMetrics().repl.hints.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::GetVersioned:
-                    metrics_->opcodeMetrics().repl.gets_versioned.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                case Opcode::AntiEntropyDigest:
-                    metrics_->opcodeMetrics().repl.anti_entropy_digest.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                case Opcode::AntiEntropySync:
-                    metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                case Opcode::AdminInfo:
-                    metrics_->opcodeMetrics().admin.info.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::AdminCluster:
-                    metrics_->opcodeMetrics().admin.cluster.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::AdminRing:
-                    metrics_->opcodeMetrics().admin.ring.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::AdminCompact:
-                    metrics_->opcodeMetrics().admin.compact.fetch_add(1, std::memory_order_relaxed);
-                    break;
-                case Opcode::AdminConfigReload:
-                    metrics_->opcodeMetrics().admin.config_reload.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                case Opcode::AdminShutdown:
-                    metrics_->opcodeMetrics().admin.shutdown.fetch_add(
-                        1,
-                        std::memory_order_relaxed
-                    );
-                    break;
-                default:
-                    break;
-            }
-        }
-
+        recordOpcodeMetric(req.opcode);
         // Replicate/Hint/Gossip/AntiEntropy*/Admin* are inter-node or admin messages
         // addressed to this node directly — skip the ring ownership check.
-        bool is_replication = req.opcode
-            == Opcode::Replicate
-            || req.opcode
-            == Opcode::Hint
-            || req.opcode
-            == Opcode::Gossip
-            || req.opcode
-            == Opcode::AntiEntropyDigest
-            || req.opcode
-            == Opcode::AntiEntropySync;
-        bool is_admin = req.opcode
-            == Opcode::AdminInfo
-            || req.opcode
-            == Opcode::AdminCluster
-            || req.opcode
-            == Opcode::AdminRing
-            || req.opcode
-            == Opcode::AdminCompact
-            || req.opcode
-            == Opcode::AdminConfigReload
-            || req.opcode
-            == Opcode::AdminShutdown;
-        bool is_internal = is_replication || is_admin;
-
-        auto deny = [this, &req] {
-            CINDER_WARN(
-                "auth failed",
-                {"opcode", static_cast<int>(req.opcode)},
-                {"node", node_id_}
-            );
-            if (metrics_) {
-                metrics_->connectionMetrics().connections_closed.fetch_add(
-                    1,
-                    std::memory_order_relaxed
-                );
-            }
-
-            // Status-only: a value body here would surface as fake data
-            // through CacheClient::get(), which returns res.value directly.
-            // Denials still echo the request trace so the caller can correlate.
-            sendResponse({
-                .status = Errc::PermissionDenied,
-                .value = std::nullopt,
-                .trace_id = req.trace_id,
-                .span_id = req.span_id,
-            });
-            maybeRead();
-        };
-
-        const bool client_auth_enabled = !client_shared_secret_.empty();
-        // Node authentication — validate auth token on internal opcodes when a
-        // shared_secret is configured. Client opcodes (Get/Set/Del/Ping)
-        // require the client credential only when client auth is enabled.
-        if (is_replication && !shared_secret_.empty()) {
-            if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
-                deny();
-                return;
-            }
-        } else if (is_admin) {
-            if (client_auth_enabled) {
-                if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
-                    deny();
-                    return;
-                }
-            } else if (!shared_secret_.empty()) {
-                if (!verifyAuthToken(shared_secret_, std::string(node_id_), auth_token)) {
-                    deny();
-                    return;
-                }
-            }
-        } else if (client_auth_enabled) {
-            // All remaining opcodes are client-facing (Get/GetVersioned/Set/Del/Ping).
-            if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
-                deny();
-                return;
-            }
+        const auto cls = classifyOpcode(req.opcode);
+        const bool is_internal = cls != OpcodeClass::Client;
+        if (!checkAuth(req, auth_token, cls)) {
+            return;
         }
-
-        // Reads are served from the local store when present — a replica holds a
-        // copy and can keep serving reads after the primary fails (failover read).
-        // Ownership only matters for writes and for read misses (redirect the
-        // client to the ring owner).
-        bool is_read = req.opcode == Opcode::Get || req.opcode == Opcode::GetVersioned;
-        if (!is_internal && req.opcode != Opcode::Ping && !is_read) {
-            auto owner = ring_.getNode(req.key);
-            if (owner != node_id_) {
-                CINDER_DEBUG("redirect", {"key", req.key}, {"to", owner});
-                if (metrics_) {
-                    metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
-                }
-
-                sendResponse({
-                    .status = Errc::NotReady,
-                    .value = redirectValue(owner),
-                    .trace_id = req.trace_id,
-                    .span_id = req.span_id,
-                });
-
-                maybeRead();
-                return;
-            }
+        if (cls == OpcodeClass::Client && !checkWriteOwnership(req)) {
+            return;
         }
 
         Response res;
-        switch (req.opcode) {
-            case Opcode::Get: {
-                if (!is_internal) {
-                    auto self = shared_from_this();
-                    auto trace_id = req.trace_id;
-                    auto span_id = req.span_id;
-                    const bool quorum_read = replica_factor_ > 1 && repl_ != nullptr;
-                    if (quorum_read) {
-                        ring_.incrementLoad(node_id_);
-                    }
-
-                    operations_.getAsync(
-                        req.key,
-                        [this, self, key = req.key, trace_id, span_id, quorum_read](
-                            Result<std::string> result
-                        ) {
-                        if (quorum_read) {
-                            ring_.decrementLoad(node_id_);
-                        }
-                        // Operation completion may be inline or on the
-                        // replication completion executor. Marshal to the
-                        // connection strand before touching its state.
-                        asio::post(
-                            strand_,
-                            [this,
-                             self,
-                             key,
-                             result = std::move(result),
-                             trace_id,
-                             span_id,
-                             quorum_read] mutable {
-                            Span async_span(
-                                quorum_read ? "replication.read.quorum" : "tcp.get.local",
-                                SpanContext{trace_id, span_id}
-                            );
-
-                            Response async_res;
-                            if (result.has_value()) {
-                                async_res.status = Errc::OK;
-                                async_res.value = std::move(*result);
-                            } else if (
-                                result.error().code()
-                                == Errc::NotFound
-                                && !quorum_read
-                                && ring_.getNode(key)
-                                != node_id_
-                            ) {
-                                const auto owner = ring_.getNode(key);
-                                async_res.status = Errc::NotReady;
-                                async_res.value = redirectValue(owner);
-                                if (metrics_) {
-                                    metrics_->connectionMetrics().redirects.fetch_add(
-                                        1,
-                                        std::memory_order_relaxed
-                                    );
-                                }
-                            } else {
-                                async_res.status = result.error().code();
-                            }
-
-                            async_res.trace_id = trace_id;
-                            async_res.span_id = span_id;
-                            sendResponse(async_res);
-                            maybeRead();
-                        }
-                        );
-                    },
-                        trace_id,
-                        span_id
-                    );
-                    return;
-                }
-
-                auto val = store_.get(req.key);
-                if (val.has_value()) {
-                    res.status = Errc::OK;
-                    res.value = std::move(val);
-                } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
-                    sendResponse({
-                        .status = Errc::NotReady,
-                        .value = redirectValue(ring_.getNode(req.key)),
-                        .trace_id = req.trace_id,
-                        .span_id = req.span_id,
-                    });
-
-                    maybeRead();
-                    return;
-                } else {
-                    res.status = Errc::NotFound;
-                }
-                break;
-            }
-            case Opcode::GetVersioned: {
-                auto entry = store_.getVersioned(req.key);
-                if (entry.has_value()) {
-                    res.status = Errc::OK;
-                    // Tombstones carry identity, not data: omit the value
-                    // but report the marker so quorum votes and repair see
-                    // the delete. Absent keys stay NotFound.
-                    if (!entry->isTombstone()) {
-                        res.value = std::move(entry->value);
-                    }
-
-                    res.version = entry->version();
-                    res.writer_node_hash = entry->writer_node_hash;
-                    res.tombstone = entry->isTombstone();
-                    if (entry->hasTtl()) {
-                        res.expires_at = toSystemExpiry(clock_, entry->expires_at);
-                    }
-                } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
-                    sendResponse({
-                        .status = Errc::NotReady,
-                        .value = redirectValue(ring_.getNode(req.key)),
-                        .trace_id = req.trace_id,
-                        .span_id = req.span_id,
-                    });
-
-                    maybeRead();
-                    return;
-                } else {
-                    res.status = Errc::NotFound;
-                }
-                break;
-            }
-            case Opcode::Set: {
-                ring_.incrementLoad(node_id_);
-                auto self = shared_from_this();
-                auto trace_id = req.trace_id;
-                auto span_id = req.span_id;
-                const bool replicated_write = replica_factor_ > 1 && repl_ != nullptr;
-                operations_.setAsync(
-                    req.key,
-                    req.value,
-                    req.ttl,
-                    [this, self, key = req.key, replicated_write, trace_id, span_id](
-                        Result<void> result
-                    ) {
-                    onWriteComplete(
-                        self,
-                        key,
-                        Opcode::Set,
-                        replicated_write,
-                        trace_id,
-                        span_id,
-                        std::move(result)
-                    );
-                },
-                    trace_id,
-                    span_id
-                );
-                return; // response is sent on the connection strand
-            }
-            case Opcode::Del: {
-                ring_.incrementLoad(node_id_);
-                auto self = shared_from_this();
-                auto trace_id = req.trace_id;
-                auto span_id = req.span_id;
-                const bool replicated_delete = replica_factor_ > 1 && repl_ != nullptr;
-                operations_.deleteAsync(
-                    req.key,
-                    [this, self, key = req.key, replicated_delete, trace_id, span_id](
-                        Result<void> result
-                    ) {
-                    onWriteComplete(
-                        self,
-                        key,
-                        Opcode::Del,
-                        replicated_delete,
-                        trace_id,
-                        span_id,
-                        std::move(result)
-                    );
-                },
-                    trace_id,
-                    span_id
-                );
-                return; // response is sent on the connection strand
-            }
-            case Opcode::Ping: {
-                res.status = Errc::OK;
-                break;
-            }
-            case Opcode::Replicate:
-            case Opcode::Hint: {
-                VersionedEntry entry;
-                entry.value = req.value;
-                entry.setVersion(req.version);
-                entry.writer_node_hash = req.writer_node_hash;
-                // Apply the primary's absolute wall-clock expiry on the local steady
-                // basis, so all replicas expire the key at the same instant.
-                // Tombstone GC deadlines ride the same field: the sender's
-                // deadline converges the reap time across replicas.
-                if (req.expires_at.has_value()) {
-                    entry.expires_at = toSteadyExpiry(clock_, *req.expires_at);
-                    entry.setHasTtl(true);
-                }
-                if (req.tombstone) {
-                    entry.setTombstone(true);
-                    if (!req.expires_at.has_value()) {
-                        // No sender deadline (hand-rolled peer or old sender):
-                        // fall back to a locally-computed GC deadline via the
-                        // versioned remove path, preserving the sender's
-                        // (version, writer) for LWW.
-                        auto del_res =
-                            store_.removeVersioned(req.key, req.version, req.writer_node_hash);
-                        res.status = del_res.has_value() ? Errc::OK : del_res.error().code();
-                        break;
-                    }
-                }
-
-                auto result = store_.putVersioned(req.key, std::move(entry));
-                res.status = result.has_value() ? Errc::OK : result.error().code();
-                break;
-            }
-            case Opcode::Gossip: {
-                if (gossip_ != nullptr) {
-                    // Sender identity is best-effort: the connection knows only its
-                    // own node_id_; the sender's entry is always inside the payload.
-                    gossip_->handleMessage(std::string(node_id_), req);
-                }
-
-                res.status = Errc::OK;
-                break;
-            }
-            case Opcode::AntiEntropyDigest: {
-                if (anti_entropy_ != nullptr) {
-                    // Sender identity is best-effort (same as gossip); used only
-                    // for logging inside the anti-entropy manager.
-                    auto respond = [this](const Response& r) {
-                        sendResponse(r);
-                        maybeRead();
-                    };
-                    if (req.key == "bucket-refinement-v3") {
-                        anti_entropy_->onBucketRefinement(std::string(node_id_), req, respond);
-                    } else {
-                        anti_entropy_->onDigestRequest(std::string(node_id_), req, respond);
-                    }
-                    return;
-                }
-
-                res.status = Errc::OK;
-                break;
-            }
-            case Opcode::AntiEntropySync: {
-                if (anti_entropy_ != nullptr) {
-                    anti_entropy_
-                        ->onSyncRequest(std::string(node_id_), req, [this](const Response& r) {
-                        sendResponse(r);
-                        maybeRead();
-                    });
-                    return;
-                }
-
-                res.status = Errc::OK;
-                break;
-            }
-            case Opcode::AdminInfo: {
-                if (admin_ && admin_->info_getter) {
-                    res.value = admin_->info_getter();
-                }
-                break;
-            }
-            case Opcode::AdminCluster: {
-                if (admin_ && admin_->cluster_getter) {
-                    res.value = admin_->cluster_getter();
-                }
-                break;
-            }
-            case Opcode::AdminRing: {
-                if (admin_ && admin_->ring_getter) {
-                    res.value = admin_->ring_getter();
-                }
-                break;
-            }
-            case Opcode::AdminCompact: {
-                if (admin_ && admin_->compact_trigger) {
-                    admin_->compact_trigger();
-                }
-                break;
-            }
-            case Opcode::AdminConfigReload: {
-                if (admin_ && admin_->config_reload_trigger) {
-                    admin_->config_reload_trigger();
-                }
-                break;
-            }
-            case Opcode::AdminShutdown: {
-                if (admin_ && admin_->shutdown_trigger) {
-                    admin_->shutdown_trigger();
-                }
-                break;
-            }
-            default: {
-                std::unreachable();
-            }
+        if (dispatchRequest(req, res, is_internal)) {
+            return;
         }
 
         // Echo trace context back to the client for correlation.
@@ -921,6 +640,328 @@ namespace cinder::net {
         res.span_id = req.span_id;
         sendResponse(res);
         maybeRead();
+    }
+
+    auto TcpConnection::dispatchRequest(const Request& req, Response& res, bool is_internal)
+        -> bool {
+        switch (req.opcode) {
+            case Opcode::Get:
+                handleGet(req, res, is_internal);
+                return true;
+            case Opcode::GetVersioned:
+                return handleGetVersioned(req, res, is_internal);
+            case Opcode::Set:
+                handleSet(req);
+                return true;
+            case Opcode::Del:
+                handleDelete(req);
+                return true;
+            case Opcode::Ping:
+                res.status = Errc::OK;
+                return false;
+            case Opcode::Replicate:
+            case Opcode::Hint:
+                handleReplicate(req, res);
+                return false;
+            case Opcode::Gossip:
+                handleGossip(req, res);
+                return false;
+            case Opcode::AntiEntropyDigest:
+                return handleAntiEntropyDigest(req);
+            case Opcode::AntiEntropySync:
+                return handleAntiEntropySync(req);
+            case Opcode::AdminInfo:
+            case Opcode::AdminCluster:
+            case Opcode::AdminRing:
+            case Opcode::AdminCompact:
+            case Opcode::AdminConfigReload:
+            case Opcode::AdminShutdown:
+                handleAdmin(req, res);
+                return false;
+            default: {
+                std::unreachable();
+            }
+        }
+        std::unreachable();
+    }
+
+    void TcpConnection::handleGet(const Request& req, Response& res, bool is_internal) {
+        if (!is_internal) {
+            auto self = shared_from_this();
+            auto trace_id = req.trace_id;
+            auto span_id = req.span_id;
+            const bool quorum_read = replica_factor_ > 1 && repl_ != nullptr;
+            if (quorum_read) {
+                ring_.incrementLoad(node_id_);
+            }
+
+            operations_.getAsync(
+                req.key,
+                [this, self, key = req.key, trace_id, span_id, quorum_read](
+                    Result<std::string> result
+                ) {
+                if (quorum_read) {
+                    ring_.decrementLoad(node_id_);
+                }
+                // Operation completion may be inline or on the
+                // replication completion executor. Marshal to the
+                // connection strand before touching its state.
+                asio::post(
+                    strand_,
+                    [this,
+                     self,
+                     key,
+                     result = std::move(result),
+                     trace_id,
+                     span_id,
+                     quorum_read] mutable {
+                    Span async_span(
+                        quorum_read ? "replication.read.quorum" : "tcp.get.local",
+                        SpanContext{trace_id, span_id}
+                    );
+
+                    Response async_res;
+                    if (result.has_value()) {
+                        async_res.status = Errc::OK;
+                        async_res.value = std::move(*result);
+                    } else if (
+                        result.error().code()
+                        == Errc::NotFound
+                        && !quorum_read
+                        && ring_.getNode(key)
+                        != node_id_
+                    ) {
+                        const auto owner = ring_.getNode(key);
+                        async_res.value = redirectValue(owner);
+                        async_res.status = Errc::NotReady;
+                        if (metrics_) {
+                            metrics_->connectionMetrics().redirects.fetch_add(
+                                1,
+                                std::memory_order_relaxed
+                            );
+                        }
+                    } else {
+                        async_res.status = result.error().code();
+                    }
+
+                    async_res.trace_id = trace_id;
+                    async_res.span_id = span_id;
+                    sendResponse(async_res);
+                    maybeRead();
+                }
+                );
+            },
+                trace_id,
+                span_id
+            );
+            return;
+        }
+
+        auto val = store_.get(req.key);
+        if (val.has_value()) {
+            res.status = Errc::OK;
+            res.value = std::move(val);
+        } else if (!is_internal && ring_.getNode(req.key) != node_id_) {
+            sendRedirect(ring_.getNode(req.key), req.trace_id, req.span_id);
+            maybeRead();
+            return;
+        } else {
+            res.status = Errc::NotFound;
+        }
+
+        res.trace_id = req.trace_id;
+        res.span_id = req.span_id;
+        sendResponse(res);
+        maybeRead();
+    }
+
+    auto TcpConnection::handleGetVersioned(const Request& req, Response& res, bool is_internal)
+        -> bool {
+        auto entry = store_.getVersioned(req.key);
+        if (entry.has_value()) {
+            res.status = Errc::OK;
+            // Tombstones carry identity, not data: omit the value
+            // but report the marker so quorum votes and repair see
+            // the delete. Absent keys stay NotFound.
+            if (!entry->isTombstone()) {
+                res.value = std::move(entry->value);
+            }
+
+            res.version = entry->version();
+            res.writer_node_hash = entry->writer_node_hash;
+            res.tombstone = entry->isTombstone();
+            if (entry->hasTtl()) {
+                res.expires_at = toSystemExpiry(clock_, entry->expires_at);
+            }
+            return false;
+        }
+        if (!is_internal && ring_.getNode(req.key) != node_id_) {
+            sendRedirect(ring_.getNode(req.key), req.trace_id, req.span_id);
+            maybeRead();
+            return true;
+        }
+
+        res.status = Errc::NotFound;
+        return false;
+    }
+
+    void TcpConnection::handleSet(const Request& req) {
+        ring_.incrementLoad(node_id_);
+        auto self = shared_from_this();
+        auto trace_id = req.trace_id;
+        auto span_id = req.span_id;
+        const bool replicated_write = replica_factor_ > 1 && repl_ != nullptr;
+        operations_.setAsync(
+            req.key,
+            req.value,
+            req.ttl,
+            [this, self, key = req.key, replicated_write, trace_id, span_id](Result<void> result) {
+            onWriteComplete(
+                self,
+                key,
+                Opcode::Set,
+                replicated_write,
+                trace_id,
+                span_id,
+                std::move(result)
+            );
+        },
+            trace_id,
+            span_id
+        );
+        // response is sent on the connection strand
+    }
+
+    void TcpConnection::handleDelete(const Request& req) {
+        ring_.incrementLoad(node_id_);
+        auto self = shared_from_this();
+        auto trace_id = req.trace_id;
+        auto span_id = req.span_id;
+        const bool replicated_delete = replica_factor_ > 1 && repl_ != nullptr;
+        operations_.deleteAsync(
+            req.key,
+            [this, self, key = req.key, replicated_delete, trace_id, span_id](Result<void> result) {
+            onWriteComplete(
+                self,
+                key,
+                Opcode::Del,
+                replicated_delete,
+                trace_id,
+                span_id,
+                std::move(result)
+            );
+        },
+            trace_id,
+            span_id
+        );
+        // response is sent on the connection strand
+    }
+
+    void TcpConnection::handleReplicate(const Request& req, Response& res) {
+        VersionedEntry entry;
+        entry.value = req.value;
+        entry.setVersion(req.version);
+        entry.writer_node_hash = req.writer_node_hash;
+        // Apply the primary's absolute wall-clock expiry on the local steady
+        // basis, so all replicas expire the key at the same instant.
+        // Tombstone GC deadlines ride the same field: the sender's
+        // deadline converges the reap time across replicas.
+        if (req.expires_at.has_value()) {
+            entry.expires_at = toSteadyExpiry(clock_, *req.expires_at);
+            entry.setHasTtl(true);
+        }
+        if (req.tombstone) {
+            entry.setTombstone(true);
+            if (!req.expires_at.has_value()) {
+                // No sender deadline (hand-rolled peer or old sender):
+                // fall back to a locally-computed GC deadline via the
+                // versioned remove path, preserving the sender's
+                // (version, writer) for LWW.
+                auto del_res = store_.removeVersioned(req.key, req.version, req.writer_node_hash);
+                res.status = del_res.has_value() ? Errc::OK : del_res.error().code();
+                return;
+            }
+        }
+
+        auto result = store_.putVersioned(req.key, std::move(entry));
+        res.status = result.has_value() ? Errc::OK : result.error().code();
+    }
+
+    void TcpConnection::handleGossip(const Request& req, Response& res) {
+        if (gossip_ != nullptr) {
+            // Sender identity is best-effort: the connection knows only its
+            // own node_id_; the sender's entry is always inside the payload.
+            gossip_->handleMessage(std::string(node_id_), req);
+        }
+        res.status = Errc::OK;
+    }
+
+    auto TcpConnection::handleAntiEntropyDigest(const Request& req) -> bool {
+        if (anti_entropy_ == nullptr) {
+            return false;
+        }
+
+        // Sender identity is best-effort (same as gossip); used only
+        // for logging inside the anti-entropy manager.
+        auto respond = [this](const Response& r) {
+            sendResponse(r);
+            maybeRead();
+        };
+        if (req.key == "bucket-refinement-v3") {
+            anti_entropy_->onBucketRefinement(std::string(node_id_), req, respond);
+        } else {
+            anti_entropy_->onDigestRequest(std::string(node_id_), req, respond);
+        }
+        return true;
+    }
+
+    auto TcpConnection::handleAntiEntropySync(const Request& req) -> bool {
+        if (anti_entropy_ == nullptr) {
+            return false;
+        }
+
+        anti_entropy_->onSyncRequest(std::string(node_id_), req, [this](const Response& r) {
+            sendResponse(r);
+            maybeRead();
+        });
+        return true;
+    }
+
+    void TcpConnection::handleAdmin(const Request& req, Response& res) {
+        switch (req.opcode) {
+            case Opcode::AdminInfo:
+                if (admin_ && admin_->info_getter) {
+                    res.value = admin_->info_getter();
+                }
+                break;
+            case Opcode::AdminCluster:
+                if (admin_ && admin_->cluster_getter) {
+                    res.value = admin_->cluster_getter();
+                }
+                break;
+            case Opcode::AdminRing:
+                if (admin_ && admin_->ring_getter) {
+                    res.value = admin_->ring_getter();
+                }
+                break;
+            case Opcode::AdminCompact:
+                if (admin_ && admin_->compact_trigger) {
+                    admin_->compact_trigger();
+                }
+                break;
+            case Opcode::AdminConfigReload:
+                if (admin_ && admin_->config_reload_trigger) {
+                    admin_->config_reload_trigger();
+                }
+                break;
+            case Opcode::AdminShutdown:
+                if (admin_ && admin_->shutdown_trigger) {
+                    admin_->shutdown_trigger();
+                }
+                break;
+            default:
+                break;
+        }
     }
 
     void TcpConnection::onWriteComplete(
@@ -944,7 +985,7 @@ namespace cinder::net {
              replicated,
              trace_id,
              span_id,
-             result = std::move(result)]() mutable {
+             result = std::move(result)] mutable {
             const bool is_set = opcode == Opcode::Set;
             Span async_span(
                 replicated ? (is_set ? "replication.write.quorum" : "replication.delete.quorum")

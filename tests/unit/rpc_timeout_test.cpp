@@ -73,11 +73,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
 
             TcpTransport transport(io);
             transport.setConfig(config);
@@ -104,8 +104,8 @@ namespace cinder {
 
             io_context io;
             tcp::acceptor acceptor(io);
-            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
-            ASSERT_NE(K_PORT, 0);
+            const uint16_t k_port = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(k_port, 0);
 
             // Server loop: accept, read request, send a valid response.
             std::function<void()> do_accept;
@@ -132,7 +132,7 @@ namespace cinder {
             do_accept();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
 
             TcpTransport transport(io);
             transport.setConfig(config);
@@ -160,11 +160,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
 
             ConnectionPool pool(config, io);
@@ -190,11 +190,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
 
             ConnectionPool pool(config, io);
@@ -221,8 +221,8 @@ namespace cinder {
 
             io_context io;
             tcp::acceptor acceptor(io);
-            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
-            ASSERT_NE(K_PORT, 0);
+            const uint16_t k_port = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(k_port, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {
@@ -247,7 +247,7 @@ namespace cinder {
             do_accept();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = 0;
 
             ConnectionPool pool(config, io);
@@ -313,11 +313,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
 
             ConnectionPool pool(config, io);
@@ -363,8 +363,8 @@ namespace cinder {
         TEST(PoolRpcTimeout, SuccessMarksSpanOk) {
             io_context io;
             tcp::acceptor acceptor(io);
-            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
-            ASSERT_NE(K_PORT, 0);
+            const uint16_t k_port = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(k_port, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {
@@ -389,7 +389,7 @@ namespace cinder {
             do_accept();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = 5000;
 
             ConnectionPool pool(config, io);
@@ -432,11 +432,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
             config.rpc_timeout_ms = static_cast<int>(K_TIMEOUT.count());
 
             ConnectionPool pool(config, io);
@@ -471,11 +471,11 @@ namespace cinder {
             io_context io;
             BlackHoleServer server(io);
             ASSERT_NE(server.port(), 0);
-            const uint16_t K_PORT = server.port();
+            const uint16_t k_port = server.port();
             server.start();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
 
             TcpTransport transport(io);
             transport.setConfig(config);
@@ -507,8 +507,8 @@ namespace cinder {
         TEST(RpcTimeout, SuccessMarksSpanOk) {
             io_context io;
             tcp::acceptor acceptor(io);
-            const uint16_t K_PORT = net::test::bindEphemeral(acceptor);
-            ASSERT_NE(K_PORT, 0);
+            const uint16_t k_port = net::test::bindEphemeral(acceptor);
+            ASSERT_NE(k_port, 0);
 
             std::function<void()> do_accept;
             do_accept = [&] {
@@ -533,7 +533,7 @@ namespace cinder {
             do_accept();
 
             ClusterConfig config;
-            config.nodes.push_back({"node1", "127.0.0.1", K_PORT});
+            config.nodes.push_back({"node1", "127.0.0.1", k_port});
 
             TcpTransport transport(io);
             transport.setConfig(config);

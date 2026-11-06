@@ -158,6 +158,25 @@ namespace cinder {
         // response, so every error path goes through here.
         static void closeConn(const std::shared_ptr<NodeConn>& conn);
 
+        // Cancels the in-flight socket operation (deadline watchdog).
+        static void cancelConn(const std::shared_ptr<NodeConn>& conn);
+
+        // (Re)connects the socket, running the TLS handshake when an SSL
+        // context is configured. Returns the first error, or success — the
+        // caller closes the connection and reports it on failure.
+        auto connectConn(
+            const std::shared_ptr<NodeConn>& conn,
+            const tcp::resolver::results_type& endpoints
+        ) -> asio::awaitable<std::error_code>;
+
+        // Single write/read on whichever transport the connection uses (TLS
+        // stream when established, plain socket otherwise). Returns the op's
+        // error, if any.
+        auto writeConn(const std::shared_ptr<NodeConn>& conn, asio::const_buffer buf)
+            -> asio::awaitable<std::error_code>;
+        auto readConn(const std::shared_ptr<NodeConn>& conn, asio::mutable_buffer buf)
+            -> asio::awaitable<std::error_code>;
+
         // Batch coroutine: write all requests, read all responses.
         auto sendBatchCoroutine(
             std::shared_ptr<NodeConn> conn,

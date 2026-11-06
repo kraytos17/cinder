@@ -745,7 +745,7 @@ namespace cinder {
             auto found = sub->find(id);
             ASSERT_TRUE(found.has_value());
             ASSERT_EQ(found->attributes.size(), 5);
-            auto byKey = [&](std::string_view key) -> const RecordingSubscriber::RecordedField* {
+            auto by_key = [&](std::string_view key) -> const RecordingSubscriber::RecordedField* {
                 for (const auto& a : found->attributes) {
                     if (a.key == key) {
                         return &a;
@@ -753,19 +753,19 @@ namespace cinder {
                 }
                 return nullptr;
             };
-            const auto* op = byKey("opcode");
+            const auto* op = by_key("opcode");
             ASSERT_NE(op, nullptr);
             EXPECT_EQ(op->type, FieldValue::Type::Str);
             EXPECT_EQ(op->str_val, "GET");
-            const auto* acks = byKey("acks");
+            const auto* acks = by_key("acks");
             ASSERT_NE(acks, nullptr);
             EXPECT_EQ(acks->type, FieldValue::Type::Int);
             EXPECT_EQ(acks->int_val, 3);
-            const auto* needed = byKey("needed");
+            const auto* needed = by_key("needed");
             ASSERT_NE(needed, nullptr);
             EXPECT_EQ(needed->type, FieldValue::Type::UInt);
             EXPECT_EQ(needed->uint_val, 2U);
-            const auto* hit = byKey("hit");
+            const auto* hit = by_key("hit");
             ASSERT_NE(hit, nullptr);
             EXPECT_EQ(hit->type, FieldValue::Type::Bool);
             EXPECT_TRUE(hit->bool_val);

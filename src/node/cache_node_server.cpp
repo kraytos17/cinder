@@ -438,16 +438,33 @@ namespace cinder {
         return timer_run_.fetch_add(1, std::memory_order_relaxed) + 1;
     }
 
-    void CacheNodeServer::scheduleReplay() {
-        timers_.replay.expires_after(seconds(1));
-        timers_.replay.async_wait([this](std::error_code ec) {
+    void CacheNodeServer::armTimer(
+        steady_timer& timer,
+        steady_timer::duration interval,
+        std::string_view span_name,
+        std::function<SpanStatus(Span&)> body
+    ) {
+        timer.expires_after(interval);
+        timer.async_wait([this,
+                          &timer,
+                          interval,
+                          name = std::string(span_name),
+                          body = std::move(body)](std::error_code ec) mutable {
             if (ec) {
                 return;
             }
 
-            // Run root (see scheduleEvict): fresh trace per firing.
-            Span span("timer.replay", SpanContext{});
+            // Run root (see scheduleEvict): the timer fires on an io thread
+            // with unrelated TLS, so mint a fresh trace for this pass.
+            Span span(name, SpanContext{});
             span.setAttribute({"run", nextTimerRun()});
+            span.setStatus(body(span));
+            armTimer(timer, interval, name, std::move(body));
+        });
+    }
+
+    void CacheNodeServer::scheduleReplay() {
+        armTimer(timers_.replay, seconds(1), "timer.replay", [this](Span&) {
             if (repl_.hintCount() > 0) {
                 repl_.replayHints([](size_t replayed) {
                     if (replayed > 0) {
@@ -455,53 +472,26 @@ namespace cinder {
                     }
                 });
             }
-
-            span.setStatus(SpanStatus::Ok);
-            scheduleReplay();
+            return SpanStatus::Ok;
         });
     }
 
     void CacheNodeServer::scheduleGossip() {
-        timers_.gossip.expires_after(gossip_.gossipInterval());
-        timers_.gossip.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            Span span("timer.gossip", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(timers_.gossip, gossip_.gossipInterval(), "timer.gossip", [this](Span&) {
             gossip_.tick();
-            span.setStatus(SpanStatus::Ok);
-            scheduleGossip();
+            return SpanStatus::Ok;
         });
     }
 
     void CacheNodeServer::scheduleProbe() {
-        timers_.probe.expires_after(ping_interval_);
-        timers_.probe.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            Span span("timer.probe", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(timers_.probe, ping_interval_, "timer.probe", [this](Span&) {
             detector_.tick();
-            span.setStatus(SpanStatus::Ok);
-            scheduleProbe();
+            return SpanStatus::Ok;
         });
     }
 
     void CacheNodeServer::scheduleEvict() {
-        timers_.evict.expires_after(seconds(1));
-        timers_.evict.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            // Run root: the timer fires on an io thread with unrelated TLS,
-            // so join nothing ambient — mint a fresh trace for this pass.
-            Span span("timer.evict", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(timers_.evict, seconds(1), "timer.evict", [this](Span&) {
             store_->evictExpired();
             // Steady-state WAL drain (batched, ~1s cadence): bounds the
             // pending queue (and the crash-loss window) between periodic
@@ -513,8 +503,7 @@ namespace cinder {
                     scheduleCompactDebounced();
                 }
             }
-            span.setStatus(SpanStatus::Ok);
-            scheduleEvict();
+            return SpanStatus::Ok;
         });
     }
 
@@ -633,22 +622,18 @@ namespace cinder {
     }
 
     void CacheNodeServer::scheduleCompact() {
-        timers_.compact.expires_after(seconds(persistence_.snapshotInterval()));
-        timers_.compact.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            Span span("timer.compact", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(
+            timers_.compact,
+            seconds(persistence_.snapshotInterval()),
+            "timer.compact",
+            [this](Span&) {
             if (auto result = persistence_.compact(); !result.has_value()) {
                 CINDER_ERROR("compact failed", {"reason", result.error().message()});
-                span.setStatus(SpanStatus::Error);
-            } else {
-                span.setStatus(SpanStatus::Ok);
+                return SpanStatus::Error;
             }
-            scheduleCompact();
-        });
+            return SpanStatus::Ok;
+        }
+        );
     }
 
     void CacheNodeServer::scheduleCompactDebounced() {
@@ -679,14 +664,11 @@ namespace cinder {
             return;
         }
 
-        timers_.anti_entropy.expires_after(anti_entropy_interval_.load());
-        timers_.anti_entropy.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            Span span("timer.anti_entropy", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(
+            timers_.anti_entropy,
+            anti_entropy_interval_.load(),
+            "timer.anti_entropy",
+            [this](Span& span) {
             // Skip background repair while the cluster view is degraded: with
             // fewer than a majority visible, partner selection may flap and
             // repair against stale membership.
@@ -696,24 +678,15 @@ namespace cinder {
                 span.setAttribute({"outcome", "skipped"});
                 span.setAttribute({"reason", "degraded-view"});
             }
-
-            span.setStatus(SpanStatus::Ok);
-            scheduleAntiEntropy();
-        });
+            return SpanStatus::Ok;
+        }
+        );
     }
 
     void CacheNodeServer::scheduleConfigReload() {
-        timers_.config_reload.expires_after(seconds(5));
-        timers_.config_reload.async_wait([this](std::error_code ec) {
-            if (ec) {
-                return;
-            }
-
-            Span span("timer.config_reload", SpanContext{});
-            span.setAttribute({"run", nextTimerRun()});
+        armTimer(timers_.config_reload, seconds(5), "timer.config_reload", [this](Span&) {
             applyConfig();
-            span.setStatus(SpanStatus::Ok);
-            scheduleConfigReload();
+            return SpanStatus::Ok;
         });
     }
 

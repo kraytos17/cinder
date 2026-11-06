@@ -217,6 +217,56 @@ namespace cinder::net {
         void onPayload(std::error_code ec, size_t bytes);
 
         void handleRequest(const Request& req, std::string_view auth_token);
+
+        // Opcode classes: client opcodes are ring-routed, replication and
+        // admin opcodes are addressed to this node directly.
+        enum class OpcodeClass {
+            Client,
+            Replication,
+            Admin,
+        };
+
+        [[nodiscard]]
+        static auto classifyOpcode(Opcode op) -> OpcodeClass;
+
+        void recordOpcodeMetric(Opcode op);
+
+        // Sends PermissionDenied + resumes reading. Callers return immediately.
+        void denyRequest(const Request& req);
+
+        // Auth gate. Returns false (response already sent) on failure.
+        [[nodiscard]]
+        auto checkAuth(const Request& req, std::string_view auth_token, OpcodeClass cls) -> bool;
+
+        // Write ownership pre-check: redirects non-owners. Returns false
+        // (response already sent) when the request must not proceed.
+        [[nodiscard]]
+        auto checkWriteOwnership(const Request& req) -> bool;
+
+        // NotReady + redirect hint. Caller still owns maybeRead().
+        void sendRedirect(const NodeId& owner, uint64_t trace_id, uint64_t span_id);
+
+        // Dispatches to the per-group handlers below. Returns true when the
+        // response was already sent (async or redirect path); false means the
+        // caller must send `res` via the epilogue.
+        [[nodiscard]]
+        auto dispatchRequest(const Request& req, Response& res, bool is_internal) -> bool;
+
+        void handleGet(const Request& req, Response& res, bool is_internal);
+
+        [[nodiscard]]
+        auto handleGetVersioned(const Request& req, Response& res, bool is_internal) -> bool;
+        void handleSet(const Request& req);
+        void handleDelete(const Request& req);
+        void handleReplicate(const Request& req, Response& res);
+        void handleGossip(const Request& req, Response& res);
+
+        [[nodiscard]]
+        auto handleAntiEntropyDigest(const Request& req) -> bool;
+
+        [[nodiscard]]
+        auto handleAntiEntropySync(const Request& req) -> bool;
+        void handleAdmin(const Request& req, Response& res);
         void onWriteComplete(
             std::shared_ptr<TcpConnection> self,
             std::string key,

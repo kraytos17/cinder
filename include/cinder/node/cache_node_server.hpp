@@ -4,10 +4,12 @@
 #include <atomic>
 #include <charconv>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -40,6 +42,8 @@ using asio::steady_timer;
 using std::chrono::milliseconds;
 
 namespace cinder {
+
+    class Span;
 
     struct CacheNodeServerOptions {
         size_t capacity = 0;
@@ -236,6 +240,15 @@ namespace cinder {
         void scheduleReplay();
         void scheduleGossip();
         void scheduleProbe();
+        // Periodic-timer rollout shared by the schedule* methods: on each
+        // firing (sans cancellation) mints a fresh span, applies the status
+        // the body returns, and re-arms. Bodies run on the io_ thread.
+        void armTimer(
+            steady_timer& timer,
+            steady_timer::duration interval,
+            std::string_view span_name,
+            std::function<SpanStatus(Span&)> body
+        );
         // Next timer-run id for span attribution (monotonic per process).
         auto nextTimerRun() -> uint64_t;
         void scheduleEvict();

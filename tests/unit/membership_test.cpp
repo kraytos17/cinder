@@ -147,5 +147,32 @@ namespace cinder {
             // Zero interval disables quarantine.
             EXPECT_FALSE(table.isQuarantined("node2", t0, 0ms));
         }
+
+        // The one refutation case the tests above miss: a well-formed rumor
+        // about ourselves whose claimed incarnation exceeds ours. Accepting
+        // it would drop the node out of its own ring, so it must still be
+        // refuted — and the refutation must beat the claimed incarnation.
+        TEST(MembershipTest, SelfRumorWithHigherIncarnationIsStillRefuted) {
+            MembershipTable table("self");
+            table.seed({{"node2", "127.0.0.1", 7001}});
+
+            auto before = table.get("self");
+            ASSERT_TRUE(before.has_value());
+
+            NodeInfo rumor;
+            rumor.id = "self";
+            rumor.host = "127.0.0.1";
+            rumor.port = 7000;
+            rumor.state = NodeState::Dead;
+            rumor.incarnation = before->incarnation + 100;
+            table.applyRumor("node2", rumor);
+
+            auto after = table.get("self");
+            ASSERT_TRUE(after.has_value());
+            EXPECT_EQ(after->state, NodeState::Alive) << "self must never accept its own death";
+            EXPECT_GT(after->incarnation, rumor.incarnation)
+                << "refuting incarnation must exceed the claimed one, or the rumor "
+                   "re-applies on the next gossip round";
+        }
     } // namespace
 } // namespace cinder

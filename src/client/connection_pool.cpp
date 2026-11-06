@@ -42,6 +42,86 @@ namespace cinder {
         conn->socket.close(ec);
     }
 
+    void ConnectionPool::cancelConn(const std::shared_ptr<NodeConn>& conn) {
+#ifdef CINDER_ENABLE_TLS
+        if (conn->stream) {
+            conn->stream->lowest_layer().cancel();
+        } else {
+            conn->socket.cancel();
+        }
+#else
+        conn->socket.cancel();
+#endif
+    }
+
+    auto ConnectionPool::connectConn(
+        const std::shared_ptr<NodeConn>& conn,
+        const tcp::resolver::results_type& endpoints
+    ) -> asio::awaitable<std::error_code> {
+        std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+        if (ssl_ctx_ != nullptr) {
+            auto ex = co_await asio::this_coro::executor; // NOLINT
+            conn->stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await async_connect(
+                conn->stream->lowest_layer(),
+                endpoints,
+                asio::redirect_error(ec)
+            );
+            if (ec) {
+                co_return ec;
+            }
+
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await conn->stream->async_handshake(
+                asio::ssl::stream_base::client,
+                asio::redirect_error(ec)
+            );
+            co_return ec;
+        }
+#endif
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+        co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
+        co_return ec;
+    }
+
+    auto ConnectionPool::writeConn(const std::shared_ptr<NodeConn>& conn, asio::const_buffer buf)
+        -> asio::awaitable<std::error_code> {
+        std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+        if (conn->stream) {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await async_write(*conn->stream, buf, asio::redirect_error(ec));
+        } else {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await async_write(conn->socket, buf, asio::redirect_error(ec));
+        }
+#else
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+        co_await async_write(conn->socket, buf, asio::redirect_error(ec));
+#endif
+        co_return ec;
+    }
+
+    auto ConnectionPool::readConn(const std::shared_ptr<NodeConn>& conn, asio::mutable_buffer buf)
+        -> asio::awaitable<std::error_code> {
+        std::error_code ec;
+#ifdef CINDER_ENABLE_TLS
+        if (conn->stream) {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await async_read(*conn->stream, buf, asio::redirect_error(ec));
+        } else {
+            // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+            co_await async_read(conn->socket, buf, asio::redirect_error(ec));
+        }
+#else
+        // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
+        co_await async_read(conn->socket, buf, asio::redirect_error(ec));
+#endif
+        co_return ec;
+    }
+
     ConnectionPool::ConnectionPool(
         const ClusterConfig& config,
         io_context& io,
@@ -97,21 +177,7 @@ namespace cinder {
                 if (!conn->connected) {
                     continue;
                 }
-
-                std::error_code ec;
-#ifdef CINDER_ENABLE_TLS
-                if (conn->stream) {
-                    conn->stream->lowest_layer().shutdown(tcp::socket::shutdown_both, ec);
-                    conn->stream->lowest_layer().close(ec);
-                } else {
-                    conn->socket.shutdown(tcp::socket::shutdown_both, ec);
-                    conn->socket.close(ec);
-                }
-#else
-                conn->socket.shutdown(tcp::socket::shutdown_both, ec);
-                conn->socket.close(ec);
-#endif
-                conn->connected = false;
+                closeConn(conn);
             }
         }
 
@@ -209,15 +275,7 @@ namespace cinder {
             timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
                 if (!timer_ec) {
                     timed_out = true;
-#ifdef CINDER_ENABLE_TLS
-                    if (conn->stream) {
-                        conn->stream->lowest_layer().cancel();
-                    } else {
-                        conn->socket.cancel();
-                    }
-#else
-                    conn->socket.cancel();
-#endif
+                    cancelConn(conn);
                 }
             });
         }
@@ -234,58 +292,18 @@ namespace cinder {
                 fail_status(timed_out, "resolve");
                 co_return err<net::Response>(poolError(timed_out, "resolve", ec));
             }
-#ifdef CINDER_ENABLE_TLS
-            if (ssl_ctx_) {
-                conn->stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
-                co_await async_connect(
-                    conn->stream->lowest_layer(),
-                    endpoints,
-                    asio::redirect_error(ec)
-                );
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "connect");
-                    co_return err<net::Response>(poolError(timed_out, "connect", ec));
-                }
-
-                co_await conn->stream->async_handshake(
-                    asio::ssl::stream_base::client,
-                    asio::redirect_error(ec)
-                );
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "tls handshake");
-                    co_return err<net::Response>(poolError(timed_out, "tls handshake", ec));
-                }
-            } else {
-                co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "connect");
-                    co_return err<net::Response>(poolError(timed_out, "connect", ec));
-                }
-            }
-#else
-            co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
-            if (ec) {
+            if (auto conn_ec = co_await connectConn(conn, endpoints); conn_ec) {
                 closeConn(conn);
                 fail_status(timed_out, "connect");
-                co_return err<net::Response>(poolError(timed_out, "connect", ec));
+                co_return err<net::Response>(poolError(timed_out, "connect", conn_ec));
             }
-#endif
+
             conn->connected = true;
             CINDER_DEBUG("connected to node", {"node", conn->addr.host});
         }
-
-#ifdef CINDER_ENABLE_TLS
-        if (conn->stream) {
-            co_await async_write(*conn->stream, buffer(data), asio::redirect_error(ec));
-        } else {
-            co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
+        if (auto write_ec = co_await writeConn(conn, buffer(data)); write_ec) {
+            ec = write_ec;
         }
-#else
-        co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
-#endif
         if (ec) {
             closeConn(conn);
             CINDER_WARN("send failed", {"node", conn->addr.host}, {"phase", "write"});
@@ -294,15 +312,9 @@ namespace cinder {
         }
 
         std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
-#ifdef CINDER_ENABLE_TLS
-        if (conn->stream) {
-            co_await async_read(*conn->stream, buffer(header), asio::redirect_error(ec));
-        } else {
-            co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
+        if (auto read_ec = co_await readConn(conn, buffer(header)); read_ec) {
+            ec = read_ec;
         }
-#else
-        co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
-#endif
         if (ec) {
             closeConn(conn);
             fail_status(timed_out, "read header");
@@ -331,27 +343,13 @@ namespace cinder {
         std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
         std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
         if (payload_len > 0) {
-#ifdef CINDER_ENABLE_TLS
-            if (conn->stream) {
-                co_await async_read(
-                    *conn->stream,
-                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                    asio::redirect_error(ec)
+            if (auto payload_ec = co_await readConn(
+                    conn,
+                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len)
                 );
-            } else {
-                co_await async_read(
-                    conn->socket,
-                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                    asio::redirect_error(ec)
-                );
+                payload_ec) {
+                ec = payload_ec;
             }
-#else
-            co_await async_read(
-                conn->socket,
-                buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                asio::redirect_error(ec)
-            );
-#endif
             if (ec) {
                 closeConn(conn);
                 fail_status(timed_out, "read payload");
@@ -431,15 +429,7 @@ namespace cinder {
             timer.async_wait([&conn, &timed_out](std::error_code timer_ec) {
                 if (!timer_ec) {
                     timed_out = true;
-#ifdef CINDER_ENABLE_TLS
-                    if (conn->stream) {
-                        conn->stream->lowest_layer().cancel();
-                    } else {
-                        conn->socket.cancel();
-                    }
-#else
-                    conn->socket.cancel();
-#endif
+                    cancelConn(conn);
                 }
             });
         }
@@ -455,72 +445,19 @@ namespace cinder {
                 fail_status(timed_out, "resolve");
                 co_return err<std::vector<net::Response>>(poolError(timed_out, "resolve", ec));
             }
-#ifdef CINDER_ENABLE_TLS
-            if (ssl_ctx_) {
-                conn->stream = std::make_unique<stream_type>(ex, *ssl_ctx_);
-                co_await async_connect(
-                    conn->stream->lowest_layer(),
-                    endpoints,
-                    asio::redirect_error(ec)
-                );
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "connect");
-                    co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
-                }
-
-                co_await conn->stream->async_handshake(
-                    asio::ssl::stream_base::client,
-                    asio::redirect_error(ec)
-                );
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "tls handshake");
-                    co_return err<std::vector<net::Response>>(
-                        poolError(timed_out, "tls handshake", ec)
-                    );
-                }
-            } else {
-                co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
-                if (ec) {
-                    closeConn(conn);
-                    fail_status(timed_out, "connect");
-                    co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
-                }
-            }
-#else
-            co_await async_connect(conn->socket, endpoints, asio::redirect_error(ec));
-            if (ec) {
+            if (auto conn_ec = co_await connectConn(conn, endpoints); conn_ec) {
                 closeConn(conn);
                 fail_status(timed_out, "connect");
-                co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", ec));
+                co_return err<std::vector<net::Response>>(poolError(timed_out, "connect", conn_ec));
             }
-#endif
             conn->connected = true;
         }
-
-#ifdef CINDER_ENABLE_TLS
-        auto write_all = [&] -> asio::awaitable<void> {
-            for (auto& data : all_data) {
-                if (conn->stream) {
-                    co_await async_write(*conn->stream, buffer(data), asio::redirect_error(ec));
-                } else {
-                    co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
-                }
-                if (ec) {
-                    co_return;
-                }
-            }
-        };
-        co_await write_all();
-#else
         for (auto& data : all_data) {
-            co_await async_write(conn->socket, buffer(data), asio::redirect_error(ec));
-            if (ec) {
+            if (auto write_ec = co_await writeConn(conn, buffer(data)); write_ec) {
+                ec = write_ec;
                 break;
             }
         }
-#endif
         if (ec) {
             closeConn(conn);
             fail_status(timed_out, "write");
@@ -532,15 +469,9 @@ namespace cinder {
         size_t bytes_in = 0;
         for (size_t i = 0; i < all_data.size(); ++i) {
             std::array<std::byte, net::K_FRAME_HEADER_SIZE> header{};
-#ifdef CINDER_ENABLE_TLS
-            if (conn->stream) {
-                co_await async_read(*conn->stream, buffer(header), asio::redirect_error(ec));
-            } else {
-                co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
+            if (auto read_ec = co_await readConn(conn, buffer(header)); read_ec) {
+                ec = read_ec;
             }
-#else
-            co_await async_read(conn->socket, buffer(header), asio::redirect_error(ec));
-#endif
             if (ec) {
                 closeConn(conn);
                 fail_status(timed_out, "read header");
@@ -570,27 +501,13 @@ namespace cinder {
             std::vector<std::byte> frame(net::K_FRAME_HEADER_SIZE + payload_len);
             std::memcpy(frame.data(), header.data(), net::K_FRAME_HEADER_SIZE);
             if (payload_len > 0) {
-#ifdef CINDER_ENABLE_TLS
-                if (conn->stream) {
-                    co_await async_read(
-                        *conn->stream,
-                        buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                        asio::redirect_error(ec)
+                if (auto payload_ec = co_await readConn(
+                        conn,
+                        buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len)
                     );
-                } else {
-                    co_await async_read(
-                        conn->socket,
-                        buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                        asio::redirect_error(ec)
-                    );
+                    payload_ec) {
+                    ec = payload_ec;
                 }
-#else
-                co_await async_read(
-                    conn->socket,
-                    buffer(frame.data() + net::K_FRAME_HEADER_SIZE, payload_len),
-                    asio::redirect_error(ec)
-                );
-#endif
                 if (ec) {
                     closeConn(conn);
                     fail_status(timed_out, "read payload");
