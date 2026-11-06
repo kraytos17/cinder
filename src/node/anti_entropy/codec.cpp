@@ -2,9 +2,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
-#include <concepts>
 #include <cstdint>
-#include <cstring>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -17,18 +15,14 @@
 namespace cinder {
     namespace {
 
-        // Little-endian append helper for the digest/sync blobs. The
-        // cluster is homogeneous, but a fixed endianness keeps the wire
-        // format well-defined.
-        template <typename T>
-            requires std::unsigned_integral<T>
-        void appendLE(std::string& out, T v) {
-            std::array<char, sizeof(v)> buf{};
-            std::memcpy(buf.data(), &v, buf.size());
-            out.append(buf.data(), buf.size());
-        }
-
         using detail::BufferReader;
+        using detail::BufferWriter;
+
+        // Encode paths pre-size their buffer exactly (BufferWriter's debug
+        // assert verifies the budget); the wire API stays std::string.
+        auto toWireString(const std::vector<std::byte>& buf) -> std::string {
+            return {reinterpret_cast<const char*>(buf.data()), buf.size()};
+        }
 
         auto ibltItemChecksum(uint64_t key_hash, uint64_t version, uint64_t writer, bool tombstone)
             -> uint64_t {
@@ -107,15 +101,14 @@ namespace cinder {
 
         auto encodeDigest(const std::vector<uint64_t>& digest) -> std::string {
             using M = AntiEntropyManager;
-            std::string out;
-
-            out.reserve(sizeof(uint32_t) * 2 + digest.size() * sizeof(uint64_t));
-            appendLE(out, M::K_DIGEST_MAGIC);
-            appendLE(out, static_cast<uint32_t>(digest.size()));
+            std::vector<std::byte> buf(sizeof(uint32_t) * 2 + digest.size() * sizeof(uint64_t));
+            BufferWriter out(buf);
+            out.write(M::K_DIGEST_MAGIC);
+            out.write(static_cast<uint32_t>(digest.size()));
             for (auto h : digest) {
-                appendLE(out, h);
+                out.write(h);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeDigest(std::string_view data, size_t expected_buckets)
@@ -154,29 +147,32 @@ namespace cinder {
             for (size_t group = 0; group < group_count; ++group) {
                 // Include each absolute bucket index to make the fold sensitive to
                 // placement, not only the multiset of bucket hashes.
-                std::string material;
                 const size_t begin = group * M::K_BUCKETS_PER_GROUP;
                 const size_t end = std::min(begin + M::K_BUCKETS_PER_GROUP, bucket_hashes.size());
-                material.reserve((end - begin) * (sizeof(uint32_t) + sizeof(uint64_t)));
+                std::vector<std::byte> material(
+                    (end - begin) * (sizeof(uint32_t) + sizeof(uint64_t))
+                );
+
+                BufferWriter mat(material);
                 for (size_t bucket = begin; bucket < end; ++bucket) {
-                    appendLE(material, static_cast<uint32_t>(bucket));
-                    appendLE(material, bucket_hashes[bucket]);
+                    mat.write(static_cast<uint32_t>(bucket));
+                    mat.write(bucket_hashes[bucket]);
                 }
-                groups[group] = XXH3_64bits(material.data(), material.size());
+                groups[group] = XXH3_64bits(mat.bytes().data(), mat.bytes().size());
             }
             return groups;
         }
 
         auto encodeGroupDigest(const std::vector<uint64_t>& groups) -> std::string {
             using M = AntiEntropyManager;
-            std::string out;
-            out.reserve(2 * sizeof(uint32_t) + groups.size() * sizeof(uint64_t));
-            appendLE(out, M::K_GROUP_DIGEST_MAGIC);
-            appendLE(out, static_cast<uint32_t>(groups.size()));
+            std::vector<std::byte> buf(2 * sizeof(uint32_t) + groups.size() * sizeof(uint64_t));
+            BufferWriter out(buf);
+            out.write(M::K_GROUP_DIGEST_MAGIC);
+            out.write(static_cast<uint32_t>(groups.size()));
             for (uint64_t hash : groups) {
-                appendLE(out, hash);
+                out.write(hash);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeGroupDigest(std::string_view data, size_t expected_groups)
@@ -211,15 +207,22 @@ namespace cinder {
 
         auto encodeBucketRefinement(const BucketRefinement& request) -> std::string {
             using M = AntiEntropyManager;
-            std::string out;
-            appendLE(out, M::K_BUCKET_REFINEMENT_MAGIC);
-            appendLE(out, request.force_metadata ? 1U : 0U);
-            appendLE(out, static_cast<uint32_t>(request.bucket_hashes.size()));
+            std::vector<std::byte> buf(
+                3
+                * sizeof(uint32_t)
+                + request.bucket_hashes.size()
+                * (sizeof(uint32_t) + sizeof(uint64_t))
+            );
+
+            BufferWriter out(buf);
+            out.write(M::K_BUCKET_REFINEMENT_MAGIC);
+            out.write(request.force_metadata ? 1U : 0U);
+            out.write(static_cast<uint32_t>(request.bucket_hashes.size()));
             for (const auto& [bucket, hash] : request.bucket_hashes) {
-                appendLE(out, bucket);
-                appendLE(out, hash);
+                out.write(bucket);
+                out.write(hash);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeBucketRefinement(std::string_view data, size_t expected_groups)
@@ -259,9 +262,14 @@ namespace cinder {
         auto encodeDigestResponse(const DigestResponse& response) -> std::string {
             using M = AntiEntropyManager;
             std::string rows = encodeMetaRows(response.rows);
-            std::string out;
-            out.reserve(
-                3
+            size_t sketches_size = 0;
+            for (const auto& [bucket, sketch] : response.iblt_sketches) {
+                (void)bucket;
+                sketches_size += 2 * sizeof(uint32_t) + sketch.size();
+            }
+
+            std::vector<std::byte> buf(
+                4
                 * sizeof(uint32_t)
                 + response.group_hashes.size()
                 * sizeof(uint64_t)
@@ -272,34 +280,36 @@ namespace cinder {
                 + sizeof(uint32_t)
                 + rows.size()
                 + sizeof(uint32_t)
+                + sketches_size
             );
 
-            appendLE(out, M::K_DIGEST_RESPONSE_MAGIC);
-            appendLE(out, static_cast<uint32_t>(response.group_hashes.size()));
+            BufferWriter out(buf);
+            out.write(M::K_DIGEST_RESPONSE_MAGIC);
+            out.write(static_cast<uint32_t>(response.group_hashes.size()));
             for (uint64_t hash : response.group_hashes) {
-                appendLE(out, hash);
+                out.write(hash);
             }
 
-            appendLE(out, static_cast<uint32_t>(response.bucket_hashes.size()));
+            out.write(static_cast<uint32_t>(response.bucket_hashes.size()));
             for (const auto& [bucket, hash] : response.bucket_hashes) {
-                appendLE(out, bucket);
-                appendLE(out, hash);
+                out.write(bucket);
+                out.write(hash);
             }
 
-            appendLE(out, static_cast<uint32_t>(response.covered_buckets.size()));
+            out.write(static_cast<uint32_t>(response.covered_buckets.size()));
             for (uint32_t bucket : response.covered_buckets) {
-                appendLE(out, bucket);
+                out.write(bucket);
             }
 
-            appendLE(out, static_cast<uint32_t>(rows.size()));
-            out += rows;
-            appendLE(out, static_cast<uint32_t>(response.iblt_sketches.size()));
+            out.write(static_cast<uint32_t>(rows.size()));
+            out.writeString(rows);
+            out.write(static_cast<uint32_t>(response.iblt_sketches.size()));
             for (const auto& [bucket, sketch] : response.iblt_sketches) {
-                appendLE(out, bucket);
-                appendLE(out, static_cast<uint32_t>(sketch.size()));
-                out += sketch;
+                out.write(bucket);
+                out.write(static_cast<uint32_t>(sketch.size()));
+                out.writeString(sketch);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeDigestResponse(std::string_view data, size_t expected_groups)
@@ -481,19 +491,22 @@ namespace cinder {
                 return {};
             }
 
-            std::string out;
-            out.reserve(2 * sizeof(uint32_t) + sketch.cells.size() * 48U);
-            appendLE(out, M::K_IBLT_MAGIC);
-            appendLE(out, static_cast<uint32_t>(sketch.cells.size()));
+            std::vector<std::byte> buf(
+                2 * sizeof(uint32_t) + sketch.cells.size() * 6 * sizeof(uint64_t)
+            );
+
+            BufferWriter out(buf);
+            out.write(M::K_IBLT_MAGIC);
+            out.write(static_cast<uint32_t>(sketch.cells.size()));
             for (const auto& cell : sketch.cells) {
-                appendLE(out, std::bit_cast<uint64_t>(cell.count));
-                appendLE(out, cell.key_hash_xor);
-                appendLE(out, cell.version_xor);
-                appendLE(out, cell.writer_xor);
-                appendLE(out, cell.tombstone_xor);
-                appendLE(out, cell.checksum_xor);
+                out.write(std::bit_cast<uint64_t>(cell.count));
+                out.write(cell.key_hash_xor);
+                out.write(cell.version_xor);
+                out.write(cell.writer_xor);
+                out.write(cell.tombstone_xor);
+                out.write(cell.checksum_xor);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeIblt(std::string_view data) -> std::optional<IbltSketch> {
@@ -641,17 +654,17 @@ namespace cinder {
         }
 
         auto encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string {
-            std::string out;
-            out.reserve(sizeof(uint32_t) + rows.size() * K_META_ROW_BYTES);
-            appendLE(out, static_cast<uint32_t>(rows.size()));
+            std::vector<std::byte> buf(sizeof(uint32_t) + rows.size() * K_META_ROW_BYTES);
+            BufferWriter out(buf);
+            out.write(static_cast<uint32_t>(rows.size()));
             for (const auto& r : rows) {
-                appendLE(out, r.bucket);
-                appendLE(out, r.key_hash);
-                appendLE(out, r.version);
-                appendLE(out, r.writer);
-                out.push_back(r.tombstone ? static_cast<char>(1) : static_cast<char>(0));
+                out.write(r.bucket);
+                out.write(r.key_hash);
+                out.write(r.version);
+                out.write(r.writer);
+                out.write(r.tombstone ? uint8_t{1} : uint8_t{0});
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeMetaRows(std::string_view data) -> std::optional<std::vector<MetaRow>> {
@@ -690,14 +703,28 @@ namespace cinder {
 
         auto encodeSync(const SyncMessage& msg, const Clock& clock) -> std::string {
             using M = AntiEntropyManager;
-            std::string out;
-            appendLE(out, M::K_SYNC_MAGIC);
-            appendLE(out, static_cast<uint32_t>(msg.entries.size()));
+            size_t entries_size = 0;
             for (const auto& item : msg.entries) {
-                appendLE(out, static_cast<uint32_t>(item.key.size()));
-                out.append(item.key);
-                appendLE(out, item.entry.version());
-                appendLE(out, item.entry.writer_node_hash);
+                entries_size += syncEntryWireSize(item.key, item.entry);
+            }
+
+            std::vector<std::byte> buf(
+                2
+                * sizeof(uint32_t)
+                + entries_size
+                + sizeof(uint32_t)
+                + msg.needs.size()
+                * sizeof(uint64_t)
+            );
+
+            BufferWriter out(buf);
+            out.write(M::K_SYNC_MAGIC);
+            out.write(static_cast<uint32_t>(msg.entries.size()));
+            for (const auto& item : msg.entries) {
+                out.write(static_cast<uint32_t>(item.key.size()));
+                out.writeString(item.key);
+                out.write(item.entry.version());
+                out.write(item.entry.writer_node_hash);
                 // Entry flags bitfield: bit 0 = has_ttl, bit 1 = tombstone.
                 // Unknown bits are rejected (clean fail on mixed versions).
                 uint8_t entry_flags = 0;
@@ -708,20 +735,20 @@ namespace cinder {
                     entry_flags |= 2U;
                 }
 
-                out.push_back(static_cast<char>(entry_flags));
+                out.write(entry_flags);
                 if (item.entry.hasTtl()) {
-                    appendLE(out, toSystemMs(clock, item.entry.expires_at));
+                    out.write(toSystemMs(clock, item.entry.expires_at));
                 }
 
-                appendLE(out, static_cast<uint32_t>(item.entry.value.size()));
-                out.append(item.entry.value);
+                out.write(static_cast<uint32_t>(item.entry.value.size()));
+                out.writeString(item.entry.value);
             }
 
-            appendLE(out, static_cast<uint32_t>(msg.needs.size()));
+            out.write(static_cast<uint32_t>(msg.needs.size()));
             for (auto h : msg.needs) {
-                appendLE(out, h);
+                out.write(h);
             }
-            return out;
+            return toWireString(buf);
         }
 
         auto decodeSync(std::string_view data, const Clock& clock) -> std::optional<SyncMessage> {
