@@ -23,6 +23,7 @@
 #include "cinder/cluster/failure_detector.hpp"
 #include "cinder/cluster/gossip.hpp"
 #include "cinder/cluster/membership.hpp"
+#include "cinder/common/anti_entropy_tuning.hpp"
 #include "cinder/common/config.hpp"
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/persistence_tuning.hpp"
@@ -52,14 +53,11 @@ namespace cinder {
         milliseconds suspect_timeout{3000};
         milliseconds gossip_interval{1000};
         milliseconds quarantine_interval{10'000};
-        PersistenceTuning tuning;
+        PersistenceTuning persistence;
         // RPC deadline — max time for a single peer RPC before cancellation.
         milliseconds rpc_timeout{5000};
         // Anti-entropy: background repair between replica partners (0 = disabled).
-        milliseconds anti_entropy_interval{30'000};
-        // Per-round repair fetch budget (bytes) and full-rehash backstop.
-        size_t anti_entropy_fetch_bytes = 1U << 20U;
-        milliseconds anti_entropy_full_rehash_interval{300'000};
+        AntiEntropyTuning anti_entropy;
         std::vector<ClusterConfig::NodeConfig> peers;
         std::string node_id;
         // Persistence
@@ -81,7 +79,6 @@ namespace cinder {
         // Concurrency: worker threads running the io_context. 0 = auto
         // (min(4, hardware_concurrency)); 1 = legacy single-threaded reactor.
         int io_threads = 0;
-        uint32_t anti_entropy_buckets = 256;
         // Hinted-handoff byte budget (drop-oldest past it). 0 = queue default.
         size_t max_hint_bytes = 0;
         // Tombstone GC grace in milliseconds: how long a delete marker

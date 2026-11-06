@@ -10,6 +10,8 @@
 
 namespace cinder {
     namespace {
+        using std::chrono::milliseconds;
+        using std::chrono::seconds;
 
         using VoidResult = Result<void>;
 
@@ -50,15 +52,15 @@ namespace cinder {
 
             fanOutQuorum<VoidResult>(3, [&](auto report) {
                 senders.emplace_back([report] mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    std::this_thread::sleep_for(milliseconds(10));
                     report(0, ok());
                 });
                 senders.emplace_back([report] mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                    std::this_thread::sleep_for(milliseconds(20));
                     report(1, ok());
                 });
                 senders.emplace_back([report] mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                    std::this_thread::sleep_for(milliseconds(30));
                     report(2, ok());
                 });
             }, [&](std::size_t, VoidResult, bool) { ++processed; }, [] { return true; }, [&] {
@@ -66,7 +68,7 @@ namespace cinder {
                 done.set_value();
             }, [&] { ++fails; });
 
-            ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+            ASSERT_EQ(done_future.wait_for(seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
             EXPECT_EQ(fails.load(), 0);
             for (auto& t : senders) {
@@ -75,7 +77,7 @@ namespace cinder {
             // Wait for the detached tail to consume every completion, so no
             // pool work referencing test stack state outlives the test.
             for (int i = 0; i < 1000 && processed.load() < 3; ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(milliseconds(1));
             }
             EXPECT_EQ(processed.load(), 3U);
         }
@@ -116,7 +118,7 @@ namespace cinder {
                 // the failure only; the other two arrive late.
                 report(0, err<void>(Error(Errc::NotReady, "down")));
                 senders.emplace_back([report] mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    std::this_thread::sleep_for(milliseconds(10));
                     report(1, ok());
                     report(2, ok());
                 });
@@ -135,12 +137,12 @@ namespace cinder {
                 [] { FAIL() << "explicit fail must not run (decision via fire)"; }
             );
 
-            ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+            ASSERT_EQ(done_future.wait_for(seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
             // Wait for the late sends to be consumed by the tail, then join
             // the sender so no thread outlives the test.
             for (int i = 0; i < 100 && late_seen.load() < 2; ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                std::this_thread::sleep_for(milliseconds(10));
             }
             EXPECT_EQ(late_seen.load(), 2);
             for (auto& t : senders) {
@@ -160,7 +162,7 @@ namespace cinder {
             fanOutQuorum<VoidResult>(3, [&](auto report) {
                 report(0, ok());
                 senders.emplace_back([report] mutable {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                    std::this_thread::sleep_for(milliseconds(10));
                     report(1, ok());
                     report(2, ok());
                 });
@@ -169,13 +171,13 @@ namespace cinder {
                 done.set_value();
             }, [] { FAIL() << "fail must not run"; });
 
-            ASSERT_EQ(done_future.wait_for(std::chrono::seconds(10)), std::future_status::ready);
+            ASSERT_EQ(done_future.wait_for(seconds(10)), std::future_status::ready);
             EXPECT_EQ(fires.load(), 1);
             for (auto& t : senders) {
                 t.join();
             }
             for (int i = 0; i < 1000 && processed.load() < 3; ++i) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(milliseconds(1));
             }
             EXPECT_EQ(processed.load(), 3U);
         }

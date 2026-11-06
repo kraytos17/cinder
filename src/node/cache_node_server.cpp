@@ -190,7 +190,7 @@ namespace cinder {
 #ifdef CINDER_ENABLE_TLS
         ssl_ctx_(initSslContext(options)),
 #endif
-        anti_entropy_interval_(options.anti_entropy_interval),
+        anti_entropy_interval_(options.anti_entropy.interval),
         capacity_(options.capacity),
         peers_(options.peers),
         node_id_(options.node_id),
@@ -227,16 +227,16 @@ namespace cinder {
             options.node_id,
             clock_,
             transport_,
-            options.anti_entropy_buckets,
+            options.anti_entropy.buckets,
             &metrics_,
-            options.anti_entropy_fetch_bytes,
-            options.anti_entropy_full_rehash_interval
+            options.anti_entropy.fetch_bytes,
+            options.anti_entropy.full_rehash_interval
         ),
         persistence_(
             PersistenceManager::Options{
                 .data_dir = options.data_dir,
                 .enabled = options.persistence_enabled,
-                .tuning = options.tuning,
+                .tuning = options.persistence,
             },
             *store_,
             &clock_
@@ -300,10 +300,10 @@ namespace cinder {
         }
         CINDER_INFO(
             "anti-entropy",
-            {"interval_ms", options.anti_entropy_interval.count()},
-            {"buckets", options.anti_entropy_buckets},
-            {"fetch_bytes", options.anti_entropy_fetch_bytes},
-            {"full_rehash_interval_ms", options.anti_entropy_full_rehash_interval.count()}
+            {"interval_ms", options.anti_entropy.interval.count()},
+            {"buckets", options.anti_entropy.buckets},
+            {"fetch_bytes", options.anti_entropy.fetch_bytes},
+            {"full_rehash_interval_ms", options.anti_entropy.full_rehash_interval.count()}
         );
     }
 
@@ -720,16 +720,14 @@ namespace cinder {
             store_->setTombstoneGcInterval(milliseconds(cfg.tombstone_gc_ms));
         } else if (field == "anti_entropy_interval_ms") {
             bool was_disabled = anti_entropy_interval_.load().count() <= 0;
-            anti_entropy_interval_ = milliseconds(cfg.anti_entropy_interval_ms);
+            anti_entropy_interval_ = cfg.anti_entropy.interval;
             if (was_disabled && anti_entropy_interval_.load().count() > 0) {
                 scheduleAntiEntropy();
             }
         } else if (field == "anti_entropy_fetch_bytes") {
-            anti_entropy_.setFetchBytes(cfg.anti_entropy_fetch_bytes);
+            anti_entropy_.setFetchBytes(cfg.anti_entropy.fetch_bytes);
         } else if (field == "anti_entropy_full_rehash_interval_ms") {
-            anti_entropy_.setFullRehashInterval(
-                milliseconds(cfg.anti_entropy_full_rehash_interval_ms)
-            );
+            anti_entropy_.setFullRehashInterval(cfg.anti_entropy.full_rehash_interval);
         } else {
             // ping_interval_ms, anti_entropy_buckets, and unknown fields need restart.
             CINDER_WARN("config field requires restart", {"field", field});

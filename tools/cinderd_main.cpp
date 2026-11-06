@@ -178,10 +178,10 @@ auto main(int argc, char* argv[]) -> int {
     options.quarantine_interval = milliseconds(quarantine_interval_ms);
     options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
     options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
-    options.tuning = cfg.tuning;
+    options.persistence = cfg.persistence;
     // CLI override for the snapshot interval only; the YAML value (or its
     // default) wins for everything else.
-    options.tuning.snapshot_interval_s = static_cast<size_t>(snapshot_interval_s);
+    options.persistence.snapshot_interval_s = static_cast<size_t>(snapshot_interval_s);
     options.io_threads = io_threads;
     options.tls_enabled = tls_enabled || cfg.tls.enabled;
     options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;
@@ -193,26 +193,25 @@ auto main(int argc, char* argv[]) -> int {
     options.eviction_policy = eviction_policy;
     options.rpc_timeout = app.count("--rpc-timeout") == 0 ? milliseconds(cfg.rpc_timeout_ms)
                                                           : milliseconds(rpc_timeout_ms);
-    options.anti_entropy_interval = milliseconds(anti_entropy_interval_ms);
-    options.anti_entropy_buckets = static_cast<uint32_t>(anti_entropy_buckets);
-    options.anti_entropy_fetch_bytes = anti_entropy_fetch_bytes;
-    options.anti_entropy_full_rehash_interval = milliseconds(anti_entropy_full_rehash_interval_ms);
+    options.anti_entropy.interval = milliseconds(anti_entropy_interval_ms);
+    options.anti_entropy.buckets = static_cast<uint32_t>(anti_entropy_buckets);
+    options.anti_entropy.fetch_bytes = anti_entropy_fetch_bytes;
+    options.anti_entropy.full_rehash_interval = milliseconds(anti_entropy_full_rehash_interval_ms);
     options.max_hint_bytes = max_hint_bytes == 0 ? cfg.max_hint_bytes : max_hint_bytes;
     options.tombstone_gc_interval =
         tombstone_gc_ms == 0 ? milliseconds(cfg.tombstone_gc_ms) : milliseconds(tombstone_gc_ms);
     if (!config_path.empty()) {
         if (app.count("--anti-entropy-interval") == 0) {
-            options.anti_entropy_interval = milliseconds(cfg.anti_entropy_interval_ms);
+            options.anti_entropy.interval = cfg.anti_entropy.interval;
         }
         if (app.count("--anti-entropy-buckets") == 0) {
-            options.anti_entropy_buckets = static_cast<uint32_t>(cfg.anti_entropy_buckets);
+            options.anti_entropy.buckets = cfg.anti_entropy.buckets;
         }
         if (app.count("--anti-entropy-fetch-bytes") == 0) {
-            options.anti_entropy_fetch_bytes = cfg.anti_entropy_fetch_bytes;
+            options.anti_entropy.fetch_bytes = cfg.anti_entropy.fetch_bytes;
         }
         if (app.count("--anti-entropy-full-rehash-interval") == 0) {
-            options.anti_entropy_full_rehash_interval =
-                milliseconds(cfg.anti_entropy_full_rehash_interval_ms);
+            options.anti_entropy.full_rehash_interval = cfg.anti_entropy.full_rehash_interval;
         }
     }
 

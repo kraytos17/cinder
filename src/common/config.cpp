@@ -10,6 +10,8 @@
 
 namespace cinder {
     namespace {
+        using std::chrono::milliseconds;
+
         // Optional YAML key: assign node[key] into field, keeping the current
         // value when the key is absent. Type is deduced from the field, so
         // call sites never repeat it: loadOr(sec, "port", cfg.port).
@@ -17,6 +19,13 @@ namespace cinder {
             if (const auto child = node[key]) {
                 field = child.template as<T>(field);
             }
+        }
+
+        // Durations serialize as integer milliseconds in YAML.
+        void loadOr(const YAML::Node& node, const char* key, milliseconds& field) {
+            int ms = static_cast<int>(field.count());
+            loadOr(node, key, ms);
+            field = milliseconds{ms};
         }
 
         // Escapes a string for JSON embedding. Returns the escaped CONTENT without
@@ -90,17 +99,17 @@ namespace cinder {
             cfg.rpc_timeout_ms,
             cfg.max_hint_bytes,
             cfg.tombstone_gc_ms,
-            cfg.anti_entropy_interval_ms,
-            cfg.anti_entropy_buckets,
-            cfg.anti_entropy_fetch_bytes,
-            cfg.anti_entropy_full_rehash_interval_ms,
+            cfg.anti_entropy.interval.count(),
+            cfg.anti_entropy.buckets,
+            cfg.anti_entropy.fetch_bytes,
+            cfg.anti_entropy.full_rehash_interval.count(),
             cfg.persistence_enabled,
             escapeJsonString(cfg.data_dir),
-            cfg.tuning.snapshot_interval_s,
-            cfg.tuning.max_wal_entries,
-            cfg.tuning.max_wal_bytes,
-            cfg.tuning.max_wal_segment_bytes,
-            cfg.tuning.wal_fsync,
+            cfg.persistence.snapshot_interval_s,
+            cfg.persistence.max_wal_entries,
+            cfg.persistence.max_wal_bytes,
+            cfg.persistence.max_wal_segment_bytes,
+            cfg.persistence.wal_fsync,
             cfg.tls.enabled,
             !cfg.auth.shared_secret.empty(),
             !cfg.auth.client_shared_secret.empty(),
@@ -157,41 +166,49 @@ namespace cinder {
         check("tombstone_gc_ms", old_cfg.tombstone_gc_ms, new_cfg.tombstone_gc_ms);
         check(
             "anti_entropy_interval_ms",
-            old_cfg.anti_entropy_interval_ms,
-            new_cfg.anti_entropy_interval_ms
+            old_cfg.anti_entropy.interval,
+            new_cfg.anti_entropy.interval
         );
 
-        check("anti_entropy_buckets", old_cfg.anti_entropy_buckets, new_cfg.anti_entropy_buckets);
+        check("anti_entropy_buckets", old_cfg.anti_entropy.buckets, new_cfg.anti_entropy.buckets);
         check(
             "anti_entropy_fetch_bytes",
-            old_cfg.anti_entropy_fetch_bytes,
-            new_cfg.anti_entropy_fetch_bytes
+            old_cfg.anti_entropy.fetch_bytes,
+            new_cfg.anti_entropy.fetch_bytes
         );
 
         check(
             "anti_entropy_full_rehash_interval_ms",
-            old_cfg.anti_entropy_full_rehash_interval_ms,
-            new_cfg.anti_entropy_full_rehash_interval_ms
+            old_cfg.anti_entropy.full_rehash_interval,
+            new_cfg.anti_entropy.full_rehash_interval
         );
 
         check("persistence_enabled", old_cfg.persistence_enabled, new_cfg.persistence_enabled);
         check("data_dir", old_cfg.data_dir, new_cfg.data_dir);
         check(
             "snapshot_interval_s",
-            old_cfg.tuning.snapshot_interval_s,
-            new_cfg.tuning.snapshot_interval_s
+            old_cfg.persistence.snapshot_interval_s,
+            new_cfg.persistence.snapshot_interval_s
         );
 
-        check("max_wal_entries", old_cfg.tuning.max_wal_entries, new_cfg.tuning.max_wal_entries);
+        check(
+            "max_wal_entries",
+            old_cfg.persistence.max_wal_entries,
+            new_cfg.persistence.max_wal_entries
+        );
 
-        check("max_wal_bytes", old_cfg.tuning.max_wal_bytes, new_cfg.tuning.max_wal_bytes);
+        check(
+            "max_wal_bytes",
+            old_cfg.persistence.max_wal_bytes,
+            new_cfg.persistence.max_wal_bytes
+        );
         check(
             "max_wal_segment_bytes",
-            old_cfg.tuning.max_wal_segment_bytes,
-            new_cfg.tuning.max_wal_segment_bytes
+            old_cfg.persistence.max_wal_segment_bytes,
+            new_cfg.persistence.max_wal_segment_bytes
         );
 
-        check("wal_fsync", old_cfg.tuning.wal_fsync, new_cfg.tuning.wal_fsync);
+        check("wal_fsync", old_cfg.persistence.wal_fsync, new_cfg.persistence.wal_fsync);
         check("tls_enabled", old_cfg.tls.enabled, new_cfg.tls.enabled);
         check("tls_cert_file", old_cfg.tls.cert_file, new_cfg.tls.cert_file);
         check("tls_key_file", old_cfg.tls.key_file, new_cfg.tls.key_file);
@@ -256,10 +273,10 @@ namespace cinder {
         }
         // Anti-entropy
         if (auto ae = root["anti_entropy"]) {
-            loadOr(ae, "interval_ms", cfg.anti_entropy_interval_ms);
-            loadOr(ae, "buckets", cfg.anti_entropy_buckets);
-            loadOr(ae, "fetch_bytes", cfg.anti_entropy_fetch_bytes);
-            loadOr(ae, "full_rehash_interval_ms", cfg.anti_entropy_full_rehash_interval_ms);
+            loadOr(ae, "interval_ms", cfg.anti_entropy.interval);
+            loadOr(ae, "buckets", cfg.anti_entropy.buckets);
+            loadOr(ae, "fetch_bytes", cfg.anti_entropy.fetch_bytes);
+            loadOr(ae, "full_rehash_interval_ms", cfg.anti_entropy.full_rehash_interval);
         }
         // Hinted handoff
         if (auto repl = root["replication"]) {
@@ -270,11 +287,11 @@ namespace cinder {
         if (auto pers = root["persistence"]) {
             loadOr(pers, "enabled", cfg.persistence_enabled);
             loadOr(pers, "data_dir", cfg.data_dir);
-            loadOr(pers, "snapshot_interval_s", cfg.tuning.snapshot_interval_s);
-            loadOr(pers, "max_wal_entries", cfg.tuning.max_wal_entries);
-            loadOr(pers, "max_wal_bytes", cfg.tuning.max_wal_bytes);
-            loadOr(pers, "max_wal_segment_bytes", cfg.tuning.max_wal_segment_bytes);
-            loadOr(pers, "wal_fsync", cfg.tuning.wal_fsync);
+            loadOr(pers, "snapshot_interval_s", cfg.persistence.snapshot_interval_s);
+            loadOr(pers, "max_wal_entries", cfg.persistence.max_wal_entries);
+            loadOr(pers, "max_wal_bytes", cfg.persistence.max_wal_bytes);
+            loadOr(pers, "max_wal_segment_bytes", cfg.persistence.max_wal_segment_bytes);
+            loadOr(pers, "wal_fsync", cfg.persistence.wal_fsync);
         }
         // TLS
         if (auto tls = root["tls"]) {
@@ -380,10 +397,10 @@ namespace cinder {
             config.replica_factor,
             escapeJsonString(config.consistency),
             config.persistence_enabled,
-            config.anti_entropy_interval_ms,
-            config.anti_entropy_buckets,
-            config.anti_entropy_fetch_bytes,
-            config.anti_entropy_full_rehash_interval_ms,
+            config.anti_entropy.interval.count(),
+            config.anti_entropy.buckets,
+            config.anti_entropy.fetch_bytes,
+            config.anti_entropy.full_rehash_interval.count(),
             config.tls.enabled,
             !config.auth.shared_secret.empty(),
             !config.auth.client_shared_secret.empty(),

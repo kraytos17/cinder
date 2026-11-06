@@ -843,10 +843,8 @@ namespace cinder {
             entry.setTombstone((entry_flags & 2U) != 0);
             if (has_ttl) {
                 entry.setHasTtl(true);
-                entry.expires_at = toSteadyExpiry(
-                    clock,
-                    std::chrono::system_clock::time_point(std::chrono::milliseconds(expires_ms))
-                );
+                entry.expires_at =
+                    toSteadyExpiry(clock, system_clock::time_point(milliseconds(expires_ms)));
             }
             return std::nullopt;
         }

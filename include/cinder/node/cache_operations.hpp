@@ -1,6 +1,5 @@
 #pragma once
 
-#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -56,7 +55,7 @@ namespace cinder {
         void setAsync(
             const std::string& key,
             std::string value,
-            std::optional<std::chrono::milliseconds> ttl,
+            std::optional<milliseconds> ttl,
             WriteCallback on_done,
             uint64_t trace_id = 0,
             uint64_t span_id = 0
