@@ -4,6 +4,8 @@
 #include <cstring>
 #include <ctime>
 
+#include "cinder/common/types.hpp"
+
 #ifdef CINDER_ENABLE_CRYPTO
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -64,7 +66,7 @@ namespace cinder {
         auto now = static_cast<uint64_t>(std::time(nullptr)) / 10;
         std::string data = node_id + ":" + std::to_string(now);
         auto digest = computeHmacSha256(secret, data);
-        return std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+        return std::string(asChars(digest));
 #endif
     }
 
@@ -89,8 +91,7 @@ namespace cinder {
             uint64_t ts = (now / 10) - static_cast<uint64_t>(i);
             std::string data = node_id + ":" + std::to_string(ts);
             auto expected = computeHmacSha256(secret, data);
-            auto expected_view =
-                std::string_view(reinterpret_cast<const char*>(expected.data()), expected.size());
+            auto expected_view = asChars(expected);
             if (constantTimeEqual(token, expected_view)) {
                 return true;
             }
@@ -107,7 +108,7 @@ namespace cinder {
         return {};
 #else
         auto digest = computeHmacSha256(secret, K_CLIENT_AUTH_DOMAIN);
-        return std::string(reinterpret_cast<const char*>(digest.data()), digest.size());
+        return std::string(asChars(digest));
 #endif
     }
 
@@ -119,8 +120,7 @@ namespace cinder {
         return false;
 #else
         auto expected = computeHmacSha256(secret, K_CLIENT_AUTH_DOMAIN);
-        auto expected_view =
-            std::string_view(reinterpret_cast<const char*>(expected.data()), expected.size());
+        auto expected_view = asChars(expected);
         return constantTimeEqual(token, expected_view);
 #endif
     }

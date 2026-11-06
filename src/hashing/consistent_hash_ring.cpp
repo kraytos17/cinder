@@ -63,8 +63,8 @@ namespace cinder {
                 order[i] = i;
             }
 
-            std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
-                return snap->hashes[a] < snap->hashes[b];
+            std::ranges::sort(order, std::ranges::less{}, [&](size_t i) -> uint64_t {
+                return snap->hashes[i];
             });
 
             auto sorted_hashes = snap->hashes;
@@ -124,8 +124,7 @@ namespace cinder {
     auto ConsistentHashRing::getNode(std::string_view key) const -> NodeId {
         auto snap = snapshot_.load();
         auto h = hashKey(key);
-        auto idx =
-            std::lower_bound(snap->hashes.begin(), snap->hashes.end(), h) - snap->hashes.begin();
+        auto idx = std::ranges::lower_bound(snap->hashes, h) - snap->hashes.begin();
         if (static_cast<size_t>(idx) == snap->hashes.size()) {
             idx = 0;
         }
@@ -143,8 +142,7 @@ namespace cinder {
 
         auto snap = snapshot_.load();
         auto h = hashKey(key);
-        auto start =
-            std::lower_bound(snap->hashes.begin(), snap->hashes.end(), h) - snap->hashes.begin();
+        auto start = std::ranges::lower_bound(snap->hashes, h) - snap->hashes.begin();
         if (static_cast<size_t>(start) == snap->hashes.size()) {
             start = 0;
         }
@@ -191,8 +189,7 @@ namespace cinder {
         }
 
         auto h = hashKey(key);
-        auto idx =
-            std::lower_bound(snap->hashes.begin(), snap->hashes.end(), h) - snap->hashes.begin();
+        auto idx = std::ranges::lower_bound(snap->hashes, h) - snap->hashes.begin();
         if (static_cast<size_t>(idx) == snap->hashes.size()) {
             idx = 0;
         }

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
@@ -128,7 +127,7 @@ namespace cinder {
         }
 
         void swapHeap(size_t lhs, size_t rhs) {
-            std::swap(heap_[lhs], heap_[rhs]);
+            std::ranges::swap(heap_[lhs], heap_[rhs]);
             heap_[lhs].node->heap_index = lhs;
             heap_[rhs].node->heap_index = rhs;
         }

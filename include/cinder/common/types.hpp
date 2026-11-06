@@ -3,7 +3,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using std::chrono::steady_clock;
@@ -14,6 +16,20 @@ namespace cinder {
     using Key = std::string;
     using NodeId = std::string;
     using Version = uint64_t;
+
+    // View raw bytes as chars without copying. Centralizes the
+    // reinterpret_cast that byte-oriented buffers (WAL/snapshot scratches,
+    // HMAC digests, journal payloads, wire slices) otherwise repeat at
+    // every use site.
+    [[nodiscard]]
+    inline auto asChars(std::span<const std::byte> bytes) -> std::string_view {
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+
+    [[nodiscard]]
+    inline auto asChars(const std::byte* data, size_t size) -> std::string_view {
+        return {reinterpret_cast<const char*>(data), size};
+    }
 
     enum class EvictionPolicy : uint8_t {
         LRU,

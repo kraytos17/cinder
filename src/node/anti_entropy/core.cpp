@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <ankerl/unordered_dense.h>
 #include <chrono>
-#include <set>
+#include <flat_set>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -342,9 +342,7 @@ namespace cinder {
             }
 
             auto& vec = per_bucket[b];
-            std::sort(vec.begin(), vec.end(), [](const MetaRow& lhs, const MetaRow& rhs) {
-                return lhs.key_hash < rhs.key_hash;
-            });
+            std::ranges::sort(vec, {}, &MetaRow::key_hash);
             // Coverage is explicit even for empty buckets. Without this, a
             // peer cannot distinguish "empty" from "omitted by byte budget".
             const size_t coverage_cost = sizeof(uint32_t);
@@ -421,8 +419,9 @@ namespace cinder {
         }
 
         std::vector<uint64_t> sorted = hashes;
-        std::sort(sorted.begin(), sorted.end());
-        sorted.erase(std::unique(sorted.begin(), sorted.end()), sorted.end());
+        std::ranges::sort(sorted);
+        auto unique_hashes = std::ranges::unique(sorted);
+        sorted.erase(unique_hashes.begin(), unique_hashes.end());
 
         // Resolve hashes to keys with one scan (point lookups would need the
         // keys, which is what we're resolving).
@@ -430,7 +429,7 @@ namespace cinder {
         resolved.reserve(sorted.size() * 2);
         store_.forEach([&sorted, &resolved](const std::string& key, const VersionedEntry&) {
             uint64_t h = XXH3_64bits(key.data(), key.size());
-            if (std::binary_search(sorted.begin(), sorted.end(), h)) {
+            if (std::ranges::binary_search(sorted, h)) {
                 resolved.try_emplace(h, key);
             }
         });
@@ -441,9 +440,7 @@ namespace cinder {
             pairs.emplace_back(h, std::move(key));
         }
 
-        std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) {
-            return a.first < b.first;
-        });
+        std::ranges::sort(pairs, {}, &std::pair<uint64_t, std::string>::first);
         return selectEntriesForPairs(pairs, max_bytes);
     }
 
@@ -464,9 +461,7 @@ namespace cinder {
             pairs.emplace_back(XXH3_64bits(key.data(), key.size()), key);
         }
 
-        std::sort(pairs.begin(), pairs.end(), [](const auto& a, const auto& b) {
-            return a.first < b.first;
-        });
+        std::ranges::sort(pairs, {}, &std::pair<uint64_t, std::string>::first);
         return encodeSync({selectEntriesForPairs(pairs, max_bytes), {}});
     }
 
@@ -555,10 +550,8 @@ namespace cinder {
             }
         }
 
-        std::sort(diff.need.begin(), diff.need.end());
-        std::sort(diff.have.begin(), diff.have.end(), [](const auto& a, const auto& b) {
-            return a.first < b.first;
-        });
+        std::ranges::sort(diff.need);
+        std::ranges::sort(diff.have, {}, &std::pair<uint64_t, std::string>::first);
         return diff;
     }
 
@@ -628,7 +621,9 @@ namespace cinder {
             return;
         }
 
-        std::set<NodeId> candidates;
+        // Bounded working set (breaks at 64): a flat set avoids per-node
+        // allocations for what is almost always a handful of peers.
+        std::flat_set<NodeId> candidates;
         auto consider = [&](const std::string& key) {
             for (const auto& node : ring_.getNodes(key, replica_factor)) {
                 if (node != self_) {
@@ -743,8 +738,8 @@ namespace cinder {
             }
         }
 
-        std::sort(requested_buckets.begin(), requested_buckets.end());
-        std::sort(response.bucket_hashes.begin(), response.bucket_hashes.end());
+        std::ranges::sort(requested_buckets);
+        std::ranges::sort(response.bucket_hashes);
         if (request->force_metadata) {
             std::vector<uint32_t> metadata_covered;
             auto meta = collectMetadata(requested_buckets, K_MAX_METADATA_BYTES, &metadata_covered);
@@ -930,11 +925,7 @@ namespace cinder {
                 failed_sketch_buckets.push_back(bucket);
                 continue;
             }
-            if (!std::binary_search(
-                    reconstructed_covered_buckets.begin(),
-                    reconstructed_covered_buckets.end(),
-                    bucket
-                )) {
+            if (!std::ranges::binary_search(reconstructed_covered_buckets, bucket)) {
                 failed_sketch_buckets.push_back(bucket);
                 continue;
             }
@@ -951,25 +942,21 @@ namespace cinder {
             std::optional<IbltDiff> difference;
             if (remote_sketch.has_value()
                 && local_sketch.has_value()
-                && std::binary_search(local_covered.begin(), local_covered.end(), bucket)) {
+                && std::ranges::binary_search(local_covered, bucket)) {
                 difference = decodeIbltDifference(*remote_sketch, *local_sketch, bucket);
             }
             if (!difference.has_value()) {
                 failed_sketch_buckets.push_back(bucket);
                 continue;
             }
-            if (!std::binary_search(
-                    reconstructed_covered_buckets.begin(),
-                    reconstructed_covered_buckets.end(),
-                    bucket
-                )) {
+            if (!std::ranges::binary_search(reconstructed_covered_buckets, bucket)) {
                 reconstructed_covered_buckets.push_back(bucket);
             }
 
-            auto remote_bucket = std::find_if(
-                response.bucket_hashes.begin(),
-                response.bucket_hashes.end(),
-                [bucket](const auto& item) { return item.first == bucket; }
+            auto remote_bucket = std::ranges::find(
+                response.bucket_hashes,
+                bucket,
+                &std::pair<uint32_t, uint64_t>::first
             );
             if (remote_bucket
                 == response.bucket_hashes.end()
@@ -1002,12 +989,11 @@ namespace cinder {
             ++successful_sketches;
         }
 
-        std::sort(failed_sketch_buckets.begin(), failed_sketch_buckets.end());
-        failed_sketch_buckets.erase(
-            std::unique(failed_sketch_buckets.begin(), failed_sketch_buckets.end()),
-            failed_sketch_buckets.end()
-        );
-        std::sort(reconstructed_covered_buckets.begin(), reconstructed_covered_buckets.end());
+        std::ranges::sort(failed_sketch_buckets);
+        auto unique_failed = std::ranges::unique(failed_sketch_buckets);
+        failed_sketch_buckets.erase(unique_failed.begin(), unique_failed.end());
+
+        std::ranges::sort(reconstructed_covered_buckets);
         if (!failed_sketch_buckets.empty()) {
             if (metrics_ != nullptr) {
                 metrics_->replicationMetrics().anti_entropy_iblt_fallbacks.fetch_add(
@@ -1061,55 +1047,22 @@ namespace cinder {
                 DigestResponse merged = response;
                 merged.iblt_sketches.clear();
                 merged.covered_buckets = reconstructed_covered_buckets;
-                merged.covered_buckets.erase(
-                    std::remove_if(
-                        merged.covered_buckets.begin(),
-                        merged.covered_buckets.end(),
-                        [&failed_sketch_buckets](uint32_t bucket) {
-                    return std::binary_search(
-                        failed_sketch_buckets.begin(),
-                        failed_sketch_buckets.end(),
-                        bucket
-                    );
-                }
-                    ),
-                    merged.covered_buckets.end()
-                );
+                std::erase_if(merged.covered_buckets, [&failed_sketch_buckets](uint32_t bucket) {
+                    return std::ranges::binary_search(failed_sketch_buckets, bucket);
+                });
 
-                std::sort(
-                    reconstructed_covered_buckets.begin(),
-                    reconstructed_covered_buckets.end()
-                );
+                std::ranges::sort(reconstructed_covered_buckets);
                 for (uint32_t bucket : reconstructed_covered_buckets) {
-                    if (!std::binary_search(
-                            failed_sketch_buckets.begin(),
-                            failed_sketch_buckets.end(),
-                            bucket
-                        )
-                        && !std::binary_search(
-                            merged.covered_buckets.begin(),
-                            merged.covered_buckets.end(),
-                            bucket
-                        )) {
+                    if (!std::ranges::binary_search(failed_sketch_buckets, bucket)
+                        && !std::ranges::binary_search(merged.covered_buckets, bucket)) {
                         merged.covered_buckets.push_back(bucket);
                     }
                 }
 
                 merged.rows = std::move(rows);
-                merged.rows.erase(
-                    std::remove_if(
-                        merged.rows.begin(),
-                        merged.rows.end(),
-                        [&failed_sketch_buckets](const MetaRow& row) {
-                    return std::binary_search(
-                        failed_sketch_buckets.begin(),
-                        failed_sketch_buckets.end(),
-                        row.bucket
-                    );
-                }
-                    ),
-                    merged.rows.end()
-                );
+                std::erase_if(merged.rows, [&failed_sketch_buckets](const MetaRow& row) {
+                    return std::ranges::binary_search(failed_sketch_buckets, row.bucket);
+                });
                 merged.rows.insert(
                     merged.rows.end(),
                     fallback_response->rows.begin(),
@@ -1121,14 +1074,13 @@ namespace cinder {
                     fallback_response->covered_buckets.end()
                 );
 
-                std::sort(merged.covered_buckets.begin(), merged.covered_buckets.end());
+                std::ranges::sort(merged.covered_buckets);
                 for (const auto& [bucket, hash] : fallback_response->bucket_hashes) {
-                    auto it = std::find_if(
-                        merged.bucket_hashes.begin(),
-                        merged.bucket_hashes.end(),
-                        [bucket](const auto& entry) { return entry.first == bucket; }
+                    auto it = std::ranges::find(
+                        merged.bucket_hashes,
+                        bucket,
+                        &std::pair<uint32_t, uint64_t>::first
                     );
-
                     if (it == merged.bucket_hashes.end()) {
                         merged.bucket_hashes.emplace_back(bucket, hash);
                     } else {
@@ -1136,11 +1088,9 @@ namespace cinder {
                     }
                 }
 
-                std::sort(merged.covered_buckets.begin(), merged.covered_buckets.end());
-                merged.covered_buckets.erase(
-                    std::unique(merged.covered_buckets.begin(), merged.covered_buckets.end()),
-                    merged.covered_buckets.end()
-                );
+                std::ranges::sort(merged.covered_buckets);
+                auto unique_covered = std::ranges::unique(merged.covered_buckets);
+                merged.covered_buckets.erase(unique_covered.begin(), unique_covered.end());
                 finishRefinement(local, partner, round_ctx, merged);
             }
             );
@@ -1196,18 +1146,14 @@ namespace cinder {
         }
 
         std::vector<uint32_t> sorted_covered_buckets = reconstructed_covered_buckets;
-        std::sort(sorted_covered_buckets.begin(), sorted_covered_buckets.end());
+        std::ranges::sort(sorted_covered_buckets);
         for (uint32_t bucket = 0; bucket < num_buckets_; ++bucket) {
             const bool bucket_differs = local[bucket] != remote_buckets[bucket];
             if (has_remote_bucket[bucket] && bucket_differs) {
                 divergent_buckets.push_back(bucket);
             } else if (
                 has_remote_sketch[bucket]
-                && std::binary_search(
-                    sorted_covered_buckets.begin(),
-                    sorted_covered_buckets.end(),
-                    bucket
-                )
+                && std::ranges::binary_search(sorted_covered_buckets, bucket)
                 && sketch_has_diff[bucket]
             ) {
                 divergent_buckets.push_back(bucket);
@@ -1223,16 +1169,12 @@ namespace cinder {
         }
         for (uint32_t bucket = 0; bucket < num_buckets_; ++bucket) {
             if (has_remote_sketch[bucket]
-                && !std::binary_search(
-                    reconstructed_covered_buckets.begin(),
-                    reconstructed_covered_buckets.end(),
-                    bucket
-                )) {
+                && !std::ranges::binary_search(reconstructed_covered_buckets, bucket)) {
                 reconstructed_covered_buckets.push_back(bucket);
             }
         }
 
-        std::sort(reconstructed_covered_buckets.begin(), reconstructed_covered_buckets.end());
+        std::ranges::sort(reconstructed_covered_buckets);
         std::vector<char> covered(num_buckets_, 0);
         for (uint32_t bucket : reconstructed_covered_buckets) {
             if (bucket >= num_buckets_) {
@@ -1247,11 +1189,7 @@ namespace cinder {
             if (row.bucket
                 >= num_buckets_
                 || !covered[row.bucket]
-                || !std::binary_search(
-                    divergent_buckets.begin(),
-                    divergent_buckets.end(),
-                    row.bucket
-                )) {
+                || !std::ranges::binary_search(divergent_buckets, row.bucket)) {
                 CINDER_WARN("bad metadata row", {"from", partner});
                 result_span.setAttribute({"outcome", "bad-meta-row"});
                 result_span.setStatus(SpanStatus::Error);

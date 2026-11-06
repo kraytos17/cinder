@@ -215,10 +215,7 @@ namespace cinder {
 
             auto payload = encodeAdd(entry.hint, now_ms + static_cast<uint64_t>(remaining_ms));
             uint32_t len = static_cast<uint32_t>(payload.size());
-            uint64_t sum = checksum(
-                std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size())
-            );
-
+            uint64_t sum = checksum(asChars(payload));
             ok = writeAll(tmp, &len, sizeof(len))
                 && writeAll(tmp, &sum, sizeof(sum))
                 && writeAll(tmp, payload.data(), payload.size());
@@ -444,10 +441,7 @@ namespace cinder {
 
     auto HintJournal::writeRecord(const std::vector<std::byte>& payload) const -> bool {
         uint32_t len = static_cast<uint32_t>(payload.size());
-        uint64_t sum = checksum(
-            std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size())
-        );
-
+        uint64_t sum = checksum(asChars(payload));
         return writeAll(fd_, &len, sizeof(len))
             && writeAll(fd_, &sum, sizeof(sum))
             && writeAll(fd_, payload.data(), payload.size());

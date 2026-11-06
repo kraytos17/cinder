@@ -1,6 +1,7 @@
 #pragma once
 
 #include <bit>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -9,6 +10,7 @@
 #include <string_view>
 
 #include "cinder/common/status.hpp"
+#include "cinder/common/types.hpp"
 
 namespace cinder::net {
 
@@ -21,18 +23,18 @@ namespace cinder::net {
         explicit ByteReader(std::span<const std::byte> data) :
             data_(data) {}
 
-        template <typename T> auto read() -> Result<T> {
+        template <std::integral T> auto read() -> Result<T> {
             if (sizeof(T) > remaining()) {
                 return err<T>(Error(Errc::InvalidArgument, "truncated"));
             }
 
             T val{};
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
             std::memcpy(&val, &data_[off_], sizeof(T));
-#else
-            std::memcpy(&val, &data_[off_], sizeof(T));
-            val = std::byteswap(val);
-#endif
+            // Wire order is big-endian; byteswap only where the host differs.
+            if constexpr (std::endian::native == std::endian::little) {
+                val = std::byteswap(val);
+            }
+
             off_ += sizeof(T);
             return val;
         }
@@ -67,7 +69,7 @@ namespace cinder::net {
             if (!bytes) {
                 return err<std::string_view>(bytes.error());
             }
-            return std::string_view(reinterpret_cast<const char*>(bytes->data()), len);
+            return asChars(*bytes);
         }
 
         [[nodiscard]]

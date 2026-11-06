@@ -378,38 +378,39 @@ namespace cinder::net {
     }
 
     static auto getOperationName(Opcode op) -> std::string_view {
+        using enum Opcode;
         switch (op) {
-            case Opcode::Get:
+            case Get:
                 return "tcp.get";
-            case Opcode::Set:
+            case Set:
                 return "tcp.set";
-            case Opcode::Del:
+            case Del:
                 return "tcp.del";
-            case Opcode::Ping:
+            case Ping:
                 return "tcp.ping";
-            case Opcode::Replicate:
+            case Replicate:
                 return "replication.write";
-            case Opcode::Hint:
+            case Hint:
                 return "replication.hint";
-            case Opcode::GetVersioned:
+            case GetVersioned:
                 return "tcp.getVersioned";
-            case Opcode::Gossip:
+            case Gossip:
                 return "gossip.handle";
-            case Opcode::AntiEntropyDigest:
+            case AntiEntropyDigest:
                 return "anti_entropy.digest";
-            case Opcode::AntiEntropySync:
+            case AntiEntropySync:
                 return "anti_entropy.sync";
-            case Opcode::AdminInfo:
+            case AdminInfo:
                 return "admin.info";
-            case Opcode::AdminCluster:
+            case AdminCluster:
                 return "admin.cluster";
-            case Opcode::AdminRing:
+            case AdminRing:
                 return "admin.ring";
-            case Opcode::AdminCompact:
+            case AdminCompact:
                 return "admin.compact";
-            case Opcode::AdminConfigReload:
+            case AdminConfigReload:
                 return "admin.config_reload";
-            case Opcode::AdminShutdown:
+            case AdminShutdown:
                 return "admin.shutdown";
             default:
                 return "unknown";
@@ -428,19 +429,20 @@ namespace cinder::net {
     }
 
     auto TcpConnection::classifyOpcode(Opcode op) -> OpcodeClass {
+        using enum Opcode;
         switch (op) {
-            case Opcode::Replicate:
-            case Opcode::Hint:
-            case Opcode::Gossip:
-            case Opcode::AntiEntropyDigest:
-            case Opcode::AntiEntropySync:
+            case Replicate:
+            case Hint:
+            case Gossip:
+            case AntiEntropyDigest:
+            case AntiEntropySync:
                 return OpcodeClass::Replication;
-            case Opcode::AdminInfo:
-            case Opcode::AdminCluster:
-            case Opcode::AdminRing:
-            case Opcode::AdminCompact:
-            case Opcode::AdminConfigReload:
-            case Opcode::AdminShutdown:
+            case AdminInfo:
+            case AdminCluster:
+            case AdminRing:
+            case AdminCompact:
+            case AdminConfigReload:
+            case AdminShutdown:
                 return OpcodeClass::Admin;
             default:
                 return OpcodeClass::Client;
@@ -448,65 +450,66 @@ namespace cinder::net {
     }
 
     void TcpConnection::recordOpcodeMetric(Opcode op) {
+        using enum Opcode;
         if (metrics_ == nullptr) {
             return;
         }
         switch (op) {
-            case Opcode::Get:
+            case Get:
                 metrics_->opcodeMetrics().client.gets.fetchAdd(1, std::memory_order_relaxed);
                 break;
-            case Opcode::Set:
+            case Set:
                 metrics_->opcodeMetrics().client.sets.fetchAdd(1, std::memory_order_relaxed);
                 break;
-            case Opcode::Del:
+            case Del:
                 metrics_->opcodeMetrics().client.dels.fetchAdd(1, std::memory_order_relaxed);
                 break;
-            case Opcode::Ping:
+            case Ping:
                 metrics_->opcodeMetrics().client.pings.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::Replicate:
+            case Replicate:
                 metrics_->opcodeMetrics().repl.replicates.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::Hint:
+            case Hint:
                 metrics_->opcodeMetrics().repl.hints.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::GetVersioned:
+            case GetVersioned:
                 metrics_->opcodeMetrics().repl.gets_versioned.fetch_add(
                     1,
                     std::memory_order_relaxed
                 );
                 break;
-            case Opcode::AntiEntropyDigest:
+            case AntiEntropyDigest:
                 metrics_->opcodeMetrics().repl.anti_entropy_digest.fetch_add(
                     1,
                     std::memory_order_relaxed
                 );
                 break;
-            case Opcode::AntiEntropySync:
+            case AntiEntropySync:
                 metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
                     1,
                     std::memory_order_relaxed
                 );
                 break;
-            case Opcode::AdminInfo:
+            case AdminInfo:
                 metrics_->opcodeMetrics().admin.info.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::AdminCluster:
+            case AdminCluster:
                 metrics_->opcodeMetrics().admin.cluster.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::AdminRing:
+            case AdminRing:
                 metrics_->opcodeMetrics().admin.ring.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::AdminCompact:
+            case AdminCompact:
                 metrics_->opcodeMetrics().admin.compact.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case Opcode::AdminConfigReload:
+            case AdminConfigReload:
                 metrics_->opcodeMetrics().admin.config_reload.fetch_add(
                     1,
                     std::memory_order_relaxed
                 );
                 break;
-            case Opcode::AdminShutdown:
+            case AdminShutdown:
                 metrics_->opcodeMetrics().admin.shutdown.fetch_add(1, std::memory_order_relaxed);
                 break;
             default:
@@ -593,7 +596,6 @@ namespace cinder::net {
         if (metrics_) {
             metrics_->connectionMetrics().redirects.fetch_add(1, std::memory_order_relaxed);
         }
-
         sendResponse({
             .status = Errc::NotReady,
             .value = redirectValue(owner),
@@ -643,38 +645,39 @@ namespace cinder::net {
 
     auto TcpConnection::dispatchRequest(const Request& req, Response& res, bool is_internal)
         -> bool {
+        using enum Opcode;
         switch (req.opcode) {
-            case Opcode::Get:
+            case Get:
                 handleGet(req, res, is_internal);
                 return true;
-            case Opcode::GetVersioned:
+            case GetVersioned:
                 return handleGetVersioned(req, res, is_internal);
-            case Opcode::Set:
+            case Set:
                 handleSet(req);
                 return true;
-            case Opcode::Del:
+            case Del:
                 handleDelete(req);
                 return true;
-            case Opcode::Ping:
+            case Ping:
                 res.status = Errc::OK;
                 return false;
-            case Opcode::Replicate:
-            case Opcode::Hint:
+            case Replicate:
+            case Hint:
                 handleReplicate(req, res);
                 return false;
-            case Opcode::Gossip:
+            case Gossip:
                 handleGossip(req, res);
                 return false;
-            case Opcode::AntiEntropyDigest:
+            case AntiEntropyDigest:
                 return handleAntiEntropyDigest(req);
-            case Opcode::AntiEntropySync:
+            case AntiEntropySync:
                 return handleAntiEntropySync(req);
-            case Opcode::AdminInfo:
-            case Opcode::AdminCluster:
-            case Opcode::AdminRing:
-            case Opcode::AdminCompact:
-            case Opcode::AdminConfigReload:
-            case Opcode::AdminShutdown:
+            case AdminInfo:
+            case AdminCluster:
+            case AdminRing:
+            case AdminCompact:
+            case AdminConfigReload:
+            case AdminShutdown:
                 handleAdmin(req, res);
                 return false;
             default: {
@@ -693,7 +696,6 @@ namespace cinder::net {
             if (quorum_read) {
                 ring_.incrementLoad(node_id_);
             }
-
             operations_.getAsync(
                 req.key,
                 [this, self, key = req.key, trace_id, span_id, quorum_read](
@@ -927,33 +929,34 @@ namespace cinder::net {
     }
 
     void TcpConnection::handleAdmin(const Request& req, Response& res) {
+        using enum Opcode;
         switch (req.opcode) {
-            case Opcode::AdminInfo:
+            case AdminInfo:
                 if (admin_ && admin_->info_getter) {
                     res.value = admin_->info_getter();
                 }
                 break;
-            case Opcode::AdminCluster:
+            case AdminCluster:
                 if (admin_ && admin_->cluster_getter) {
                     res.value = admin_->cluster_getter();
                 }
                 break;
-            case Opcode::AdminRing:
+            case AdminRing:
                 if (admin_ && admin_->ring_getter) {
                     res.value = admin_->ring_getter();
                 }
                 break;
-            case Opcode::AdminCompact:
+            case AdminCompact:
                 if (admin_ && admin_->compact_trigger) {
                     admin_->compact_trigger();
                 }
                 break;
-            case Opcode::AdminConfigReload:
+            case AdminConfigReload:
                 if (admin_ && admin_->config_reload_trigger) {
                     admin_->config_reload_trigger();
                 }
                 break;
-            case Opcode::AdminShutdown:
+            case AdminShutdown:
                 if (admin_ && admin_->shutdown_trigger) {
                     admin_->shutdown_trigger();
                 }

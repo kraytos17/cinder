@@ -316,5 +316,52 @@ logging:
             auto json = formatConfigJson(cfg);
             EXPECT_TRUE(json.contains("node\\\"with\\\\special\\nchars"));
         }
+
+        TEST(ConfigTest, FormatNodeInfoJsonKeepsAdminSchemaAndEscaping) {
+            Config cfg;
+            cfg.port = 7001;
+            cfg.capacity = 8192;
+            cfg.replica_factor = 2;
+            cfg.consistency = "quorum";
+            cfg.peers.push_back({"peer\"2", "host\\name", 7002});
+
+            const auto json = formatNodeInfoJson("node\"1", cfg, 321, 12);
+            EXPECT_EQ(
+                json,
+                R"({"node_id":"node\"1","port":7001,"capacity_bytes":8192,"current_bytes":321,"current_entries":12,"eviction_policy":"lru","replica_factor":2,"consistency":"quorum","persistence_enabled":false,"anti_entropy_interval_ms":30000,"anti_entropy_buckets":256,"anti_entropy_fetch_bytes":1048576,"anti_entropy_full_rehash_interval_ms":300000,"tls_enabled":false,"auth_enabled":false,"client_auth_enabled":false,"log_level":"info","peers":[{"id":"peer\"2","host":"host\\name","port":7002}]})"
+            );
+        }
+
+        TEST(ConfigTest, FormatClusterJsonKeepsOrderAndEscaping) {
+            const std::vector<NodeInfo> nodes{
+                NodeInfo{
+                    .id = "node\"1",
+                    .host = "host\\one",
+                    .port = 7000,
+                    .state = NodeState::Alive,
+                    .incarnation = 3
+                },
+                NodeInfo{
+                    .id = "node2",
+                    .host = "host2",
+                    .port = 7001,
+                    .state = NodeState::Suspect,
+                    .incarnation = 4
+                },
+            };
+
+            EXPECT_EQ(
+                formatClusterJson(nodes),
+                R"([{"id":"node\"1","host":"host\\one","port":7000,"state":"alive","incarnation":3},{"id":"node2","host":"host2","port":7001,"state":"suspect","incarnation":4}])"
+            );
+            EXPECT_EQ(formatClusterJson({}), "[]");
+        }
+
+        TEST(ConfigTest, FormatRingJsonKeepsSchemaAndEscaping) {
+            EXPECT_EQ(
+                formatRingJson("node\"1"),
+                R"({"self":"node\"1","vnodes_per_node":150,"note":"ring is an immutable snapshot with 150 vnodes per physical node"})"
+            );
+        }
     } // namespace
 } // namespace cinder

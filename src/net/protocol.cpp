@@ -3,6 +3,7 @@
 #include <array>
 #include <bit>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstring>
 #include <limits>
@@ -109,7 +110,7 @@ namespace cinder::net {
         return true;
     }
 
-    template <typename T> static auto mustRead(ByteReader& reader) -> Result<T> {
+    template <std::integral T> static auto mustRead(ByteReader& reader) -> Result<T> {
         return reader.read<T>();
     }
 
@@ -320,7 +321,7 @@ namespace cinder::net {
         if ((*flags & K_FLAG_HAS_AUTH) != 0 && r.remaining() >= 32) {
             auto auth_bytes = r.readBytes(32);
             if (auth_bytes) {
-                decoded.auth_token.assign(reinterpret_cast<const char*>(auth_bytes->data()), 32);
+                decoded.auth_token.assign(asChars(*auth_bytes));
             }
         }
         return ok(std::move(decoded));

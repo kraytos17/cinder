@@ -84,7 +84,7 @@ namespace cinder {
                 candidate *= 0x94D049BB133111EBULL;
                 candidate ^= candidate >> 31U;
                 positions[i] = static_cast<size_t>(candidate % count);
-                while (std::find(
+                while (std::ranges::find(
                            positions.begin(),
                            positions.begin() + static_cast<ptrdiff_t>(i),
                            positions[i]
@@ -439,11 +439,7 @@ namespace cinder {
                 return std::nullopt;
             }
             for (const auto& row : response.rows) {
-                if (!std::binary_search(
-                        response.covered_buckets.begin(),
-                        response.covered_buckets.end(),
-                        row.bucket
-                    )) {
+                if (!std::ranges::binary_search(response.covered_buckets, row.bucket)) {
                     return std::nullopt;
                 }
             }
@@ -456,12 +452,11 @@ namespace cinder {
             );
 
             std::vector<uint32_t> sorted_covered = response.covered_buckets;
-            std::sort(sorted_covered.begin(), sorted_covered.end());
+            std::ranges::sort(sorted_covered);
             std::vector<uint32_t> sketch_buckets;
             sketch_buckets.reserve(response.iblt_sketches.size());
-            for (const auto& [bucket, sketch] : response.iblt_sketches) {
-                (void)sketch;
-                if (!std::binary_search(sorted_covered.begin(), sorted_covered.end(), bucket)) {
+            for (const auto& [bucket, _] : response.iblt_sketches) {
+                if (!std::ranges::binary_search(sorted_covered, bucket)) {
                     return std::nullopt;
                 }
                 if (bucket >= sketch_bucket_seen.size() || sketch_bucket_seen[bucket]) {
@@ -472,9 +467,8 @@ namespace cinder {
                 sketch_buckets.push_back(bucket);
             }
 
-            std::sort(sketch_buckets.begin(), sketch_buckets.end());
-            if (std::adjacent_find(sketch_buckets.begin(), sketch_buckets.end())
-                != sketch_buckets.end()) {
+            std::ranges::sort(sketch_buckets);
+            if (std::ranges::adjacent_find(sketch_buckets) != sketch_buckets.end()) {
                 return std::nullopt;
             }
             for (const auto& row : response.rows) {

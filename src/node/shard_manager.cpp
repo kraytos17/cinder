@@ -60,7 +60,7 @@ namespace cinder {
                 continue;
             }
 
-            bool staying = std::find(desired.begin(), desired.end(), self_) != desired.end();
+            bool staying = std::ranges::contains(desired, self_);
             if (staying) {
                 // Keep the local copy; make sure every other member has it too.
                 for (const auto& owner : desired) {

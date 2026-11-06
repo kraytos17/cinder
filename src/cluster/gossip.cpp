@@ -106,7 +106,7 @@ namespace cinder {
                 peers_.push_back(info.id);
             }
         }
-        std::sort(peers_.begin(), peers_.end());
+        std::ranges::sort(peers_);
     }
 
     void GossipManager::sendView(const NodeId& to) {

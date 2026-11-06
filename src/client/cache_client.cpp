@@ -83,11 +83,8 @@ namespace cinder {
         // instead. When the server attached an address, register it first
         // so nodes outside the client config are reachable.
         auto target = parseRedirectTarget(res.value().value.value_or(""));
-        bool fresh = target.has_value()
-            && target->id
-            != node
-            && std::find(visited.begin(), visited.end(), target->id)
-            == visited.end();
+        bool fresh =
+            target.has_value() && target->id != node && !std::ranges::contains(visited, target->id);
         if (!fresh || hops >= K_MAX_REDIRECT_HOPS) {
             return std::nullopt;
         }

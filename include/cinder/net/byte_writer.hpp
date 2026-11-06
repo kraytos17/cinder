@@ -2,6 +2,7 @@
 
 #include <bit>
 #include <cassert>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -20,14 +21,14 @@ namespace cinder::net {
         explicit ByteWriter(std::vector<std::byte>& out) :
             out_(out) {}
 
-        template <typename T> void write(T val) {
+        template <std::integral T> void write(T val) {
             assert(off_ + sizeof(T) <= out_.size());
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+            // Wire order is big-endian; byteswap only where the host differs.
+            if constexpr (std::endian::native == std::endian::little) {
+                val = std::byteswap(val);
+            }
+
             std::memcpy(&out_[off_], &val, sizeof(T));
-#else
-            auto net = std::byteswap(val);
-            std::memcpy(&out_[off_], &net, sizeof(T));
-#endif
             off_ += sizeof(T);
         }
 

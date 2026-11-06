@@ -1,6 +1,8 @@
 #include "cinder/common/config.hpp"
 
+#include <format>
 #include <fstream>
+#include <ranges>
 #include <string>
 #include <yaml-cpp/yaml.h>
 
@@ -42,59 +44,61 @@ namespace cinder {
     } // namespace
 
     auto formatConfigJson(const Config& cfg) -> std::string {
-        std::string out = "{";
-        out += R"("node_id":")" + escapeJsonString(cfg.node_id) + "\",";
-        out += "\"port\":" + std::to_string(cfg.port) + ",";
-        out += "\"capacity\":" + std::to_string(cfg.capacity) + ",";
-        out += "\"replica_factor\":" + std::to_string(cfg.replica_factor) + ",";
-        out += R"("consistency":")" + escapeJsonString(cfg.consistency) + "\",";
-        out += "\"peers\":[";
+        std::string peers;
         for (size_t i = 0; i < cfg.peers.size(); ++i) {
             if (i > 0) {
-                out += ',';
+                peers += ',';
             }
 
-            out += R"({"id":")" + escapeJsonString(cfg.peers[i].id) + "\",";
-            out += R"("host":")" + escapeJsonString(cfg.peers[i].host) + "\",";
-            out += "\"port\":" + std::to_string(cfg.peers[i].port) + "}";
+            peers += std::format(
+                R"({{"id":"{}","host":"{}","port":{}}})",
+                escapeJsonString(cfg.peers[i].id),
+                escapeJsonString(cfg.peers[i].host),
+                cfg.peers[i].port
+            );
         }
-
-        out += "],";
-        out += "\"ping_interval_ms\":" + std::to_string(cfg.ping_interval_ms) + ",";
-        out += "\"suspect_timeout_ms\":" + std::to_string(cfg.suspect_timeout_ms) + ",";
-        out += "\"gossip_interval_ms\":" + std::to_string(cfg.gossip_interval_ms) + ",";
-        out += "\"quarantine_interval_ms\":" + std::to_string(cfg.quarantine_interval_ms) + ",";
-        out += "\"rpc_timeout_ms\":" + std::to_string(cfg.rpc_timeout_ms) + ",";
-        out += "\"max_hint_bytes\":" + std::to_string(cfg.max_hint_bytes) + ",";
-        out += "\"tombstone_gc_ms\":" + std::to_string(cfg.tombstone_gc_ms) + ",";
-        out += "\"anti_entropy_interval_ms\":" + std::to_string(cfg.anti_entropy_interval_ms) + ",";
-        out += "\"anti_entropy_buckets\":" + std::to_string(cfg.anti_entropy_buckets) + ",";
-        out += "\"anti_entropy_fetch_bytes\":" + std::to_string(cfg.anti_entropy_fetch_bytes) + ",";
-        out += "\"anti_entropy_full_rehash_interval_ms\":"
-            + std::to_string(cfg.anti_entropy_full_rehash_interval_ms)
-            + ",";
-        out += "\"persistence_enabled\":"
-            + std::string(cfg.persistence_enabled ? "true" : "false")
-            + ",";
-
-        out += R"("data_dir":")" + escapeJsonString(cfg.data_dir) + "\",";
-        out += "\"snapshot_interval_s\":" + std::to_string(cfg.snapshot_interval_s) + ",";
-        out += "\"max_wal_entries\":" + std::to_string(cfg.max_wal_entries) + ",";
-        out += "\"wal_fsync\":" + std::string(cfg.wal_fsync ? "true" : "false") + ",";
-        out += "\"tls_enabled\":" + std::string(cfg.tls.enabled ? "true" : "false") + ",";
-        out += "\"auth_enabled\":"
-            + std::string(cfg.auth.shared_secret.empty() ? "false" : "true")
-            + ",";
-        out += "\"client_auth_enabled\":"
-            + std::string(cfg.auth.client_shared_secret.empty() ? "false" : "true")
-            + ",";
-
-        out += "\"metrics_port\":" + std::to_string(cfg.metrics_port) + ",";
-        out += "\"grpc_port\":" + std::to_string(cfg.grpc_port) + ",";
-        out += R"("log_level":")" + escapeJsonString(cfg.log_level) + "\",";
-        out += R"("config_path":")" + escapeJsonString(cfg.config_path) + "\"";
-        out += '}';
-        return out;
+        return std::format(
+            R"({{"node_id":"{}","port":{},"capacity":{},"replica_factor":{},)"
+            R"("consistency":"{}","peers":[{}],)"
+            R"("ping_interval_ms":{},"suspect_timeout_ms":{},)"
+            R"("gossip_interval_ms":{},"quarantine_interval_ms":{},)"
+            R"("rpc_timeout_ms":{},"max_hint_bytes":{},"tombstone_gc_ms":{},)"
+            R"("anti_entropy_interval_ms":{},"anti_entropy_buckets":{},)"
+            R"("anti_entropy_fetch_bytes":{},"anti_entropy_full_rehash_interval_ms":{},)"
+            R"("persistence_enabled":{},"data_dir":"{}",)"
+            R"("snapshot_interval_s":{},"max_wal_entries":{},"wal_fsync":{},)"
+            R"("tls_enabled":{},"auth_enabled":{},"client_auth_enabled":{},)"
+            R"("metrics_port":{},"grpc_port":{},"log_level":"{}","config_path":"{}"}})",
+            escapeJsonString(cfg.node_id),
+            cfg.port,
+            cfg.capacity,
+            cfg.replica_factor,
+            escapeJsonString(cfg.consistency),
+            peers,
+            cfg.ping_interval_ms,
+            cfg.suspect_timeout_ms,
+            cfg.gossip_interval_ms,
+            cfg.quarantine_interval_ms,
+            cfg.rpc_timeout_ms,
+            cfg.max_hint_bytes,
+            cfg.tombstone_gc_ms,
+            cfg.anti_entropy_interval_ms,
+            cfg.anti_entropy_buckets,
+            cfg.anti_entropy_fetch_bytes,
+            cfg.anti_entropy_full_rehash_interval_ms,
+            cfg.persistence_enabled,
+            escapeJsonString(cfg.data_dir),
+            cfg.snapshot_interval_s,
+            cfg.max_wal_entries,
+            cfg.wal_fsync,
+            cfg.tls.enabled,
+            !cfg.auth.shared_secret.empty(),
+            !cfg.auth.client_shared_secret.empty(),
+            cfg.metrics_port,
+            cfg.grpc_port,
+            escapeJsonString(cfg.log_level),
+            escapeJsonString(cfg.config_path)
+        );
     }
 
     auto diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::string> {
@@ -118,13 +122,13 @@ namespace cinder {
             changed.emplace_back("peers");
         } else {
             bool peers_changed = false;
-            for (size_t i = 0; i < old_cfg.peers.size(); ++i) {
-                if (old_cfg.peers[i].id
-                    != new_cfg.peers[i].id
-                    || old_cfg.peers[i].host
-                    != new_cfg.peers[i].host
-                    || old_cfg.peers[i].port
-                    != new_cfg.peers[i].port) {
+            for (auto&& [old_peer, new_peer] : std::views::zip(old_cfg.peers, new_cfg.peers)) {
+                if (old_peer.id
+                    != new_peer.id
+                    || old_peer.host
+                    != new_peer.host
+                    || old_peer.port
+                    != new_peer.port) {
                     peers_changed = true;
                     break;
                 }
@@ -357,77 +361,69 @@ namespace cinder {
         size_t store_size,
         size_t store_entries
     ) -> std::string {
-        std::string out = "{";
-        out += R"("node_id":")" + escapeJsonString(node_id) + "\",";
-        out += "\"port\":" + std::to_string(config.port) + ",";
-        out += "\"capacity_bytes\":" + std::to_string(config.capacity) + ",";
-        out += "\"current_bytes\":" + std::to_string(store_size) + ",";
-        out += "\"current_entries\":" + std::to_string(store_entries) + ",";
-        out += R"("eviction_policy":")" + escapeJsonString("lru") + "\",";
-        out += "\"replica_factor\":" + std::to_string(config.replica_factor) + ",";
-        out += R"("consistency":")" + escapeJsonString(config.consistency) + "\",";
-        out += "\"persistence_enabled\":"
-            + std::string(config.persistence_enabled ? "true" : "false")
-            + ",";
-
-        out +=
-            "\"anti_entropy_interval_ms\":" + std::to_string(config.anti_entropy_interval_ms) + ",";
-        out += "\"anti_entropy_buckets\":" + std::to_string(config.anti_entropy_buckets) + ",";
-        out +=
-            "\"anti_entropy_fetch_bytes\":" + std::to_string(config.anti_entropy_fetch_bytes) + ",";
-        out += "\"anti_entropy_full_rehash_interval_ms\":"
-            + std::to_string(config.anti_entropy_full_rehash_interval_ms)
-            + ",";
-        out += "\"tls_enabled\":" + std::string(config.tls.enabled ? "true" : "false") + ",";
-        out += "\"auth_enabled\":"
-            + std::string(config.auth.shared_secret.empty() ? "false" : "true")
-            + ",";
-        out += "\"client_auth_enabled\":"
-            + std::string(config.auth.client_shared_secret.empty() ? "false" : "true")
-            + ",";
-
-        out += R"("log_level":")" + escapeJsonString(config.log_level) + "\",";
-        out += "\"peers\":[";
-        for (size_t i = 0; i < config.peers.size(); ++i) {
-            if (i > 0) {
-                out += ',';
+        std::string peers;
+        for (auto&& [index, peer] : std::views::enumerate(config.peers)) {
+            if (index != 0) {
+                peers += ',';
             }
 
-            out += R"({"id":")" + escapeJsonString(config.peers[i].id) + "\",";
-            out += R"("host":")" + escapeJsonString(config.peers[i].host) + "\",";
-            out += "\"port\":" + std::to_string(config.peers[i].port) + "}";
+            peers += std::format(
+                R"({{"id":"{}","host":"{}","port":{}}})",
+                escapeJsonString(peer.id),
+                escapeJsonString(peer.host),
+                peer.port
+            );
         }
-
-        out += "]}";
-        return out;
+        return std::format(
+            R"({{"node_id":"{}","port":{},"capacity_bytes":{},"current_bytes":{},"current_entries":{},)"
+            R"("eviction_policy":"lru","replica_factor":{},"consistency":"{}",)"
+            R"("persistence_enabled":{},"anti_entropy_interval_ms":{},)"
+            R"("anti_entropy_buckets":{},"anti_entropy_fetch_bytes":{},)"
+            R"("anti_entropy_full_rehash_interval_ms":{},"tls_enabled":{},)"
+            R"("auth_enabled":{},"client_auth_enabled":{},"log_level":"{}","peers":[{}]}})",
+            escapeJsonString(node_id),
+            config.port,
+            config.capacity,
+            store_size,
+            store_entries,
+            config.replica_factor,
+            escapeJsonString(config.consistency),
+            config.persistence_enabled,
+            config.anti_entropy_interval_ms,
+            config.anti_entropy_buckets,
+            config.anti_entropy_fetch_bytes,
+            config.anti_entropy_full_rehash_interval_ms,
+            config.tls.enabled,
+            !config.auth.shared_secret.empty(),
+            !config.auth.client_shared_secret.empty(),
+            escapeJsonString(config.log_level),
+            peers
+        );
     }
 
     auto formatClusterJson(const std::vector<NodeInfo>& nodes) -> std::string {
-        std::string out = "[";
-        for (size_t i = 0; i < nodes.size(); ++i) {
-            if (i > 0) {
-                out += ',';
+        std::string entries;
+        for (auto&& [index, node] : std::views::enumerate(nodes)) {
+            if (index != 0) {
+                entries += ',';
             }
 
-            out += '{';
-            out += R"("id":")" + escapeJsonString(nodes[i].id) + "\",";
-            out += R"("host":")" + escapeJsonString(nodes[i].host) + "\",";
-            out += "\"port\":" + std::to_string(nodes[i].port) + ",";
-            out += R"("state":")" + std::string(nodeStateToString(nodes[i].state)) + "\",";
-            out += "\"incarnation\":" + std::to_string(nodes[i].incarnation);
-            out += '}';
+            entries += std::format(
+                R"({{"id":"{}","host":"{}","port":{},"state":"{}","incarnation":{}}})",
+                escapeJsonString(node.id),
+                escapeJsonString(node.host),
+                node.port,
+                nodeStateToString(node.state),
+                node.incarnation
+            );
         }
-
-        out += ']';
-        return out;
+        return std::format("[{}]", entries);
     }
 
     auto formatRingJson(const NodeId& self) -> std::string {
-        std::string out = "{";
-        out += R"("self":")" + escapeJsonString(self) + "\",";
-        out += "\"vnodes_per_node\":150,";
-        out += R"("note":"ring is an immutable snapshot with 150 vnodes per physical node")";
-        out += '}';
-        return out;
+        return std::format(
+            R"({{"self":"{}","vnodes_per_node":150,"note":"ring is an immutable snapshot with 150 vnodes per physical node"}})",
+            escapeJsonString(self)
+        );
     }
 } // namespace cinder
