@@ -3,8 +3,6 @@
 #include <atomic>
 #include <chrono>
 #include <fcntl.h>
-#include <filesystem>
-#include <future>
 #include <gtest/gtest.h>
 #include <random>
 #include <string>
@@ -13,15 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "cinder/cluster/membership.hpp"
-#include "cinder/cluster/transport.hpp"
-#include "cinder/common/metrics.hpp"
-#include "cinder/common/tracing.hpp"
-#include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/node/replication_manager.hpp"
-#include "cinder/store/lru_store.hpp"
-#include "test_scratch.hpp"
 #include "unit/hint_test_helpers.hpp"
 
 using std::chrono::milliseconds;
@@ -78,7 +69,7 @@ namespace cinder {
             ASSERT_EQ(keys.size(), K_USABLE);
             EXPECT_EQ(keys.front(), "k1") << "k0 was oldest and should have been dropped";
             EXPECT_EQ(keys.back(), "newest");
-            EXPECT_EQ(std::count(keys.begin(), keys.end(), "k0"), 0);
+            EXPECT_EQ(std::ranges::count(keys, "k0"), 0);
         }
 
         TEST(HintQueueTest, ByteBudgetEvictsOldestFirst) {
@@ -586,7 +577,7 @@ namespace cinder {
             // Compare as sets: replay order is FIFO per producer but
             // interleaving across producers is schedule-dependent, and
             // lexicographic sort does not match numeric key order.
-            std::sort(seen.begin(), seen.end());
+            std::ranges::sort(seen);
             std::vector<std::string> want;
             want.reserve(seen.size());
             for (int p = 0; p < K_PRODUCERS; ++p) {
@@ -594,7 +585,7 @@ namespace cinder {
                     want.push_back("n" + std::to_string(p) + "|k" + std::to_string(i));
                 }
             }
-            std::sort(want.begin(), want.end());
+            std::ranges::sort(want);
             EXPECT_EQ(seen, want) << "hint set mismatch under concurrency";
         }
 

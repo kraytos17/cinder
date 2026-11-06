@@ -1,4 +1,4 @@
-#include <algorithm>
+#include <ankerl/unordered_dense.h>
 #include <array>
 #include <gtest/gtest.h>
 
@@ -34,7 +34,7 @@ namespace cinder {
             ring.addNode("a");
             ring.addNode("b");
 
-            std::set<std::string> nodes;
+            ankerl::unordered_dense::set<std::string> nodes;
             for (int i = 0; i < 1000; i++) {
                 nodes.insert(ring.getNode(std::to_string(i)));
             }
@@ -303,11 +303,7 @@ namespace cinder {
                 }
                 // Exactly one classification row per value.
                 EXPECT_EQ(
-                    std::count_if(
-                        std::begin(cases),
-                        std::end(cases),
-                        [v](const Case& c) { return c.code == v; }
-                    ),
+                    std::ranges::count_if(cases, [v](const Case& c) { return c.code == v; }),
                     1
                 )
                     << "Errc value "
@@ -316,7 +312,7 @@ namespace cinder {
             }
             // No row may reference a value outside the enumerated set.
             for (const auto& c : cases) {
-                EXPECT_EQ(std::count(std::begin(k_all_values), std::end(k_all_values), c.code), 1)
+                EXPECT_EQ(std::ranges::count(k_all_values, c.code), 1)
                     << "table row for an unknown Errc";
             }
         }

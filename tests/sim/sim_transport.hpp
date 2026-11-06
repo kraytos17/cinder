@@ -19,12 +19,13 @@ using std::chrono::steady_clock;
 // time (a queued message may be silently dropped). Deterministic: same seed →
 // same delivery schedule.
 class SimBus {
-  public:
+public:
 
     using Handler =
         std::move_only_function<void(const cinder::NodeId& from, const cinder::net::Request&)>;
-    using RequestHandler = std::move_only_function<cinder::net::Response(
-        const cinder::NodeId& from, const cinder::net::Request&)>;
+    using RequestHandler = std::move_only_function<
+        cinder::net::Response(const cinder::NodeId& from, const cinder::net::Request&)
+    >;
 
     explicit SimBus(SimClock& clock, uint64_t seed);
 
@@ -35,14 +36,20 @@ class SimBus {
     void registerRequestHandler(const cinder::NodeId& id, RequestHandler handler);
 
     // Returns false if the target is down (message not accepted).
-    auto route(const cinder::NodeId& from, const cinder::NodeId& to,
-        const cinder::net::Request& req) -> bool;
+    auto route(
+        const cinder::NodeId& from,
+        const cinder::NodeId& to,
+        const cinder::net::Request& req
+    ) -> bool;
 
     // Route a request-response message. The response callback is invoked when
     // the message is delivered (or dropped).
-    auto routeRequest(const cinder::NodeId& from, const cinder::NodeId& to,
+    auto routeRequest(
+        const cinder::NodeId& from,
+        const cinder::NodeId& to,
         const cinder::net::Request& req,
-        cinder::Transport::RequestCallback on_response) -> bool;
+        cinder::Transport::RequestCallback on_response
+    ) -> bool;
 
     // Deliver every scheduled message whose time has come (<= clock.now()).
     void deliver();
@@ -56,7 +63,7 @@ class SimBus {
     auto deliveredCount() const -> size_t;
     auto droppedCount() const -> size_t;
 
-  private:
+private:
 
     struct Event {
         steady_clock::time_point deliver_at;
@@ -91,17 +98,23 @@ class SimBus {
 // Per-node view of a shared SimBus. Satisfies cinder::Transport so a
 // ReplicationManager can send/register against it.
 class SimTransport final : public cinder::Transport {
-  public:
+public:
 
     SimTransport(SimBus& bus, cinder::NodeId from);
 
-    void sendAsync(const cinder::NodeId& to, const cinder::net::Request& req,
-        cinder::Transport::SendCallback on_done) override;
-    void sendRequestAsync(const cinder::NodeId& to, const cinder::net::Request& req,
-        cinder::Transport::RequestCallback on_done) override;
+    void sendAsync(
+        const cinder::NodeId& to,
+        const cinder::net::Request& req,
+        cinder::Transport::SendCallback on_done
+    ) override;
+    void sendRequestAsync(
+        const cinder::NodeId& to,
+        const cinder::net::Request& req,
+        cinder::Transport::RequestCallback on_done
+    ) override;
     void onMessage(MessageHandler handler) override;
 
-  private:
+private:
 
     SimBus& bus_;
     cinder::NodeId from_;

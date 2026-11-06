@@ -130,7 +130,7 @@ namespace {
             if (candidate.empty() || candidate == "fuzz-self") {
                 candidate = "node" + std::to_string(ids.size());
             }
-            if (std::find(ids.begin(), ids.end(), candidate) == ids.end()) {
+            if (!std::ranges::contains(ids, candidate)) {
                 ids.push_back(std::move(candidate));
             }
         }

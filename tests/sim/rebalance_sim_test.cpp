@@ -240,10 +240,8 @@ namespace cinder {
             size_t retained = 0;
             for (const auto& k : keys) {
                 auto replica_set = c.node1->ring.getNodes(k, 2);
-                const bool node1_leaving =
-                    std::find(replica_set.begin(), replica_set.end(), "node1") == replica_set.end();
-                const bool set_includes_down_node =
-                    std::find(replica_set.begin(), replica_set.end(), "node3") != replica_set.end();
+                const bool node1_leaving = !std::ranges::contains(replica_set, "node1");
+                const bool set_includes_down_node = std::ranges::contains(replica_set, "node3");
                 if (!node1_leaving || !set_includes_down_node) {
                     continue;
                 }
@@ -279,8 +277,7 @@ namespace cinder {
             size_t dropped = 0;
             for (const auto& k : keys) {
                 auto replica_set = c.node1->ring.getNodes(k, 2);
-                const bool node1_leaving =
-                    std::find(replica_set.begin(), replica_set.end(), "node1") == replica_set.end();
+                const bool node1_leaving = !std::ranges::contains(replica_set, "node1");
                 if (!node1_leaving) {
                     continue;
                 }
@@ -383,8 +380,7 @@ namespace cinder {
                         << member;
                 }
                 // node1 keeps exactly the keys still in its replica set.
-                bool node1_owns =
-                    std::find(desired.begin(), desired.end(), "node1") != desired.end();
+                bool node1_owns = std::ranges::contains(desired, "node1");
                 EXPECT_EQ(c.node1->store.get(k).has_value(), node1_owns) << k;
             }
         }

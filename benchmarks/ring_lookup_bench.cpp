@@ -1,10 +1,21 @@
+#include <array>
 #include <benchmark/benchmark.h>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "cinder/hashing/consistent_hash_ring.hpp"
 
 namespace cinder {
     namespace {
+
+        auto makeLookupKeys() -> std::array<std::string, 1024> {
+            std::array<std::string, 1024> keys;
+            for (size_t i = 0; i < keys.size(); ++i) {
+                keys[i] = "ring-benchmark-key-" + std::to_string(i);
+            }
+            return keys;
+        }
 
         void bmRingGetNode(benchmark::State& state) {
             ConsistentHashRing ring(static_cast<int>(state.range(0)));
@@ -12,11 +23,14 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
             ring.addNode("node4");
-            int i = 0;
+            const auto keys = makeLookupKeys();
+            size_t i = 0;
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                (void)ring.getNode("key" + std::to_string(i++));
+                auto node = ring.getNode(keys[i++ % keys.size()]);
+                benchmark::DoNotOptimize(node);
             }
+            state.SetItemsProcessed(state.iterations());
         }
 
         // NOLINTNEXTLINE
@@ -28,28 +42,61 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
             ring.addNode("node4");
-            int i = 0;
+            const auto keys = makeLookupKeys();
+            size_t i = 0;
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                (void)ring.getNodes("key" + std::to_string(i++), 3);
+                auto nodes = ring.getNodes(keys[i++ % keys.size()], 3);
+                benchmark::DoNotOptimize(nodes);
             }
+            state.SetItemsProcessed(state.iterations());
         }
 
         // NOLINTNEXTLINE
         BENCHMARK(bmRingGetNodes)->Arg(50)->Arg(150)->Arg(300);
 
-        void bmRingAddNode(benchmark::State& state) {
+        void bmRingIndividualMembershipChurn(benchmark::State& state) {
             ConsistentHashRing ring(static_cast<int>(state.range(0)));
             ring.addNode("node1");
-            int i = 0;
+            ring.addNode("node2");
+            ring.addNode("node3");
+            ring.addNode("node4");
+            bool transient_present = false;
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                ring.addNode("node" + std::to_string(i++));
+                if (transient_present) {
+                    ring.removeNode("transient");
+                } else {
+                    ring.addNode("transient");
+                }
+                transient_present = !transient_present;
             }
+            state.SetItemsProcessed(state.iterations());
         }
 
         // NOLINTNEXTLINE
-        BENCHMARK(bmRingAddNode)->Arg(50)->Arg(150);
+        BENCHMARK(bmRingIndividualMembershipChurn)->Arg(50)->Arg(150)->Arg(300);
+
+        void bmRingBulkMembershipChurn(benchmark::State& state) {
+            ConsistentHashRing ring(static_cast<int>(state.range(0)));
+            const std::vector<NodeId> base{"node1", "node2", "node3", "node4"};
+            const std::vector<NodeId>
+                with_transient{"node1", "node2", "node3", "node4", "transient"};
+            ring.setNodes(base);
+            bool transient_present = false;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                ring.setNodes(
+                    transient_present ? std::span<const NodeId>(base)
+                                      : std::span<const NodeId>(with_transient)
+                );
+                transient_present = !transient_present;
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmRingBulkMembershipChurn)->Arg(50)->Arg(150)->Arg(300);
 
         // Production-shaped contention: N threads doing the per-request
         // getNode on one shared ring. Each lookup takes the spinlock-backed
@@ -60,11 +107,12 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
             ring.addNode("node4");
+            const auto keys = makeLookupKeys();
             int i = state.thread_index();
             const int stride = state.threads();
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                auto key = "key" + std::to_string(i);
+                const auto& key = keys[static_cast<size_t>(i) % keys.size()];
                 i += stride;
                 auto node = ring.getNode(key);
                 benchmark::DoNotOptimize(node);
@@ -84,11 +132,12 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
             ring.addNode("node4");
+            const auto keys = makeLookupKeys();
             int i = state.thread_index();
             const int stride = state.threads();
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                auto key = "key" + std::to_string(i);
+                const auto& key = keys[static_cast<size_t>(i) % keys.size()];
                 i += stride;
                 auto node = ring.getNode(key);
                 ring.incrementLoad(node);
@@ -108,11 +157,12 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
             ring.addNode("node4");
+            const auto keys = makeLookupKeys();
             int i = state.thread_index();
             const int stride = state.threads();
             // NOLINTNEXTLINE
             for (auto _ : state) {
-                auto key = "key" + std::to_string(i);
+                const auto& key = keys[static_cast<size_t>(i) % keys.size()];
                 i += stride;
                 auto node = ring.getNodeBounded(key);
                 benchmark::DoNotOptimize(node);

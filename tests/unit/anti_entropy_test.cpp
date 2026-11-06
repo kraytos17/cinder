@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <chrono>
 #include <gtest/gtest.h>
 #include <memory>

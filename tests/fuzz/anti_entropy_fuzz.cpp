@@ -98,7 +98,7 @@ namespace {
             out.push_back(snapKey(kv));
         }
 
-        std::sort(out.begin(), out.end());
+        std::ranges::sort(out);
         return out;
     }
 

@@ -1,6 +1,6 @@
+#include <btree/map.h>
 #include <chrono>
 #include <gtest/gtest.h>
-#include <map>
 
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
@@ -153,7 +153,7 @@ namespace cinder {
 
         TYPED_TEST(VersionedStoreTest, ForEachVisitsAllKeys) {
             TypeParam store(1'048'576); // ample capacity — no eviction
-            std::map<std::string, std::string> expected;
+            btree::map<std::string, std::string> expected;
             for (int i = 0; i < 10; i++) {
                 auto key = "key" + std::to_string(i);
                 auto value = "v" + std::to_string(i);
@@ -161,7 +161,7 @@ namespace cinder {
                 expected[key] = value;
             }
 
-            std::map<std::string, std::string> visited;
+            btree::map<std::string, std::string> visited;
             store.forEach([&](const std::string& key, const VersionedEntry& entry) {
                 visited[key] = entry.value;
             });

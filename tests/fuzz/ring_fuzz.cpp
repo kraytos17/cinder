@@ -25,13 +25,13 @@ namespace {
             if (op == 0) {
                 auto id = fdp.ConsumeRandomLengthString(8);
                 ring.addNode(id);
-                if (std::find(members.begin(), members.end(), id) == members.end()) {
+                if (!std::ranges::contains(members, id)) {
                     members.push_back(id);
                 }
             } else if (op == 1) {
                 auto id = fdp.ConsumeRandomLengthString(8);
                 ring.removeNode(id);
-                members.erase(std::remove(members.begin(), members.end(), id), members.end());
+                std::erase(members, id);
             } else if (op == 2) {
                 if (members.empty()) {
                     continue;
@@ -40,18 +40,18 @@ namespace {
                 auto first = ring.getNode(key);
                 auto second = ring.getNode(key);
                 assert(first == second); // deterministic routing
-                assert(std::find(members.begin(), members.end(), first) != members.end());
+                assert(std::ranges::contains(members, first));
             } else {
                 if (members.empty()) {
                     continue;
                 }
                 auto key = fdp.ConsumeRandomLengthString(16);
-                // Replica count is assert-bounded at 32 in the implementation.
-                const int n = fdp.ConsumeIntegralInRange<int>(0, 32);
+                // Replica count is bounded to [1, 32] by the ring API.
+                const int n = fdp.ConsumeIntegralInRange<int>(1, 32);
                 auto got = ring.getNodes(key, n);
                 assert(got.size() == static_cast<size_t>(std::min<int>(n, members.size())));
                 for (size_t a = 0; a < got.size(); ++a) {
-                    assert(std::find(members.begin(), members.end(), got[a]) != members.end());
+                    assert(std::ranges::contains(members, got[a]));
                     for (size_t b = a + 1; b < got.size(); ++b) {
                         assert(got[a] != got[b]);
                     }

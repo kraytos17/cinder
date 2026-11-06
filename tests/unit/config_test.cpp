@@ -339,14 +339,14 @@ logging:
                     .host = "host\\one",
                     .port = 7000,
                     .state = NodeState::Alive,
-                    .incarnation = 3
+                    .incarnation = 3,
                 },
                 NodeInfo{
                     .id = "node2",
                     .host = "host2",
                     .port = 7001,
                     .state = NodeState::Suspect,
-                    .incarnation = 4
+                    .incarnation = 4,
                 },
             };
 

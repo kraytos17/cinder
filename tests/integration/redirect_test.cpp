@@ -60,8 +60,7 @@ namespace cinder {
                     auto hint = on_old.value().value.value_or("");
                     if (hint.find('@')
                         == std::string::npos
-                        || std::find(redirected.begin(), redirected.end(), k)
-                        != redirected.end()) {
+                        || std::ranges::contains(redirected, k)) {
                         continue;
                     }
                     redirected.push_back(k);

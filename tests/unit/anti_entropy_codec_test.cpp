@@ -1,16 +1,9 @@
 #include <algorithm>
-#include <chrono>
 #include <gtest/gtest.h>
-#include <memory>
-#include <random>
 #include <string>
 #include <vector>
 #include <xxhash.h>
 
-#include "cinder/cluster/transport.hpp"
-#include "cinder/common/metrics.hpp"
-#include "cinder/common/tracing.hpp"
-#include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/node/anti_entropy.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "unit/anti_entropy_fixtures.hpp"
@@ -245,20 +238,12 @@ namespace cinder {
             ASSERT_TRUE(decoded.has_value());
             ASSERT_EQ(decoded->remote_only.size(), 2U);
             ASSERT_EQ(decoded->local_only.size(), 2U);
-            EXPECT_TRUE(
-                std::any_of(
-                    decoded->remote_only.begin(),
-                    decoded->remote_only.end(),
-                    [](const auto& row) { return row.key_hash == 20 && row.version == 2; }
-                )
-            );
-            EXPECT_TRUE(
-                std::any_of(
-                    decoded->local_only.begin(),
-                    decoded->local_only.end(),
-                    [](const auto& row) { return row.key_hash == 20 && row.version == 1; }
-                )
-            );
+            EXPECT_TRUE(std::ranges::any_of(decoded->remote_only, [](const auto& row) {
+                return row.key_hash == 20 && row.version == 2;
+            }));
+            EXPECT_TRUE(std::ranges::any_of(decoded->local_only, [](const auto& row) {
+                return row.key_hash == 20 && row.version == 1;
+            }));
         }
 
         TEST(AntiEntropyIbltTest, CodecAndInvalidSketchValidation) {

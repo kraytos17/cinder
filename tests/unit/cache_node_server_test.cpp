@@ -377,10 +377,7 @@ namespace cinder {
                     known_traces.push_back(s.trace_id);
                 }
                 for (auto trace : probe->event_traces) {
-                    EXPECT_TRUE(
-                        std::find(known_traces.begin(), known_traces.end(), trace)
-                        != known_traces.end()
-                    ) << trace;
+                    EXPECT_TRUE(std::ranges::contains(known_traces, trace)) << trace;
                 }
             }
 

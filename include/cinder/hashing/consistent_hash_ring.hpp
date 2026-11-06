@@ -2,10 +2,13 @@
 
 #include <ankerl/unordered_dense.h>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -39,10 +42,10 @@ namespace cinder {
         std::vector<LoadCell> load_cells; // parallel: per-node in-flight load
     };
 
-    // Consistent-hash ring with virtual nodes and lock-free reads.
+    // Consistent-hash ring with virtual nodes and immutable-snapshot reads.
     //
     // Concurrency contract: readers (getNode/getNodes) load an immutable
-    // RingSnapshot via std::atomic<std::shared_ptr<>> and never block or tear;
+    // RingSnapshot via std::atomic<std::shared_ptr<>> without taking a ring mutex;
     // mutators (addNode/removeNode) publish a fresh copy-on-write snapshot with a
     // CAS retry loop, so concurrent mutators merge instead of losing updates.
     // Readers may observe either the pre- or post-mutation view for keys in flight
@@ -55,6 +58,10 @@ namespace cinder {
     class ConsistentHashRing {
     public:
 
+        static constexpr size_t K_MAX_PHYSICAL_NODES =
+            static_cast<size_t>(std::numeric_limits<uint16_t>::max()) + 1;
+        static constexpr size_t K_MAX_REPLICAS = 32;
+
         explicit ConsistentHashRing(int vnodes_per_node = 150, double bounded_load_factor = 0.0);
         ~ConsistentHashRing() = default;
 
@@ -66,6 +73,12 @@ namespace cinder {
         void addNode(const NodeId& node_id);
         void removeNode(std::string_view node_id);
 
+        // Replace the physical membership with one copy-on-write rebuild and
+        // one publish. Existing node order and load cells are retained; newly
+        // introduced nodes append in input order. Duplicate ids are ignored.
+        void setNodes(std::span<const NodeId> node_ids);
+        // Empty ring returns an empty NodeId. Replica counts must be in [1, 32];
+        // invalid counts throw std::invalid_argument in every build mode.
         auto getNode(std::string_view key) const -> NodeId;
         auto getNodes(std::string_view key, int replica_count) const -> std::vector<NodeId>;
 

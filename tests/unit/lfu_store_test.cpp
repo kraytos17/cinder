@@ -1,6 +1,5 @@
 #include <chrono>
 #include <gtest/gtest.h>
-#include <thread>
 
 #include "cinder/store/lfu_store.hpp"
 #include "sim/sim_clock.hpp"

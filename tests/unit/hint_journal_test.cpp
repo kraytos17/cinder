@@ -1,26 +1,17 @@
 // Direct unit tests for HintJournal durability and its spans.
-#include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <fcntl.h>
 #include <filesystem>
-#include <future>
 #include <gtest/gtest.h>
-#include <random>
 #include <string>
-#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
 
-#include "cinder/cluster/membership.hpp"
-#include "cinder/cluster/transport.hpp"
-#include "cinder/common/metrics.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/node/hint_journal.hpp"
 #include "cinder/node/hint_queue.hpp"
 #include "cinder/node/replication_manager.hpp"
-#include "cinder/store/lru_store.hpp"
 #include "test_scratch.hpp"
 #include "unit/hint_test_helpers.hpp"
 #include "unit/trace_test_helpers.hpp"

@@ -100,17 +100,19 @@ namespace cinder {
     void CacheNodeServer::seedCluster(const CacheNodeServerOptions& options) {
         signals_.add(SIGINT);
         signals_.add(SIGTERM);
-        ring_.addNode(options.node_id);
         table_.seed(options.peers);
         table_.setSelfAddress("127.0.0.1", options.port);
 
         ClusterConfig config;
         config.nodes.push_back({options.node_id, "127.0.0.1", options.port});
+        std::vector<NodeId> ring_nodes{options.node_id};
+        ring_nodes.reserve(options.peers.size() + 1);
         for (const auto& peer : options.peers) {
-            ring_.addNode(peer.id);
+            ring_nodes.push_back(peer.id);
             config.nodes.push_back(peer);
         }
 
+        ring_.setNodes(ring_nodes);
         transport_.setConfig(config);
         transport_.setRpcTimeout(options.rpc_timeout);
 
@@ -515,20 +517,26 @@ namespace cinder {
         Span span("cluster.rebuild_ring", captureTraceContext());
         size_t alive_count = 0;
         size_t removed_count = 0;
-        for (const auto& info : table_.snapshot()) {
+        const auto members = table_.snapshot();
+
+        std::vector<NodeId> ring_nodes;
+        ring_nodes.reserve(members.size() + 1);
+        ring_nodes.push_back(node_id_);
+        for (const auto& info : members) {
             if (info.id == node_id_) {
                 continue;
             }
 
             transport_.addAddr(info.id, info.host, info.port);
             if (info.state == NodeState::Alive) {
-                ring_.addNode(info.id);
+                ring_nodes.push_back(info.id);
                 ++alive_count;
             } else {
-                ring_.removeNode(info.id);
                 ++removed_count;
             }
         }
+
+        ring_.setNodes(ring_nodes);
         CINDER_INFO("ring rebuilt", {"alive", alive_count}, {"removed", removed_count});
         span.setStatus(SpanStatus::Ok);
         // Push keys this node no longer owns to their new ring owners. The scan

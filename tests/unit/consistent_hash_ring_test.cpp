@@ -1,7 +1,9 @@
+#include <ankerl/unordered_dense.h>
 #include <atomic>
+#include <btree/map.h>
 #include <chrono>
 #include <gtest/gtest.h>
-#include <set>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -29,7 +31,7 @@ namespace cinder {
             ring.addNode("node2");
             ring.addNode("node3");
 
-            std::set<std::string> seen;
+            ankerl::unordered_dense::set<std::string> seen;
             for (int i = 0; i < 1000; i++) {
                 auto key = "key" + std::to_string(i);
                 seen.insert(ring.getNode(key));
@@ -42,7 +44,7 @@ namespace cinder {
             ring.addNode("node1");
             ring.addNode("node2");
 
-            std::map<std::string, int> counts;
+            btree::map<std::string, int> counts;
             for (int i = 0; i < 10'000; i++) {
                 auto key = "key" + std::to_string(i);
                 counts[ring.getNode(key)]++;
@@ -95,7 +97,7 @@ namespace cinder {
             ring.addNode("node1");
             ring.addNode("node2");
 
-            std::map<std::string, std::string> before;
+            btree::map<std::string, std::string> before;
             for (int i = 0; i < 10'000; i++) {
                 auto key = "key" + std::to_string(i);
                 before[key] = ring.getNode(key);
@@ -103,7 +105,7 @@ namespace cinder {
 
             ring.addNode("node3");
             int moved = 0;
-            for (auto& [key, old_node] : before) {
+            for (const auto& [key, old_node] : before) {
                 if (ring.getNode(key) != old_node) {
                     moved++;
                 }
@@ -239,6 +241,78 @@ namespace cinder {
             }
         }
 
+        TEST(ConsistentHashRingTest, EmptyRingLookupsAreSafe) {
+            ConsistentHashRing ring;
+            EXPECT_TRUE(ring.getNode("key").empty());
+            EXPECT_THROW((void)ring.getNodes("key", 0), std::invalid_argument);
+            EXPECT_THROW((void)ring.getNodes("key", -1), std::invalid_argument);
+            EXPECT_THROW((void)ring.getNodes("key", 33), std::invalid_argument);
+        }
+
+        TEST(ConsistentHashRingTest, InvalidConfigurationIsRejected) {
+            EXPECT_THROW(ConsistentHashRing(0), std::invalid_argument);
+            EXPECT_THROW(ConsistentHashRing(-1), std::invalid_argument);
+            EXPECT_THROW(ConsistentHashRing(1, -1.0), std::invalid_argument);
+            EXPECT_THROW(
+                ConsistentHashRing(1, std::numeric_limits<double>::infinity()),
+                std::invalid_argument
+            );
+        }
+
+        TEST(ConsistentHashRingTest, PhysicalNodeIndexCapacityIsExplicit) {
+            EXPECT_EQ(ConsistentHashRing::K_MAX_PHYSICAL_NODES, 65'536U);
+            EXPECT_EQ(ConsistentHashRing::K_MAX_REPLICAS, 32U);
+        }
+
+        TEST(ConsistentHashRingTest, SetNodesMatchesIncrementalMembership) {
+            ConsistentHashRing incremental(32);
+            incremental.addNode("node-a");
+            incremental.addNode("node-b");
+            incremental.addNode("node-c");
+
+            ConsistentHashRing bulk(32);
+            const std::vector<NodeId> nodes{"node-a", "node-b", "node-c", "node-b"};
+            bulk.setNodes(nodes);
+
+            for (int i = 0; i < 1000; ++i) {
+                auto key = "key-" + std::to_string(i);
+                EXPECT_EQ(bulk.getNode(key), incremental.getNode(key));
+                EXPECT_EQ(bulk.getNodes(key, 3), incremental.getNodes(key, 3));
+            }
+        }
+
+        TEST(ConsistentHashRingTest, SetNodesKeepsSurvivorLoadsAndResetsRejoinedLoads) {
+            ConsistentHashRing ring(16);
+            const std::vector<NodeId> initial{"node-a", "node-b"};
+            ring.setNodes(initial);
+            ring.incrementLoad("node-a");
+            ring.incrementLoad("node-b");
+
+            const std::vector<NodeId> changed{"node-b", "node-c"};
+            ring.setNodes(changed);
+            EXPECT_EQ(ring.currentLoad("node-b"), 1U);
+            EXPECT_EQ(ring.currentLoad("node-a"), 0U);
+            EXPECT_EQ(ring.currentLoad("node-c"), 0U);
+
+            ring.setNodes(initial);
+            EXPECT_EQ(ring.currentLoad("node-a"), 0U);
+            EXPECT_EQ(ring.currentLoad("node-b"), 1U);
+        }
+
+        TEST(ConsistentHashRingTest, SetNodesEmptyAndDuplicateUpdatesAreNoops) {
+            ConsistentHashRing ring(8);
+            const std::vector<NodeId> nodes{"node-a", "node-b"};
+            ring.setNodes(nodes);
+            const auto before = ring.getNode("key");
+            const std::vector<NodeId> duplicates{"node-a", "node-b", "node-a"};
+            ring.setNodes(duplicates);
+            EXPECT_EQ(ring.getNode("key"), before);
+            const std::vector<NodeId> empty;
+            ring.setNodes(empty);
+            EXPECT_TRUE(ring.getNode("key").empty());
+            EXPECT_TRUE(ring.getNodes("key", 1).empty());
+        }
+
         TEST(BoundedLoadTest, SingleNodeAlwaysReturnsThatNode) {
             ConsistentHashRing ring(10, 1.0);
             ring.addNode("node1");
@@ -255,7 +329,7 @@ namespace cinder {
             ring.addNode("node2");
 
             // With no load, getNodeBounded behaves like getNode.
-            std::map<std::string, int> counts;
+            btree::map<std::string, int> counts;
             for (int i = 0; i < 10'000; i++) {
                 auto key = "key" + std::to_string(i);
                 counts[ring.getNodeBounded(key)]++;
