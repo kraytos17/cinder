@@ -109,6 +109,7 @@ persistence:
   max_wal_entries: 500
   max_wal_bytes: 8192
   max_wal_segment_bytes: 1024
+  max_sealed_segments: 7
   wal_fsync: true
 )";
             }
@@ -127,6 +128,7 @@ persistence:
             EXPECT_EQ(cfg.persistence.max_wal_entries, 500U);
             EXPECT_EQ(cfg.persistence.max_wal_bytes, 8192U);
             EXPECT_EQ(cfg.persistence.max_wal_segment_bytes, 1024U);
+            EXPECT_EQ(cfg.persistence.max_sealed_segments, 7U);
             EXPECT_TRUE(cfg.persistence.wal_fsync);
         }
 

@@ -19,6 +19,13 @@ namespace cinder {
         // Seal the active file into wal_<seq>.log once it reaches this
         // size (0 = disabled, single wal.log like before).
         size_t max_wal_segment_bytes = 16U << 20U;
+        // Bound the number of sealed segments awaiting compaction (0 =
+        // disabled). Backstop for configs that disable both entry and
+        // byte triggers: without it sealed segments accumulate and each
+        // restart replays all of them. Generous enough (32 x 16 MiB)
+        // to never fire under the default triggers, which compact on
+        // bytes long before 32 segments exist.
+        size_t max_sealed_segments = 32;
         // fdatasync on every flush: acknowledged writes survive an OS
         // crash, not just a process crash. Off by default (page-cache
         // durability); enable when the WAL is the durability story.

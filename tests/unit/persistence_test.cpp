@@ -808,6 +808,52 @@ namespace cinder {
             EXPECT_FALSE(pm.walNeedsCompact());
         }
 
+        TEST_F(PersistenceTest, WalNeedsCompactSealedSegmentsThreshold) {
+            LruStore store(1'000'000);
+            auto opts = PersistenceManager::Options{
+                .data_dir = scratch_.path().string(),
+                .enabled = true,
+                .tuning = {
+                    .snapshot_interval_s = 3600,
+                    .max_wal_entries = 0, // entries/bytes disabled: segments alone trigger
+                    .max_wal_bytes = 0,
+                    .max_wal_segment_bytes = 200,
+                    .max_sealed_segments = 2,
+                },
+            };
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(pm.recover().has_value());
+
+            bool requested = false;
+            for (int i = 0; i < 16 && !requested; ++i) {
+                const auto key = "k" + std::to_string(i);
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = key,
+                        .value = "v",
+                        .version = static_cast<uint64_t>(i + 1),
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+                pm.flush();
+                requested = pm.walNeedsCompact();
+            }
+            EXPECT_TRUE(requested);
+
+            // A fresh restart seeds the sealed count from disk: still pending.
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_TRUE(pm2.walNeedsCompact());
+
+            // Compact deletes the sealed segments and clears the request.
+            ASSERT_TRUE(pm.compact().has_value());
+            EXPECT_FALSE(pm.walNeedsCompact());
+        }
+
         TEST_F(PersistenceTest, WalSyncOk) {
             auto wal_path = (scratch_.path() / "wal.log").string();
             {

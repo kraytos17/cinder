@@ -83,7 +83,7 @@ namespace cinder {
             R"("anti_entropy_interval_ms":{},"anti_entropy_buckets":{},)"
             R"("anti_entropy_fetch_bytes":{},"anti_entropy_full_rehash_interval_ms":{},)"
             R"("persistence_enabled":{},"data_dir":"{}",)"
-            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"max_wal_segment_bytes":{},"wal_fsync":{},)"
+            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"max_wal_segment_bytes":{},"max_sealed_segments":{},"wal_fsync":{},)"
             R"("tls_enabled":{},"auth_enabled":{},"client_auth_enabled":{},)"
             R"("metrics_port":{},"grpc_port":{},"log_level":"{}","config_path":"{}"}})",
             escapeJsonString(cfg.node_id),
@@ -109,6 +109,7 @@ namespace cinder {
             cfg.persistence.max_wal_entries,
             cfg.persistence.max_wal_bytes,
             cfg.persistence.max_wal_segment_bytes,
+            cfg.persistence.max_sealed_segments,
             cfg.persistence.wal_fsync,
             cfg.tls.enabled,
             !cfg.auth.shared_secret.empty(),
@@ -196,7 +197,6 @@ namespace cinder {
             old_cfg.persistence.max_wal_entries,
             new_cfg.persistence.max_wal_entries
         );
-
         check(
             "max_wal_bytes",
             old_cfg.persistence.max_wal_bytes,
@@ -206,6 +206,11 @@ namespace cinder {
             "max_wal_segment_bytes",
             old_cfg.persistence.max_wal_segment_bytes,
             new_cfg.persistence.max_wal_segment_bytes
+        );
+        check(
+            "max_sealed_segments",
+            old_cfg.persistence.max_sealed_segments,
+            new_cfg.persistence.max_sealed_segments
         );
 
         check("wal_fsync", old_cfg.persistence.wal_fsync, new_cfg.persistence.wal_fsync);
@@ -291,6 +296,7 @@ namespace cinder {
             loadOr(pers, "max_wal_entries", cfg.persistence.max_wal_entries);
             loadOr(pers, "max_wal_bytes", cfg.persistence.max_wal_bytes);
             loadOr(pers, "max_wal_segment_bytes", cfg.persistence.max_wal_segment_bytes);
+            loadOr(pers, "max_sealed_segments", cfg.persistence.max_sealed_segments);
             loadOr(pers, "wal_fsync", cfg.persistence.wal_fsync);
         }
         // TLS

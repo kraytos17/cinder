@@ -111,12 +111,18 @@ namespace {
         // strictly inside the buffer so byte flips never write out of bounds.
         const size_t at = fdp.ConsumeIntegralInRange<size_t>(0, bytes.size() - 1);
         switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 2)) {
-            case 0:
-                bytes[at] ^= static_cast<uint8_t>(1U << fdp.ConsumeIntegralInRange(0, 7));
+            case 0: {
+                const auto mask = (1U << fdp.ConsumeIntegralInRange<unsigned>(0, 7));
+                const auto blended = static_cast<unsigned int>(bytes[at]) ^ mask;
+                bytes[at] = static_cast<uint8_t>(blended);
                 break;
-            case 1:
-                bytes[at] ^= fdp.ConsumeIntegral<uint8_t>();
+            }
+            case 1: {
+                const auto blended = static_cast<unsigned int>(bytes[at])
+                    ^ static_cast<unsigned int>(fdp.ConsumeIntegral<uint8_t>());
+                bytes[at] = static_cast<uint8_t>(blended);
                 break;
+            }
             default:
                 bytes.resize(at);
                 break;

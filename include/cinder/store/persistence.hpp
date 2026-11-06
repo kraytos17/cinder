@@ -50,7 +50,7 @@ namespace cinder {
 
         // True when the WAL has grown past the auto-compact threshold and the
         // server should schedule a (debounced, async) compact. Lock-free read;
-        // zero when disabled or when both limits are 0.
+        // zero when disabled or when all three limits are 0.
         [[nodiscard]]
         auto walNeedsCompact() const -> bool {
             const size_t total_entries = wal_entry_count_.load(std::memory_order_relaxed)
@@ -61,7 +61,11 @@ namespace cinder {
                 + wal_sealed_bytes_.load(std::memory_order_relaxed);
             const bool bytes_hit =
                 opts_.tuning.max_wal_bytes > 0 && total_bytes >= opts_.tuning.max_wal_bytes;
-            return entries_hit || bytes_hit;
+            const bool segments_hit = opts_.tuning.max_sealed_segments
+                > 0
+                && wal_sealed_count_.load(std::memory_order_relaxed)
+                >= opts_.tuning.max_sealed_segments;
+            return entries_hit || bytes_hit || segments_hit;
         }
 
         // Create snapshot and truncate WAL.
@@ -154,9 +158,11 @@ namespace cinder {
         std::atomic<size_t> wal_entry_count_{0};
         std::atomic<size_t> wal_bytes_{0};
         // Sealed-segment totals; added on seal, cleared when a compact
-        // deletes the segments. walNeedsCompact() sums both sides.
+        // deletes the segments. walNeedsCompact() sums both sides. The
+        // count additionally backs the max_sealed_segments backstop.
         std::atomic<size_t> wal_sealed_entries_{0};
         std::atomic<uint64_t> wal_sealed_bytes_{0};
+        std::atomic<size_t> wal_sealed_count_{0};
         // Next segment sequence number. Guarded by mutex_; set at recover
         // from the max sealed seq on disk.
         uint64_t wal_next_seq_ = 1;

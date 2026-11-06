@@ -200,6 +200,7 @@ namespace cinder {
         size_t sealed_records = 0;
         uint64_t active_bytes = 0;
         uint64_t sealed_bytes = 0;
+        size_t sealed_count = 0;
         uint64_t max_sealed_seq = 0;
         bool have_sealed = false;
         for (const auto& wal_file : findWalFiles()) {
@@ -234,6 +235,7 @@ namespace cinder {
             } else {
                 sealed_records += stats.records;
                 sealed_bytes += file_bytes;
+                ++sealed_count;
                 if (auto seq = parseWalSegmentSeq(wal_file.filename().string())) {
                     have_sealed = true;
                     max_sealed_seq = std::max(max_sealed_seq, seq.value());
@@ -249,6 +251,7 @@ namespace cinder {
         wal_bytes_.store(static_cast<size_t>(active_bytes), std::memory_order_relaxed);
         wal_sealed_entries_.store(sealed_records, std::memory_order_relaxed);
         wal_sealed_bytes_.store(sealed_bytes, std::memory_order_relaxed);
+        wal_sealed_count_.store(sealed_count, std::memory_order_relaxed);
         span.setStatus(SpanStatus::Ok);
         return ok();
     }
@@ -706,6 +709,7 @@ namespace cinder {
         }
 
         wal_sealed_entries_.fetch_add(sealed_entries, std::memory_order_relaxed);
+        wal_sealed_count_.fetch_add(1, std::memory_order_relaxed);
         ++wal_next_seq_;
         return ok();
     }
@@ -725,6 +729,7 @@ namespace cinder {
 
         wal_sealed_entries_.store(0, std::memory_order_relaxed);
         wal_sealed_bytes_.store(0, std::memory_order_relaxed);
+        wal_sealed_count_.store(0, std::memory_order_relaxed);
         if (!detail::syncDirectory(opts_.data_dir)) {
             CINDER_WARN("sealed WAL dir fsync failed", {"path", opts_.data_dir});
         }

@@ -151,6 +151,12 @@ namespace cinder::tools {
         );
         bindFlag(
             app,
+            "--max-sealed-segments",
+            options.persistence.max_sealed_segments,
+            "Force compaction past this many sealed segments (0 = disabled)"
+        );
+        bindFlag(
+            app,
             "--wal-fsync",
             options.persistence.wal_fsync,
             "fdatasync on every WAL flush (durable, slower)"
@@ -305,6 +311,12 @@ namespace cinder::tools {
                 "--max-wal-segment-bytes",
                 options.persistence.max_wal_segment_bytes,
                 cfg.persistence.max_wal_segment_bytes
+            );
+            applyIfUnset(
+                app,
+                "--max-sealed-segments",
+                options.persistence.max_sealed_segments,
+                cfg.persistence.max_sealed_segments
             );
             applyIfUnset(
                 app,

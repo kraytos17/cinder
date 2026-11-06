@@ -457,7 +457,9 @@ The snapshot gives a consistent base; the WAL captures writes since.
 **Compaction** — `PersistenceManager::compact()` snapshots current store
 state, deletes the now-covered sealed segments, and rotates to a fresh active
 WAL. Triggered by `snapshot_interval_s`, or out-of-cycle once the WAL exceeds
-`max_wal_entries` or `max_wal_bytes` (sealed + active combined).
+`max_wal_entries` or `max_wal_bytes` (sealed + active combined), or once
+`max_sealed_segments` sealed segments accumulate (backstop for configs that
+disable both size triggers).
 
 ## Edge Cases
 
@@ -514,6 +516,7 @@ both sides of the partition are reconciled by LWW.
 | `--max-wal-entries` | `10000` | Max WAL entries before forced compaction |
 | `--max-wal-bytes` | `67108864` | Max WAL bytes (sealed + active) before forced compaction (`0` = disabled) |
 | `--max-wal-segment-bytes` | `16777216` | Seal the active WAL into `wal_<seq>.log` past this size (`0` = disabled) |
+| `--max-sealed-segments` | `32` | Force compaction past this many sealed segments (`0` = disabled) |
 | `--wal-fsync` | `false` | fdatasync on every WAL flush (survives OS crashes, costs throughput) |
 
 All parameters can be set via CLI flags or the YAML config file; an
@@ -561,6 +564,7 @@ persistence:
   max_wal_entries: 10000
   max_wal_bytes: 67108864
   max_wal_segment_bytes: 16777216
+  max_sealed_segments: 32
   wal_fsync: false
 
 tls:
