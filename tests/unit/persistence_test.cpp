@@ -26,8 +26,7 @@ namespace cinder {
             return {
                 .data_dir = dir.string(),
                 .enabled = true,
-                .snapshot_interval_s = 60,
-                .max_wal_entries = 100,
+                .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
             };
         }
 
@@ -385,8 +384,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store
             );
@@ -421,8 +419,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store2
             );
@@ -443,8 +440,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store
             );
@@ -466,8 +462,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store2
             );
@@ -515,8 +510,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store
             );
@@ -532,8 +526,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 60,
-                    .max_wal_entries = 100,
+                    .tuning = {.snapshot_interval_s = 60, .max_wal_entries = 100},
                 },
                 store
             );
@@ -777,8 +770,7 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 3600,
-                    .max_wal_entries = 3,
+                    .tuning = {.snapshot_interval_s = 3600, .max_wal_entries = 3},
                 },
                 store
             );
@@ -1088,9 +1080,12 @@ namespace cinder {
                 PersistenceManager::Options{
                     .data_dir = scratch_.path().string(),
                     .enabled = true,
-                    .snapshot_interval_s = 3600,
-                    .max_wal_entries = 0, // entries disabled: bytes alone trigger
-                    .max_wal_bytes = 256,
+                    .tuning =
+                        {
+                            .snapshot_interval_s = 3600,
+                            .max_wal_entries = 0, // entries disabled: bytes alone trigger
+                            .max_wal_bytes = 256,
+                        },
                 },
                 store
             );
@@ -1118,10 +1113,12 @@ namespace cinder {
             PersistenceManager::Options opts{
                 .data_dir = scratch_.path().string(),
                 .enabled = true,
-                .snapshot_interval_s = 3600,
-                .max_wal_entries = 0,
-                .max_wal_bytes = 0, // compact disabled: segments accumulate
-                .max_wal_segment_bytes = 200,
+                .tuning = {
+                    .snapshot_interval_s = 3600,
+                    .max_wal_entries = 0,
+                    .max_wal_bytes = 0, // compact disabled: segments accumulate
+                    .max_wal_segment_bytes = 200,
+                },
             };
             PersistenceManager pm(opts, store);
             ASSERT_TRUE(pm.recover().has_value());
@@ -1171,10 +1168,12 @@ namespace cinder {
             PersistenceManager::Options opts{
                 .data_dir = scratch_.path().string(),
                 .enabled = true,
-                .snapshot_interval_s = 3600,
-                .max_wal_entries = 0,
-                .max_wal_bytes = 0,
-                .max_wal_segment_bytes = 200,
+                .tuning = {
+                    .snapshot_interval_s = 3600,
+                    .max_wal_entries = 0,
+                    .max_wal_bytes = 0,
+                    .max_wal_segment_bytes = 200,
+                },
             };
             PersistenceManager pm(opts, store);
             ASSERT_TRUE(pm.recover().has_value());

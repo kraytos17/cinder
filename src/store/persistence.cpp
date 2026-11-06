@@ -106,6 +106,23 @@ namespace cinder {
             return seq;
         }
 
+        // Sorted directory listing; callers filter by name. One place for the
+        // exists-check + iterate + sort boilerplate instead of a hand-rolled
+        // copy per scan.
+        auto sortedDirEntries(const std::filesystem::path& dir)
+            -> std::vector<std::filesystem::path> {
+            std::vector<std::filesystem::path> out;
+            if (!std::filesystem::exists(dir)) {
+                return out;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                out.push_back(entry.path());
+            }
+
+            std::ranges::sort(out);
+            return out;
+        }
+
         // True for snapshot_<something>.dat names (strictly more than just
         // prefix+suffix, so the bare affixes never match).
         auto isSnapshotFile(std::string_view name) -> bool {
@@ -123,17 +140,12 @@ namespace cinder {
         auto listSnapshotFiles(const std::filesystem::path& dir)
             -> std::vector<std::filesystem::path> {
             std::vector<std::filesystem::path> snaps;
-            if (!std::filesystem::exists(dir)) {
-                return snaps;
-            }
-            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
-                if (isSnapshotFile(entry.path().filename().string())) {
-                    snaps.push_back(entry.path());
+            for (const auto& path : sortedDirEntries(dir)) {
+                if (isSnapshotFile(path.filename().string())) {
+                    snaps.push_back(path);
                 }
             }
-
-            std::ranges::sort(snaps);
-            return snaps;
+            return snaps; // sortedDirEntries already sorts
         }
     } // namespace
 
@@ -287,7 +299,7 @@ namespace cinder {
             span.setStatus(SpanStatus::Ok);
             return; // nothing pending: skip the flush syscall
         }
-        if (opts_.wal_fsync) {
+        if (opts_.tuning.wal_fsync) {
             // sync() flushes userspace buffers first, then fdatasyncs.
             if (auto synced = wal_->sync(); !synced.has_value()) {
                 CINDER_ERROR("WAL fsync failed", {"reason", synced.error().message()});
@@ -300,7 +312,7 @@ namespace cinder {
         // Size-based rotation: seal oversized active files so no single
         // recovery file grows without bound. Sealed segments are deleted by
         // the next successful compact.
-        if (opts_.max_wal_segment_bytes > 0) {
+        if (opts_.tuning.max_wal_segment_bytes > 0) {
             std::error_code size_ec;
             const auto active_size = std::filesystem::file_size(
                 std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME,
@@ -308,7 +320,7 @@ namespace cinder {
             );
             if (!size_ec
                 && active_size
-                >= opts_.max_wal_segment_bytes
+                >= opts_.tuning.max_wal_segment_bytes
                 && active_size
                 > K_WAL_HEADER_SIZE) {
                 if (auto sealed = sealActiveWalLocked(); !sealed.has_value()) {
@@ -592,15 +604,12 @@ namespace cinder {
     auto PersistenceManager::findWalFiles() const -> std::vector<std::filesystem::path> {
         std::vector<std::pair<uint64_t, std::filesystem::path>> sealed;
         std::filesystem::path active;
-        if (!std::filesystem::exists(opts_.data_dir)) {
-            return {};
-        }
-        for (const auto& entry : std::filesystem::directory_iterator(opts_.data_dir)) {
-            const auto name = entry.path().filename().string();
+        for (const auto& path : sortedDirEntries(opts_.data_dir)) {
+            const auto name = path.filename().string();
             if (name == K_WAL_FILENAME) {
-                active = entry.path();
+                active = path;
             } else if (auto seq = parseWalSegmentSeq(name)) {
-                sealed.emplace_back(seq.value(), entry.path());
+                sealed.emplace_back(seq.value(), path);
             }
         }
 

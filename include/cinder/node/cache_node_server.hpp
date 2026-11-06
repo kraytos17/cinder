@@ -25,6 +25,7 @@
 #include "cinder/cluster/membership.hpp"
 #include "cinder/common/config.hpp"
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/persistence_tuning.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_server.hpp"
@@ -51,15 +52,7 @@ namespace cinder {
         milliseconds suspect_timeout{3000};
         milliseconds gossip_interval{1000};
         milliseconds quarantine_interval{10'000};
-        size_t snapshot_interval_s = 60;
-        size_t max_wal_entries = 10'000;
-        // WAL byte budget before auto-compact (0 = disabled). Entry counts
-        // alone under-trigger on large values; bytes alone under-trigger on
-        // many tiny tombstones — hence both limits.
-        size_t max_wal_bytes = 64U << 20U;
-        // Active WAL file size before sealing into wal_<seq>.log
-        // (0 = disabled, single wal.log like before).
-        size_t max_wal_segment_bytes = 16U << 20U;
+        PersistenceTuning tuning;
         // RPC deadline — max time for a single peer RPC before cancellation.
         milliseconds rpc_timeout{5000};
         // Anti-entropy: background repair between replica partners (0 = disabled).
@@ -108,8 +101,6 @@ namespace cinder {
         uint16_t metrics_port = 0;
         ConsistencyMode mode = ConsistencyMode::Async;
         bool persistence_enabled = false;
-        // fdatasync on every WAL flush (durability vs throughput).
-        bool wal_fsync = false;
         bool tls_enabled = false;
     };
 

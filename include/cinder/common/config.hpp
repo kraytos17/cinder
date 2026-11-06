@@ -6,6 +6,7 @@
 
 #include "cinder/cluster/membership.hpp"
 #include "cinder/common/cluster_config.hpp"
+#include "cinder/common/persistence_tuning.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/common/types.hpp"
@@ -69,16 +70,7 @@ namespace cinder {
         // Persistence
         bool persistence_enabled = false;
         std::string data_dir;
-        int snapshot_interval_s = 60;
-        int max_wal_entries = 10'000;
-        // WAL byte budget before auto-compact (0 = disabled).
-        size_t max_wal_bytes = 64U << 20U;
-        // Active WAL file size before sealing into wal_<seq>.log
-        // (0 = disabled, single wal.log like before).
-        size_t max_wal_segment_bytes = 16U << 20U;
-        // fdatasync on every WAL flush (durability vs throughput).
-        // Restart-only like the other persistence knobs.
-        bool wal_fsync = false;
+        PersistenceTuning tuning;
 
         // TLS
         TlsConfig tls;

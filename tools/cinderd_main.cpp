@@ -178,12 +178,10 @@ auto main(int argc, char* argv[]) -> int {
     options.quarantine_interval = milliseconds(quarantine_interval_ms);
     options.persistence_enabled = persistence_enabled || cfg.persistence_enabled;
     options.data_dir = data_dir.empty() ? cfg.data_dir : data_dir;
-    options.snapshot_interval_s = snapshot_interval_s;
-    // No CLI override for these: the YAML value (or its default) always wins.
-    options.max_wal_entries = static_cast<size_t>(cfg.max_wal_entries);
-    options.max_wal_bytes = cfg.max_wal_bytes;
-    options.max_wal_segment_bytes = cfg.max_wal_segment_bytes;
-    options.wal_fsync = cfg.wal_fsync;
+    options.tuning = cfg.tuning;
+    // CLI override for the snapshot interval only; the YAML value (or its
+    // default) wins for everything else.
+    options.tuning.snapshot_interval_s = static_cast<size_t>(snapshot_interval_s);
     options.io_threads = io_threads;
     options.tls_enabled = tls_enabled || cfg.tls.enabled;
     options.tls_cert_file = tls_cert_file.empty() ? cfg.tls.cert_file : tls_cert_file;

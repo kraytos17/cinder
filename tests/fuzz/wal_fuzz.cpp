@@ -1,70 +1,18 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
-#include <fstream>
 #include <fuzzer/FuzzedDataProvider.h>
-#include <sstream>
 #include <string>
 #include <unistd.h>
 #include <vector>
 
 #include "cinder/store/wal.hpp"
+#include "fuzz_file_io.hpp"
 
 namespace {
 
-    // Writers are path-based (no istream injection point), so each input gets a
-    // PID-scoped temp dir (libFuzzer -jobs forks workers; the PID separates
-    // them) plus a per-input counter. RAII unlink keeps /tmp clean.
-    auto tempDir() -> const std::string& {
-        static const std::string dir = std::filesystem::temp_directory_path().string()
-            + "/cinder_fuzz_wal_"
-            + std::to_string(::getpid());
-        static const bool created = (std::filesystem::create_directories(dir), true);
-        (void)created;
-        return dir;
-    }
-
-    class FileGuard {
-    public:
-
-        explicit FileGuard(std::string path) :
-            path_(std::move(path)) {}
-
-        ~FileGuard() {
-            std::error_code ec;
-            std::filesystem::remove(path_, ec);
-        }
-
-        FileGuard(const FileGuard&) = delete;
-        auto operator=(const FileGuard&) -> FileGuard& = delete;
-
-        auto path() const -> const std::string& {
-            return path_;
-        }
-
-    private:
-
-        std::string path_;
-    };
-
-    auto nextPath() -> FileGuard {
-        static uint64_t counter = 0;
-        return FileGuard(tempDir() + "/wal_" + std::to_string(counter++) + ".wal");
-    }
-
-    auto slurp(const std::string& path) -> std::vector<uint8_t> {
-        std::ifstream in(path, std::ios::binary);
-        std::ostringstream ss;
-        ss << in.rdbuf();
-        auto str = ss.str();
-        return {str.begin(), str.end()};
-    }
-
-    auto spit(const std::string& path, const uint8_t* data, size_t size) -> void {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
-    }
+    // File-backed harness shared with snapshot_fuzz (see fuzz_file_io.hpp).
+    cinder_fuzz::TempGarden garden("wal", "wal_", ".wal");
 
     auto operator==(const cinder::WalEntry& a, const cinder::WalEntry& b) -> bool {
         return a.op
@@ -109,7 +57,7 @@ namespace {
             entries.push_back(makeEntry(fdp));
         }
 
-        auto guard = nextPath();
+        auto guard = garden.next();
         {
             cinder::WalWriter writer(guard.path());
             for (const auto& e : entries) {
@@ -128,13 +76,13 @@ namespace {
 
         // Group commit must be byte-identical to sequential appends, so the
         // drain fast path cannot diverge from the tested framing.
-        auto batch_guard = nextPath();
+        auto batch_guard = garden.next();
         {
             cinder::WalWriter writer(batch_guard.path());
             auto res = writer.appendBatch(entries);
             assert(res.has_value());
         }
-        assert(slurp(guard.path()) == slurp(batch_guard.path()));
+        assert(cinder_fuzz::slurp(guard.path()) == cinder_fuzz::slurp(batch_guard.path()));
     }
 
     void mutate(FuzzedDataProvider& fdp) {
@@ -145,7 +93,7 @@ namespace {
             entries.push_back(makeEntry(fdp));
         }
 
-        auto base = nextPath();
+        auto base = garden.next();
         {
             cinder::WalWriter writer(base.path());
             for (const auto& e : entries) {
@@ -153,7 +101,7 @@ namespace {
                 assert(res.has_value());
             }
         }
-        auto bytes = slurp(base.path());
+        auto bytes = cinder_fuzz::slurp(base.path());
         if (bytes.empty()) {
             return;
         }
@@ -174,8 +122,8 @@ namespace {
                 break;
         }
 
-        auto mutated = nextPath();
-        spit(mutated.path(), bytes.data(), bytes.size());
+        auto mutated = garden.next();
+        cinder_fuzz::spit(mutated.path(), bytes.data(), bytes.size());
         cinder::WalReader reader(mutated.path());
         size_t returned = 0;
         while (auto got = reader.next()) {
@@ -197,8 +145,8 @@ namespace {
         // Direct passthrough: arbitrary bytes (bad magic, truncations, lying
         // lengths) must never crash and never yield an invalid op.
         auto bytes = fdp.ConsumeRemainingBytes<uint8_t>();
-        auto guard = nextPath();
-        spit(guard.path(), bytes.data(), bytes.size());
+        auto guard = garden.next();
+        cinder_fuzz::spit(guard.path(), bytes.data(), bytes.size());
         cinder::WalReader reader(guard.path());
         while (auto got = reader.next()) {
             assert(got->op == cinder::WalEntry::Op::Set || got->op == cinder::WalEntry::Op::Del);

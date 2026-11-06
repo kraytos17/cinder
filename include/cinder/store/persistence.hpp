@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
+#include "cinder/common/persistence_tuning.hpp"
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/store/snapshot.hpp"
@@ -27,22 +28,7 @@ namespace cinder {
         struct Options {
             std::string data_dir;
             bool enabled = false;
-            size_t snapshot_interval_s = 60;
-            size_t max_wal_entries = 10'000;
-            // Rotate/compact once the WAL exceeds this many bytes (0 =
-            // disabled). Entry counts alone under-trigger on large values;
-            // bytes alone under-trigger on many tiny tombstones — hence both.
-            // Counts sealed segments plus the active file.
-            size_t max_wal_bytes = 64U << 20U;
-            // Seal the active file into wal_<seq>.log once it reaches this
-            // size (0 = disabled, single wal.log like before). Bounds the
-            // work a single recovery file can hold; sealed segments are
-            // deleted by the next successful compact.
-            size_t max_wal_segment_bytes = 16U << 20U;
-            // fdatasync on every flush: acknowledged writes survive an OS
-            // crash, not just a process crash. Off by default (page-cache
-            // durability); enable when the WAL is the durability story.
-            bool wal_fsync = false;
+            PersistenceTuning tuning;
         };
 
         PersistenceManager(Options opts, CacheStore& store, Clock* clock = nullptr);
@@ -70,10 +56,11 @@ namespace cinder {
             const size_t total_entries = wal_entry_count_.load(std::memory_order_relaxed)
                 + wal_sealed_entries_.load(std::memory_order_relaxed);
             const bool entries_hit =
-                opts_.max_wal_entries > 0 && total_entries >= opts_.max_wal_entries;
+                opts_.tuning.max_wal_entries > 0 && total_entries >= opts_.tuning.max_wal_entries;
             const size_t total_bytes = wal_bytes_.load(std::memory_order_relaxed)
                 + wal_sealed_bytes_.load(std::memory_order_relaxed);
-            const bool bytes_hit = opts_.max_wal_bytes > 0 && total_bytes >= opts_.max_wal_bytes;
+            const bool bytes_hit =
+                opts_.tuning.max_wal_bytes > 0 && total_bytes >= opts_.tuning.max_wal_bytes;
             return entries_hit || bytes_hit;
         }
 
@@ -90,7 +77,7 @@ namespace cinder {
 
         [[nodiscard]]
         auto snapshotInterval() const -> size_t {
-            return opts_.snapshot_interval_s;
+            return opts_.tuning.snapshot_interval_s;
         }
 
     private:

@@ -10,6 +10,14 @@
 
 namespace cinder {
     namespace {
+        // Optional YAML key: assign node[key] into field, keeping the current
+        // value when the key is absent. Type is deduced from the field, so
+        // call sites never repeat it: loadOr(sec, "port", cfg.port).
+        template <typename T> void loadOr(const YAML::Node& node, const char* key, T& field) {
+            if (const auto child = node[key]) {
+                field = child.template as<T>(field);
+            }
+        }
 
         // Escapes a string for JSON embedding. Returns the escaped CONTENT without
         // surrounding quotes — every call site already supplies those via
@@ -88,11 +96,11 @@ namespace cinder {
             cfg.anti_entropy_full_rehash_interval_ms,
             cfg.persistence_enabled,
             escapeJsonString(cfg.data_dir),
-            cfg.snapshot_interval_s,
-            cfg.max_wal_entries,
-            cfg.max_wal_bytes,
-            cfg.max_wal_segment_bytes,
-            cfg.wal_fsync,
+            cfg.tuning.snapshot_interval_s,
+            cfg.tuning.max_wal_entries,
+            cfg.tuning.max_wal_bytes,
+            cfg.tuning.max_wal_segment_bytes,
+            cfg.tuning.wal_fsync,
             cfg.tls.enabled,
             !cfg.auth.shared_secret.empty(),
             !cfg.auth.client_shared_secret.empty(),
@@ -105,21 +113,17 @@ namespace cinder {
 
     auto diffConfig(const Config& old_cfg, const Config& new_cfg) -> std::vector<std::string> {
         std::vector<std::string> changed;
-        if (old_cfg.node_id != new_cfg.node_id) {
-            changed.emplace_back("node_id");
-        }
-        if (old_cfg.port != new_cfg.port) {
-            changed.emplace_back("port");
-        }
-        if (old_cfg.capacity != new_cfg.capacity) {
-            changed.emplace_back("capacity");
-        }
-        if (old_cfg.replica_factor != new_cfg.replica_factor) {
-            changed.emplace_back("replica_factor");
-        }
-        if (old_cfg.consistency != new_cfg.consistency) {
-            changed.emplace_back("consistency");
-        }
+        const auto check = [&](std::string_view name, const auto& old_v, const auto& new_v) {
+            if (old_v != new_v) {
+                changed.emplace_back(name);
+            }
+        };
+
+        check("node_id", old_cfg.node_id, new_cfg.node_id);
+        check("port", old_cfg.port, new_cfg.port);
+        check("capacity", old_cfg.capacity, new_cfg.capacity);
+        check("replica_factor", old_cfg.replica_factor, new_cfg.replica_factor);
+        check("consistency", old_cfg.consistency, new_cfg.consistency);
         if (old_cfg.peers.size() != new_cfg.peers.size()) {
             changed.emplace_back("peers");
         } else {
@@ -139,88 +143,69 @@ namespace cinder {
                 changed.emplace_back("peers");
             }
         }
-        if (old_cfg.ping_interval_ms != new_cfg.ping_interval_ms) {
-            changed.emplace_back("ping_interval_ms");
-        }
-        if (old_cfg.suspect_timeout_ms != new_cfg.suspect_timeout_ms) {
-            changed.emplace_back("suspect_timeout_ms");
-        }
-        if (old_cfg.gossip_interval_ms != new_cfg.gossip_interval_ms) {
-            changed.emplace_back("gossip_interval_ms");
-        }
-        if (old_cfg.quarantine_interval_ms != new_cfg.quarantine_interval_ms) {
-            changed.emplace_back("quarantine_interval_ms");
-        }
-        if (old_cfg.rpc_timeout_ms != new_cfg.rpc_timeout_ms) {
-            changed.emplace_back("rpc_timeout_ms");
-        }
-        if (old_cfg.max_hint_bytes != new_cfg.max_hint_bytes) {
-            changed.emplace_back("max_hint_bytes");
-        }
-        if (old_cfg.tombstone_gc_ms != new_cfg.tombstone_gc_ms) {
-            changed.emplace_back("tombstone_gc_ms");
-        }
-        if (old_cfg.anti_entropy_interval_ms != new_cfg.anti_entropy_interval_ms) {
-            changed.emplace_back("anti_entropy_interval_ms");
-        }
-        if (old_cfg.anti_entropy_buckets != new_cfg.anti_entropy_buckets) {
-            changed.emplace_back("anti_entropy_buckets");
-        }
-        if (old_cfg.anti_entropy_fetch_bytes != new_cfg.anti_entropy_fetch_bytes) {
-            changed.emplace_back("anti_entropy_fetch_bytes");
-        }
-        if (old_cfg.anti_entropy_full_rehash_interval_ms
-            != new_cfg.anti_entropy_full_rehash_interval_ms) {
-            changed.emplace_back("anti_entropy_full_rehash_interval_ms");
-        }
-        if (old_cfg.persistence_enabled != new_cfg.persistence_enabled) {
-            changed.emplace_back("persistence_enabled");
-        }
-        if (old_cfg.data_dir != new_cfg.data_dir) {
-            changed.emplace_back("data_dir");
-        }
-        if (old_cfg.snapshot_interval_s != new_cfg.snapshot_interval_s) {
-            changed.emplace_back("snapshot_interval_s");
-        }
-        if (old_cfg.max_wal_entries != new_cfg.max_wal_entries) {
-            changed.emplace_back("max_wal_entries");
-        }
-        if (old_cfg.max_wal_bytes != new_cfg.max_wal_bytes) {
-            changed.emplace_back("max_wal_bytes");
-        }
-        if (old_cfg.max_wal_segment_bytes != new_cfg.max_wal_segment_bytes) {
-            changed.emplace_back("max_wal_segment_bytes");
-        }
-        if (old_cfg.wal_fsync != new_cfg.wal_fsync) {
-            changed.emplace_back("wal_fsync");
-        }
-        if (old_cfg.tls.enabled != new_cfg.tls.enabled) {
-            changed.emplace_back("tls_enabled");
-        }
-        if (old_cfg.tls.cert_file != new_cfg.tls.cert_file) {
-            changed.emplace_back("tls_cert_file");
-        }
-        if (old_cfg.tls.key_file != new_cfg.tls.key_file) {
-            changed.emplace_back("tls_key_file");
-        }
-        if (old_cfg.tls.ca_file != new_cfg.tls.ca_file) {
-            changed.emplace_back("tls_ca_file");
-        }
-        if (old_cfg.auth.shared_secret != new_cfg.auth.shared_secret) {
-            changed.emplace_back("auth_shared_secret");
-        }
-        if (old_cfg.auth.client_shared_secret != new_cfg.auth.client_shared_secret) {
-            changed.emplace_back("auth_client_shared_secret");
-        }
-        if (old_cfg.log_level != new_cfg.log_level) {
-            changed.emplace_back("log_level");
-        }
-        if (old_cfg.metrics_port != new_cfg.metrics_port) {
-            changed.emplace_back("metrics_port");
-        }
-        if (old_cfg.grpc_port != new_cfg.grpc_port) {
-            changed.emplace_back("grpc_port");
-        }
+        check("ping_interval_ms", old_cfg.ping_interval_ms, new_cfg.ping_interval_ms);
+        check("suspect_timeout_ms", old_cfg.suspect_timeout_ms, new_cfg.suspect_timeout_ms);
+        check("gossip_interval_ms", old_cfg.gossip_interval_ms, new_cfg.gossip_interval_ms);
+        check(
+            "quarantine_interval_ms",
+            old_cfg.quarantine_interval_ms,
+            new_cfg.quarantine_interval_ms
+        );
+
+        check("rpc_timeout_ms", old_cfg.rpc_timeout_ms, new_cfg.rpc_timeout_ms);
+        check("max_hint_bytes", old_cfg.max_hint_bytes, new_cfg.max_hint_bytes);
+        check("tombstone_gc_ms", old_cfg.tombstone_gc_ms, new_cfg.tombstone_gc_ms);
+        check(
+            "anti_entropy_interval_ms",
+            old_cfg.anti_entropy_interval_ms,
+            new_cfg.anti_entropy_interval_ms
+        );
+
+        check("anti_entropy_buckets", old_cfg.anti_entropy_buckets, new_cfg.anti_entropy_buckets);
+        check(
+            "anti_entropy_fetch_bytes",
+            old_cfg.anti_entropy_fetch_bytes,
+            new_cfg.anti_entropy_fetch_bytes
+        );
+
+        check(
+            "anti_entropy_full_rehash_interval_ms",
+            old_cfg.anti_entropy_full_rehash_interval_ms,
+            new_cfg.anti_entropy_full_rehash_interval_ms
+        );
+
+        check("persistence_enabled", old_cfg.persistence_enabled, new_cfg.persistence_enabled);
+        check("data_dir", old_cfg.data_dir, new_cfg.data_dir);
+        check(
+            "snapshot_interval_s",
+            old_cfg.tuning.snapshot_interval_s,
+            new_cfg.tuning.snapshot_interval_s
+        );
+
+        check("max_wal_entries", old_cfg.tuning.max_wal_entries, new_cfg.tuning.max_wal_entries);
+
+        check("max_wal_bytes", old_cfg.tuning.max_wal_bytes, new_cfg.tuning.max_wal_bytes);
+        check(
+            "max_wal_segment_bytes",
+            old_cfg.tuning.max_wal_segment_bytes,
+            new_cfg.tuning.max_wal_segment_bytes
+        );
+
+        check("wal_fsync", old_cfg.tuning.wal_fsync, new_cfg.tuning.wal_fsync);
+        check("tls_enabled", old_cfg.tls.enabled, new_cfg.tls.enabled);
+        check("tls_cert_file", old_cfg.tls.cert_file, new_cfg.tls.cert_file);
+        check("tls_key_file", old_cfg.tls.key_file, new_cfg.tls.key_file);
+        check("tls_ca_file", old_cfg.tls.ca_file, new_cfg.tls.ca_file);
+        check("auth_shared_secret", old_cfg.auth.shared_secret, new_cfg.auth.shared_secret);
+        check(
+            "auth_client_shared_secret",
+            old_cfg.auth.client_shared_secret,
+            new_cfg.auth.client_shared_secret
+        );
+
+        check("log_level", old_cfg.log_level, new_cfg.log_level);
+        check("metrics_port", old_cfg.metrics_port, new_cfg.metrics_port);
+        check("grpc_port", old_cfg.grpc_port, new_cfg.grpc_port);
         return changed;
     }
 
@@ -242,13 +227,13 @@ namespace cinder {
 
         // Server
         if (auto server = root["server"]) {
-            cfg.node_id = server["node_id"].as<std::string>(cfg.node_id);
-            cfg.port = server["port"].as<uint16_t>(cfg.port);
-            cfg.capacity = server["capacity"].as<size_t>(cfg.capacity);
-            cfg.rpc_timeout_ms = server["rpc_timeout_ms"].as<int>(cfg.rpc_timeout_ms);
-            cfg.replica_factor = server["replication_factor"].as<int>(cfg.replica_factor);
-            cfg.consistency = server["consistency"].as<std::string>(cfg.consistency);
-            cfg.metrics_port = server["metrics_port"].as<uint16_t>(cfg.metrics_port);
+            loadOr(server, "node_id", cfg.node_id);
+            loadOr(server, "port", cfg.port);
+            loadOr(server, "capacity", cfg.capacity);
+            loadOr(server, "rpc_timeout_ms", cfg.rpc_timeout_ms);
+            loadOr(server, "replication_factor", cfg.replica_factor);
+            loadOr(server, "consistency", cfg.consistency);
+            loadOr(server, "metrics_port", cfg.metrics_port);
         }
         // Cluster peers
         if (auto cluster = root["cluster"]) {
@@ -264,57 +249,52 @@ namespace cinder {
         }
         // Failure detector
         if (auto fd = root["failure_detector"]) {
-            cfg.ping_interval_ms = fd["ping_interval_ms"].as<int>(cfg.ping_interval_ms);
-            cfg.suspect_timeout_ms = fd["suspect_timeout_ms"].as<int>(cfg.suspect_timeout_ms);
-            cfg.gossip_interval_ms = fd["gossip_interval_ms"].as<int>(cfg.gossip_interval_ms);
-            cfg.quarantine_interval_ms =
-                fd["quarantine_interval_ms"].as<int>(cfg.quarantine_interval_ms);
+            loadOr(fd, "ping_interval_ms", cfg.ping_interval_ms);
+            loadOr(fd, "suspect_timeout_ms", cfg.suspect_timeout_ms);
+            loadOr(fd, "gossip_interval_ms", cfg.gossip_interval_ms);
+            loadOr(fd, "quarantine_interval_ms", cfg.quarantine_interval_ms);
         }
         // Anti-entropy
         if (auto ae = root["anti_entropy"]) {
-            cfg.anti_entropy_interval_ms = ae["interval_ms"].as<int>(cfg.anti_entropy_interval_ms);
-            cfg.anti_entropy_buckets = ae["buckets"].as<int>(cfg.anti_entropy_buckets);
-            cfg.anti_entropy_fetch_bytes =
-                ae["fetch_bytes"].as<size_t>(cfg.anti_entropy_fetch_bytes);
-            cfg.anti_entropy_full_rehash_interval_ms =
-                ae["full_rehash_interval_ms"].as<int>(cfg.anti_entropy_full_rehash_interval_ms);
+            loadOr(ae, "interval_ms", cfg.anti_entropy_interval_ms);
+            loadOr(ae, "buckets", cfg.anti_entropy_buckets);
+            loadOr(ae, "fetch_bytes", cfg.anti_entropy_fetch_bytes);
+            loadOr(ae, "full_rehash_interval_ms", cfg.anti_entropy_full_rehash_interval_ms);
         }
         // Hinted handoff
         if (auto repl = root["replication"]) {
-            cfg.max_hint_bytes = repl["max_hint_bytes"].as<size_t>(cfg.max_hint_bytes);
-            cfg.tombstone_gc_ms = repl["tombstone_gc_ms"].as<int>(cfg.tombstone_gc_ms);
+            loadOr(repl, "max_hint_bytes", cfg.max_hint_bytes);
+            loadOr(repl, "tombstone_gc_ms", cfg.tombstone_gc_ms);
         }
         // Persistence
         if (auto pers = root["persistence"]) {
-            cfg.persistence_enabled = pers["enabled"].as<bool>(cfg.persistence_enabled);
-            cfg.data_dir = pers["data_dir"].as<std::string>(cfg.data_dir);
-            cfg.snapshot_interval_s = pers["snapshot_interval_s"].as<int>(cfg.snapshot_interval_s);
-            cfg.max_wal_entries = pers["max_wal_entries"].as<int>(cfg.max_wal_entries);
-            cfg.max_wal_bytes = pers["max_wal_bytes"].as<size_t>(cfg.max_wal_bytes);
-            cfg.max_wal_segment_bytes =
-                pers["max_wal_segment_bytes"].as<size_t>(cfg.max_wal_segment_bytes);
-            cfg.wal_fsync = pers["wal_fsync"].as<bool>(cfg.wal_fsync);
+            loadOr(pers, "enabled", cfg.persistence_enabled);
+            loadOr(pers, "data_dir", cfg.data_dir);
+            loadOr(pers, "snapshot_interval_s", cfg.tuning.snapshot_interval_s);
+            loadOr(pers, "max_wal_entries", cfg.tuning.max_wal_entries);
+            loadOr(pers, "max_wal_bytes", cfg.tuning.max_wal_bytes);
+            loadOr(pers, "max_wal_segment_bytes", cfg.tuning.max_wal_segment_bytes);
+            loadOr(pers, "wal_fsync", cfg.tuning.wal_fsync);
         }
         // TLS
         if (auto tls = root["tls"]) {
-            cfg.tls.enabled = tls["enabled"].as<bool>(cfg.tls.enabled);
-            cfg.tls.cert_file = tls["cert_file"].as<std::string>(cfg.tls.cert_file);
-            cfg.tls.key_file = tls["key_file"].as<std::string>(cfg.tls.key_file);
-            cfg.tls.ca_file = tls["ca_file"].as<std::string>(cfg.tls.ca_file);
+            loadOr(tls, "enabled", cfg.tls.enabled);
+            loadOr(tls, "cert_file", cfg.tls.cert_file);
+            loadOr(tls, "key_file", cfg.tls.key_file);
+            loadOr(tls, "ca_file", cfg.tls.ca_file);
         }
         // Auth
         if (auto auth = root["auth"]) {
-            cfg.auth.shared_secret = auth["shared_secret"].as<std::string>(cfg.auth.shared_secret);
-            cfg.auth.client_shared_secret =
-                auth["client_shared_secret"].as<std::string>(cfg.auth.client_shared_secret);
+            loadOr(auth, "shared_secret", cfg.auth.shared_secret);
+            loadOr(auth, "client_shared_secret", cfg.auth.client_shared_secret);
         }
         // Logging
         if (auto log = root["logging"]) {
-            cfg.log_level = log["level"].as<std::string>(cfg.log_level);
+            loadOr(log, "level", cfg.log_level);
         }
         // gRPC
         if (auto grpc = root["grpc"]) {
-            cfg.grpc_port = grpc["port"].as<uint16_t>(cfg.grpc_port);
+            loadOr(grpc, "port", cfg.grpc_port);
         }
         return cfg;
     }
