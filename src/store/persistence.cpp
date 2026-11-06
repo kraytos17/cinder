@@ -1,8 +1,10 @@
 #include "cinder/store/persistence.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <utility>
 
@@ -17,6 +19,9 @@ namespace cinder {
 
     namespace {
         constexpr const char* K_WAL_FILENAME = "wal.log";
+        constexpr const char* K_WAL_SEGMENT_PREFIX = "wal_";
+        constexpr const char* K_WAL_SEGMENT_SUFFIX = ".log";
+        constexpr size_t K_WAL_HEADER_SIZE = 8; // magic(4) + version(4)
         constexpr const char* K_SNAPSHOT_PREFIX = "snapshot_";
         constexpr const char* K_SNAPSHOT_SUFFIX = ".dat";
         constexpr const char* K_CURRENT_FILENAME = "CURRENT";
@@ -86,6 +91,35 @@ namespace cinder {
             }
             return {};
         }
+
+        // Zero-padded so lexicographic order equals numeric order, even
+        // beyond seq 9 (no fragile name > comparison).
+        auto walSegmentName(uint64_t seq) -> std::string {
+            return std::format("{}{:020}{}", K_WAL_SEGMENT_PREFIX, seq, K_WAL_SEGMENT_SUFFIX);
+        }
+
+        // Parse wal_<seq>.log filenames; nullopt for anything else.
+        auto parseWalSegmentSeq(std::string_view name) -> std::optional<uint64_t> {
+            std::string_view prefix(K_WAL_SEGMENT_PREFIX);
+            std::string_view suffix(K_WAL_SEGMENT_SUFFIX);
+            if (name.size()
+                <= prefix.size()
+                + suffix.size()
+                || !name.starts_with(prefix)
+                || !name.ends_with(suffix)) {
+                return std::nullopt;
+            }
+
+            const auto digits =
+                name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+            uint64_t seq = 0;
+            const auto [ptr, ec] =
+                std::from_chars(digits.data(), digits.data() + digits.size(), seq);
+            if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
+                return std::nullopt;
+            }
+            return seq;
+        }
     } // namespace
 
     PersistenceManager::PersistenceManager(Options opts, CacheStore& store, Clock* clock) :
@@ -135,6 +169,11 @@ namespace cinder {
 
                 [[maybe_unused]]
                 auto res = store_.putVersioned(entry.key, std::move(ve));
+                // WAL records carry no freq (frozen v2 framing): only the
+                // snapshot restores policy state; WAL-only keys start at 1.
+                if (entry.freq > 1) {
+                    store_.restoreFreq(entry.key, entry.freq);
+                }
                 ++snap_count;
             });
             if (!result.has_value()) {
@@ -145,29 +184,49 @@ namespace cinder {
             CINDER_INFO("recovered entries from snapshot", {"count", snap_count});
         }
 
-        // Replay WAL if present, keeping the log: entries already applied to
-        // the store stay on disk, so a crash before the next snapshot loses
-        // nothing. Counters seed from the replayed file size/record count.
-        auto wal_path = findWalPath();
-        size_t wal_records = 0;
-        uint64_t wal_file_bytes = 0;
-        if (!wal_path.empty()) {
+        // Replay sealed segments in seq order, then the active file. The log
+        // is kept (append mode): entries already applied to the store stay on
+        // disk, so a crash before the next snapshot loses nothing. Counters
+        // seed from the replayed files.
+        size_t active_records = 0;
+        size_t sealed_records = 0;
+        uint64_t active_bytes = 0;
+        uint64_t sealed_bytes = 0;
+        uint64_t max_sealed_seq = 0;
+        bool have_sealed = false;
+        for (const auto& wal_file : findWalFiles()) {
+            const bool is_active = wal_file.filename() == K_WAL_FILENAME;
             std::error_code size_ec;
-            wal_file_bytes = std::filesystem::file_size(wal_path, size_ec);
-            auto wal_result = replayWal(std::filesystem::path(wal_path));
+            const uint64_t file_bytes = std::filesystem::file_size(wal_file, size_ec);
+            auto wal_result = replayWal(wal_file);
             if (!wal_result.has_value()) {
                 loading_ = false;
                 span.setStatus(SpanStatus::Error);
                 return err(wal_result.error());
             }
-            wal_records = wal_result.value();
+            if (is_active) {
+                active_records = wal_result.value();
+                active_bytes = size_ec ? 0 : file_bytes;
+            } else {
+                sealed_records += wal_result.value();
+                if (!size_ec) {
+                    sealed_bytes += file_bytes;
+                }
+                if (auto seq = parseWalSegmentSeq(wal_file.filename().string())) {
+                    have_sealed = true;
+                    max_sealed_seq = std::max(max_sealed_seq, seq.value());
+                }
+            }
         }
 
         loading_ = false;
         auto new_wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
         wal_ = std::make_unique<WalWriter>(new_wal_path.string(), WalOpenMode::Append);
-        wal_entry_count_.store(wal_records, std::memory_order_relaxed);
-        wal_bytes_.store(static_cast<size_t>(wal_file_bytes), std::memory_order_relaxed);
+        wal_next_seq_ = have_sealed ? max_sealed_seq + 1 : 1;
+        wal_entry_count_.store(active_records, std::memory_order_relaxed);
+        wal_bytes_.store(static_cast<size_t>(active_bytes), std::memory_order_relaxed);
+        wal_sealed_entries_.store(sealed_records, std::memory_order_relaxed);
+        wal_sealed_bytes_.store(sealed_bytes, std::memory_order_relaxed);
         span.setStatus(SpanStatus::Ok);
         return ok();
     }
@@ -239,12 +298,30 @@ namespace cinder {
                 span.setStatus(SpanStatus::Error);
                 return;
             }
-
-            span.setStatus(SpanStatus::Ok);
-            return;
+        } else {
+            wal_->flush();
         }
-
-        wal_->flush();
+        // Size-based rotation: seal oversized active files so no single
+        // recovery file grows without bound. Sealed segments are deleted by
+        // the next successful compact.
+        if (opts_.max_wal_segment_bytes > 0) {
+            std::error_code size_ec;
+            const auto active_size = std::filesystem::file_size(
+                std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME,
+                size_ec
+            );
+            if (!size_ec
+                && active_size
+                >= opts_.max_wal_segment_bytes
+                && active_size
+                > K_WAL_HEADER_SIZE) {
+                if (auto sealed = sealActiveWalLocked(); !sealed.has_value()) {
+                    CINDER_ERROR("WAL seal failed", {"reason", sealed.error().message()});
+                    span.setStatus(SpanStatus::Error);
+                    return;
+                }
+            }
+        }
         span.setStatus(SpanStatus::Ok);
     }
 
@@ -278,43 +355,14 @@ namespace cinder {
         }
 
         pruneOldSnapshots();
-        // Rotate atomically: stage the fresh WAL at wal.log.tmp, fsync it,
-        // rename over wal.log, fsync the directory — then drain into it.
-        // WalWriter is neither copyable nor movable, but the heap object
-        // stays put: after rename its open handles still refer to the same
-        // inode, now visible at the final path. The old writer stays open
-        // across the rename so wal_ is never null; resetting it afterwards
-        // just closes the unlinked pre-compact inode.
+        // The new snapshot covers every sealed segment: delete them, then
+        // replace the active file with a fresh WAL and drain into it.
+        deleteSealedSegmentsLocked();
         auto wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
-        auto wal_tmp = std::filesystem::path(std::string(wal_path.string()) + ".tmp");
-        auto fresh = std::make_unique<WalWriter>(wal_tmp.string());
-        fresh->flush();
-        if (!detail::syncFileContents(wal_tmp.string())) {
-            std::error_code ec;
-            std::filesystem::remove(wal_tmp, ec);
+        if (auto rotated = replaceWalLocked(wal_path); !rotated.has_value()) {
             span.setStatus(SpanStatus::Error);
-            return err(Error(Errc::InternalError, "WAL rotate fsync failed"));
+            return err(rotated.error());
         }
-
-        {
-            std::error_code ec;
-            std::filesystem::rename(wal_tmp, wal_path, ec);
-            if (ec) {
-                std::filesystem::remove(wal_tmp, ec);
-                span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::InternalError, "WAL rotate failed: " + ec.message()));
-            }
-        }
-
-        if (!detail::syncDirectory(wal_path.string())) {
-            span.setStatus(SpanStatus::Error);
-            return err(Error(Errc::InternalError, "WAL dir fsync failed"));
-        }
-
-        wal_.reset();
-        wal_ = std::move(fresh);
-        wal_entry_count_.store(0, std::memory_order_relaxed);
-        wal_bytes_.store(0, std::memory_order_relaxed);
         if (wal_) {
             drainQueueLocked();
         }
@@ -360,6 +408,9 @@ namespace cinder {
         all_entries.reserve(live.size());
         for (auto& [key, ve] : live) {
             SnapshotEntry se;
+            // Query LFU policy state before moving the key: liveEntries()
+            // drops it, and a restart would otherwise reset hot entries.
+            se.freq = store_.entryFreq(key);
             se.key = std::move(key);
             se.value = std::move(ve.value);
             se.version = ve.version();
@@ -372,7 +423,6 @@ namespace cinder {
                 se.expires_at_ms = 0;
             }
 
-            se.freq = 0;
             if (ve.version() >= next_version) {
                 next_version = ve.version() + 1;
             }
@@ -548,11 +598,132 @@ namespace cinder {
         }
     }
 
-    auto PersistenceManager::findWalPath() const -> std::string {
-        auto wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
-        if (std::filesystem::exists(wal_path)) {
-            return wal_path.string();
+    auto PersistenceManager::findWalFiles() const -> std::vector<std::filesystem::path> {
+        std::vector<std::pair<uint64_t, std::filesystem::path>> sealed;
+        std::filesystem::path active;
+        if (!std::filesystem::exists(opts_.data_dir)) {
+            return {};
         }
-        return {};
+        for (const auto& entry : std::filesystem::directory_iterator(opts_.data_dir)) {
+            const auto name = entry.path().filename().string();
+            if (name == K_WAL_FILENAME) {
+                active = entry.path();
+            } else if (auto seq = parseWalSegmentSeq(name)) {
+                sealed.emplace_back(seq.value(), entry.path());
+            }
+        }
+
+        std::ranges::sort(sealed, {}, &std::pair<uint64_t, std::filesystem::path>::first);
+        std::vector<std::filesystem::path> files;
+        files.reserve(sealed.size() + (active.empty() ? 0U : 1U));
+        for (const auto& [_, path] : sealed) {
+            files.push_back(path);
+        }
+        if (!active.empty()) {
+            files.push_back(active);
+        }
+        return files;
+    }
+
+    auto PersistenceManager::replaceWalLocked(const std::filesystem::path& path) -> Result<void> {
+        // Stage the fresh WAL at <path>.tmp, fsync it, rename over <path>,
+        // fsync the directory — then adopt it. The old writer stays open
+        // across the rename so wal_ is never null; resetting it afterwards
+        // just closes the unlinked pre-rotation inode.
+        auto tmp = std::filesystem::path(std::string(path.string()) + ".tmp");
+        auto fresh = std::make_unique<WalWriter>(tmp.string());
+        fresh->flush();
+        if (!detail::syncFileContents(tmp.string())) {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return err(Error(Errc::InternalError, "WAL rotate fsync failed"));
+        }
+
+        {
+            std::error_code ec;
+            std::filesystem::rename(tmp, path, ec);
+            if (ec) {
+                std::filesystem::remove(tmp, ec);
+                return err(Error(Errc::InternalError, "WAL rotate failed: " + ec.message()));
+            }
+        }
+
+        if (!detail::syncDirectory(path.string())) {
+            return err(Error(Errc::InternalError, "WAL dir fsync failed"));
+        }
+
+        wal_.reset();
+        wal_ = std::move(fresh);
+        std::error_code size_ec;
+        const auto fresh_bytes = std::filesystem::file_size(path, size_ec);
+
+        wal_entry_count_.store(0, std::memory_order_relaxed);
+        wal_bytes_.store(size_ec ? 0 : static_cast<size_t>(fresh_bytes), std::memory_order_relaxed);
+        return ok();
+    }
+
+    auto PersistenceManager::sealActiveWalLocked() -> Result<void> {
+        const auto wal_path = std::filesystem::path(opts_.data_dir) / K_WAL_FILENAME;
+        wal_->flush();
+        std::error_code size_ec;
+        const auto sealed_bytes = std::filesystem::file_size(wal_path, size_ec);
+        const size_t sealed_entries = wal_entry_count_.load(std::memory_order_relaxed);
+        // Close before rename: Windows cannot rename an open file, and on
+        // POSIX the open handles would keep pointing at the sealed inode.
+        wal_.reset();
+        const auto seg_path = std::filesystem::path(opts_.data_dir) / walSegmentName(wal_next_seq_);
+        {
+            std::error_code ec;
+            std::filesystem::rename(wal_path, seg_path, ec);
+            if (ec) {
+                // Roll back: reopen whatever is at wal.log (likely nothing)
+                // so wal_ is non-null and queued writes are not dropped.
+                wal_ = std::make_unique<WalWriter>(wal_path.string(), WalOpenMode::Append);
+                return err(Error(Errc::InternalError, "WAL seal failed: " + ec.message()));
+            }
+        }
+
+        if (!detail::syncDirectory(seg_path.string())) {
+            wal_ = std::make_unique<WalWriter>(wal_path.string(), WalOpenMode::Append);
+            return err(Error(Errc::InternalError, "WAL seal dir fsync failed"));
+        }
+        if (auto fresh = replaceWalLocked(wal_path); !fresh.has_value()) {
+            // Fresh-file staging failed after the seal rename; move the
+            // segment back and reopen it so no writer state is lost.
+            std::error_code ec;
+            std::filesystem::rename(seg_path, wal_path, ec);
+            wal_ = std::make_unique<WalWriter>(wal_path.string(), WalOpenMode::Append);
+            return err(fresh.error());
+        }
+        if (!size_ec) {
+            wal_sealed_bytes_.fetch_add(
+                static_cast<uint64_t>(sealed_bytes),
+                std::memory_order_relaxed
+            );
+        }
+
+        wal_sealed_entries_.fetch_add(sealed_entries, std::memory_order_relaxed);
+        ++wal_next_seq_;
+        return ok();
+    }
+
+    void PersistenceManager::deleteSealedSegmentsLocked() {
+        for (const auto& file : findWalFiles()) {
+            if (file.filename() == K_WAL_FILENAME) {
+                continue;
+            }
+
+            std::error_code ec;
+            std::filesystem::remove(file, ec);
+            if (ec) {
+                CINDER_WARN("sealed WAL delete failed", {"path", file.string()});
+            }
+        }
+
+        wal_sealed_entries_.store(0, std::memory_order_relaxed);
+        wal_sealed_bytes_.store(0, std::memory_order_relaxed);
+        if (!detail::syncDirectory(opts_.data_dir)) {
+            CINDER_WARN("sealed WAL dir fsync failed", {"path", opts_.data_dir});
+        }
     }
 } // namespace cinder

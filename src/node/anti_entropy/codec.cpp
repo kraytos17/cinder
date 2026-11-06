@@ -2,6 +2,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <concepts>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -16,32 +17,21 @@
 namespace cinder {
     namespace {
 
-        // Little-endian append helpers for the digest/sync blobs. The cluster is
-        // homogeneous, but a fixed endianness keeps the wire format well-defined.
-        void appendU32(std::string& out, uint32_t v) {
+        // Little-endian append helper for the digest/sync blobs. The
+        // cluster is homogeneous, but a fixed endianness keeps the wire
+        // format well-defined.
+        template <typename T>
+            requires std::unsigned_integral<T>
+        void appendLE(std::string& out, T v) {
             std::array<char, sizeof(v)> buf{};
             std::memcpy(buf.data(), &v, buf.size());
             out.append(buf.data(), buf.size());
         }
 
-        void appendU64(std::string& out, uint64_t v) {
-            std::array<char, sizeof(v)> buf{};
-            std::memcpy(buf.data(), &v, buf.size());
-            out.append(buf.data(), buf.size());
-        }
-
-        auto readU32(const char*& p, const char* end, uint32_t& out) -> bool {
-            if (static_cast<size_t>(end - p) < sizeof(uint32_t)) {
-                return false;
-            }
-
-            std::memcpy(&out, p, sizeof(out));
-            p += sizeof(out);
-            return true;
-        }
-
-        auto readU64(const char*& p, const char* end, uint64_t& out) -> bool {
-            if (static_cast<size_t>(end - p) < sizeof(uint64_t)) {
+        template <typename T>
+            requires std::unsigned_integral<T>
+        auto readLE(const char*& p, const char* end, T& out) -> bool {
+            if (static_cast<size_t>(end - p) < sizeof(T)) {
                 return false;
             }
 
@@ -138,11 +128,12 @@ namespace cinder {
         auto encodeDigest(const std::vector<uint64_t>& digest) -> std::string {
             using M = AntiEntropyManager;
             std::string out;
+
             out.reserve(sizeof(uint32_t) * 2 + digest.size() * sizeof(uint64_t));
-            appendU32(out, M::K_DIGEST_MAGIC);
-            appendU32(out, static_cast<uint32_t>(digest.size()));
+            appendLE(out, M::K_DIGEST_MAGIC);
+            appendLE(out, static_cast<uint32_t>(digest.size()));
             for (auto h : digest) {
-                appendU64(out, h);
+                appendLE(out, h);
             }
             return out;
         }
@@ -154,10 +145,10 @@ namespace cinder {
             const char* end = p + data.size();
             uint32_t magic = 0;
             uint32_t n = 0;
-            if (!readU32(p, end, magic) || magic != M::K_DIGEST_MAGIC) {
+            if (!readLE(p, end, magic) || magic != M::K_DIGEST_MAGIC) {
                 return std::nullopt;
             }
-            if (!readU32(p, end, n) || n != expected_buckets) {
+            if (!readLE(p, end, n) || n != expected_buckets) {
                 return std::nullopt;
             }
             if (static_cast<size_t>(end - p) != static_cast<size_t>(n) * sizeof(uint64_t)) {
@@ -168,7 +159,7 @@ namespace cinder {
             digest.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
                 uint64_t h = 0;
-                if (!readU64(p, end, h)) {
+                if (!readLE(p, end, h)) {
                     return std::nullopt;
                 }
                 digest.push_back(h);
@@ -189,8 +180,8 @@ namespace cinder {
                 const size_t end = std::min(begin + M::K_BUCKETS_PER_GROUP, bucket_hashes.size());
                 material.reserve((end - begin) * (sizeof(uint32_t) + sizeof(uint64_t)));
                 for (size_t bucket = begin; bucket < end; ++bucket) {
-                    appendU32(material, static_cast<uint32_t>(bucket));
-                    appendU64(material, bucket_hashes[bucket]);
+                    appendLE(material, static_cast<uint32_t>(bucket));
+                    appendLE(material, bucket_hashes[bucket]);
                 }
                 groups[group] = XXH3_64bits(material.data(), material.size());
             }
@@ -201,10 +192,10 @@ namespace cinder {
             using M = AntiEntropyManager;
             std::string out;
             out.reserve(2 * sizeof(uint32_t) + groups.size() * sizeof(uint64_t));
-            appendU32(out, M::K_GROUP_DIGEST_MAGIC);
-            appendU32(out, static_cast<uint32_t>(groups.size()));
+            appendLE(out, M::K_GROUP_DIGEST_MAGIC);
+            appendLE(out, static_cast<uint32_t>(groups.size()));
             for (uint64_t hash : groups) {
-                appendU64(out, hash);
+                appendLE(out, hash);
             }
             return out;
         }
@@ -216,10 +207,10 @@ namespace cinder {
             const char* end = p + data.size();
             uint32_t magic = 0;
             uint32_t count = 0;
-            if (!readU32(p, end, magic)
+            if (!readLE(p, end, magic)
                 || magic
                 != M::K_GROUP_DIGEST_MAGIC
-                || !readU32(p, end, count)
+                || !readLE(p, end, count)
                 || count
                 != expected_groups
                 || static_cast<size_t>(end - p)
@@ -232,7 +223,7 @@ namespace cinder {
             result.reserve(count);
             for (uint32_t i = 0; i < count; ++i) {
                 uint64_t hash = 0;
-                if (!readU64(p, end, hash)) {
+                if (!readLE(p, end, hash)) {
                     return std::nullopt;
                 }
                 result.push_back(hash);
@@ -243,12 +234,12 @@ namespace cinder {
         auto encodeBucketRefinement(const BucketRefinement& request) -> std::string {
             using M = AntiEntropyManager;
             std::string out;
-            appendU32(out, M::K_BUCKET_REFINEMENT_MAGIC);
-            appendU32(out, request.force_metadata ? 1U : 0U);
-            appendU32(out, static_cast<uint32_t>(request.bucket_hashes.size()));
+            appendLE(out, M::K_BUCKET_REFINEMENT_MAGIC);
+            appendLE(out, request.force_metadata ? 1U : 0U);
+            appendLE(out, static_cast<uint32_t>(request.bucket_hashes.size()));
             for (const auto& [bucket, hash] : request.bucket_hashes) {
-                appendU32(out, bucket);
-                appendU64(out, hash);
+                appendLE(out, bucket);
+                appendLE(out, hash);
             }
             return out;
         }
@@ -261,13 +252,13 @@ namespace cinder {
             uint32_t magic = 0;
             uint32_t flags = 0;
             uint32_t bucket_count = 0;
-            if (!readU32(p, end, magic)
+            if (!readLE(p, end, magic)
                 || magic
                 != M::K_BUCKET_REFINEMENT_MAGIC
-                || !readU32(p, end, flags)
+                || !readLE(p, end, flags)
                 || (flags & ~1U)
                 != 0
-                || !readU32(p, end, bucket_count)
+                || !readLE(p, end, bucket_count)
                 || static_cast<size_t>(end - p)
                 != static_cast<size_t>(bucket_count)
                 * (sizeof(uint32_t) + sizeof(uint64_t))) {
@@ -280,10 +271,7 @@ namespace cinder {
             for (uint32_t i = 0; i < bucket_count; ++i) {
                 uint32_t bucket = 0;
                 uint64_t hash = 0;
-                if (!readU32(p, end, bucket)
-                    || bucket
-                    >= expected_groups
-                    || !readU64(p, end, hash)) {
+                if (!readLE(p, end, bucket) || bucket >= expected_groups || !readLE(p, end, hash)) {
                     return std::nullopt;
                 }
                 request.bucket_hashes.emplace_back(bucket, hash);
@@ -309,29 +297,29 @@ namespace cinder {
                 + sizeof(uint32_t)
             );
 
-            appendU32(out, M::K_DIGEST_RESPONSE_MAGIC);
-            appendU32(out, static_cast<uint32_t>(response.group_hashes.size()));
+            appendLE(out, M::K_DIGEST_RESPONSE_MAGIC);
+            appendLE(out, static_cast<uint32_t>(response.group_hashes.size()));
             for (uint64_t hash : response.group_hashes) {
-                appendU64(out, hash);
+                appendLE(out, hash);
             }
 
-            appendU32(out, static_cast<uint32_t>(response.bucket_hashes.size()));
+            appendLE(out, static_cast<uint32_t>(response.bucket_hashes.size()));
             for (const auto& [bucket, hash] : response.bucket_hashes) {
-                appendU32(out, bucket);
-                appendU64(out, hash);
+                appendLE(out, bucket);
+                appendLE(out, hash);
             }
 
-            appendU32(out, static_cast<uint32_t>(response.covered_buckets.size()));
+            appendLE(out, static_cast<uint32_t>(response.covered_buckets.size()));
             for (uint32_t bucket : response.covered_buckets) {
-                appendU32(out, bucket);
+                appendLE(out, bucket);
             }
 
-            appendU32(out, static_cast<uint32_t>(rows.size()));
+            appendLE(out, static_cast<uint32_t>(rows.size()));
             out += rows;
-            appendU32(out, static_cast<uint32_t>(response.iblt_sketches.size()));
+            appendLE(out, static_cast<uint32_t>(response.iblt_sketches.size()));
             for (const auto& [bucket, sketch] : response.iblt_sketches) {
-                appendU32(out, bucket);
-                appendU32(out, static_cast<uint32_t>(sketch.size()));
+                appendLE(out, bucket);
+                appendLE(out, static_cast<uint32_t>(sketch.size()));
                 out += sketch;
             }
             return out;
@@ -344,10 +332,10 @@ namespace cinder {
             const char* end = p + data.size();
             uint32_t magic = 0;
             uint32_t group_count = 0;
-            if (!readU32(p, end, magic)
+            if (!readLE(p, end, magic)
                 || magic
                 != M::K_DIGEST_RESPONSE_MAGIC
-                || !readU32(p, end, group_count)
+                || !readLE(p, end, group_count)
                 || group_count
                 != expected_groups) {
                 return std::nullopt;
@@ -357,14 +345,14 @@ namespace cinder {
             response.group_hashes.reserve(group_count);
             for (uint32_t i = 0; i < group_count; ++i) {
                 uint64_t hash = 0;
-                if (!readU64(p, end, hash)) {
+                if (!readLE(p, end, hash)) {
                     return std::nullopt;
                 }
                 response.group_hashes.push_back(hash);
             }
 
             uint32_t bucket_hash_count = 0;
-            if (!readU32(p, end, bucket_hash_count)
+            if (!readLE(p, end, bucket_hash_count)
                 || static_cast<size_t>(end - p)
                 < static_cast<size_t>(bucket_hash_count)
                 * (sizeof(uint32_t) + sizeof(uint64_t))) {
@@ -375,14 +363,14 @@ namespace cinder {
             for (uint32_t i = 0; i < bucket_hash_count; ++i) {
                 uint32_t bucket = 0;
                 uint64_t hash = 0;
-                if (!readU32(p, end, bucket) || !readU64(p, end, hash)) {
+                if (!readLE(p, end, bucket) || !readLE(p, end, hash)) {
                     return std::nullopt;
                 }
                 response.bucket_hashes.emplace_back(bucket, hash);
             }
 
             uint32_t covered_count = 0;
-            if (!readU32(p, end, covered_count)
+            if (!readLE(p, end, covered_count)
                 || static_cast<size_t>(end - p)
                 < static_cast<size_t>(covered_count)
                 * sizeof(uint32_t)
@@ -393,14 +381,14 @@ namespace cinder {
             response.covered_buckets.reserve(covered_count);
             for (uint32_t i = 0; i < covered_count; ++i) {
                 uint32_t bucket = 0;
-                if (!readU32(p, end, bucket)) {
+                if (!readLE(p, end, bucket)) {
                     return std::nullopt;
                 }
                 response.covered_buckets.push_back(bucket);
             }
 
             uint32_t rows_size = 0;
-            if (!readU32(p, end, rows_size)
+            if (!readLE(p, end, rows_size)
                 || static_cast<size_t>(end - p)
                 < rows_size
                 + sizeof(uint32_t)) {
@@ -415,7 +403,7 @@ namespace cinder {
             response.rows = std::move(*rows);
             p += rows_size;
             uint32_t sketch_count = 0;
-            if (!readU32(p, end, sketch_count)
+            if (!readLE(p, end, sketch_count)
                 || static_cast<size_t>(sketch_count)
                 > static_cast<size_t>(end - p)
                 / (2 * sizeof(uint32_t))) {
@@ -427,8 +415,8 @@ namespace cinder {
                 uint32_t bucket = 0;
                 uint32_t sketch_size = 0;
                 std::string sketch_blob;
-                if (!readU32(p, end, bucket)
-                    || !readU32(p, end, sketch_size)
+                if (!readLE(p, end, bucket)
+                    || !readLE(p, end, sketch_size)
                     || !readBytes(p, end, sketch_size, sketch_blob)
                     || !decodeIblt(sketch_blob).has_value()) {
                     return std::nullopt;
@@ -519,15 +507,15 @@ namespace cinder {
 
             std::string out;
             out.reserve(2 * sizeof(uint32_t) + sketch.cells.size() * 48U);
-            appendU32(out, M::K_IBLT_MAGIC);
-            appendU32(out, static_cast<uint32_t>(sketch.cells.size()));
+            appendLE(out, M::K_IBLT_MAGIC);
+            appendLE(out, static_cast<uint32_t>(sketch.cells.size()));
             for (const auto& cell : sketch.cells) {
-                appendU64(out, std::bit_cast<uint64_t>(cell.count));
-                appendU64(out, cell.key_hash_xor);
-                appendU64(out, cell.version_xor);
-                appendU64(out, cell.writer_xor);
-                appendU64(out, cell.tombstone_xor);
-                appendU64(out, cell.checksum_xor);
+                appendLE(out, std::bit_cast<uint64_t>(cell.count));
+                appendLE(out, cell.key_hash_xor);
+                appendLE(out, cell.version_xor);
+                appendLE(out, cell.writer_xor);
+                appendLE(out, cell.tombstone_xor);
+                appendLE(out, cell.checksum_xor);
             }
             return out;
         }
@@ -539,10 +527,10 @@ namespace cinder {
             uint32_t magic = 0;
             uint32_t count = 0;
             constexpr size_t K_CELL_BYTES = sizeof(uint64_t) + 5 * sizeof(uint64_t);
-            if (!readU32(p, end, magic)
+            if (!readLE(p, end, magic)
                 || magic
                 != M::K_IBLT_MAGIC
-                || !readU32(p, end, count)
+                || !readLE(p, end, count)
                 || count
                 < M::K_IBLT_HASH_COUNT
                 || count
@@ -558,12 +546,12 @@ namespace cinder {
             for (uint32_t i = 0; i < count; ++i) {
                 uint64_t count_bits = 0;
                 IbltCell cell;
-                if (!readU64(p, end, count_bits)
-                    || !readU64(p, end, cell.key_hash_xor)
-                    || !readU64(p, end, cell.version_xor)
-                    || !readU64(p, end, cell.writer_xor)
-                    || !readU64(p, end, cell.tombstone_xor)
-                    || !readU64(p, end, cell.checksum_xor)) {
+                if (!readLE(p, end, count_bits)
+                    || !readLE(p, end, cell.key_hash_xor)
+                    || !readLE(p, end, cell.version_xor)
+                    || !readLE(p, end, cell.writer_xor)
+                    || !readLE(p, end, cell.tombstone_xor)
+                    || !readLE(p, end, cell.checksum_xor)) {
                     return std::nullopt;
                 }
                 if (count_bits < (uint64_t{1} << 63U) && count_bits > (uint64_t{1} << 40U)) {
@@ -680,12 +668,12 @@ namespace cinder {
         auto encodeMetaRows(const std::vector<MetaRow>& rows) -> std::string {
             std::string out;
             out.reserve(sizeof(uint32_t) + rows.size() * K_META_ROW_BYTES);
-            appendU32(out, static_cast<uint32_t>(rows.size()));
+            appendLE(out, static_cast<uint32_t>(rows.size()));
             for (const auto& r : rows) {
-                appendU32(out, r.bucket);
-                appendU64(out, r.key_hash);
-                appendU64(out, r.version);
-                appendU64(out, r.writer);
+                appendLE(out, r.bucket);
+                appendLE(out, r.key_hash);
+                appendLE(out, r.version);
+                appendLE(out, r.writer);
                 out.push_back(r.tombstone ? static_cast<char>(1) : static_cast<char>(0));
             }
             return out;
@@ -695,7 +683,7 @@ namespace cinder {
             const char* p = data.data();
             const char* end = p + data.size();
             uint32_t n = 0;
-            if (!readU32(p, end, n)) {
+            if (!readLE(p, end, n)) {
                 return std::nullopt;
             }
             if (static_cast<size_t>(end - p) != static_cast<size_t>(n) * K_META_ROW_BYTES) {
@@ -706,10 +694,10 @@ namespace cinder {
             rows.reserve(n);
             for (uint32_t i = 0; i < n; ++i) {
                 MetaRow r;
-                if (!readU32(p, end, r.bucket)
-                    || !readU64(p, end, r.key_hash)
-                    || !readU64(p, end, r.version)
-                    || !readU64(p, end, r.writer)
+                if (!readLE(p, end, r.bucket)
+                    || !readLE(p, end, r.key_hash)
+                    || !readLE(p, end, r.version)
+                    || !readLE(p, end, r.writer)
                     || p
                     >= end) {
                     return std::nullopt;
@@ -730,13 +718,13 @@ namespace cinder {
         auto encodeSync(const SyncMessage& msg, const Clock& clock) -> std::string {
             using M = AntiEntropyManager;
             std::string out;
-            appendU32(out, M::K_SYNC_MAGIC);
-            appendU32(out, static_cast<uint32_t>(msg.entries.size()));
+            appendLE(out, M::K_SYNC_MAGIC);
+            appendLE(out, static_cast<uint32_t>(msg.entries.size()));
             for (const auto& item : msg.entries) {
-                appendU32(out, static_cast<uint32_t>(item.key.size()));
+                appendLE(out, static_cast<uint32_t>(item.key.size()));
                 out.append(item.key);
-                appendU64(out, item.entry.version());
-                appendU64(out, item.entry.writer_node_hash);
+                appendLE(out, item.entry.version());
+                appendLE(out, item.entry.writer_node_hash);
                 // Entry flags bitfield: bit 0 = has_ttl, bit 1 = tombstone.
                 // Unknown bits are rejected (clean fail on mixed versions).
                 uint8_t entry_flags = 0;
@@ -749,16 +737,16 @@ namespace cinder {
 
                 out.push_back(static_cast<char>(entry_flags));
                 if (item.entry.hasTtl()) {
-                    appendU64(out, toSystemMs(clock, item.entry.expires_at));
+                    appendLE(out, toSystemMs(clock, item.entry.expires_at));
                 }
 
-                appendU32(out, static_cast<uint32_t>(item.entry.value.size()));
+                appendLE(out, static_cast<uint32_t>(item.entry.value.size()));
                 out.append(item.entry.value);
             }
 
-            appendU32(out, static_cast<uint32_t>(msg.needs.size()));
+            appendLE(out, static_cast<uint32_t>(msg.needs.size()));
             for (auto h : msg.needs) {
-                appendU64(out, h);
+                appendLE(out, h);
             }
             return out;
         }
@@ -768,13 +756,13 @@ namespace cinder {
             const char* p = data.data();
             const char* end = p + data.size();
             uint32_t magic = 0;
-            if (!readU32(p, end, magic) || magic != M::K_SYNC_MAGIC) {
+            if (!readLE(p, end, magic) || magic != M::K_SYNC_MAGIC) {
                 return std::nullopt;
             }
 
             SyncMessage msg;
             uint32_t entry_count = 0;
-            if (!readU32(p, end, entry_count)) {
+            if (!readLE(p, end, entry_count)) {
                 return std::nullopt;
             }
 
@@ -793,7 +781,7 @@ namespace cinder {
             }
 
             uint32_t need_count = 0;
-            if (!readU32(p, end, need_count)) {
+            if (!readLE(p, end, need_count)) {
                 return std::nullopt;
             }
             if (static_cast<size_t>(end - p)
@@ -805,7 +793,7 @@ namespace cinder {
             msg.needs.reserve(need_count);
             for (uint32_t i = 0; i < need_count; ++i) {
                 uint64_t h = 0;
-                if (!readU64(p, end, h)) {
+                if (!readLE(p, end, h)) {
                     return std::nullopt;
                 }
                 msg.needs.push_back(h);
@@ -825,10 +813,10 @@ namespace cinder {
             uint64_t writer_hash = 0;
             uint32_t val_len = 0;
             std::string value;
-            if (!readU32(p, end, key_len)
+            if (!readLE(p, end, key_len)
                 || !readBytes(p, end, key_len, key)
-                || !readU64(p, end, version)
-                || !readU64(p, end, writer_hash)
+                || !readLE(p, end, version)
+                || !readLE(p, end, writer_hash)
                 || static_cast<size_t>(end - p)
                 < 1) {
                 return "truncated entry";
@@ -842,10 +830,10 @@ namespace cinder {
 
             const bool has_ttl = (entry_flags & 1U) != 0;
             uint64_t expires_ms = 0;
-            if (has_ttl && !readU64(p, end, expires_ms)) {
+            if (has_ttl && !readLE(p, end, expires_ms)) {
                 return "truncated expiry";
             }
-            if (!readU32(p, end, val_len) || !readBytes(p, end, val_len, value)) {
+            if (!readLE(p, end, val_len) || !readBytes(p, end, val_len, value)) {
                 return "truncated value";
             }
 

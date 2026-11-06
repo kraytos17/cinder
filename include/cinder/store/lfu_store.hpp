@@ -60,6 +60,12 @@ namespace cinder {
 
         explicit LfuStore(size_t capacity_bytes, Clock* clock = nullptr);
 
+        // Snapshot persistence: expose/restore frequency policy state so a
+        // restart preserves hot-set information. Base defaults (0/no-op)
+        // already cover LRU.
+        auto entryFreq(const std::string& key) const -> size_t final;
+        void restoreFreq(const std::string& key, size_t freq) final;
+
     private:
 
         static auto nodeKey(const LfuNode& n) -> const std::string& {

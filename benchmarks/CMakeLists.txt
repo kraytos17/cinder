@@ -6,6 +6,7 @@ set(CINDER_BENCH_SOURCES
     lfu_bucket_bench.cpp
     tracing_bench.cpp
     anti_entropy_bench.cpp
+    wal_bench.cpp
 )
 
 add_executable(cinder_throughput_bench ${CINDER_BENCH_SOURCES})

@@ -1,5 +1,7 @@
 #include "cinder/store/wal.hpp"
 
+#include <concepts>
+#include <cstring>
 #include <limits>
 #ifndef _WIN32
 #include <fcntl.h>
@@ -29,15 +31,49 @@ namespace cinder {
             uint8_t tombstone = 0;
         };
 
+        // Little-endian buffer cursor: bounds-checked takes straight out of
+        // the slurped file image, one memcpy per scalar and zero syscalls.
+        struct BufferCursor {
+            const char* data = nullptr;
+            size_t size = 0;
+            size_t pos = 0;
+
+            // One constrained template instead of three near-identical takes.
+            template <typename T>
+                requires std::unsigned_integral<T>
+            auto take() -> std::optional<T> {
+                if (pos + sizeof(T) > size) {
+                    return std::nullopt;
+                }
+
+                T v = 0;
+                std::memcpy(&v, data + pos, sizeof(v));
+                pos += sizeof(v);
+                return v;
+            }
+
+            auto takeString(size_t len) -> std::optional<std::string> {
+                // Bounds-check before allocating: a corrupt length prefix
+                // must yield nullopt, not a huge allocation (fuzz inputs).
+                if (len > size - pos) {
+                    return std::nullopt;
+                }
+
+                std::string s(data + pos, len);
+                pos += len;
+                return s;
+            }
+        };
+
         // v2 records carry a trailing tombstone byte after has_ttl; v1
         // records end at has_ttl. The caller gates on the file version.
         // Sets invalid=true when bytes were present but semantically bad
-        // (unknown op, tombstone > 1). Truncation (EOF mid-record) leaves
-        // invalid=false so callers treat it as a torn tail, not corruption.
-        auto readEntryFields(std::istream& in, bool is_v2, bool& invalid)
+        // (unknown op, tombstone > 1). Truncation (end of image mid-record)
+        // leaves invalid=false so callers treat it as a torn tail, not corruption.
+        auto readEntryFields(BufferCursor& in, bool is_v2, bool& invalid)
             -> std::optional<ParsedEntry> {
             invalid = false;
-            auto op_byte = readU8(in);
+            auto op_byte = in.take<uint8_t>();
             if (!op_byte.has_value()) {
                 return std::nullopt;
             }
@@ -48,49 +84,49 @@ namespace cinder {
                 return std::nullopt;
             }
 
-            auto key_len = readU32(in);
+            auto key_len = in.take<uint32_t>();
             if (!key_len.has_value()) {
                 return std::nullopt;
             }
 
-            auto key = readString(in, key_len.value());
+            auto key = in.takeString(key_len.value());
             if (!key.has_value()) {
                 return std::nullopt;
             }
 
-            auto val_len = readU32(in);
+            auto val_len = in.take<uint32_t>();
             if (!val_len.has_value()) {
                 return std::nullopt;
             }
 
-            auto value = readString(in, val_len.value());
+            auto value = in.takeString(val_len.value());
             if (!value.has_value()) {
                 return std::nullopt;
             }
 
-            auto version = readU64(in);
+            auto version = in.take<uint64_t>();
             if (!version.has_value()) {
                 return std::nullopt;
             }
 
-            auto writer_hash = readU64(in);
+            auto writer_hash = in.take<uint64_t>();
             if (!writer_hash.has_value()) {
                 return std::nullopt;
             }
 
-            auto expires_ms = readU64(in);
+            auto expires_ms = in.take<uint64_t>();
             if (!expires_ms.has_value()) {
                 return std::nullopt;
             }
 
-            auto has_ttl = readU8(in);
+            auto has_ttl = in.take<uint8_t>();
             if (!has_ttl.has_value()) {
                 return std::nullopt;
             }
 
             uint8_t tombstone = 0;
             if (is_v2) {
-                auto tombstone_byte = readU8(in);
+                auto tombstone_byte = in.take<uint8_t>();
                 if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
                     if (tombstone_byte.has_value()) {
                         invalid = true;
@@ -163,8 +199,8 @@ namespace cinder {
             // missing/empty → fresh header; present-but-invalid → the file is
             // garbage, so fall back to a truncated fresh log.
             std::ifstream probe(path, std::ios::binary);
-            auto magic = readU32(probe);
-            auto version = readU32(probe);
+            auto magic = readLE<uint32_t>(probe);
+            auto version = readLE<uint32_t>(probe);
             const bool valid = magic.has_value()
                 && magic.value()
                 == K_WAL_MAGIC
@@ -183,8 +219,8 @@ namespace cinder {
             }
         }
         if (needs_header && out_.is_open()) {
-            writeU32(out_, K_WAL_MAGIC);
-            writeU32(out_, K_WAL_FORMAT_VERSION);
+            writeLE(out_, K_WAL_MAGIC);
+            writeLE(out_, K_WAL_FORMAT_VERSION);
         }
 #ifndef _WIN32
         sync_fd_ = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
@@ -225,19 +261,19 @@ namespace cinder {
         scratch_.resize(size + sizeof(uint64_t));
 
         size_t off = 0;
-        writeU8(scratch_, off, std::to_underlying(entry.op));
-        writeU32(scratch_, off, static_cast<uint32_t>(entry.key.size()));
+        writeLE(scratch_, off, std::to_underlying(entry.op));
+        writeLE(scratch_, off, static_cast<uint32_t>(entry.key.size()));
         writeBytes(scratch_, off, entry.key.data(), entry.key.size());
-        writeU32(scratch_, off, static_cast<uint32_t>(entry.value.size()));
+        writeLE(scratch_, off, static_cast<uint32_t>(entry.value.size()));
         writeBytes(scratch_, off, entry.value.data(), entry.value.size());
-        writeU64(scratch_, off, entry.version);
-        writeU64(scratch_, off, entry.writer_node_hash);
-        writeU64(scratch_, off, entry.expires_at_ms);
-        writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
-        writeU8(scratch_, off, entry.is_tombstone ? 1 : 0);
+        writeLE(scratch_, off, entry.version);
+        writeLE(scratch_, off, entry.writer_node_hash);
+        writeLE(scratch_, off, entry.expires_at_ms);
+        writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
+        writeLE(scratch_, off, entry.is_tombstone ? uint8_t{1} : uint8_t{0});
 
         auto digest = XXH3_64bits(scratch_.data(), size);
-        writeU64(scratch_, off, digest);
+        writeLE(scratch_, off, digest);
         out_.write(
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
@@ -291,22 +327,21 @@ namespace cinder {
         size_t off = 0;
         for (const auto& entry : entries) {
             const size_t record_start = off;
-            writeU8(scratch_, off, std::to_underlying(entry.op));
-            writeU32(scratch_, off, static_cast<uint32_t>(entry.key.size()));
+            writeLE(scratch_, off, std::to_underlying(entry.op));
+            writeLE(scratch_, off, static_cast<uint32_t>(entry.key.size()));
             writeBytes(scratch_, off, entry.key.data(), entry.key.size());
-            writeU32(scratch_, off, static_cast<uint32_t>(entry.value.size()));
+            writeLE(scratch_, off, static_cast<uint32_t>(entry.value.size()));
             writeBytes(scratch_, off, entry.value.data(), entry.value.size());
-            writeU64(scratch_, off, entry.version);
-            writeU64(scratch_, off, entry.writer_node_hash);
-            writeU64(scratch_, off, entry.expires_at_ms);
-            writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
-            writeU8(scratch_, off, entry.is_tombstone ? 1 : 0);
-
+            writeLE(scratch_, off, entry.version);
+            writeLE(scratch_, off, entry.writer_node_hash);
+            writeLE(scratch_, off, entry.expires_at_ms);
+            writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
+            writeLE(scratch_, off, entry.is_tombstone ? uint8_t{1} : uint8_t{0});
             auto digest = XXH3_64bits(
                 static_cast<const void*>(scratch_.data() + record_start),
                 off - record_start
             );
-            writeU64(scratch_, off, digest);
+            writeLE(scratch_, off, digest);
         }
 
         out_.write(
@@ -340,59 +375,82 @@ namespace cinder {
 #endif
     }
 
-    WalReader::WalReader(const std::string& path) :
-        in_(path, std::ios::binary) {}
-
-    auto WalReader::next() -> std::optional<WalEntry> {
-        if (!header_checked_) {
-            header_checked_ = true;
-            auto magic = readU32(in_);
-            if (magic.has_value() && magic.value() == K_WAL_MAGIC) {
-                auto version = readU32(in_);
-                if (version.has_value()
-                    && (version.value()
-                        == K_WAL_FORMAT_VERSION
-                        || version.value()
-                        == K_WAL_FORMAT_VERSION_V1)) {
-                    format_version_ = version.value();
-                } else {
-                    // Unknown version — rewind past magic so old-format reads work.
-                    in_.seekg(0);
-                }
-            } else {
-                // No magic — old format. Seek back to start.
-                in_.seekg(0);
-            }
+    WalReader::WalReader(const std::string& path) {
+        // Slurp the whole image once: replay then decodes from memory with
+        // zero further syscalls. Segment rotation bounds the image size.
+        std::ifstream in(path, std::ios::binary | std::ios::ate);
+        if (!in.is_open()) {
+            return;
         }
 
+        const auto size = in.tellg();
+        if (size <= 0) {
+            return;
+        }
+
+        in.seekg(0);
+        data_.resize(static_cast<size_t>(size));
+        if (!in.read(data_.data(), size)) {
+            data_.clear();
+            return;
+        }
+
+        BufferCursor header{data_.data(), data_.size(), 0};
+        const auto magic = header.take<uint32_t>();
+        if (magic.has_value() && magic.value() == K_WAL_MAGIC) {
+            const auto version = header.take<uint32_t>();
+            if (version.has_value()
+                && (version.value()
+                    == K_WAL_FORMAT_VERSION
+                    || version.value()
+                    == K_WAL_FORMAT_VERSION_V1)) {
+                format_version_ = version.value();
+                pos_ = header.pos;
+                return;
+            }
+            // Unknown version — fall through to legacy decoding from 0.
+        }
+        // No magic — pre-magic legacy format. Decode from the start.
+        pos_ = 0;
+    }
+
+    auto WalReader::next() -> std::optional<WalEntry> {
+        BufferCursor in{data_.data(), data_.size(), pos_};
         const bool is_v2 = format_version_ == K_WAL_FORMAT_VERSION;
         bool invalid = false;
-        auto fields = readEntryFields(in_, is_v2, invalid);
+        auto fields = readEntryFields(in, is_v2, invalid);
         if (!fields.has_value()) {
             // Structurally invalid bytes (bad op / bad tombstone) signal
             // mid-file corruption; short reads are a torn crash tail.
             if (invalid) {
                 corrupted_ = true;
             }
+
+            pos_ = in.pos;
             return std::nullopt;
         }
         if (format_version_ == 0) {
+            pos_ = in.pos;
             return toWalEntry(fields.value());
         }
 
-        auto stored_checksum = readU64(in_);
+        const auto stored_checksum = in.take<uint64_t>();
         if (!stored_checksum.has_value()) {
+            pos_ = in.pos;
             return std::nullopt; // truncated entry
         }
         if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum.value()) {
             CINDER_WARN("checksum mismatch at entry — corrupt data");
             corrupted_ = true;
+            pos_ = in.pos;
             return std::nullopt;
         }
+
+        pos_ = in.pos;
         return toWalEntry(fields.value());
     }
 
     auto WalReader::hasMore() -> bool {
-        return in_ && in_.peek() != EOF;
+        return pos_ < data_.size();
     }
 } // namespace cinder

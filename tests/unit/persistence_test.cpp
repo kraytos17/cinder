@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cinder/common/tracing.hpp"
+#include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "cinder/store/persistence.hpp"
 #include "cinder/store/snapshot.hpp"
@@ -1110,6 +1111,137 @@ namespace cinder {
             EXPECT_TRUE(pm.walNeedsCompact());
             ASSERT_TRUE(pm.compact().has_value());
             EXPECT_FALSE(pm.walNeedsCompact());
+        }
+
+        TEST_F(PersistenceTest, WalSegmentRotationSealsAndReplays) {
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts{
+                .data_dir = scratch_.path().string(),
+                .enabled = true,
+                .snapshot_interval_s = 3600,
+                .max_wal_entries = 0,
+                .max_wal_bytes = 0, // compact disabled: segments accumulate
+                .max_wal_segment_bytes = 200,
+            };
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(pm.recover().has_value());
+
+            constexpr int K_NUM_KEYS = 12; // >9 segments exercises seq ordering
+            for (int i = 0; i < K_NUM_KEYS; ++i) {
+                const auto key = "seg" + std::to_string(i);
+                ASSERT_TRUE(store.put(key, "v" + std::to_string(i)).has_value());
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = key,
+                        .value = "v" + std::to_string(i),
+                        .version = static_cast<uint64_t>(i + 1),
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+                pm.flush();
+            }
+
+            size_t sealed = 0;
+            for (const auto& entry : std::filesystem::directory_iterator(scratch_.path())) {
+                const auto name = entry.path().filename().string();
+                if (name.starts_with("wal_") && name.ends_with(".log")) {
+                    ++sealed;
+                }
+            }
+            EXPECT_GT(sealed, 1U);
+
+            // Fresh restart replays sealed segments in order plus the active
+            // file: every key present, no snapshot involved.
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            for (int i = 0; i < K_NUM_KEYS; ++i) {
+                const auto key = "seg" + std::to_string(i);
+                auto got = store2.get(key);
+                ASSERT_TRUE(got.has_value()) << key;
+                EXPECT_EQ(*got, "v" + std::to_string(i));
+            }
+        }
+
+        TEST_F(PersistenceTest, CompactDeletesSealedSegments) {
+            LruStore store(1'000'000);
+            PersistenceManager::Options opts{
+                .data_dir = scratch_.path().string(),
+                .enabled = true,
+                .snapshot_interval_s = 3600,
+                .max_wal_entries = 0,
+                .max_wal_bytes = 0,
+                .max_wal_segment_bytes = 200,
+            };
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(pm.recover().has_value());
+            for (int i = 0; i < 6; ++i) {
+                const auto key = "c" + std::to_string(i);
+                ASSERT_TRUE(store.put(key, "v").has_value());
+                pm.onWrite(
+                    WalEntry{
+                        .op = WalEntry::Op::Set,
+                        .key = key,
+                        .value = "v",
+                        .version = static_cast<uint64_t>(i + 1),
+                        .writer_node_hash = 0,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                    }
+                );
+                pm.flush();
+            }
+            ASSERT_TRUE(pm.compact().has_value());
+
+            // Snapshot covers everything: no sealed segments remain, active
+            // WAL is fresh, and a restart still recovers all keys.
+            for (const auto& entry : std::filesystem::directory_iterator(scratch_.path())) {
+                const auto name = entry.path().filename().string();
+                EXPECT_FALSE(name.starts_with("wal_") && name.ends_with(".log")) << name;
+            }
+            LruStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            for (int i = 0; i < 6; ++i) {
+                EXPECT_TRUE(store2.get("c" + std::to_string(i)).has_value());
+            }
+        }
+
+        TEST_F(PersistenceTest, LfuFreqSurvivesSnapshotRoundTrip) {
+            LfuStore store(1'000'000);
+            PersistenceManager::Options opts = pmOptions(scratch_.path());
+            PersistenceManager pm(opts, store);
+            ASSERT_TRUE(store.put("hot", "1").has_value());
+            ASSERT_TRUE(store.put("cold", "2").has_value());
+            for (int i = 0; i < 3; ++i) {
+                EXPECT_TRUE(store.get("hot").has_value());
+            }
+            ASSERT_EQ(store.entryFreq("hot"), 4U); // 1 insert + 3 hits
+            ASSERT_EQ(store.entryFreq("cold"), 1U);
+            ASSERT_TRUE(pm.compact().has_value());
+
+            LfuStore store2(1'000'000);
+            PersistenceManager pm2(opts, store2);
+            ASSERT_TRUE(pm2.recover().has_value());
+            EXPECT_EQ(store2.entryFreq("hot"), 4U);
+            EXPECT_EQ(store2.entryFreq("cold"), 1U);
+        }
+
+        TEST_F(PersistenceTest, LfuRestoreNeverDemotes) {
+            LfuStore store(1'000'000);
+            ASSERT_TRUE(store.put("k", "v").has_value());
+            EXPECT_TRUE(store.get("k").has_value());
+            EXPECT_TRUE(store.get("k").has_value());
+            ASSERT_EQ(store.entryFreq("k"), 3U);
+            store.restoreFreq("k", 2); // stale replay must not demote
+            EXPECT_EQ(store.entryFreq("k"), 3U);
+            store.restoreFreq("k", 9);
+            EXPECT_EQ(store.entryFreq("k"), 9U);
+            store.restoreFreq("missing", 5); // absent key: no-op, no crash
+            EXPECT_EQ(store.entryFreq("missing"), 0U);
         }
 
         TEST_F(PersistenceTest, SnapshotStreamMatchesReadAll) {

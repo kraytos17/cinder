@@ -259,18 +259,18 @@ namespace cinder {
         size_t off = 0;
         auto reserve =
             hint.target.size() + hint.req.key.size() + hint.req.value.size() + 64 + 8 + 1;
-        payload.resize(reserve);
 
-        detail::writeU8(payload, off, K_OP_ADD);
-        detail::writeU64(payload, off, sys_expiry_ms);
-        detail::writeU32(payload, off, static_cast<uint32_t>(hint.target.size()));
+        payload.resize(reserve);
+        detail::writeLE(payload, off, K_OP_ADD);
+        detail::writeLE(payload, off, sys_expiry_ms);
+        detail::writeLE(payload, off, static_cast<uint32_t>(hint.target.size()));
         detail::writeBytes(payload, off, hint.target.data(), hint.target.size());
-        detail::writeU32(payload, off, static_cast<uint32_t>(hint.req.key.size()));
+        detail::writeLE(payload, off, static_cast<uint32_t>(hint.req.key.size()));
         detail::writeBytes(payload, off, hint.req.key.data(), hint.req.key.size());
-        detail::writeU32(payload, off, static_cast<uint32_t>(hint.req.value.size()));
+        detail::writeLE(payload, off, static_cast<uint32_t>(hint.req.value.size()));
         detail::writeBytes(payload, off, hint.req.value.data(), hint.req.value.size());
-        detail::writeU64(payload, off, hint.req.version);
-        detail::writeU64(payload, off, hint.req.writer_node_hash);
+        detail::writeLE(payload, off, hint.req.version);
+        detail::writeLE(payload, off, hint.req.writer_node_hash);
         // Trailing entry-expiry (absolute wall-clock ms, 0 = none) and
         // tombstone marker. TTL writes and delete markers keep their
         // deadlines across a journal recovery; without these, a replayed
@@ -283,8 +283,8 @@ namespace cinder {
             );
         }
 
-        detail::writeU64(payload, off, entry_expiry_ms);
-        detail::writeU8(payload, off, hint.req.tombstone ? 1 : 0);
+        detail::writeLE(payload, off, entry_expiry_ms);
+        detail::writeLE(payload, off, hint.req.tombstone ? uint8_t{1} : uint8_t{0});
         payload.resize(off);
         return payload;
     }
@@ -293,14 +293,14 @@ namespace cinder {
         -> std::vector<std::byte> {
         std::vector<std::byte> payload;
         size_t off = 0;
-        payload.resize(target.size() + key.size() + 32);
 
-        detail::writeU8(payload, off, K_OP_DEL);
-        detail::writeU32(payload, off, static_cast<uint32_t>(target.size()));
+        payload.resize(target.size() + key.size() + 32);
+        detail::writeLE(payload, off, K_OP_DEL);
+        detail::writeLE(payload, off, static_cast<uint32_t>(target.size()));
         detail::writeBytes(payload, off, target.data(), target.size());
-        detail::writeU32(payload, off, static_cast<uint32_t>(key.size()));
+        detail::writeLE(payload, off, static_cast<uint32_t>(key.size()));
         detail::writeBytes(payload, off, key.data(), key.size());
-        detail::writeU64(payload, off, version);
+        detail::writeLE(payload, off, version);
         payload.resize(off);
         return payload;
     }

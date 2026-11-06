@@ -73,6 +73,9 @@ namespace cinder {
         int max_wal_entries = 10'000;
         // WAL byte budget before auto-compact (0 = disabled).
         size_t max_wal_bytes = 64U << 20U;
+        // Active WAL file size before sealing into wal_<seq>.log
+        // (0 = disabled, single wal.log like before).
+        size_t max_wal_segment_bytes = 16U << 20U;
         // fdatasync on every WAL flush (durability vs throughput).
         // Restart-only like the other persistence knobs.
         bool wal_fsync = false;

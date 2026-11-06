@@ -26,10 +26,10 @@ namespace cinder {
         // Header in one write: magic + version + next_version + entry_count.
         scratch_.resize(sizeof(uint32_t) * 3 + sizeof(uint64_t));
         size_t off = 0;
-        writeU32(scratch_, off, K_SNAPSHOT_MAGIC);
-        writeU32(scratch_, off, K_SNAPSHOT_FORMAT_VERSION);
-        writeU64(scratch_, off, next_version);
-        writeU32(scratch_, off, static_cast<uint32_t>(entries.size()));
+        writeLE(scratch_, off, K_SNAPSHOT_MAGIC);
+        writeLE(scratch_, off, K_SNAPSHOT_FORMAT_VERSION);
+        writeLE(scratch_, off, next_version);
+        writeLE(scratch_, off, static_cast<uint32_t>(entries.size()));
         out.write(
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
@@ -61,16 +61,16 @@ namespace cinder {
 
             scratch_.resize(size);
             off = 0;
-            writeU32(scratch_, off, key_len);
+            writeLE(scratch_, off, key_len);
             writeBytes(scratch_, off, entry.key.data(), key_len);
-            writeU32(scratch_, off, val_len);
+            writeLE(scratch_, off, val_len);
             writeBytes(scratch_, off, entry.value.data(), val_len);
-            writeU64(scratch_, off, entry.version);
-            writeU64(scratch_, off, entry.writer_node_hash);
-            writeU64(scratch_, off, entry.expires_at_ms);
-            writeU8(scratch_, off, entry.has_ttl ? 1 : 0);
-            writeU64(scratch_, off, entry.freq);
-            writeU8(scratch_, off, entry.tombstone ? 1 : 0);
+            writeLE(scratch_, off, entry.version);
+            writeLE(scratch_, off, entry.writer_node_hash);
+            writeLE(scratch_, off, entry.expires_at_ms);
+            writeLE(scratch_, off, entry.has_ttl ? uint8_t{1} : uint8_t{0});
+            writeLE(scratch_, off, entry.freq);
+            writeLE(scratch_, off, entry.tombstone ? uint8_t{1} : uint8_t{0});
             out.write(
                 reinterpret_cast<const char*>(scratch_.data()),
                 static_cast<std::streamsize>(scratch_.size())
@@ -126,13 +126,13 @@ namespace cinder {
             return err(Error(Errc::InternalError, "snapshot file not open"));
         }
 
-        auto magic = readU32(in_);
+        auto magic = readLE<uint32_t>(in_);
         if (!magic.has_value() || magic.value() != K_SNAPSHOT_MAGIC) {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::CorruptData, "invalid snapshot magic"));
         }
 
-        auto format_ver = readU32(in_);
+        auto format_ver = readLE<uint32_t>(in_);
         const bool is_v2 =
             format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION;
         const bool is_v1 =
@@ -142,13 +142,13 @@ namespace cinder {
             return err(Error(Errc::CorruptData, "unsupported snapshot format version"));
         }
 
-        auto next_ver = readU64(in_);
+        auto next_ver = readLE<uint64_t>(in_);
         if (!next_ver.has_value()) {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::CorruptData, "truncated snapshot header"));
         }
 
-        auto entry_count = readU32(in_);
+        auto entry_count = readLE<uint32_t>(in_);
         if (!entry_count.has_value()) {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::CorruptData, "truncated snapshot entry count"));
@@ -174,56 +174,77 @@ namespace cinder {
 
         next_version = next_ver.value();
         size_t streamed = 0;
+        // Single-seek string reads: one tellg per string against the known
+        // file size, instead of re-statting the file on every string.
+        const auto total_size = static_cast<uint64_t>(file_size);
+        auto read_sized = [&](size_t len) -> std::optional<std::string> {
+            const auto cur = in_.tellg();
+            if (cur < pos) {
+                return std::nullopt;
+            }
+
+            const auto cur_off = static_cast<uint64_t>(cur);
+            if (total_size < cur_off || total_size - cur_off < len) {
+                return std::nullopt;
+            }
+
+            std::string buf(len, '\0');
+            if (!in_.read(buf.data(), static_cast<std::streamsize>(len))) {
+                return std::nullopt;
+            }
+            return buf;
+        };
+
         for (uint32_t i = 0; i < entry_count.value(); ++i) {
-            auto key_len = readU32(in_);
+            auto key_len = readLE<uint32_t>(in_);
             if (!key_len.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot key"));
             }
 
-            auto key = readString(in_, key_len.value());
+            auto key = read_sized(key_len.value());
             if (!key.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot key data"));
             }
 
-            auto val_len = readU32(in_);
+            auto val_len = readLE<uint32_t>(in_);
             if (!val_len.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot value"));
             }
 
-            auto value = readString(in_, val_len.value());
+            auto value = read_sized(val_len.value());
             if (!value.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot value data"));
             }
 
-            auto version = readU64(in_);
+            auto version = readLE<uint64_t>(in_);
             if (!version.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot version"));
             }
 
-            auto writer_hash = readU64(in_);
+            auto writer_hash = readLE<uint64_t>(in_);
             if (!writer_hash.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot writer_hash"));
             }
 
-            auto expires_ms = readU64(in_);
+            auto expires_ms = readLE<uint64_t>(in_);
             if (!expires_ms.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot expires_at_ms"));
             }
 
-            auto has_ttl = readU8(in_);
+            auto has_ttl = readLE<uint8_t>(in_);
             if (!has_ttl.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
             }
 
-            auto freq = readU64(in_);
+            auto freq = readLE<uint64_t>(in_);
             if (!freq.has_value()) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot freq"));
@@ -231,7 +252,7 @@ namespace cinder {
 
             bool tombstone = false;
             if (is_v2) {
-                auto tombstone_byte = readU8(in_);
+                auto tombstone_byte = readLE<uint8_t>(in_);
                 if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
                     span.setStatus(SpanStatus::Error);
                     return err(Error(Errc::CorruptData, "truncated snapshot tombstone"));

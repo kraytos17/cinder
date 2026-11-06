@@ -57,6 +57,9 @@ namespace cinder {
         // alone under-trigger on large values; bytes alone under-trigger on
         // many tiny tombstones — hence both limits.
         size_t max_wal_bytes = 64U << 20U;
+        // Active WAL file size before sealing into wal_<seq>.log
+        // (0 = disabled, single wal.log like before).
+        size_t max_wal_segment_bytes = 16U << 20U;
         // RPC deadline — max time for a single peer RPC before cancellation.
         milliseconds rpc_timeout{5000};
         // Anti-entropy: background repair between replica partners (0 = disabled).

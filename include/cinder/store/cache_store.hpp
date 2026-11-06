@@ -106,6 +106,17 @@ namespace cinder {
         // Change the capacity at runtime. Default no-op.
         virtual void setCapacity(size_t /*unused*/) {}
 
+        // Frequency hint for snapshot persistence (LFU policy state).
+        // Default 0 (LRU has no frequencies). Recovered via restoreFreq so
+        // a restart preserves hot-set information instead of resetting it.
+        virtual auto entryFreq(const std::string& /*key*/) const -> size_t {
+            return 0;
+        }
+
+        // Restore frequency state after a snapshot replay; default no-op.
+        // Never demotes: a newer access (higher freq) always wins.
+        virtual void restoreFreq(const std::string& /*key*/, size_t /*freq*/) {}
+
         // Tombstone GC grace: how long a delete marker survives before the
         // TTL-wheel reaps it. Must exceed the worst-case partition healing
         // time (hint TTL + several anti-entropy rounds); premature GC

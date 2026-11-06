@@ -66,7 +66,7 @@ namespace cinder {
             R"("anti_entropy_interval_ms":{},"anti_entropy_buckets":{},)"
             R"("anti_entropy_fetch_bytes":{},"anti_entropy_full_rehash_interval_ms":{},)"
             R"("persistence_enabled":{},"data_dir":"{}",)"
-            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"wal_fsync":{},)"
+            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"max_wal_segment_bytes":{},"wal_fsync":{},)"
             R"("tls_enabled":{},"auth_enabled":{},"client_auth_enabled":{},)"
             R"("metrics_port":{},"grpc_port":{},"log_level":"{}","config_path":"{}"}})",
             escapeJsonString(cfg.node_id),
@@ -91,6 +91,7 @@ namespace cinder {
             cfg.snapshot_interval_s,
             cfg.max_wal_entries,
             cfg.max_wal_bytes,
+            cfg.max_wal_segment_bytes,
             cfg.wal_fsync,
             cfg.tls.enabled,
             !cfg.auth.shared_secret.empty(),
@@ -186,6 +187,9 @@ namespace cinder {
         }
         if (old_cfg.max_wal_bytes != new_cfg.max_wal_bytes) {
             changed.emplace_back("max_wal_bytes");
+        }
+        if (old_cfg.max_wal_segment_bytes != new_cfg.max_wal_segment_bytes) {
+            changed.emplace_back("max_wal_segment_bytes");
         }
         if (old_cfg.wal_fsync != new_cfg.wal_fsync) {
             changed.emplace_back("wal_fsync");
@@ -287,6 +291,8 @@ namespace cinder {
             cfg.snapshot_interval_s = pers["snapshot_interval_s"].as<int>(cfg.snapshot_interval_s);
             cfg.max_wal_entries = pers["max_wal_entries"].as<int>(cfg.max_wal_entries);
             cfg.max_wal_bytes = pers["max_wal_bytes"].as<size_t>(cfg.max_wal_bytes);
+            cfg.max_wal_segment_bytes =
+                pers["max_wal_segment_bytes"].as<size_t>(cfg.max_wal_segment_bytes);
             cfg.wal_fsync = pers["wal_fsync"].as<bool>(cfg.wal_fsync);
         }
         // TLS

@@ -109,11 +109,14 @@ namespace cinder {
 
     private:
 
-        std::ifstream in_;
+        // Whole-file image slurped once in the constructor: one read syscall
+        // instead of per-field stream reads plus tellg/seek round-trips per
+        // string. Segment rotation bounds the image by max_wal_segment_bytes.
+        std::vector<char> data_;
+        size_t pos_ = 0;
         // File format version: 0 = pre-magic legacy (no checksums), 1 = v1
         // checksummed records, 2 = v2 records with trailing tombstone byte.
         uint32_t format_version_ = 0;
-        bool header_checked_ = false;
         bool corrupted_ = false;
     };
 } // namespace cinder

@@ -2,11 +2,13 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/status.hpp"
@@ -27,7 +29,13 @@ namespace cinder {
             // Rotate/compact once the WAL exceeds this many bytes (0 =
             // disabled). Entry counts alone under-trigger on large values;
             // bytes alone under-trigger on many tiny tombstones — hence both.
+            // Counts sealed segments plus the active file.
             size_t max_wal_bytes = 64U << 20U;
+            // Seal the active file into wal_<seq>.log once it reaches this
+            // size (0 = disabled, single wal.log like before). Bounds the
+            // work a single recovery file can hold; sealed segments are
+            // deleted by the next successful compact.
+            size_t max_wal_segment_bytes = 16U << 20U;
             // fdatasync on every flush: acknowledged writes survive an OS
             // crash, not just a process crash. Off by default (page-cache
             // durability); enable when the WAL is the durability story.
@@ -56,14 +64,13 @@ namespace cinder {
         // zero when disabled or when both limits are 0.
         [[nodiscard]]
         auto walNeedsCompact() const -> bool {
-            const bool entries_hit = opts_.max_wal_entries
-                > 0
-                && wal_entry_count_.load(std::memory_order_relaxed)
-                >= opts_.max_wal_entries;
-            const bool bytes_hit = opts_.max_wal_bytes
-                > 0
-                && wal_bytes_.load(std::memory_order_relaxed)
-                >= opts_.max_wal_bytes;
+            const size_t total_entries = wal_entry_count_.load(std::memory_order_relaxed)
+                + wal_sealed_entries_.load(std::memory_order_relaxed);
+            const bool entries_hit =
+                opts_.max_wal_entries > 0 && total_entries >= opts_.max_wal_entries;
+            const size_t total_bytes = wal_bytes_.load(std::memory_order_relaxed)
+                + wal_sealed_bytes_.load(std::memory_order_relaxed);
+            const bool bytes_hit = opts_.max_wal_bytes > 0 && total_bytes >= opts_.max_wal_bytes;
             return entries_hit || bytes_hit;
         }
 
@@ -100,11 +107,27 @@ namespace cinder {
         // caller can seed its byte/entry accounting.
         auto replayWal(const std::filesystem::path& path) -> Result<size_t>;
         auto findLatestSnapshot() const -> std::string;
-        auto findWalPath() const -> std::string;
+        // Sealed segments in seq order plus the active wal.log last (if it
+        // exists). A crash between seal-rename and fresh-file creation leaves
+        // only sealed segments; recovery handles that.
+        auto findWalFiles() const -> std::vector<std::filesystem::path>;
         // Delete all but the newest K_SNAPSHOTS_TO_KEEP snapshots so the
         // data dir does not grow without bound. Best-effort: failures are
         // logged, never fatal to compact().
         void pruneOldSnapshots() const;
+
+        // Seal the active wal.log into wal_<seq>.log and open a fresh active
+        // file. Caller must hold mutex_; wal_ must be non-null. Best-effort
+        // rollback keeps wal_ non-null: on fresh-file failure the sealed
+        // file is moved back and reopened in Append mode.
+        auto sealActiveWalLocked() -> Result<void>;
+        // Stage a fresh truncated WAL at <path>.tmp, fsync, rename over
+        // <path>, fsync the dir, then adopt it as wal_ (resetting active
+        // counters). Caller must hold mutex_.
+        auto replaceWalLocked(const std::filesystem::path& path) -> Result<void>;
+        // Delete sealed wal_<seq>.log segments; the latest snapshot covers
+        // them. Caller must hold mutex_. Best-effort: failures are logged.
+        void deleteSealedSegmentsLocked();
 
         // Append every queued entry to the current WAL writer. Caller must hold
         // mutex_; internally takes queue_mutex_ (lock order: mutex_ >
@@ -128,10 +151,17 @@ namespace cinder {
         std::deque<WalEntry> pending_wal_;
 
         std::unique_ptr<WalWriter> wal_;
-        // Entries/bytes appended since the last truncate; advanced under
-        // mutex_, read lock-free by walNeedsCompact() on the housekeeping path.
+        // Active-file entries/bytes, advanced under mutex_, read lock-free by
+        // walNeedsCompact() on the housekeeping path. Reset by seal/rotate.
         std::atomic<size_t> wal_entry_count_{0};
         std::atomic<size_t> wal_bytes_{0};
+        // Sealed-segment totals; added on seal, cleared when a compact
+        // deletes the segments. walNeedsCompact() sums both sides.
+        std::atomic<size_t> wal_sealed_entries_{0};
+        std::atomic<uint64_t> wal_sealed_bytes_{0};
+        // Next segment sequence number. Guarded by mutex_; set at recover
+        // from the max sealed seq on disk.
+        uint64_t wal_next_seq_ = 1;
         std::mutex mutex_;
         // Set during recover()'s snapshot/WAL load; atomic because onWrite checks
         // it from store call paths on other threads.

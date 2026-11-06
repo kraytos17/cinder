@@ -38,6 +38,34 @@ namespace cinder {
         incrementFreq(sh, it);
     }
 
+    auto LfuStore::entryFreq(const std::string& key) const -> size_t {
+        const auto& sh = shards_[std::hash<std::string_view>{}(key) % shards_.size()];
+        std::shared_lock lock(sh.mutex);
+        const auto it = sh.index.find(key);
+        if (it == sh.index.end()) {
+            return 0;
+        }
+        return it->second->freq;
+    }
+
+    void LfuStore::restoreFreq(const std::string& key, size_t freq) {
+        if (freq <= 1) {
+            return; // insertNew already starts at 1; nothing to restore
+        }
+
+        auto& sh = shards_[std::hash<std::string_view>{}(key) % shards_.size()];
+        std::unique_lock lock(sh.mutex);
+        const auto it = sh.index.find(key);
+        if (it == sh.index.end() || it->second->freq >= freq) {
+            return; // absent, or a newer access already won: never demote
+        }
+
+        removeFromFreqBucket(sh, it->second);
+        it->second->freq = freq;
+        it->second->freq_index = sh.freq_buckets[freq].size();
+        sh.freq_buckets[freq].push_back(it->second);
+    }
+
     void LfuStore::onEvictExpired(Shard& sh, ListIt it) {
         removeFromFreqBucket(sh, it);
     }
