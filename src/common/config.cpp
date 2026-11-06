@@ -6,7 +6,7 @@
 #include <string>
 #include <yaml-cpp/yaml.h>
 
-#include "cinder/node/cache_node_server.hpp"
+#include "cinder/common/parse.hpp"
 
 namespace cinder {
     namespace {

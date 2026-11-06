@@ -1,6 +1,5 @@
 #include "cinder/cluster/gossip.hpp"
 
-#include <charconv>
 #include <random>
 #include <string>
 #include <string_view>
@@ -8,6 +7,7 @@
 #include <vector>
 
 #include "cinder/common/metrics.hpp"
+#include "cinder/common/parse.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
 
@@ -177,9 +177,7 @@ namespace cinder {
             out.host = std::string(entry.substr(at + 1, colon1 - at - 1));
             auto port_str = entry.substr(colon1 + 1, colon2 - colon1 - 1);
             uint16_t port = 0;
-            auto [port_end, port_ec] =
-                std::from_chars(port_str.data(), port_str.data() + port_str.size(), port);
-            if (port_ec != std::errc{} || port_end != port_str.data() + port_str.size()) {
+            if (!parseUint(port_str, port)) {
                 return false;
             }
 
@@ -197,9 +195,7 @@ namespace cinder {
 
             auto inc_str = entry.substr(colon3 + 1);
             uint64_t incarnation = 0;
-            auto [inc_end, inc_ec] =
-                std::from_chars(inc_str.data(), inc_str.data() + inc_str.size(), incarnation);
-            if (inc_ec != std::errc{} || inc_end != inc_str.data() + inc_str.size()) {
+            if (!parseUint(inc_str, incarnation)) {
                 return false;
             }
 

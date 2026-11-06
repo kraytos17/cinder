@@ -3,6 +3,7 @@
 #include <chrono>
 #include <fstream>
 #include <gtest/gtest.h>
+#include <limits>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -10,6 +11,7 @@
 
 #include "cinder/client/cache_client.hpp"
 #include "cinder/common/config.hpp"
+#include "cinder/common/parse.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/node/cache_node_server.hpp"
 #include "integration/test_helpers.hpp"
@@ -41,6 +43,27 @@ namespace cinder {
         TEST(ParsePeerTest, EmptyId) {
             ClusterConfig::NodeConfig out;
             EXPECT_FALSE(parsePeer("@127.0.0.1:17911", out));
+        }
+
+        TEST(ParsePeerTest, RejectsBadPorts) {
+            ClusterConfig::NodeConfig out;
+            EXPECT_FALSE(parsePeer("node2@127.0.0.1:70000", out)); // out of uint16 range
+            EXPECT_FALSE(parsePeer("node2@127.0.0.1:7000x", out)); // trailing junk
+            EXPECT_FALSE(parsePeer("node2@127.0.0.1:", out)); // empty port
+            EXPECT_FALSE(parsePeer("node2@127.0.0.1:abc", out)); // non-numeric
+        }
+
+        TEST(ParseUintTest, FullConsumptionAndRange) {
+            uint16_t port = 0;
+            EXPECT_TRUE(parseUint("7000", port));
+            EXPECT_EQ(port, 7000U);
+            EXPECT_FALSE(parseUint("", port));
+            EXPECT_FALSE(parseUint("7000x", port));
+            EXPECT_FALSE(parseUint("70000", port)); // out of uint16 range
+            uint64_t big = 0;
+            EXPECT_TRUE(parseUint("18446744073709551615", big));
+            EXPECT_EQ(big, std::numeric_limits<uint64_t>::max());
+            EXPECT_FALSE(parseUint("18446744073709551616", big)); // overflow
         }
 
         // Gap §4 test: hot-reload racing live traffic under TSan. The server

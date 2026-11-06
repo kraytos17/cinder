@@ -1,13 +1,13 @@
 #include "cinder/store/persistence.hpp"
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <utility>
 
+#include "cinder/common/parse.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/detail/io_utils.hpp"
@@ -98,9 +98,7 @@ namespace cinder {
             const auto digits =
                 name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
             uint64_t seq = 0;
-            const auto [ptr, ec] =
-                std::from_chars(digits.data(), digits.data() + digits.size(), seq);
-            if (ec != std::errc{} || ptr != digits.data() + digits.size()) {
+            if (!parseUint(digits, seq)) {
                 return std::nullopt;
             }
             return seq;

@@ -2,7 +2,6 @@
 
 #include <ankerl/unordered_dense.h>
 #include <asio.hpp>
-#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <limits>
@@ -16,6 +15,7 @@
 #include <vector>
 
 #include "cinder/client/connection_pool.hpp"
+#include "cinder/common/parse.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 
 using asio::io_context;
@@ -216,8 +216,7 @@ namespace cinder {
 
         uint16_t port = 0;
         auto digits = addr.substr(colon + 1);
-        auto [ptr, ec] = std::from_chars(digits.data(), digits.data() + digits.size(), port);
-        if (ec != std::errc() || ptr != digits.data() + digits.size() || port == 0) {
+        if (!parseUint(digits, port) || port == 0) {
             return target;
         }
 

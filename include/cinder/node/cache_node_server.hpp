@@ -2,15 +2,12 @@
 
 #include <asio.hpp>
 #include <atomic>
-#include <charconv>
 #include <cstdint>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 #ifdef CINDER_ENABLE_TLS
@@ -100,38 +97,6 @@ namespace cinder {
         bool persistence_enabled = false;
         bool tls_enabled = false;
     };
-
-    // Parse a single "id@host:port" peer string into a NodeConfig. Returns false
-    // on malformed input (no '@' separator, missing port, or a non-numeric or
-    // out-of-range port). constexpr so it can be exercised at compile time.
-    inline constexpr auto parsePeer(const std::string& peer, ClusterConfig::NodeConfig& out)
-        -> bool {
-        auto at = peer.rfind('@');
-        if (at == std::string::npos) {
-            return false;
-        }
-
-        auto colon = peer.find(':', at);
-        if (colon == std::string::npos) {
-            return false;
-        }
-        if (at == 0 || colon == at + 1) {
-            return false;
-        }
-
-        const char* begin = peer.data() + colon + 1;
-        const char* end = peer.data() + peer.size();
-        uint32_t port = 0;
-        auto [ptr, ec] = std::from_chars(begin, end, port);
-        if (ec != std::errc{} || ptr != end || port > std::numeric_limits<uint16_t>::max()) {
-            return false;
-        }
-
-        out.id = peer.substr(0, at);
-        out.host = peer.substr(at + 1, colon - at - 1);
-        out.port = static_cast<uint16_t>(port);
-        return true;
-    }
 
     // Assembles a single cache node: store + ring + replication transport +
     // TCP server, plus periodic hinted-handoff replay and signal-driven shutdown.

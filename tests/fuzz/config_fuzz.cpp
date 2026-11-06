@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "cinder/common/config.hpp"
-#include "cinder/node/cache_node_server.hpp"
+#include "cinder/common/parse.hpp"
 
 namespace {
 
