@@ -35,6 +35,7 @@ cinder_add_test(cinder_unit_ring_tests
     unit/gossip_test.cpp
     unit/anti_entropy_codec_test.cpp
     unit/anti_entropy_test.cpp
+    unit/iblt_test.cpp
     unit/hint_queue_test.cpp
     unit/hint_journal_test.cpp
     unit/replication_manager_test.cpp

@@ -8,6 +8,15 @@
 //
 // Wire layout is frozen (K_IBLT_MAGIC "AEI4", 6 x u64 per cell); the
 // anti-entropy exchange relies on byte-identical encode output.
+//
+// Threat model note: the mapping hash (XXH3, unsalted) is not collision-
+// resistant and peers are trusted only via the HMAC node credential — a
+// compromised peer could force systematic peel failures. That degrades to
+// the metadata-retry fallback (correct, just slower), never to wrong data:
+// every peeled row re-validates against the XXH3 checksum. Salting would
+// buy DoS resistance at the cost of sketch determinism (same rows must
+// encode to the same bytes for the roundtrip tests and fuzz corpus);
+// revisit if the trust boundary ever admits unauthenticated writers.
 
 #include <cstddef>
 #include <cstdint>

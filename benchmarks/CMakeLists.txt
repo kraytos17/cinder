@@ -6,6 +6,7 @@ set(CINDER_BENCH_SOURCES
     lfu_bucket_bench.cpp
     tracing_bench.cpp
     anti_entropy_bench.cpp
+    iblt_bench.cpp
     wal_bench.cpp
 )
 

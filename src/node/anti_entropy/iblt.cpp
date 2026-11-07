@@ -26,16 +26,8 @@ namespace cinder {
             return XXH3_64bits(words.data(), sizeof(words));
         }
 
-        auto positions(
-            uint64_t key_hash,
-            uint64_t version,
-            uint64_t writer,
-            bool tombstone,
-            size_t count
-        ) -> std::array<size_t, iblt::K_HASH_COUNT> {
+        auto positions(uint64_t hash, size_t count) -> std::array<size_t, iblt::K_HASH_COUNT> {
             std::array<size_t, iblt::K_HASH_COUNT> result{};
-            std::array<uint64_t, 4> words{key_hash, version, writer, tombstone ? 1U : 0U};
-            uint64_t hash = XXH3_64bits(words.data(), sizeof(words));
             for (size_t i = 0; i < result.size(); ++i) {
                 uint64_t candidate = hash + (i + 1) * 0x9E3779B97F4A7C15ULL;
                 candidate ^= candidate >> 30U;
@@ -60,20 +52,13 @@ namespace cinder {
             return result;
         }
 
-        void apply(
-            iblt::Cell& cell,
-            int64_t sign,
-            uint64_t key_hash,
-            uint64_t version,
-            uint64_t writer,
-            bool tombstone
-        ) {
+        void apply(iblt::Cell& cell, int64_t sign, const iblt::Item& row, uint64_t checksum) {
             cell.count += sign;
-            cell.key_hash_xor ^= key_hash;
-            cell.version_xor ^= version;
-            cell.writer_xor ^= writer;
-            cell.tombstone_xor ^= tombstone ? 1U : 0U;
-            cell.checksum_xor ^= itemChecksum(key_hash, version, writer, tombstone);
+            cell.key_hash_xor ^= row.key_hash;
+            cell.version_xor ^= row.version;
+            cell.writer_xor ^= row.writer;
+            cell.tombstone_xor ^= row.tombstone ? 1U : 0U;
+            cell.checksum_xor ^= checksum;
         }
 
         auto pure(const iblt::Cell& cell) -> bool {
@@ -115,9 +100,16 @@ namespace cinder {
             uint64_t writer,
             bool tombstone
         ) {
-            const auto map = positions(key_hash, version, writer, tombstone, sketch.cells.size());
+            const Item row{
+                .key_hash = key_hash,
+                .version = version,
+                .writer = writer,
+                .tombstone = tombstone,
+            };
+            const auto checksum = itemChecksum(key_hash, version, writer, tombstone);
+            const auto map = positions(checksum, sketch.cells.size());
             for (size_t pos : map) {
-                apply(sketch.cells[pos], 1, key_hash, version, writer, tombstone);
+                apply(sketch.cells[pos], 1, row, checksum);
             }
         }
 
@@ -246,22 +238,11 @@ namespace cinder {
 
                 const bool is_remote = cell.count == 1;
                 (is_remote ? decoded.remote_only : decoded.local_only).push_back(row);
-                const auto map = positions(
-                    row.key_hash,
-                    row.version,
-                    row.writer,
-                    row.tombstone,
-                    delta.cells.size()
-                );
+                const auto checksum =
+                    itemChecksum(row.key_hash, row.version, row.writer, row.tombstone);
+                const auto map = positions(checksum, delta.cells.size());
                 for (size_t target : map) {
-                    apply(
-                        delta.cells[target],
-                        is_remote ? -1 : 1,
-                        row.key_hash,
-                        row.version,
-                        row.writer,
-                        row.tombstone
-                    );
+                    apply(delta.cells[target], is_remote ? -1 : 1, row, checksum);
                     if (!queued[target] && pure(delta.cells[target])) {
                         queue.push_back(target);
                         queued[target] = 1;

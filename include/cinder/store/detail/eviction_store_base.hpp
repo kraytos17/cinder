@@ -126,13 +126,26 @@ namespace cinder {
             // Lamport bump in putVersioned() advances past observed versions.
             entry.setVersion(self.mintVersion());
             if (ttl.has_value()) {
-                entry.expires_at = now() + *ttl;
+                const auto at = now();
+                entry.expires_at = at + *ttl;
                 entry.setHasTtl(true);
+                return putVersionedAt(key, std::move(entry), at);
             }
             return putVersioned(key, std::move(entry));
         }
 
         auto putVersioned(const std::string& key, VersionedEntry entry) -> Result<void> final {
+            // One clock read per op: callers that already hold a timestamp
+            // use putVersionedAt; the wheel slot below reuses this one.
+            const auto at = entry.hasTtl() ? now() : steady_clock::time_point{};
+            return putVersionedAt(key, std::move(entry), at);
+        }
+
+        auto putVersionedAt(
+            const std::string& key,
+            VersionedEntry entry,
+            steady_clock::time_point at
+        ) -> Result<void> {
             Derived& self = d();
             auto& sh = self.shards_[shardFor(key)];
             std::scoped_lock lock(sh.mutex);
@@ -199,7 +212,7 @@ namespace cinder {
                     noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
                 }
 
-                updateWheel(sh, it->second);
+                updateWheelAt(sh, it->second, at);
                 writeWal(sh, key);
                 if (metrics_) {
                     if (entry_is_tombstone) {
@@ -242,7 +255,7 @@ namespace cinder {
                 noteAdded(key, resident.version_and_ttl, resident.writer_node_hash);
             }
 
-            updateWheel(sh, new_it);
+            updateWheelAt(sh, new_it, at);
             writeWal(sh, key);
             if (metrics_) {
                 if (entry_is_tombstone) {
@@ -373,9 +386,10 @@ namespace cinder {
             tomb.setVersion(version);
             tomb.setTombstone(true);
             tomb.writer_node_hash = writer;
-            tomb.expires_at = now() + tombstone_gc_.load(std::memory_order_relaxed);
+            const auto at = now();
+            tomb.expires_at = at + tombstone_gc_.load(std::memory_order_relaxed);
             tomb.setHasTtl(true);
-            return putVersioned(key, std::move(tomb));
+            return putVersionedAt(key, std::move(tomb), at);
         }
 
         void setTombstoneGcInterval(milliseconds interval) final {
@@ -411,7 +425,7 @@ namespace cinder {
                         if (!entry.hasTtl() || entry.expires_at > current) {
                             // Fired early (wheel wrap, sub-second drift): re-schedule so the
                             // key is still reaped at its true expiry.
-                            sh.wheel.insert(&node, expiryTicks(entry.expires_at));
+                            sh.wheel.insert(&node, expiryTicksAt(entry.expires_at, current));
                             return;
                         }
 
@@ -513,11 +527,12 @@ namespace cinder {
             return n;
         }
 
-        // Wheel slot for an absolute expiry: at least 1 tick ahead of the current
-        // cursor, so sub-second TTLs are reaped on the very next evictExpired.
+        // Wheel slot for an absolute expiry: at least 1 tick ahead of the given
+        // timestamp, so sub-second TTLs are reaped on the very next evictExpired.
         [[nodiscard]]
-        auto expiryTicks(steady_clock::time_point expires_at) const -> size_t {
-            auto remaining = expires_at - now();
+        auto expiryTicksAt(steady_clock::time_point expires_at, steady_clock::time_point at) const
+            -> size_t {
+            auto remaining = expires_at - at;
             if (remaining <= seconds(0)) {
                 return 1;
             }
@@ -604,10 +619,11 @@ namespace cinder {
             total_entries_.fetch_sub(1, std::memory_order_relaxed);
         }
 
-        template <typename S, typename It> void updateWheel(S& sh, It it) {
+        template <typename S, typename It>
+        void updateWheelAt(S& sh, It it, steady_clock::time_point at) {
             auto& entry = Derived::nodeEntry(*it);
             if (entry.hasTtl()) {
-                sh.wheel.insert(&(*it), expiryTicks(entry.expires_at));
+                sh.wheel.insert(&(*it), expiryTicksAt(entry.expires_at, at));
             } else {
                 sh.wheel.remove(&(*it));
             }

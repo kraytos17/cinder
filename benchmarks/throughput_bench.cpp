@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <benchmark/benchmark.h>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <numeric>
@@ -28,6 +29,21 @@ namespace cinder {
 
         // NOLINTNEXTLINE
         BENCHMARK(bmLruStorePut)->Range(1 << 16, 1 << 20);
+
+        void bmLruStorePutTtl(benchmark::State& state) {
+            LruStore store(static_cast<size_t>(state.range(0)));
+            int i = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                // NOLINTNEXTLINE
+                (void)store
+                    .put(std::to_string(i++), std::string(256, 'x'), std::chrono::seconds{600});
+            }
+            state.SetItemsProcessed(state.iterations());
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmLruStorePutTtl)->Range(1 << 16, 1 << 20);
 
         void bmLruStoreGet(benchmark::State& state) {
             LruStore store(static_cast<size_t>(state.range(0)));
