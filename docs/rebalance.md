@@ -308,7 +308,7 @@ the hint TTL.
    that group's 16 bucket hashes (same opcode, `key` set to
    `"bucket-refinement-v3"`). The responder returns the intersection of
    requested buckets whose hashes differ, plus compact **metadata rows**
-   `(bucket, key_hash, version, writer)` — 28 bytes each — for the buckets
+   `(bucket, key_hash, version, writer, tombstone)` — 29 bytes each — for the buckets
    its byte budget covers, and an explicit covered-bucket set. Values never
    cross the wire in this phase; uncovered buckets are deferred, never
    treated as missing.
@@ -415,7 +415,7 @@ integers are **native byte order** (little-endian on x86).
 | Field              | Size | Description |
 |--------------------|------|--------------|
 | `magic`             | 4    | `0x43534E50` ("CSNP") |
-| `format_version`    | 4    | `1` (`uint32`) |
+| `format_version`    | 4    | `2` (`uint32`) |
 | `next_version`      | 8    | monotonic version counter, `uint64` |
 | `entry_count`       | 4    | number of entries, `uint32` |
 | — per entry — | | |
@@ -512,7 +512,7 @@ both sides of the partition are reconciled by LWW.
 | `--anti-entropy-full-rehash-interval` | `300000` | Anti-entropy full-rehash backstop interval (ms) |
 | `--persistence-enabled` | `false` | Enable disk persistence (snapshot + WAL) |
 | `--data-dir` | (empty) | Directory for snapshot and WAL files |
-| `--snapshot-interval-s` | `60` | Seconds between automatic snapshots |
+| `--snapshot-interval` | `60` | Seconds between automatic snapshots |
 | `--max-wal-entries` | `10000` | Max WAL entries before forced compaction |
 | `--max-wal-bytes` | `67108864` | Max WAL bytes (sealed + active) before forced compaction (`0` = disabled) |
 | `--max-wal-segment-bytes` | `16777216` | Seal the active WAL into `wal_<seq>.log` past this size (`0` = disabled) |

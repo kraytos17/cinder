@@ -15,7 +15,8 @@ alongside it:
   `config-reload`, `shutdown`).
 
 `CacheClient` + `ConnectionPool` offer the same access in-process, with
-ring routing, one redirect retry, and pipelined per-owner `multiGet`.
+ring routing, redirect following (up to 4 hops, visited-set bounded,
+outside the transport attempt budget), and pipelined per-owner `multiGet`.
 
 ## Request path
 
@@ -73,14 +74,15 @@ auto `min(4, hardware_concurrency)`).
   deferred keys migrate. See `rebalance.md`.
 - **Anti-entropy** — background replica repair on a timer: exchange xxHash3
   range-bucket digests, then sync only divergent buckets (configurable
-  interval and bucket count).
+  interval and bucket count). Large divergent buckets go through IBLT
+  sketches with a metadata-row fallback; see `rebalance.md`.
 
 ## Durability and operations
 
 - **Persistence** — append-only WAL (`WAL0` header, per-entry XXH3-64) plus
   periodic snapshots (`CSNP` header, atomic write-to-temp + rename). Writes queue
   in memory and drain to the WAL on the ~1s housekeeping tick; crossing
-  `max_wal_entries`/`max_wal_bytes` triggers an out-of-cycle compact (snapshot,
+  `max_wal_entries`/`max_wal_bytes`/`max_sealed_segments` triggers an out-of-cycle compact (snapshot,
   delete sealed segments, rotate to a fresh WAL). Oversized active logs are
   sealed into `wal_<seq>.log` past `max_wal_segment_bytes`. `wal_fsync: false`
   by default: drained data is page-cache durable — enable it

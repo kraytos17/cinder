@@ -9,9 +9,10 @@ one variable at a time, same machine, same build, same flags.
 
 All benchmarks live in one binary, `cinder_throughput_bench`, built by any
 preset with `CINDER_BUILD_BENCHMARKS=ON` (`release`, `release-clang`,
-`release-unity`, `profile`, `ci`, `ci-bench` — see AGENTS.md for the full
-matrix). Benchmark sources are covered by the format gate and by
-clang-tidy/cppcheck in `just lint`, like everything else.
+`release-unity`, `profile`, `ci-bench`, `ci-gcc-bench`, plus the PGO
+presets — see AGENTS.md for the full matrix). Benchmark sources are covered
+by the format gate and by clang-tidy/cppcheck in `just lint`, like
+everything else.
 
 ```bash
 # Build and run everything (release by default):
@@ -34,8 +35,9 @@ All `CINDER_*` tuning knobs (`CINDER_BENCH_PRESET`, `CINDER_REPL_FILTER`,
 `Justfile`, or copy `.env.example` to `.env`) also work from the
 environment or as `just VAR=value` overrides.
 
-Current families in `benchmarks/`: store put/get (`lrU`/`lfu`), ring
-lookup, slab allocator, tracing overhead, anti-entropy, WAL/snapshot,
+Current families in `benchmarks/`: store put/get (LRU/LFU, plain + TTL),
+ring lookup, slab allocator, tracing overhead, anti-entropy digests and
+IBLT insert/peel/wire-bytes, WAL append/replay, snapshot write/read,
 hint-queue snapshot/remove, and `replication_bench.cpp` (quorum
 write/read across replica counts, hint replay at 64/256/1024 backlogs).
 
@@ -74,9 +76,23 @@ write/read across replica counts, hint replay at 64/256/1024 backlogs).
 | read repair @1–4 | 1174 → 1630ns | +~400ns over miss (self-heal + repair fan-out) |
 | replay/call | 8.3 / 32.1 / 34.9µs @64/256/1024 | ~135ns/hint; 1024 costs one 256-batch |
 
-Full percentile tables live in `.opencode/plan/repl_improv.md` (Phase 6).
+Full percentile tables are regenerated on demand — rerun the bench with
+`--benchmark_out=/tmp/repl.csv --benchmark_out_format=csv` (see above).
 The 1024-backlog result confirms the `K_REPLAY_BATCH = 256` bound: one
 call replays one batch, the remainder drains on later ticks.
+
+### Reference numbers (2026-11-07, release, same box)
+
+| op | before | after | note |
+|---|---|---|---|
+| snapshot write, 1024×64 B entries | 402µs | 343µs | chunked 256 KiB writes (−15%) |
+| snapshot write, 1024×1 KB entries | 1089µs | 538µs | per-entry `ofstream` overflowed the 8 KiB filebuf every write (−51%) |
+| snapshot read (streaming), 4096 entries | 1552µs | 470µs | single trailing-block read + no `tellg` (−70%) |
+| snapshot read (readAll), 4096 entries | 1755µs | 610µs | same (−65%) |
+| IBLT insert, 48 items / 64 cells | 1031ns | 834ns | one XXH3 per insert instead of four (−19%) |
+| IBLT peel, 8-item diff | — | 689ns | rules out parallel peeling (sub-µs already) |
+| IBLT wire, loaded 64-cell sketch | — | 3.08 KB | VLE projection saves 448 B (−14.5%; kept unfrozen wire) |
+| TTL put, single entry | 183ns | 173ns | one `steady_clock` read instead of two (−6%) |
 
 ## CPU profiling with samply
 

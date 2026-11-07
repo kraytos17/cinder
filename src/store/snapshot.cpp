@@ -1,5 +1,6 @@
 #include "cinder/store/snapshot.hpp"
 
+#include <array>
 #include <fstream>
 #include <limits>
 
@@ -203,17 +204,19 @@ namespace cinder {
 
         next_version = next_ver.value();
         size_t streamed = 0;
-        // Single-seek string reads: one tellg per string against the known
-        // file size, instead of re-statting the file on every string.
-        const auto total_size = static_cast<uint64_t>(file_size);
-        auto read_sized = [&](size_t len) -> std::optional<std::string> {
-            const auto cur = in_.tellg();
-            if (cur < pos) {
-                return std::nullopt;
+        // Remaining-bytes counter instead of a tellg per string: tellg
+        // forces a sentry + seekoff query on every key and value.
+        uint64_t left = remaining;
+        auto take = [&](size_t n) -> bool {
+            if (n > left) {
+                return false;
             }
 
-            const auto cur_off = static_cast<uint64_t>(cur);
-            if (total_size < cur_off || total_size - cur_off < len) {
+            left -= n;
+            return true;
+        };
+        auto read_sized = [&](size_t len) -> std::optional<std::string> {
+            if (len > left) {
                 return std::nullopt;
             }
 
@@ -221,12 +224,19 @@ namespace cinder {
             if (!in_.read(buf.data(), static_cast<std::streamsize>(len))) {
                 return std::nullopt;
             }
+
+            left -= len;
             return buf;
         };
+        // Fixed trailing block per entry: version/writer/expires u64,
+        // has_ttl u8, freq u64, tombstone u8. One stream read instead of
+        // six sentry-guarded readLE calls.
+        constexpr size_t K_TAIL_BYTES =
+            3 * sizeof(uint64_t) + sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint8_t);
 
         for (uint32_t i = 0; i < entry_count.value(); ++i) {
             auto key_len = readLE<uint32_t>(in_);
-            if (!key_len.has_value()) {
+            if (!key_len.has_value() || !take(sizeof(uint32_t))) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot key"));
             }
@@ -238,7 +248,7 @@ namespace cinder {
             }
 
             auto val_len = readLE<uint32_t>(in_);
-            if (!val_len.has_value()) {
+            if (!val_len.has_value() || !take(sizeof(uint32_t))) {
                 span.setStatus(SpanStatus::Error);
                 return err(Error(Errc::CorruptData, "truncated snapshot value"));
             }
@@ -249,55 +259,51 @@ namespace cinder {
                 return err(Error(Errc::CorruptData, "truncated snapshot value data"));
             }
 
-            auto version = readLE<uint64_t>(in_);
-            if (!version.has_value()) {
+            // Fixed trailing block in one stream read: version/writer/
+            // expires u64, has_ttl u8, freq u64, plus the v2 tombstone u8.
+            // v1 entries have no tombstone byte on disk.
+            const size_t tail_size = is_v2 ? K_TAIL_BYTES : K_TAIL_BYTES - 1;
+            std::array<char, K_TAIL_BYTES> tail{};
+            if (!take(tail_size)
+                || !in_.read(tail.data(), static_cast<std::streamsize>(tail_size))) {
                 span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::CorruptData, "truncated snapshot version"));
+                return err(Error(Errc::CorruptData, "truncated snapshot entry"));
             }
 
-            auto writer_hash = readLE<uint64_t>(in_);
-            if (!writer_hash.has_value()) {
+            BufferReader fixed(tail.data(), tail_size);
+            uint64_t version = 0;
+            uint64_t writer_hash = 0;
+            uint64_t expires_ms = 0;
+            uint8_t has_ttl = 0;
+            uint64_t freq = 0;
+            uint8_t tombstone_byte = 0;
+            if (!fixed.read(version)
+                || !fixed.read(writer_hash)
+                || !fixed.read(expires_ms)
+                || !fixed.read(has_ttl)
+                || !fixed.read(freq)) {
                 span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::CorruptData, "truncated snapshot writer_hash"));
-            }
-
-            auto expires_ms = readLE<uint64_t>(in_);
-            if (!expires_ms.has_value()) {
-                span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::CorruptData, "truncated snapshot expires_at_ms"));
-            }
-
-            auto has_ttl = readLE<uint8_t>(in_);
-            if (!has_ttl.has_value()) {
-                span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::CorruptData, "truncated snapshot has_ttl"));
-            }
-
-            auto freq = readLE<uint64_t>(in_);
-            if (!freq.has_value()) {
-                span.setStatus(SpanStatus::Error);
-                return err(Error(Errc::CorruptData, "truncated snapshot freq"));
+                return err(Error(Errc::CorruptData, "truncated snapshot entry"));
             }
 
             bool tombstone = false;
             if (is_v2) {
-                auto tombstone_byte = readLE<uint8_t>(in_);
-                if (!tombstone_byte.has_value() || tombstone_byte.value() > 1) {
+                if (!fixed.read(tombstone_byte) || tombstone_byte > 1) {
                     span.setStatus(SpanStatus::Error);
                     return err(Error(Errc::CorruptData, "truncated snapshot tombstone"));
                 }
-                tombstone = tombstone_byte.value() != 0;
+                tombstone = tombstone_byte != 0;
             }
 
             SnapshotEntry entry{
                 .key = std::move(key.value()),
                 .value = std::move(value.value()),
-                .version = version.value(),
-                .writer_node_hash = writer_hash.value(),
-                .expires_at_ms = expires_ms.value(),
-                .has_ttl = has_ttl.value() != 0,
+                .version = version,
+                .writer_node_hash = writer_hash,
+                .expires_at_ms = expires_ms,
+                .has_ttl = has_ttl != 0,
                 .tombstone = tombstone,
-                .freq = freq.value(),
+                .freq = freq,
             };
 
             fn(entry);

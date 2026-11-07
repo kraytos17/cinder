@@ -55,7 +55,7 @@ rebalance in [`docs/rebalance.md`](docs/rebalance.md).
 - **Persistence** — checksummed WAL + atomic snapshots, crash recovery
 - **Observability** — Prometheus `/metrics` + `/config`, structured tracing with wire trace-ids
 - **Security & ops** — opt-in TLS 1.2, opt-in gRPC gateway, `cinder-admin` tooling, live config hot-reload
-- **Correctness tooling** — 509 unit + 52 sim + 34 integration + 11 CLI tests, 13 libFuzzer harnesses, ASan/TSan/UBSan/MSan CI
+- **Correctness tooling** — 571 unit + 52 sim + 34 integration + 11 CLI tests, 13 libFuzzer harnesses, ASan/TSan/UBSan/MSan CI
 
 ## Build
 
@@ -104,7 +104,9 @@ unstable under multi-node integration load.
 | `pgo-use` | GCC | Release + LTO + PGO-optimized | Production build consuming PGO profiles (shares `build/pgo`) |
 | `debug-clang` | Clang | Debug, per-file | Clang dev |
 | `ci` | Clang | RelWithDebInfo + **clang-tidy** | Lint-gated CI |
+| `ci-bench` | Clang | RelWithDebInfo + **clang-tidy** + benchmarks | Lint gate incl. benchmark TUs |
 | `ci-gcc` | GCC | RelWithDebInfo + ASan/UBSan | Sanitizer CI |
+| `ci-gcc-bench` | GCC | Sanitizers + benchmarks | cppcheck compile database |
 | `asan` / `asan-clang` | GCC / Clang | Debug + ASan/UBSan | Memory checking |
 | `tsan` / `tsan-clang` | GCC / Clang | Debug + ThreadSanitizer | Race detection |
 | `tls-grpc` / `tls-grpc-clang` | GCC / Clang | Release + **TLS** + **gRPC** | TLS + gRPC gateway CI |
@@ -144,11 +146,17 @@ server:
   replication_factor: 1
   consistency: async        # async | quorum
   metrics_port: 9100        # Prometheus /metrics + /config (0 = disabled)
+  rpc_timeout_ms: 5000      # per-RPC deadline in ms (0 = no timeout)
 cluster:
   peers: []                 # ["node2@127.0.0.1:7001", ...]
 persistence:
   enabled: false
   data_dir: /var/lib/cinder
+  snapshot_interval_s: 60
+  max_wal_entries: 10000
+  max_wal_bytes: 67108864
+  max_wal_segment_bytes: 16777216
+  max_sealed_segments: 32
 tls:
   enabled: false            # + cert_file / key_file / ca_file
 ```
@@ -156,13 +164,13 @@ tls:
 The full reference is `cinderd.yaml`; every flag is documented in `cinderd --help`.
 Key tunables: `--ping-interval`, `--suspect-timeout`, `--gossip-interval`,
 `--quarantine-interval`, `--io-threads` (0 = auto), `--eviction-policy`
-(lru|lfu), `--rpc-timeout`, `--enable-persistence`, `--anti-entropy-interval`,
-`--grpc-port` (0 = disabled, needs a `CINDER_ENABLE_GRPC` build).
+(lru|lfu), `--rpc-timeout`, `--enable-persistence`, `--max-sealed-segments`,
+`--anti-entropy-interval`, `--grpc-port` (0 = disabled, needs a `CINDER_ENABLE_GRPC` build).
 
 ## Tests
 
-509 unit + 52 sim + 34 integration + 11 CLI tests (plus 10 TLS and 16 gRPC tests
-under those builds):
+571 unit + 52 sim + 34 integration + 11 CLI tests (plus the TLS and gRPC
+suites under those builds):
 
 ```bash
 just test-unit
@@ -223,9 +231,9 @@ cinder/
 │                                #   client/, node/, cluster/
 ├── src/                         # Implementations
 ├── tools/                       # cinderd, cinder-cli, cinder-admin entry points
-├── tests/                       # unit/ (509) · integration/ (34+11 CLI) · sim/ (52) ·
+├── tests/                       # unit/ (571) · integration/ (34+11 CLI) · sim/ (52) ·
 │                                #   fuzz/ (13 harnesses + corpus) · fixtures/ (test certs)
-├── benchmarks/                  # throughput, replication fan-out, allocator, ring, LFU-bucket, tracing, anti-entropy
+├── benchmarks/                  # throughput, replication fan-out, allocator, ring, LFU-bucket, tracing, anti-entropy, IBLT, WAL/snapshot
 ├── cinder/v1/cache.proto        # gRPC service definition
 ├── suppressions/                # Sanitizer + cppcheck suppressions
 └── docs/

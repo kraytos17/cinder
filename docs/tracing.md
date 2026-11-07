@@ -2,8 +2,7 @@
 
 Cinder's tracing substrate (`cinder/common/tracing.hpp`) provides spans with
 explicit cross-thread context, typed structured events, and a pluggable
-subscriber backend. This note covers the conventions; the plan in
-`.opencode/plan/cinder-comprehensive-tracing.md` tracks the multi-phase rollout.
+subscriber backend. This note covers the conventions.
 
 ## Operation naming
 

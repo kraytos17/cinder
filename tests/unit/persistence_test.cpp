@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "cinder/common/tracing.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 #include "cinder/store/lfu_store.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "cinder/store/persistence.hpp"
@@ -1442,6 +1443,65 @@ namespace cinder {
                 EXPECT_EQ(got[i].key, all->entries[i].key);
                 EXPECT_EQ(got[i].value, all->entries[i].value);
             }
+        }
+
+        TEST_F(PersistenceTest, SnapshotReadV1WithoutTombstone) {
+            // v1 files carry no trailing tombstone byte; the reader must
+            // decode them without consuming the next entry's bytes.
+            auto snap_path = (scratch_.path() / "v1_snapshot.dat").string();
+            {
+                std::vector<std::byte> buf;
+                buf.resize(sizeof(uint32_t) * 2 + sizeof(uint64_t) + sizeof(uint32_t));
+                detail::BufferWriter header(buf);
+                header.write(K_SNAPSHOT_MAGIC);
+                header.write(K_SNAPSHOT_FORMAT_VERSION_V1);
+                header.write(uint64_t{7});
+                header.write(uint32_t{2});
+                auto append_entry =
+                    [&](std::string_view key, std::string_view value, uint64_t version) {
+                    const size_t size = sizeof(uint32_t)
+                        + key.size()
+                        + sizeof(uint32_t)
+                        + value.size()
+                        + 3
+                        * sizeof(uint64_t)
+                        + sizeof(uint8_t)
+                        + sizeof(uint64_t);
+                    const size_t base = buf.size();
+                    buf.resize(base + size);
+                    detail::BufferWriter body(buf, base);
+                    body.write(static_cast<uint32_t>(key.size()));
+                    body.writeString(key);
+                    body.write(static_cast<uint32_t>(value.size()));
+                    body.writeString(value);
+                    body.write(version);
+                    body.write(uint64_t{9});
+                    body.write(uint64_t{0});
+                    body.write(uint8_t{0});
+                    body.write(uint64_t{4});
+                };
+                append_entry("k1", "v1", 11);
+                append_entry("k2", "v2", 22);
+                std::ofstream out(snap_path, std::ios::binary | std::ios::trunc);
+                out.write(
+                    reinterpret_cast<const char*>(buf.data()),
+                    static_cast<std::streamsize>(buf.size())
+                );
+            }
+
+            SnapshotReader reader(snap_path);
+            auto result = reader.readAll();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->next_version, 7);
+            ASSERT_EQ(result->entries.size(), 2U);
+            EXPECT_EQ(result->entries[0].key, "k1");
+            EXPECT_EQ(result->entries[0].value, "v1");
+            EXPECT_EQ(result->entries[0].version, 11U);
+            EXPECT_FALSE(result->entries[0].tombstone);
+            EXPECT_EQ(result->entries[1].key, "k2");
+            EXPECT_EQ(result->entries[1].value, "v2");
+            EXPECT_EQ(result->entries[1].version, 22U);
+            EXPECT_FALSE(result->entries[1].tombstone);
         }
 
         TEST_F(PersistenceTest, CurrentPointerSurvivesNewerGarbage) {
