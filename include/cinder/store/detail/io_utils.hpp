@@ -118,6 +118,15 @@ namespace cinder::detail {
         explicit BufferWriter(std::vector<std::byte>& buf) :
             buf_(buf) {}
 
+        // Start writing at an offset (chunked sinks that pack several
+        // records into one pre-sized buffer). offset() keeps tracking
+        // the absolute position, so the caller can resume after a flush.
+        BufferWriter(std::vector<std::byte>& buf, size_t offset) :
+            buf_(buf),
+            offset_(offset) {
+            assert(offset_ <= buf_.size());
+        }
+
         template <typename T>
             requires std::unsigned_integral<T>
         void write(T v) {

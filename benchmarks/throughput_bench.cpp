@@ -418,8 +418,8 @@ namespace cinder {
             return entries;
         }
 
-        // Snapshot write: header + one buffered write per entry (the
-        // single-copy encode path). Entries are built once outside timing.
+        // Snapshot write: header + chunked batched writes (256 KiB chunks,
+        // one stream write per chunk). Entries are built once outside timing.
         void bmSnapshotWrite(benchmark::State& state) {
             const auto count = static_cast<size_t>(state.range(0));
             const auto value_size = static_cast<size_t>(state.range(1));

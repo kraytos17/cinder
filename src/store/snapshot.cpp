@@ -9,6 +9,27 @@
 using namespace cinder::detail;
 
 namespace cinder {
+    namespace {
+        // One entry's framing, shared by the chunked path and the huge-entry
+        // bypass below. Field order/widths are the frozen CSNP layout.
+        void encodeSnapshotEntry(
+            detail::BufferWriter& out,
+            const SnapshotEntry& entry,
+            uint32_t key_len,
+            uint32_t val_len
+        ) {
+            out.write(key_len);
+            out.writeString(entry.key);
+            out.write(val_len);
+            out.writeString(entry.value);
+            out.write(entry.version);
+            out.write(entry.writer_node_hash);
+            out.write(entry.expires_at_ms);
+            out.write(entry.has_ttl ? uint8_t{1} : uint8_t{0});
+            out.write(entry.freq);
+            out.write(entry.tombstone ? uint8_t{1} : uint8_t{0});
+        }
+    } // namespace
 
     SnapshotWriter::SnapshotWriter(const std::string& path) :
         path_(path) {}
@@ -37,10 +58,27 @@ namespace cinder {
             static_cast<std::streamsize>(scratch_.size())
         );
 
-        // One write per entry. Field order, widths, and native-endian byte
-        // layout are unchanged from the per-field stream writes, so files
-        // stay byte-identical (WAL0/CSNP magic, fuzz corpora still decode).
-        // v2 appends a trailing tombstone byte after freq.
+        // Batch entries into bounded chunks: one stream write per chunk
+        // instead of per entry. Same bytes, same order. An entry larger
+        // than the chunk bypasses it (after flushing) so memory stays
+        // bounded no matter the value sizes. Field order, widths, and
+        // native-endian layout are unchanged, so files stay byte-identical
+        // (WAL0/CSNP magic, fuzz corpora still decode).
+        constexpr size_t K_CHUNK_BYTES = 256U << 10U;
+        std::vector<std::byte> chunk(K_CHUNK_BYTES);
+        size_t chunk_pos = 0;
+        auto flush_chunk = [&] {
+            if (chunk_pos == 0) {
+                return;
+            }
+
+            out.write(
+                reinterpret_cast<const char*>(chunk.data()),
+                static_cast<std::streamsize>(chunk_pos)
+            );
+            chunk_pos = 0;
+        };
+
         for (const auto& entry : entries) {
             if (entry.key.size()
                 > std::numeric_limits<uint32_t>::max()
@@ -61,24 +99,27 @@ namespace cinder {
                 + sizeof(uint8_t)
                 + sizeof(uint8_t); // has_ttl + tombstone
 
-            scratch_.resize(size);
-            BufferWriter body(scratch_);
-            body.write(key_len);
-            body.writeString(entry.key);
-            body.write(val_len);
-            body.writeString(entry.value);
-            body.write(entry.version);
-            body.write(entry.writer_node_hash);
-            body.write(entry.expires_at_ms);
-            body.write(entry.has_ttl ? uint8_t{1} : uint8_t{0});
-            body.write(entry.freq);
-            body.write(entry.tombstone ? uint8_t{1} : uint8_t{0});
-            out.write(
-                reinterpret_cast<const char*>(scratch_.data()),
-                static_cast<std::streamsize>(scratch_.size())
-            );
+            if (size > K_CHUNK_BYTES) {
+                flush_chunk();
+                scratch_.resize(size);
+                BufferWriter body(scratch_);
+                encodeSnapshotEntry(body, entry, key_len, val_len);
+                out.write(
+                    reinterpret_cast<const char*>(scratch_.data()),
+                    static_cast<std::streamsize>(scratch_.size())
+                );
+                continue;
+            }
+            if (chunk_pos + size > chunk.size()) {
+                flush_chunk();
+            }
+
+            BufferWriter body(chunk, chunk_pos);
+            encodeSnapshotEntry(body, entry, key_len, val_len);
+            chunk_pos = body.offset();
         }
 
+        flush_chunk();
         out.flush();
         if (!out.good()) {
             span.setStatus(SpanStatus::Error);

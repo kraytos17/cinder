@@ -53,9 +53,9 @@ namespace cinder {
     private:
 
         std::string path_;
-        // Reused per-entry encode buffer: one out.write per entry instead of
-        // ~9 small stream writes. Grows to the largest entry seen; never
-        // shrinks within a snapshot.
+        // Encode buffer for the header and for entries larger than the
+        // 256 KiB write chunk (which bypass chunking). Grows to the
+        // largest entry seen; never shrinks within a snapshot.
         std::vector<std::byte> scratch_;
     };
 

@@ -378,6 +378,68 @@ namespace cinder {
             EXPECT_TRUE(result->entries[2].has_ttl);
         }
 
+        TEST_F(PersistenceTest, SnapshotWriteBypassesChunkForHugeEntries) {
+            // Entries larger than the 256 KiB write chunk bypass chunking
+            // (after flushing it); small entries around them still batch.
+            // Round-trip proves byte-identical framing on all three paths:
+            // chunked, bypass, chunked-again.
+            auto snap_path = (scratch_.path() / "huge_snapshot.dat").string();
+            std::vector<SnapshotEntry> entries;
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "small-before",
+                    .value = "v",
+                    .version = 1,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "huge",
+                    .value = std::string(300'000, 'x'),
+                    .version = 2,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 3,
+                }
+            );
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "small-after",
+                    .value = "w",
+                    .version = 3,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+
+            {
+                SnapshotWriter writer(snap_path);
+                ASSERT_TRUE(writer.write(9, entries).has_value());
+            }
+
+            SnapshotReader reader(snap_path);
+            auto result = reader.readAll();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->next_version, 9);
+            ASSERT_EQ(result->entries.size(), 3U);
+            EXPECT_EQ(result->entries[0].key, "small-before");
+            EXPECT_EQ(result->entries[1].key, "huge");
+            EXPECT_EQ(result->entries[1].value.size(), 300'000U);
+            EXPECT_EQ(result->entries[1].freq, 3U);
+            EXPECT_EQ(result->entries[2].key, "small-after");
+            EXPECT_EQ(result->entries[2].value, "w");
+        }
+
         TEST_F(PersistenceTest, RecoverFromSnapshotPlusWal) {
             LruStore store(1'000'000);
             PersistenceManager pm(
