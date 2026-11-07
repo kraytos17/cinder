@@ -163,15 +163,14 @@ namespace cinder {
         }
 
         auto format_ver = readLE<uint32_t>(in_);
-        const bool is_v2 =
-            format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION;
-        const bool is_v1 =
-            format_ver.has_value() && format_ver.value() == K_SNAPSHOT_FORMAT_VERSION_V1;
-        if (!is_v1 && !is_v2) {
+        const auto format =
+            format_ver.has_value() ? parseSnapshotFormat(format_ver.value()) : std::nullopt;
+        if (!format.has_value()) {
             span.setStatus(SpanStatus::Error);
             return err(Error(Errc::CorruptData, "unsupported snapshot format version"));
         }
 
+        const bool has_tombstone = snapshotHasTombstone(format.value());
         auto next_ver = readLE<uint64_t>(in_);
         if (!next_ver.has_value()) {
             span.setStatus(SpanStatus::Error);
@@ -190,7 +189,7 @@ namespace cinder {
         // 42 bytes v2 (trailing tombstone byte).
         constexpr size_t K_MIN_ENTRY_BYTES_V1 = 41;
         constexpr size_t K_MIN_ENTRY_BYTES_V2 = 42;
-        const size_t min_entry_bytes = is_v2 ? K_MIN_ENTRY_BYTES_V2 : K_MIN_ENTRY_BYTES_V1;
+        const size_t min_entry_bytes = has_tombstone ? K_MIN_ENTRY_BYTES_V2 : K_MIN_ENTRY_BYTES_V1;
         auto pos = in_.tellg();
         in_.seekg(0, std::ios::end);
 
@@ -262,7 +261,7 @@ namespace cinder {
             // Fixed trailing block in one stream read: version/writer/
             // expires u64, has_ttl u8, freq u64, plus the v2 tombstone u8.
             // v1 entries have no tombstone byte on disk.
-            const size_t tail_size = is_v2 ? K_TAIL_BYTES : K_TAIL_BYTES - 1;
+            const size_t tail_size = has_tombstone ? K_TAIL_BYTES : K_TAIL_BYTES - 1;
             std::array<char, K_TAIL_BYTES> tail{};
             if (!take(tail_size)
                 || !in_.read(tail.data(), static_cast<std::streamsize>(tail_size))) {
@@ -287,7 +286,7 @@ namespace cinder {
             }
 
             bool tombstone = false;
-            if (is_v2) {
+            if (has_tombstone) {
                 if (!fixed.read(tombstone_byte) || tombstone_byte > 1) {
                     span.setStatus(SpanStatus::Error);
                     return err(Error(Errc::CorruptData, "truncated snapshot tombstone"));

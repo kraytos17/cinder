@@ -49,10 +49,12 @@ namespace cinder {
     // version) uniquely identifies a write (per-writer Lamport clock, single
     // store version authority), so hashing values is pure overhead.
     //
-    // Wire schema v5 (magic-prefixed blobs, AER5/AEB5 envelopes with optional
-    // AEI3 sketches). Older envelopes are rejected: old peers fail the magic
-    // check and report InvalidArgument — a clean failed round that resumes
-    // once the cluster is homogeneous.
+    // Wire schema: magic-prefixed blobs (AEM2 flat digests, AEM3 group
+    // digests, AER6 responses, AEB5 refinements, AEMS syncs, AEI4 sketches).
+    // A new layout gets a new magic and keeps its old decoder while any
+    // supported peer may send it; retirement means deleting the old branch.
+    // Unknown magics are rejected: old peers fail the round cleanly and
+    // report InvalidArgument, resuming once the cluster is homogeneous.
     class AntiEntropyManager {
     public:
 
@@ -62,7 +64,6 @@ namespace cinder {
         static constexpr uint32_t K_DIGEST_RESPONSE_MAGIC = 0x41455236; // "AER6"
         static constexpr uint32_t K_BUCKET_REFINEMENT_MAGIC = 0x41454235; // "AEB5"
         static constexpr uint32_t K_SYNC_MAGIC = 0x41454D53; // "AEMS"
-        static constexpr uint32_t K_NEED_MAGIC = 0x41454D4E; // "AEMN"
         static constexpr uint32_t K_BUCKETS_PER_GROUP = 16;
         static constexpr uint32_t K_IBLT_MAGIC = iblt::K_MAGIC; // "AEI4"
         static constexpr size_t K_IBLT_HASH_COUNT = iblt::K_HASH_COUNT;

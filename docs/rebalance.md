@@ -410,7 +410,10 @@ write with `NotReady`. E.g. with 2 replicas (`total = 3`), `W = 2`
 Optional disk persistence via snapshot + write-ahead log (WAL).
 
 **Snapshot format** — magic `0x43534E50` ("CSNP"), format version 2. All
-integers are **native byte order** (little-endian on x86).
+integers are **native byte order** (little-endian on x86). Versions are
+parsed once into an enum (`SnapshotFormat`); readers accept every known
+version and writers always emit current, so a v3 adds an enumerator plus
+a capability query instead of new branches at every use site.
 
 | Field              | Size | Description |
 |--------------------|------|--------------|
@@ -434,7 +437,9 @@ Writes are atomic: data is written to `path.tmp`, fsync'd, then renamed to
 `path`, followed by a directory fsync.
 
 **WAL format** — magic `0x57414C30` ("WAL0"), format version 2. All integers
-are **native byte order** (little-endian on x86). Each entry records a `Set` or
+are **native byte order** (little-endian on x86). Versions are parsed once
+into `WalFormat` (`Legacy` = pre-magic format with no checksums); readers
+accept every known version and writers always emit current. Each entry records a `Set` or
 `Del` with version metadata, a trailing tombstone byte (v2), and an 8-byte
 XXH3-64 checksum of the entry payload for integrity verification. A batch of
 entries is encoded identically to N sequential appends and landed with a

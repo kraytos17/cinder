@@ -35,7 +35,7 @@ namespace cinder {
         // Sets invalid=true when bytes were present but semantically bad
         // (unknown op, tombstone > 1). Truncation (end of image mid-record)
         // leaves invalid=false so callers treat it as a torn tail, not corruption.
-        auto readEntryFields(BufferReader& in, bool is_v2, bool& invalid)
+        auto readEntryFields(BufferReader& in, WalFormat format, bool& invalid)
             -> std::optional<ParsedEntry> {
             invalid = false;
             uint8_t op_byte = 0;
@@ -90,7 +90,7 @@ namespace cinder {
             }
 
             uint8_t tombstone = 0;
-            if (is_v2) {
+            if (walHasTombstone(format)) {
                 uint8_t tombstone_byte = 0;
                 if (!in.read(tombstone_byte)) {
                     return std::nullopt; // truncated entry
@@ -115,7 +115,7 @@ namespace cinder {
             };
         }
 
-        auto computeEntryChecksum(const ParsedEntry& e, bool is_v2) -> uint64_t {
+        auto computeEntryChecksum(const ParsedEntry& e, WalFormat format) -> uint64_t {
             XXH3_state_t* state = XXH3_createState();
             XXH3_64bits_reset(state);
 
@@ -129,7 +129,7 @@ namespace cinder {
             XXH3_64bits_update(state, &e.writer_node_hash, sizeof(e.writer_node_hash));
             XXH3_64bits_update(state, &e.expires_ms, sizeof(e.expires_ms));
             XXH3_64bits_update(state, &e.has_ttl, sizeof(e.has_ttl));
-            if (is_v2) {
+            if (walHasTombstone(format)) {
                 XXH3_64bits_update(state, &e.tombstone, sizeof(e.tombstone));
             }
 
@@ -202,6 +202,7 @@ namespace cinder {
                 | std::ios::out
                 | (mode == WalOpenMode::Truncate ? std::ios::trunc : std::ios::app)
         );
+
         bool needs_header = mode == WalOpenMode::Truncate;
         if (mode == WalOpenMode::Append) {
             // Probe the existing file: valid header → resume after it;
@@ -214,10 +215,7 @@ namespace cinder {
                 && magic.value()
                 == K_WAL_MAGIC
                 && version.has_value()
-                && (version.value()
-                    == K_WAL_FORMAT_VERSION
-                    || version.value()
-                    == K_WAL_FORMAT_VERSION_V1);
+                && parseWalFormat(version.value()).has_value();
             if (!magic.has_value()) {
                 needs_header = true; // missing or empty file
             } else if (!valid) {
@@ -253,10 +251,8 @@ namespace cinder {
                 ::close(probe);
             }
 
-            const bool valid = have_header
-                && header[0]
-                == K_WAL_MAGIC
-                && (header[1] == K_WAL_FORMAT_VERSION || header[1] == K_WAL_FORMAT_VERSION_V1);
+            const bool valid =
+                have_header && header[0] == K_WAL_MAGIC && parseWalFormat(header[1]).has_value();
             if (!have_header) {
                 needs_header = true; // missing or empty file
             } else if (!valid) {
@@ -432,8 +428,8 @@ namespace cinder {
             if (!header.read(version)) {
                 return; // torn header: nothing to decode
             }
-            if (version == K_WAL_FORMAT_VERSION || version == K_WAL_FORMAT_VERSION_V1) {
-                format_version_ = version;
+            if (auto format = parseWalFormat(version); format.has_value()) {
+                format_version_ = *format;
                 pos_ = header.pos();
                 return;
             }
@@ -446,9 +442,8 @@ namespace cinder {
     auto WalReader::next() -> std::optional<WalEntry> {
         BufferReader in{data_.data(), data_.size()};
         in.seek(pos_);
-        const bool is_v2 = format_version_ == K_WAL_FORMAT_VERSION;
         bool invalid = false;
-        auto fields = readEntryFields(in, is_v2, invalid);
+        auto fields = readEntryFields(in, format_version_, invalid);
         if (!fields.has_value()) {
             // Structurally invalid bytes (bad op / bad tombstone) signal
             // mid-file corruption; short reads are a torn crash tail.
@@ -459,7 +454,7 @@ namespace cinder {
             pos_ = in.pos();
             return std::nullopt;
         }
-        if (format_version_ == 0) {
+        if (format_version_ == WalFormat::Legacy) {
             pos_ = in.pos();
             commit_pos_ = pos_;
             return toWalEntry(fields.value());
@@ -470,7 +465,7 @@ namespace cinder {
             pos_ = in.pos();
             return std::nullopt; // truncated entry
         }
-        if (computeEntryChecksum(fields.value(), is_v2) != stored_checksum) {
+        if (computeEntryChecksum(fields.value(), format_version_) != stored_checksum) {
             CINDER_WARN("checksum mismatch at entry — corrupt data");
             corrupted_ = true;
             pos_ = in.pos();

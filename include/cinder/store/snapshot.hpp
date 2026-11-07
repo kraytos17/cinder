@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <fstream>
 #include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -18,6 +19,38 @@ namespace cinder {
     // delete markers so a restart cannot resurrect deleted keys.
     constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION = 2;
     constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION_V1 = 1;
+
+    // On-disk format version, parsed once from the header. Writers always
+    // emit V2; readers accept every enumerator. A v3 adds an enumerator
+    // plus a capability query below — call sites ask what a format
+    // supports rather than branching on version numbers.
+    enum class SnapshotFormat : uint32_t {
+        V1 = 1,
+        V2 = 2,
+    };
+
+    static_assert(
+        static_cast<uint32_t>(SnapshotFormat::V2) == K_SNAPSHOT_FORMAT_VERSION,
+        "SnapshotFormat::V2 must match the version writers emit"
+    );
+
+    [[nodiscard]]
+    inline auto parseSnapshotFormat(uint32_t v) -> std::optional<SnapshotFormat> {
+        switch (v) {
+            case static_cast<uint32_t>(SnapshotFormat::V1):
+                return SnapshotFormat::V1;
+            case static_cast<uint32_t>(SnapshotFormat::V2):
+                return SnapshotFormat::V2;
+            default:
+                return std::nullopt;
+        }
+    }
+
+    // v2 appends the trailing tombstone byte per entry.
+    [[nodiscard]]
+    constexpr auto snapshotHasTombstone(SnapshotFormat f) -> bool {
+        return f >= SnapshotFormat::V2;
+    }
 
     struct SnapshotEntry {
         std::string key;

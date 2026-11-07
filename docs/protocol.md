@@ -342,7 +342,9 @@ accepted on decode for compatibility but no longer sent), `0x41454D53`
 ("AEMS", sync), `0x41454D4E` ("AEMN" — reserved), `0x41455236` ("AER6",
 digest response), `0x41454235` ("AEB5", bucket refinement). Payloads
 without a recognized magic are rejected, so old peers fail a round cleanly
-and converge once the cluster is homogeneous.
+and converge once the cluster is homogeneous. A new layout gets a new magic
+and keeps its old decoder while any supported peer may send it; retirement
+means deleting the old branch.
 
 ### Group Digest (`ANTI_ENTROPY_DIGEST` request, opcode 9)
 

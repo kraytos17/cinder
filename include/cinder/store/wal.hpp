@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -18,6 +19,40 @@ namespace cinder {
     // source cleanup must not resurrect markers).
     constexpr uint32_t K_WAL_FORMAT_VERSION = 2;
     constexpr uint32_t K_WAL_FORMAT_VERSION_V1 = 1;
+
+    // On-disk format version, parsed once from the header. Legacy (0) is
+    // the pre-magic format with no checksums. Writers always emit V2;
+    // readers accept every enumerator. A v3 adds an enumerator plus a
+    // capability query below — call sites ask what a format supports
+    // rather than branching on version numbers.
+    enum class WalFormat : uint32_t {
+        Legacy = 0,
+        V1 = 1,
+        V2 = 2,
+    };
+
+    static_assert(
+        static_cast<uint32_t>(WalFormat::V2) == K_WAL_FORMAT_VERSION,
+        "WalFormat::V2 must match the version writers emit"
+    );
+
+    [[nodiscard]]
+    inline auto parseWalFormat(uint32_t v) -> std::optional<WalFormat> {
+        switch (v) {
+            case static_cast<uint32_t>(WalFormat::V1):
+                return WalFormat::V1;
+            case static_cast<uint32_t>(WalFormat::V2):
+                return WalFormat::V2;
+            default:
+                return std::nullopt;
+        }
+    }
+
+    // v2 appends the trailing tombstone byte (covered by the checksum).
+    [[nodiscard]]
+    constexpr auto walHasTombstone(WalFormat f) -> bool {
+        return f >= WalFormat::V2;
+    }
 
     struct WalEntry {
         enum class Op : uint8_t {
@@ -140,9 +175,9 @@ namespace cinder {
         size_t pos_ = 0;
         // End offset of the last fully decoded record (see validSize()).
         uint64_t commit_pos_ = 0;
-        // File format version: 0 = pre-magic legacy (no checksums), 1 = v1
-        // checksummed records, 2 = v2 records with trailing tombstone byte.
-        uint32_t format_version_ = 0;
+        // File format version: Legacy (0) = pre-magic format with no
+        // checksums; parsed once from the header into a WalFormat.
+        WalFormat format_version_ = WalFormat::Legacy;
         bool corrupted_ = false;
     };
 } // namespace cinder
