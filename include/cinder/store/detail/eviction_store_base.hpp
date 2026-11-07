@@ -387,6 +387,7 @@ namespace cinder {
             tomb.setTombstone(true);
             tomb.writer_node_hash = writer;
             const auto at = now();
+
             tomb.expires_at = at + tombstone_gc_.load(std::memory_order_relaxed);
             tomb.setHasTtl(true);
             return putVersionedAt(key, std::move(tomb), at);

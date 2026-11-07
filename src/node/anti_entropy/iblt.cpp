@@ -106,6 +106,7 @@ namespace cinder {
                 .writer = writer,
                 .tombstone = tombstone,
             };
+
             const auto checksum = itemChecksum(key_hash, version, writer, tombstone);
             const auto map = positions(checksum, sketch.cells.size());
             for (size_t pos : map) {
