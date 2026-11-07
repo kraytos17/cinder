@@ -21,6 +21,20 @@ namespace cinder {
 
         BENCHMARK(bmSpanNoSubscriber);
 
+        void bmSpanNoSubscriberChild(benchmark::State& state) {
+            // Child spans skip the freshTraceId() atomic (they inherit the
+            // parent's trace id). Parent lives outside the loop; each child
+            // still pays TLS save/restore + splitmix span id.
+            Span parent("bench.parent");
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                Span child("bench.op", parent.spanId());
+                benchmark::DoNotOptimize(child.spanId());
+            }
+        }
+
+        BENCHMARK(bmSpanNoSubscriberChild);
+
         void bmSpanNoSubscriberWithOutcome(benchmark::State& state) {
             // NOLINTNEXTLINE
             for (auto _ : state) {

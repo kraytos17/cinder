@@ -208,6 +208,15 @@ Cinder candidates *to investigate, not to assume*: packed replication
 metrics (`Metrics`), shared atomics on completion paths, concurrent
 hint-queue/transport state. Evidence first.
 
+Measured and closed (do not re-investigate without new evidence): `Span`
+construction with no subscriber is ~20ns root / ~16ns child
+(`bmSpanNoSubscriber`, `bmSpanNoSubscriberChild`); the delta is the single
+`freshTraceId` atomic. Hot paths overwhelmingly use explicit-parent child
+spans (wire-joined server spans, fanout/replica spans), so at most ~4ns per
+request is removable — below any action threshold. The rest is TLS context
+installs feeding `captureTraceContext()` (wire propagation) and log
+enrichment: functional, not overhead.
+
 ## Profile-guided optimization (PGO)
 
 Repo support (GCC only, matching the release toolchain):
