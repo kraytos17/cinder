@@ -11,6 +11,7 @@
 #include "cinder/common/tracing.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/node/anti_entropy.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "unit/anti_entropy_fixtures.hpp"
 
@@ -18,6 +19,26 @@ using std::chrono::seconds;
 
 namespace cinder {
     namespace {
+
+        auto encodeCounterBundleForTest(
+            const std::vector<std::pair<std::string, std::string>>& counters
+        ) -> std::string {
+            size_t total = 2 * sizeof(uint32_t);
+            for (const auto& [key, state] : counters) {
+                total += 2 * sizeof(uint32_t) + key.size() + state.size();
+            }
+            std::vector<std::byte> buf(total);
+            detail::BufferWriter out(buf);
+            out.write(uint32_t{0x43414531}); // CAE1
+            out.write(static_cast<uint32_t>(counters.size()));
+            for (const auto& [key, state] : counters) {
+                out.write(static_cast<uint32_t>(key.size()));
+                out.writeString(key);
+                out.write(static_cast<uint32_t>(state.size()));
+                out.writeString(state);
+            }
+            return detail::toWireString(buf);
+        }
 
         TEST(AntiEntropySyncTest, CollectApplyRoundTrip) {
             Node a;
@@ -96,6 +117,95 @@ namespace cinder {
             EXPECT_EQ(mb.applyEntries(std::string("\x05\x00\x00\x00", 4)), 0);
             EXPECT_EQ(mb.applyEntries(AntiEntropyManager::encodeDigest({1, 2, 3})), 0);
             EXPECT_TRUE(b.store.getVersioned("k1") == std::nullopt);
+        }
+
+        TEST(AntiEntropyCounterTest, ExchangesAndMergesBothDirections) {
+            Node a;
+            Node b;
+            CrdtCounterStore counters_a(1U << 20U);
+            CrdtCounterStore counters_b(1U << 20U);
+            ASSERT_TRUE(counters_a.increment("visits", "n1", 5).has_value());
+            ASSERT_TRUE(counters_b.decrement("visits", "n2", 2).has_value());
+
+            AntiEntropyManager ae_a(
+                a.store,
+                a.ring,
+                "n1",
+                a.clock,
+                a.transport,
+                8,
+                nullptr,
+                1U << 20U,
+                AntiEntropyManager::K_DEFAULT_FULL_REHASH_INTERVAL,
+                &counters_a
+            );
+            AntiEntropyManager ae_b(
+                b.store,
+                b.ring,
+                "n2",
+                b.clock,
+                b.transport,
+                8,
+                nullptr,
+                1U << 20U,
+                AntiEntropyManager::K_DEFAULT_FULL_REHASH_INTERVAL,
+                &counters_b
+            );
+
+            auto encoded = crdt::encodeCounter(*counters_a.get("visits"));
+            net::Request req;
+            req.opcode = net::Opcode::CounterAntiEntropy;
+            req.value = encodeCounterBundleForTest({{"visits", encoded}});
+            std::optional<net::Response> response;
+            ae_b.onCounterAntiEntropy("n1", req, [&](net::Response r) { response = std::move(r); });
+            ASSERT_TRUE(response.has_value());
+            ASSERT_EQ(response->status, Errc::OK);
+            ASSERT_TRUE(response->value.has_value());
+
+            net::Request reply;
+            reply.value = *response->value;
+            std::optional<net::Response> final_response;
+            ae_a.onCounterAntiEntropy("n2", reply, [&](net::Response r) {
+                final_response = std::move(r);
+            });
+            ASSERT_TRUE(final_response.has_value());
+            EXPECT_EQ(counters_a.value("visits"), 3);
+            EXPECT_EQ(counters_b.value("visits"), 3);
+            EXPECT_EQ(counters_a.get("visits"), counters_b.get("visits"));
+        }
+
+        TEST(AntiEntropyCounterTest, RejectsMalformedAndOverBudgetBundle) {
+            Node node;
+            CrdtCounterStore counters(1U << 20U);
+            AntiEntropyManager ae(
+                node.store,
+                node.ring,
+                "n1",
+                node.clock,
+                node.transport,
+                8,
+                nullptr,
+                32,
+                AntiEntropyManager::K_DEFAULT_FULL_REHASH_INTERVAL,
+                &counters
+            );
+            net::Request req;
+            req.opcode = net::Opcode::CounterAntiEntropy;
+            req.value = "bad";
+            std::optional<net::Response> bad;
+            ae.onCounterAntiEntropy("n2", req, [&](net::Response r) { bad = std::move(r); });
+            ASSERT_TRUE(bad.has_value());
+            EXPECT_EQ(bad->status, Errc::InvalidArgument);
+
+            ASSERT_TRUE(
+                counters.increment("key", "actor-name-that-exceeds-the-budget", 1).has_value()
+            );
+            req.value =
+                encodeCounterBundleForTest({{"key", crdt::encodeCounter(*counters.get("key"))}});
+            std::optional<net::Response> over;
+            ae.onCounterAntiEntropy("n2", req, [&](net::Response r) { over = std::move(r); });
+            ASSERT_TRUE(over.has_value());
+            EXPECT_EQ(over->status, Errc::CapacityExceeded);
         }
 
         TEST(AntiEntropySyncTest, TtlPreserved) {

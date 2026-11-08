@@ -242,7 +242,7 @@ namespace cinder::net {
         if (raw_opcode
             < std::to_underlying(Opcode::Get)
             || raw_opcode
-            > std::to_underlying(Opcode::CounterGet)) {
+            > std::to_underlying(Opcode::CounterAntiEntropy)) {
             return err<DecodedRequest>(Error(Errc::InvalidArgument, "unknown opcode"));
         }
 
@@ -321,6 +321,24 @@ namespace cinder::net {
 
             req.counter_delta = *delta;
             req.counter_decrement = *decrement != 0;
+        }
+        if (req.opcode
+            == Opcode::CounterAdjust
+            || req.opcode
+            == Opcode::CounterMerge
+            || req.opcode
+            == Opcode::CounterGet) {
+            if (req.ttl.has_value()
+                || req.expires_at.has_value()
+                || req.tombstone
+                || req.version
+                != 0
+                || req.writer_node_hash
+                != 0) {
+                return err<DecodedRequest>(
+                    Error(Errc::InvalidArgument, "counter opcode has LWW metadata")
+                );
+            }
         }
         // Trace context — optional trailing data gated by flag 0x04.
         if ((*flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {

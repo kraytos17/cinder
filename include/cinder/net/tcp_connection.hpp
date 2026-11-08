@@ -271,6 +271,8 @@ namespace cinder::net {
 
         [[nodiscard]]
         auto handleAntiEntropySync(const Request& req) -> bool;
+        [[nodiscard]]
+        auto handleCounterAntiEntropy(const Request& req) -> bool;
         void handleAdmin(const Request& req, Response& res);
         void onWriteComplete(
             std::shared_ptr<TcpConnection> self,

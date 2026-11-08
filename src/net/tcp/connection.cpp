@@ -408,6 +408,8 @@ namespace cinder::net {
                 return "counter.merge";
             case CounterGet:
                 return "counter.get";
+            case CounterAntiEntropy:
+                return "counter.anti_entropy";
             case AdminInfo:
                 return "admin.info";
             case AdminCluster:
@@ -444,6 +446,7 @@ namespace cinder::net {
             case Gossip:
             case AntiEntropyDigest:
             case AntiEntropySync:
+            case CounterAntiEntropy:
                 return OpcodeClass::Replication;
             case AdminInfo:
             case AdminCluster:
@@ -494,6 +497,12 @@ namespace cinder::net {
                 );
                 break;
             case AntiEntropySync:
+                metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
+                    1,
+                    std::memory_order_relaxed
+                );
+                break;
+            case CounterAntiEntropy:
                 metrics_->opcodeMetrics().repl.anti_entropy_sync.fetch_add(
                     1,
                     std::memory_order_relaxed
@@ -695,6 +704,8 @@ namespace cinder::net {
             case CounterGet:
                 handleCounterGet(req, res);
                 return false;
+            case CounterAntiEntropy:
+                return handleCounterAntiEntropy(req);
             case AdminInfo:
             case AdminCluster:
             case AdminRing:
@@ -982,6 +993,33 @@ namespace cinder::net {
 
         res.value = crdt::encodeCounter(*state);
         res.status = Errc::OK;
+    }
+
+    auto TcpConnection::handleCounterAntiEntropy(const Request& req) -> bool {
+        auto self = shared_from_this();
+        auto respond = [this, self](Response response) {
+            // Handler currently responds synchronously, but marshal through
+            // this strand even if the repair implementation later defers
+            // work; every call path keeps connection state strand-confined.
+            asio::post(strand_, [this, self, response = std::move(response)] {
+                sendResponse(response);
+                maybeRead();
+            });
+        };
+        if (counter_store_ == nullptr || anti_entropy_ == nullptr) {
+            respond(
+                Response{
+                    .status = Errc::NotSupported,
+                    .value = {},
+                    .trace_id = req.trace_id,
+                    .span_id = req.span_id,
+                }
+            );
+            return true;
+        }
+
+        anti_entropy_->onCounterAntiEntropy(std::string(node_id_), req, std::move(respond));
+        return true;
     }
 
     void TcpConnection::handleGossip(const Request& req, Response& res) {

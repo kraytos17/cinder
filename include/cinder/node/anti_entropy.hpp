@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <flat_set>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,7 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/iblt.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/crdt_counter_store.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 
 using std::chrono::milliseconds;
@@ -153,7 +155,8 @@ namespace cinder {
             uint32_t num_buckets,
             MetricsCollector* metrics = nullptr,
             size_t fetch_bytes = 1U << 20U,
-            milliseconds full_rehash_interval = K_DEFAULT_FULL_REHASH_INTERVAL
+            milliseconds full_rehash_interval = K_DEFAULT_FULL_REHASH_INTERVAL,
+            CrdtCounterStore* counter_store = nullptr
         );
 
         ~AntiEntropyManager();
@@ -305,6 +308,11 @@ namespace cinder {
         // Best-effort: transport failures only log.
         void runRound(int replica_factor);
 
+        // Independent CRDT repair round. Exchanges bounded full counter
+        // snapshots and merges in both directions; this deliberately does
+        // not enter the LWW digest/metadata path.
+        void runCounterRound(int replica_factor);
+
         // Protocol handlers — called by TcpConnection::handleRequest, always
         // on that connection's strand.
         // onDigestRequest: receives initiator's digest, compares, responds
@@ -329,6 +337,12 @@ namespace cinder {
         );
 
         void onSyncRequest(
+            const NodeId& from,
+            const net::Request& req,
+            std::function<void(net::Response)> respond
+        );
+
+        void onCounterAntiEntropy(
             const NodeId& from,
             const net::Request& req,
             std::function<void(net::Response)> respond
@@ -374,7 +388,13 @@ namespace cinder {
         // full-rehash rounds (which scan anyway) and when the cache is empty,
         // so steady-state rounds never scan for partners.
         void refreshPartners(int replica_factor);
+        void considerCounterPartners(
+            std::flat_set<NodeId>& candidates,
+            size_t max_candidates
+        ) const;
+        auto encodeCounterBatch(size_t max_bytes) -> std::optional<std::string>;
 
+        void exchangeCounterState(const NodeId& partner, SpanContext round_ctx);
         void finishRefinement(
             const std::vector<uint64_t>& local_bucket_hashes,
             const NodeId& partner,
@@ -435,6 +455,7 @@ namespace cinder {
         ConsistentHashRing& ring_;
         Clock& clock_;
         Transport& transport_;
+        CrdtCounterStore* counter_store_;
         std::atomic<size_t> fetch_bytes_;
         std::atomic<milliseconds> full_rehash_interval_;
         size_t partner_idx_ = 0;
@@ -451,6 +472,8 @@ namespace cinder {
         std::vector<std::pair<uint32_t, uint64_t>> pending_;
         std::vector<NodeId> partners_;
         NodeId self_;
+        std::mutex counter_cursor_mutex_;
+        std::string counter_cursor_;
         std::mutex pending_mutex_;
         std::shared_mutex acc_mutex_;
         uint32_t num_buckets_;

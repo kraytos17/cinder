@@ -13,14 +13,14 @@ compile time via `consteval` and verified with `static_assert`.
 |--------|------|---------------|--------------|
 | 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
 | 1      | 1    | `version`     | `0x06` |
-| 2      | 1    | `opcode`      | Request: 1–19 (see [Opcodes](#opcodes)). Response: `0x00` |
+| 2      | 1    | `opcode`      | Request: 1–20 (see [Opcodes](#opcodes)). Response: `0x00` |
 | 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
 **Limits and validation:**
 - Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
   both encode and decode. On decode, `payload_len` is checked against this
   bound before the body is read.
-- `opcode` must fall in `1..19`; any other value is rejected as unknown. A
+- `opcode` must fall in `1..20`; any other value is rejected as unknown. A
   `consteval` function, `opcodeRangeCoverage()`, asserts at compile time that
   this range is contiguous with no gaps.
 
@@ -87,6 +87,11 @@ depending on which flags are set.
   encoding. Counter adjustments are not safe to retry after a transport
   error: the owner may have applied the operation even if the response was
   lost. Replica state merge is safe to retry because it is idempotent.
+- **`CAE1` bundle** (`COUNTER_ANTI_ENTROPY`) is `magic u32`, `entry_count u32`,
+  then repeated `key_len u32`, key bytes, `state_len u32`, and serialized
+  PN-Counter bytes. The complete bundle must fit `anti_entropy_fetch_bytes`;
+  otherwise it is rejected/deferred intact to a later round. No LWW versions,
+  tombstones, or cache values are included.
 
 `ttl_ms` and `expires_at_ms` are mutually exclusive in practice: clients send
 the former on writes, replication uses the latter.
@@ -114,12 +119,16 @@ the former on writes, replication uses the latter.
 | 17 | `COUNTER_ADJUST` | client-only, owner-routed; `key`, `counter_delta`, `counter_decrement`; response carries the updated serialized PN-Counter state |
 | 18 | `COUNTER_MERGE` | internal-only; `key` + serialized PN-Counter state in `value`; receiver merges, never LWW-replaces |
 | 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
+| 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
 
 Admin opcodes (11-16) bypass ring ownership checks and are client-initiated only.
-`COUNTER_MERGE` is internal/authenticated like replication; counter adjust/get
-are client-authenticated and owner-routed. Counter state is asynchronously
-replicated as full PN-Counter snapshots. Counter-aware anti-entropy and WAL/
-snapshot durability are not yet implemented.
+`COUNTER_MERGE` and `COUNTER_ANTI_ENTROPY` are internal/authenticated like
+replication; counter adjust/get are client-authenticated and owner-routed.
+Counter state is asynchronously replicated as full PN-Counter snapshots.
+Counter anti-entropy uses deterministic sorted-key batches, each bounded by
+`anti_entropy_fetch_bytes`; a per-manager cursor advances over later rounds so
+a large counter keyspace is not truncated or permanently starved.
+Counter state remains outside the existing LWW WAL/snapshot durability path.
 
 ## Response Payload
 
@@ -343,7 +352,7 @@ Protocol v6 (introduced in this version) is **not backward-compatible** with
 v5. The version check uses strict equality — a v6 node will reject v5 frames
 and vice versa. All nodes in a cluster must be upgraded simultaneously.
 
-Protocol v6 adds counter opcodes 17–19 and the `COUNTER_ADJUST` suffix fields.
+Protocol v6 adds counter opcodes 17–20 and the `COUNTER_ADJUST` suffix fields.
 Nodes running v5 reject v6 frames at the version check. All nodes in a cluster
 must be upgraded simultaneously.
 

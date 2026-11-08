@@ -237,7 +237,8 @@ namespace cinder {
             options.anti_entropy.buckets,
             &metrics_,
             options.anti_entropy.fetch_bytes,
-            options.anti_entropy.full_rehash_interval
+            options.anti_entropy.full_rehash_interval,
+            &counter_store_
         ),
         persistence_(
             PersistenceManager::Options{
@@ -688,6 +689,7 @@ namespace cinder {
             // repair against stale membership.
             if (!table_.isDegraded()) {
                 anti_entropy_.runRound(replica_factor_);
+                anti_entropy_.runCounterRound(replica_factor_);
             } else {
                 span.setAttribute({"outcome", "skipped"});
                 span.setAttribute({"reason", "degraded-view"});

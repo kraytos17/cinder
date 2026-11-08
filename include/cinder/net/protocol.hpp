@@ -63,6 +63,7 @@ namespace cinder::net {
         CounterAdjust = 17,
         CounterMerge = 18,
         CounterGet = 19,
+        CounterAntiEntropy = 20,
     };
 
     // The decode path validates `raw_opcode ∈ [Get, AdminShutdown]`; assert at
@@ -70,7 +71,7 @@ namespace cinder::net {
     // gaps or overlap.
     consteval auto opcodeRangeCoverage() -> bool {
         const int min = std::to_underlying(Opcode::Get);
-        const int max = std::to_underlying(Opcode::CounterGet);
+        const int max = std::to_underlying(Opcode::CounterAntiEntropy);
         int count = 0;
         for (const auto op : {
                  Opcode::Get,
@@ -92,6 +93,7 @@ namespace cinder::net {
                  Opcode::CounterAdjust,
                  Opcode::CounterMerge,
                  Opcode::CounterGet,
+                 Opcode::CounterAntiEntropy,
              }) {
             if (std::to_underlying(op) < min || std::to_underlying(op) > max) {
                 return false;

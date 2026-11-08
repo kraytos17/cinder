@@ -47,7 +47,8 @@ namespace {
              Op::AdminShutdown,
              Op::CounterAdjust,
              Op::CounterMerge,
-             Op::CounterGet}
+             Op::CounterGet,
+             Op::CounterAntiEntropy}
         );
         req.trace_id = fdp.ConsumeIntegral<uint64_t>();
         // Encoder gates span on trace_id != 0; a lone span would not survive.

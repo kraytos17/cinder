@@ -112,7 +112,12 @@ namespace cinder::net {
         }
 
         TEST(ProtocolTest, CounterMergeAndGetOpcodesRoundTrip) {
-            for (Opcode opcode : {Opcode::CounterMerge, Opcode::CounterGet}) {
+            for (Opcode opcode : {
+                     Opcode::CounterMerge,
+                     Opcode::CounterGet,
+                     Opcode::CounterAntiEntropy,
+                 }) {
+                SCOPED_TRACE(static_cast<int>(opcode));
                 Request req;
                 req.opcode = opcode;
                 req.key = "counter-key";

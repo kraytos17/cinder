@@ -29,12 +29,14 @@ namespace cinder {
         uint32_t num_buckets,
         MetricsCollector* metrics,
         size_t fetch_bytes,
-        milliseconds full_rehash_interval
+        milliseconds full_rehash_interval,
+        CrdtCounterStore* counter_store
     ) :
         store_(store),
         ring_(ring),
         clock_(clock),
         transport_(transport),
+        counter_store_(counter_store),
         fetch_bytes_(fetch_bytes),
         full_rehash_interval_(full_rehash_interval),
         metrics_(metrics),
@@ -658,6 +660,227 @@ namespace cinder {
         return applySync(std::move(*msg));
     }
 
+    namespace {
+        inline constexpr uint32_t K_COUNTER_AE_MAGIC = 0x43414531; // "CAE1"
+
+        auto decodeCounterBundle(std::string_view data)
+            -> std::optional<std::vector<std::pair<std::string, crdt::PNCounter>>> {
+            detail::BufferReader reader(data);
+            uint32_t magic = 0;
+            uint32_t count = 0;
+            if (!reader.read(magic) || magic != K_COUNTER_AE_MAGIC || !reader.read(count)) {
+                return std::nullopt;
+            }
+
+            constexpr size_t K_MIN_RECORD = 2 * sizeof(uint32_t) + 2; // 1-byte key + CRDC header
+            if (static_cast<uint64_t>(count) > reader.remaining() / K_MIN_RECORD) {
+                return std::nullopt;
+            }
+
+            std::vector<std::pair<std::string, crdt::PNCounter>> result;
+            result.reserve(count);
+            std::string previous_key;
+            for (uint32_t i = 0; i < count; ++i) {
+                uint32_t key_len = 0;
+                uint32_t state_len = 0;
+                std::string key;
+                std::string state;
+                if (!reader.read(key_len)
+                    || key_len
+                    == 0
+                    || !reader.readString(key_len, key)
+                    || !reader.read(state_len)
+                    || state_len
+                    == 0
+                    || !reader.readString(state_len, state)) {
+                    return std::nullopt;
+                }
+                if (!previous_key.empty() && key <= previous_key) {
+                    return std::nullopt;
+                }
+
+                auto counter = crdt::decodePNCounter(state);
+                if (!counter.has_value()) {
+                    return std::nullopt;
+                }
+                previous_key = key;
+                result.emplace_back(std::move(key), std::move(*counter));
+            }
+            if (reader.remaining() != 0) {
+                return std::nullopt;
+            }
+            return result;
+        }
+
+        auto encodeOneCounter(
+            detail::BufferWriter& writer,
+            const std::string& key,
+            const crdt::PNCounter& counter
+        ) -> bool {
+            if (key.size() > std::numeric_limits<uint32_t>::max()) {
+                return false;
+            }
+            const std::string state = crdt::encodeCounter(counter);
+            if (state.empty() || state.size() > std::numeric_limits<uint32_t>::max()) {
+                return false;
+            }
+            writer.write(static_cast<uint32_t>(key.size()));
+            writer.writeString(key);
+            writer.write(static_cast<uint32_t>(state.size()));
+            writer.writeString(state);
+            return true;
+        }
+
+        auto counterRecordBytes(const std::string& key, const crdt::PNCounter& counter)
+            -> std::optional<size_t> {
+            const std::string state = crdt::encodeCounter(counter);
+            if (state.empty()
+                || key.size()
+                > std::numeric_limits<uint32_t>::max()
+                || state.size()
+                > std::numeric_limits<uint32_t>::max()) {
+                return std::nullopt;
+            }
+            return 2 * sizeof(uint32_t) + key.size() + state.size();
+        }
+    } // namespace
+
+    auto AntiEntropyManager::encodeCounterBatch(size_t max_bytes) -> std::optional<std::string> {
+        if (counter_store_ == nullptr || max_bytes < 2 * sizeof(uint32_t)) {
+            return std::nullopt;
+        }
+        auto counters = counter_store_->liveCounters();
+        std::ranges::sort(counters, [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        std::scoped_lock lock(counter_cursor_mutex_);
+        size_t start = 0;
+        if (!counter_cursor_.empty()) {
+            auto it = std::ranges::upper_bound(
+                counters,
+                counter_cursor_,
+                {},
+                [](const auto& item) -> const std::string& { return item.first; }
+            );
+            if (it != counters.end()) {
+                start = static_cast<size_t>(std::distance(counters.begin(), it));
+            }
+        }
+
+        std::vector<size_t> selected;
+        size_t bytes = 2 * sizeof(uint32_t);
+        if (!counters.empty()) {
+            for (size_t offset = 0; offset < counters.size(); ++offset) {
+                const size_t index = (start + offset) % counters.size();
+                auto record_bytes =
+                    counterRecordBytes(counters[index].first, counters[index].second);
+                if (!record_bytes.has_value() || *record_bytes > max_bytes - bytes) {
+                    if (selected.empty()) {
+                        return std::nullopt;
+                    }
+                    break;
+                }
+                bytes += *record_bytes;
+                selected.push_back(index);
+            }
+        }
+
+        std::vector<std::byte> encoded(bytes);
+        detail::BufferWriter writer(encoded);
+        writer.write(K_COUNTER_AE_MAGIC);
+        writer.write(static_cast<uint32_t>(selected.size()));
+        for (size_t index : selected) {
+            if (index >= counters.size()) {
+                return std::nullopt;
+            }
+            if (!encodeOneCounter(writer, counters[index].first, counters[index].second)) {
+                return std::nullopt;
+            }
+        }
+        if (!selected.empty()) {
+            if (selected.back() >= counters.size()) {
+                return std::nullopt;
+            }
+            counter_cursor_ = counters[selected.back()].first;
+        }
+        return detail::toWireString(encoded);
+    }
+
+    void AntiEntropyManager::onCounterAntiEntropy(
+        const NodeId& from,
+        const net::Request& req,
+        std::function<void(net::Response)> respond
+    ) {
+        auto fail = [&](Errc code) {
+            respond(
+                net::Response{
+                    .status = code,
+                    .value = {},
+                    .trace_id = req.trace_id,
+                    .span_id = req.span_id,
+                }
+            );
+        };
+        if (counter_store_ == nullptr) {
+            fail(Errc::NotSupported);
+            return;
+        }
+        if (req.value.size() > fetchBytes()) {
+            fail(Errc::CapacityExceeded);
+            return;
+        }
+
+        auto remote = decodeCounterBundle(req.value);
+        if (!remote.has_value()) {
+            CINDER_WARN("bad counter anti-entropy bundle", {"from", from});
+            fail(Errc::InvalidArgument);
+            return;
+        }
+        // Preflight capacity for the whole incoming batch before applying any
+        // item. If one key cannot fit, leave local state unchanged and ask the
+        // initiator to retry in a later exchange after capacity changes.
+        CrdtCounterStore staged(counter_store_->capacityBytes());
+        for (const auto& [key, local] : counter_store_->liveCounters()) {
+            auto inserted = staged.merge(key, local);
+            if (!inserted.has_value()) {
+                fail(inserted.error().code());
+                return;
+            }
+        }
+        for (const auto& [key, state] : *remote) {
+            auto merged = staged.merge(key, state);
+            if (!merged.has_value()) {
+                fail(merged.error().code());
+                return;
+            }
+        }
+        for (const auto& [key, state] : *remote) {
+            auto merged = counter_store_->merge(key, state);
+            if (!merged.has_value()) {
+                fail(merged.error().code());
+                return;
+            }
+        }
+
+        auto local = counter_store_->liveCounters();
+        // Reply with the entire merged local state. If it exceeds our
+        // outbound budget, the next partner round sends the remaining batch;
+        // this request still succeeds because all received entries are safe
+        // to replay and the peer can continue pushing its own bounded batch.
+        auto response = encodeCounterBatch(fetchBytes());
+        if (!response.has_value()) {
+            fail(Errc::CapacityExceeded);
+            return;
+        }
+        respond(
+            net::Response{
+                .status = Errc::OK,
+                .value = std::move(response),
+                .trace_id = req.trace_id,
+                .span_id = req.span_id,
+            }
+        );
+    }
+
     void AntiEntropyManager::refreshPartners(int replica_factor) {
         partners_.clear();
         if (replica_factor <= 1) {
@@ -682,6 +905,17 @@ namespace cinder {
             (void)entry;
             if (consider(key)) {
                 break;
+            }
+        }
+        // Counter-only keys do not appear in CacheStore's LWW scan. Include
+        // them in partner selection so a cluster using only CRDT counters
+        // still runs the repair exchange.
+        if (candidates.size() <= 64 && counter_store_ != nullptr) {
+            for (const auto& [key, counter] : counter_store_->liveCounters()) {
+                (void)counter;
+                if (consider(key)) {
+                    break;
+                }
             }
         }
         partners_.assign(candidates.begin(), candidates.end());
@@ -1462,6 +1696,89 @@ namespace cinder {
                 finishRefinement(local, partner, refinement_parent, *decoded);
             }
             );
+        }
+        );
+    }
+
+    void AntiEntropyManager::runCounterRound(int replica_factor) {
+        Span span("anti_entropy.counter.round", captureTraceContext());
+        if (counter_store_ == nullptr || counter_store_->size() == 0) {
+            span.setAttribute({"outcome", "skipped"});
+            span.setAttribute({"reason", "no-counter-state"});
+            return;
+        }
+        partners_dirty_.store(true, std::memory_order_release);
+        auto partner = pickPartner(replica_factor);
+        if (!partner.has_value()) {
+            span.setAttribute({"outcome", "skipped"});
+            span.setAttribute({"reason", "no-partner"});
+            return;
+        }
+        span.setAttribute({"partner", *partner});
+        span.setStatus(SpanStatus::Ok);
+        exchangeCounterState(*partner, span.context());
+    }
+
+    void AntiEntropyManager::exchangeCounterState(const NodeId& partner, SpanContext round_ctx) {
+        if (counter_store_ == nullptr) {
+            return;
+        }
+
+        // Deterministic sorted-key cursor batches allow arbitrarily large
+        // counter stores to converge over several bounded repair rounds.
+        auto encoded = encodeCounterBatch(fetchBytes());
+        if (!encoded.has_value()) {
+            Span span("anti_entropy.counter", round_ctx);
+            span.setAttribute({"partner", partner});
+            span.setAttribute({"outcome", "over-budget"});
+            span.setStatus(SpanStatus::Error);
+            return;
+        }
+
+        net::Request req;
+        req.opcode = net::Opcode::CounterAntiEntropy;
+        req.value = std::move(*encoded);
+        req.trace_id = round_ctx.trace_id;
+        req.span_id = round_ctx.span_id;
+        transport_.sendRequestAsync(
+            partner,
+            req,
+            [this, partner, round_ctx](Result<net::Response> response) {
+            TraceScope scope(round_ctx);
+            Span span("anti_entropy.counter", round_ctx);
+            span.setAttribute({"partner", partner});
+            if (!response.has_value()
+                || response->status
+                != Errc::OK
+                || !response->value.has_value()) {
+                span.setAttribute({"outcome", "exchange-failed"});
+                span.setStatus(SpanStatus::Error);
+                return;
+            }
+
+            // Handler returns its merged post-state. Re-enter the same handler
+            // locally to validate and merge using the identical bounded path.
+            net::Request reply;
+            reply.value = *response->value;
+            size_t merged_count = 0;
+            auto decoded = decodeCounterBundle(reply.value);
+            if (!decoded.has_value()) {
+                span.setAttribute({"outcome", "bad-response"});
+                span.setStatus(SpanStatus::Error);
+                return;
+            }
+            for (const auto& [key, state] : *decoded) {
+                auto merged = counter_store_->merge(key, state);
+                if (!merged.has_value()) {
+                    span.setAttribute({"outcome", "merge-rejected"});
+                    span.setStatus(SpanStatus::Error);
+                    return;
+                }
+                ++merged_count;
+            }
+            span.setAttribute({"entries", merged_count});
+            span.setAttribute({"outcome", "completed"});
+            span.setStatus(SpanStatus::Ok);
         }
         );
     }

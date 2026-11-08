@@ -22,10 +22,8 @@
 //     that still holds the key resurrects it. Distributed delete needs a
 //     tombstone/gc design; until then remove() is an operator-local escape
 //     hatch, not a replicated delete.
-//   - Not wired anywhere yet: no server, replication, anti-entropy,
-//     WAL, or snapshot integration. liveCounters() is the snapshot
-//     accessor those paths will consume. Counter bytes must never flow
-//     through the LWW putVersioned path.
+//   - Counter state is not in the LWW WAL/snapshot or LWW anti-entropy
+//     digest. Replication and repair must merge these states explicitly.
 //
 // Threading mirrors the eviction stores: keys stripe over shards (one per
 // 64 KiB, clamped to [1, 16]), one shared_mutex per shard, copy-out reads.
@@ -184,6 +182,21 @@ namespace cinder {
                 }
             }
             return items;
+        }
+
+        [[nodiscard]]
+        auto sizeBytes() const -> size_t {
+            size_t total = 0;
+            for (const auto& sh : shards_) {
+                std::shared_lock lock(sh.mutex);
+                total += sh.current_bytes;
+            }
+            return total;
+        }
+
+        [[nodiscard]]
+        auto capacityBytes() const -> size_t {
+            return capacity_bytes_.load(std::memory_order_relaxed);
         }
 
     private:

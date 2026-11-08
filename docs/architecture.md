@@ -28,7 +28,7 @@ client ──TCP frame (v5)──▶ TcpServer ──▶ CacheNodeServer ──�
 ```
 
 Frames are length-prefixed with a compile-time-validated 7-byte header
-(`consteval` + `static_assert`), big-endian fields, 19 opcodes, 64 MiB max.
+(`consteval` + `static_assert`), big-endian fields, 20 opcodes, 64 MiB max.
 `TcpServer` serializes each connection on its own strand; `TcpTransport` and
 `ConnectionPool` run request-response as `asio::co_spawn` coroutines with
 configurable RPC deadlines, one exchange at a time per socket guarded by a
