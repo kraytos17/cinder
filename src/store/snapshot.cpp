@@ -60,11 +60,13 @@ namespace cinder {
             if (!in.read(key_len) || !in.readString(key_len, key)) {
                 return false;
             }
+
             uint32_t val_len = 0;
             std::string value;
             if (!in.read(val_len) || !in.readString(val_len, value)) {
                 return false;
             }
+
             uint64_t version = 0;
             uint64_t writer = 0;
             uint64_t expires = 0;
@@ -81,6 +83,7 @@ namespace cinder {
                 > 1) {
                 return false;
             }
+
             out.key = std::move(key);
             out.value = std::move(value);
             out.version = version;
@@ -114,6 +117,7 @@ namespace cinder {
                 plain_len,
                 K_SNAPSHOT_ZSTD_LEVEL
             );
+
             const bool use_compressed = !ZSTD_isError(compressed) && compressed < plain_len;
             const SnapshotBlockCodec codec =
                 use_compressed ? SnapshotBlockCodec::Zstd : SnapshotBlockCodec::Raw;
@@ -133,6 +137,7 @@ namespace cinder {
                 reinterpret_cast<const char*>(header.data()),
                 static_cast<std::streamsize>(header.size())
             );
+
             out.write(static_cast<const char*>(payload), static_cast<std::streamsize>(stored_len));
             return static_cast<bool>(out);
         }
@@ -170,6 +175,7 @@ namespace cinder {
                 != hdr.size()) {
                 return fail(Error(Errc::CorruptData, "truncated snapshot block"));
             }
+
             BufferReader hb(hdr.data(), hdr.size());
             uint8_t codec = 0;
             uint32_t stored = 0;
@@ -200,6 +206,7 @@ namespace cinder {
             if (codec == static_cast<uint8_t>(SnapshotBlockCodec::Raw) && stored != uncompressed) {
                 return fail(Error(Errc::CorruptData, "corrupt snapshot block"));
             }
+
             std::vector<std::byte> payload(stored);
             if (!take(stored)
                 || !in.read(
@@ -210,6 +217,7 @@ namespace cinder {
                 != stored) {
                 return fail(Error(Errc::CorruptData, "truncated snapshot block"));
             }
+
             const void* plain = payload.data();
             std::vector<std::byte> decoded;
             if (codec == static_cast<uint8_t>(SnapshotBlockCodec::Zstd)) {
@@ -224,6 +232,7 @@ namespace cinder {
             if (XXH64(plain, uncompressed, 0) != checksum) {
                 return fail(Error(Errc::CorruptData, "corrupt snapshot block"));
             }
+
             budget -= uncompressed;
             staging.insert(
                 staging.end(),
@@ -248,6 +257,7 @@ namespace cinder {
                 span.setStatus(SpanStatus::Error);
                 return err(std::move(e));
             };
+
             uint64_t uncompressed_total = 0;
             if (auto v = readLE<uint64_t>(in); v.has_value() && left >= sizeof(uint64_t)) {
                 left -= sizeof(uint64_t);
@@ -255,6 +265,7 @@ namespace cinder {
             } else {
                 return fail(Error(Errc::CorruptData, "truncated snapshot header"));
             }
+
             // v3 always carries tombstones: 42 bytes/entry minimum.
             constexpr size_t K_MIN_ENTRY_BYTES = 42;
             if (entry_count > uncompressed_total / K_MIN_ENTRY_BYTES) {
@@ -292,6 +303,7 @@ namespace cinder {
                     if (left == 0) {
                         return fail(Error(Errc::CorruptData, "truncated snapshot entry"));
                     }
+
                     auto decoded = decodeV3Block(in, left, staging, budget, span);
                     if (!decoded.has_value()) {
                         return err(decoded.error());
@@ -300,9 +312,11 @@ namespace cinder {
                         return fail(Error(Errc::CorruptData, "truncated snapshot entry"));
                     }
                 }
+
                 fn(entry);
                 ++streamed;
             }
+
             span.setAttribute({"entries", streamed});
             span.setStatus(SpanStatus::Ok);
             return ok();
@@ -332,12 +346,14 @@ namespace cinder {
                 uncompressed_total += encodedEntrySize(entry.key.size(), entry.value.size());
             }
         }
+
         scratch_.resize(
             sizeof(uint32_t)
             * 3
             + sizeof(uint64_t)
             + (snapshotIsCompressed(format) ? sizeof(uint64_t) : 0)
         );
+
         {
             BufferWriter header(scratch_);
             header.write(K_SNAPSHOT_MAGIC);
@@ -353,7 +369,6 @@ namespace cinder {
             reinterpret_cast<const char*>(scratch_.data()),
             static_cast<std::streamsize>(scratch_.size())
         );
-
         if (compress_) {
             if (auto body = writeCompressedEntries(out, entries); !body.has_value()) {
                 span.setStatus(SpanStatus::Error);
@@ -461,6 +476,7 @@ namespace cinder {
             if (chunk_pos == 0) {
                 return true;
             }
+
             const bool ok = emitSnapshotBlock(out, chunk.data(), chunk_pos, cbuf);
             chunk_pos = 0;
             return ok;
@@ -474,6 +490,7 @@ namespace cinder {
                     }
                     space = chunk.size();
                 }
+
                 const size_t take = std::min(n, space);
                 std::memcpy(chunk.data() + chunk_pos, data, take);
                 chunk_pos += take;
@@ -495,6 +512,7 @@ namespace cinder {
             const auto val_len = static_cast<uint32_t>(entry.value.size());
             scratch_.resize(encodedEntrySize(key_len, val_len));
             BufferWriter body(scratch_);
+
             encodeSnapshotEntry(body, entry, key_len, val_len);
             if (!append_bytes(reinterpret_cast<const char*>(scratch_.data()), scratch_.size())) {
                 return err(Error(Errc::InternalError, "snapshot write failed"));
@@ -585,6 +603,7 @@ namespace cinder {
         if (snapshotIsCompressed(format.value())) {
             return readCompressedBody(in_, left, entry_count.value(), std::move(fn), span);
         }
+
         auto read_sized = [&](size_t len) -> std::optional<std::string> {
             if (len > left) {
                 return std::nullopt;
