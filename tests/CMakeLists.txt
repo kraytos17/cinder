@@ -24,6 +24,7 @@ cinder_add_test(cinder_unit_store_tests
     unit/versioned_store_test.cpp
     unit/persistence_test.cpp
     unit/crdt_counter_test.cpp
+    unit/crdt_counter_store_test.cpp
     unit/lfu_concurrent_test.cpp
     unit/store_concurrency_test.cpp
     sim/sim_clock.cpp
