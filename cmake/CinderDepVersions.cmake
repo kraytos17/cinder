@@ -11,7 +11,7 @@
 # (cinder_use_cached_dep drops stale auto-pinned source dirs); use
 # `just deps-refresh` to force re-derivation immediately.
 
-set(CINDER_DEP_KEYS asio xxhash spdlog cli11 yaml-cpp mimalloc googletest benchmark grpc)
+set(CINDER_DEP_KEYS asio xxhash spdlog cli11 yaml-cpp mimalloc googletest benchmark grpc zstd)
 
 set(CINDER_DEP_asio_REPO       https://github.com/chriskohlhoff/asio.git)
 set(CINDER_DEP_asio_TAG        asio-1-38-2)
@@ -42,3 +42,6 @@ set(CINDER_DEP_benchmark_TAG   v1.9.5)
 set(CINDER_DEP_grpc_REPO       https://github.com/grpc/grpc.git)
 set(CINDER_DEP_grpc_TAG        v1.85.0)
 set(CINDER_DEP_grpc_SUBMODULES TRUE)
+
+set(CINDER_DEP_zstd_REPO       https://github.com/facebook/zstd.git)
+set(CINDER_DEP_zstd_TAG        v1.5.7)

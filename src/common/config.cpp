@@ -83,7 +83,7 @@ namespace cinder {
             R"("anti_entropy_interval_ms":{},"anti_entropy_buckets":{},)"
             R"("anti_entropy_fetch_bytes":{},"anti_entropy_full_rehash_interval_ms":{},)"
             R"("persistence_enabled":{},"data_dir":"{}",)"
-            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"max_wal_segment_bytes":{},"max_sealed_segments":{},"wal_fsync":{},)"
+            R"("snapshot_interval_s":{},"max_wal_entries":{},"max_wal_bytes":{},"max_wal_segment_bytes":{},"max_sealed_segments":{},"wal_fsync":{},"snapshot_compression":{},)"
             R"("tls_enabled":{},"auth_enabled":{},"client_auth_enabled":{},)"
             R"("metrics_port":{},"grpc_port":{},"log_level":"{}","config_path":"{}"}})",
             escapeJsonString(cfg.node_id),
@@ -111,6 +111,7 @@ namespace cinder {
             cfg.persistence.max_wal_segment_bytes,
             cfg.persistence.max_sealed_segments,
             cfg.persistence.wal_fsync,
+            cfg.persistence.snapshot_compression,
             cfg.tls.enabled,
             !cfg.auth.shared_secret.empty(),
             !cfg.auth.client_shared_secret.empty(),
@@ -214,6 +215,11 @@ namespace cinder {
         );
 
         check("wal_fsync", old_cfg.persistence.wal_fsync, new_cfg.persistence.wal_fsync);
+        check(
+            "snapshot_compression",
+            old_cfg.persistence.snapshot_compression,
+            new_cfg.persistence.snapshot_compression
+        );
         check("tls_enabled", old_cfg.tls.enabled, new_cfg.tls.enabled);
         check("tls_cert_file", old_cfg.tls.cert_file, new_cfg.tls.cert_file);
         check("tls_key_file", old_cfg.tls.key_file, new_cfg.tls.key_file);
@@ -298,6 +304,7 @@ namespace cinder {
             loadOr(pers, "max_wal_segment_bytes", cfg.persistence.max_wal_segment_bytes);
             loadOr(pers, "max_sealed_segments", cfg.persistence.max_sealed_segments);
             loadOr(pers, "wal_fsync", cfg.persistence.wal_fsync);
+            loadOr(pers, "snapshot_compression", cfg.persistence.snapshot_compression);
         }
         // TLS
         if (auto tls = root["tls"]) {

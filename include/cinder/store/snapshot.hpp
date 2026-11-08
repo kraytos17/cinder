@@ -20,13 +20,15 @@ namespace cinder {
     constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION = 2;
     constexpr uint32_t K_SNAPSHOT_FORMAT_VERSION_V1 = 1;
 
-    // On-disk format version, parsed once from the header. Writers always
-    // emit V2; readers accept every enumerator. A v3 adds an enumerator
-    // plus a capability query below — call sites ask what a format
-    // supports rather than branching on version numbers.
+    // On-disk format version, parsed once from the header. Writers emit
+    // V2, or V3 when compression is enabled; readers accept every
+    // enumerator. A v4 adds an enumerator plus a capability query below —
+    // call sites ask what a format supports rather than branching on
+    // version numbers.
     enum class SnapshotFormat : uint32_t {
         V1 = 1,
         V2 = 2,
+        V3 = 3,
     };
 
     static_assert(
@@ -41,6 +43,8 @@ namespace cinder {
                 return SnapshotFormat::V1;
             case static_cast<uint32_t>(SnapshotFormat::V2):
                 return SnapshotFormat::V2;
+            case static_cast<uint32_t>(SnapshotFormat::V3):
+                return SnapshotFormat::V3;
             default:
                 return std::nullopt;
         }
@@ -51,6 +55,27 @@ namespace cinder {
     constexpr auto snapshotHasTombstone(SnapshotFormat f) -> bool {
         return f >= SnapshotFormat::V2;
     }
+
+    // v3 stores the entry stream as independently compressed blocks.
+    [[nodiscard]]
+    constexpr auto snapshotIsCompressed(SnapshotFormat f) -> bool {
+        return f >= SnapshotFormat::V3;
+    }
+
+    // v3 block framing. Every block carries at most this many uncompressed
+    // bytes, so readers can bound allocations before decoding; entries
+    // larger than a block span consecutive blocks.
+    inline constexpr size_t K_SNAPSHOT_BLOCK_BYTES = 256U << 10U;
+
+    // Block record layout: codec u8, stored bytes u32, uncompressed
+    // bytes u32, xxh64 checksum u64 of the *uncompressed* payload.
+    inline constexpr size_t K_SNAPSHOT_BLOCK_HEADER_BYTES =
+        sizeof(uint8_t) + sizeof(uint32_t) + sizeof(uint32_t) + sizeof(uint64_t);
+
+    enum class SnapshotBlockCodec : uint8_t {
+        Raw = 0,
+        Zstd = 1,
+    };
 
     struct SnapshotEntry {
         std::string key;
@@ -73,7 +98,7 @@ namespace cinder {
     class SnapshotWriter {
     public:
 
-        explicit SnapshotWriter(const std::string& path);
+        explicit SnapshotWriter(const std::string& path, bool compress = false);
         ~SnapshotWriter() = default;
 
         SnapshotWriter(const SnapshotWriter&) = delete;
@@ -85,7 +110,14 @@ namespace cinder {
 
     private:
 
+        // v3 body: same encoded entries, packed into 256 KiB chunks and
+        // emitted as independently compressed blocks (raw fallback per
+        // block). Entries of any size split across chunk boundaries.
+        auto writeCompressedEntries(std::ostream& out, std::span<const SnapshotEntry> entries)
+            -> Result<void>;
+
         std::string path_;
+        bool compress_ = false;
         // Encode buffer for the header and for entries larger than the
         // 256 KiB write chunk (which bypass chunking). Grows to the
         // largest entry seen; never shrinks within a snapshot.

@@ -134,6 +134,54 @@ namespace cinder {
         // NOLINTNEXTLINE
         BENCHMARK(bmSnapshotWriteRead)->Range(128, 4096);
 
+        void bmSnapshotCompressedWriteRead(benchmark::State& state) {
+            // Mixed realistic data: mostly compressible values with shared
+            // prefixes, plus ~10% incompressible (already-compressed bytes)
+            // exercising the raw-fallback path.
+            const size_t n = static_cast<size_t>(state.range(0));
+            std::vector<SnapshotEntry> entries;
+            entries.reserve(n);
+            uint64_t x = 0x12345678;
+            for (size_t i = 0; i < n; ++i) {
+                std::string value;
+                if (i % 10 == 9) {
+                    value.resize(256);
+                    for (size_t j = 0; j < 256; ++j) {
+                        x = x * 6'364'136'223'846'793'005ULL + 1'442'695'040'888'963'407ULL;
+                        value[j] = static_cast<char>((x >> 33U) & 0xFFU);
+                    }
+                } else {
+                    value = "user-profile-payload-" + std::to_string(i % 8) + std::string(200, 'x');
+                }
+                entries.push_back(
+                    SnapshotEntry{
+                        .key = "snap-key-" + std::to_string(i),
+                        .value = std::move(value),
+                        .version = i + 1,
+                    }
+                );
+            }
+            uint64_t round = 0;
+            // NOLINTNEXTLINE
+            for (auto _ : state) {
+                state.PauseTiming();
+                const auto round_path =
+                    (benchDir() / ("snap_zstd_" + std::to_string(round++) + ".dat")).string();
+                SnapshotWriter writer(round_path, true);
+                // NOLINTNEXTLINE
+                (void)writer.write(round, entries);
+                state.ResumeTiming();
+                SnapshotReader reader(round_path);
+                auto data = reader.readAll();
+                benchmark::DoNotOptimize(data.has_value());
+                benchmark::ClobberMemory();
+            }
+            state.SetItemsProcessed(state.iterations() * static_cast<int64_t>(n));
+        }
+
+        // NOLINTNEXTLINE
+        BENCHMARK(bmSnapshotCompressedWriteRead)->Range(128, 4096);
+
         void bmSnapshotStreamRead(benchmark::State& state) {
             const size_t n = static_cast<size_t>(state.range(0));
             std::vector<SnapshotEntry> entries;

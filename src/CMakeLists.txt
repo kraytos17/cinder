@@ -47,6 +47,7 @@ target_link_libraries(cinder_core PUBLIC
     Threads::Threads
     asio
     xxhash
+    libzstd_static
     spdlog::spdlog
     yaml-cpp::yaml-cpp
 )

@@ -33,9 +33,11 @@ namespace {
             == b.freq;
     }
 
-    // Header is magic(4) + version(4) + next_version(8) + count(4): the writer
-    // normalizes has_ttl to 0/1, so roundtripped entries compare exactly.
-    constexpr size_t K_HEADER_SIZE = 20;
+    // Header is magic(4) + version(4) + next_version(8) + count(4), plus the
+    // declared uncompressed size u64 for v3: the writer normalizes has_ttl
+    // to 0/1, so roundtripped entries compare exactly.
+    constexpr size_t K_HEADER_SIZE_V2 = 20;
+    constexpr size_t K_HEADER_SIZE_V3 = 28;
 
     auto makeEntry(FuzzedDataProvider& fdp) -> cinder::SnapshotEntry {
         cinder::SnapshotEntry e;
@@ -59,10 +61,11 @@ namespace {
             entries.push_back(makeEntry(fdp));
         }
         const auto next_version = fdp.ConsumeIntegral<cinder::Version>();
+        const bool compress = fdp.ConsumeBool();
 
         auto guard = garden.next();
         {
-            cinder::SnapshotWriter writer(guard.path());
+            cinder::SnapshotWriter writer(guard.path(), compress);
             auto res = writer.write(next_version, entries);
             assert(res.has_value());
         }
@@ -98,27 +101,30 @@ namespace {
             entries.push_back(makeEntry(fdp));
         }
         const auto next_version = fdp.ConsumeIntegral<cinder::Version>();
+        const bool compress = fdp.ConsumeBool();
 
         auto base = garden.next();
         {
-            cinder::SnapshotWriter writer(base.path());
+            cinder::SnapshotWriter writer(base.path(), compress);
             auto res = writer.write(next_version, entries);
             assert(res.has_value());
         }
         auto bytes = cinder_fuzz::slurp(base.path());
-        if (bytes.size() <= K_HEADER_SIZE) {
+        const size_t header_size = compress ? K_HEADER_SIZE_V3 : K_HEADER_SIZE_V2;
+        if (bytes.size() <= header_size) {
             return;
         }
 
-        // Flip-only and truncate-only: never insert. Snapshots carry no
-        // checksums, so a body mutation can decode to *different* entry data —
-        // only framing invariants survive: with the 20-byte header intact the
-        // count field is untouched, so a successful read returns exactly N
-        // entries with the original next_version (any truncation or length
-        // corruption surfaces as err instead). Header mutations: crash-freedom
-        // only.
+        // Flip-only and truncate-only: never insert. v2 bodies carry no
+        // checksums, so a body mutation can decode to *different* entry
+        // data — only framing invariants survive: with the header intact
+        // the count field is untouched, so a successful read returns
+        // exactly N entries with the original next_version (any truncation
+        // or length corruption surfaces as err instead). v3 blocks carry
+        // xxh64 checksums, so body mutations almost always fail closed.
+        // Header mutations: crash-freedom only.
         const size_t at = fdp.ConsumeIntegralInRange<size_t>(0, bytes.size() - 1);
-        const bool header_hit = at < K_HEADER_SIZE;
+        const bool header_hit = at < header_size;
         switch (fdp.ConsumeIntegralInRange<uint8_t>(0, 2)) {
             case 0:
                 bytes[at] ^= static_cast<uint8_t>(1U << fdp.ConsumeIntegralInRange(0, 7));

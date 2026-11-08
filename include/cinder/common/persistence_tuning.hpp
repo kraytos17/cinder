@@ -30,5 +30,8 @@ namespace cinder {
         // crash, not just a process crash. Off by default (page-cache
         // durability); enable when the WAL is the durability story.
         bool wal_fsync = false;
+        // Compress snapshots with Zstd (independent blocks, raw fallback
+        // per block). Off by default; enable when snapshots dominate disk.
+        bool snapshot_compression = false;
     };
 } // namespace cinder

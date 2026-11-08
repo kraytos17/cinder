@@ -466,6 +466,14 @@ WAL. Triggered by `snapshot_interval_s`, or out-of-cycle once the WAL exceeds
 `max_sealed_segments` sealed segments accumulate (backstop for configs that
 disable both size triggers).
 
+**Snapshot format** — snapshots are versioned (`CSNP` magic + u32 version).
+v1/v2 store entries raw inline (v2 adds the trailing tombstone byte); v3 —
+written when `snapshot_compression` is on — stores the same entry stream in
+independently compressed 256 KiB blocks (Zstd level 1, raw fallback per
+block that compresses poorly), each framed with stored/uncompressed sizes
+plus an xxh64 of the uncompressed bytes. Readers accept all versions, so
+enabling compression mid-cluster is safe: old files still decode.
+
 ## Edge Cases
 
 **Concurrent rebalance** — several `onChange` callbacks can fire in quick
@@ -523,6 +531,7 @@ both sides of the partition are reconciled by LWW.
 | `--max-wal-segment-bytes` | `16777216` | Seal the active WAL into `wal_<seq>.log` past this size (`0` = disabled) |
 | `--max-sealed-segments` | `32` | Force compaction past this many sealed segments (`0` = disabled) |
 | `--wal-fsync` | `false` | fdatasync on every WAL flush (survives OS crashes, costs throughput) |
+| `--snapshot-compression` | `false` | Compress snapshots with Zstd (independent 256 KiB blocks, raw fallback per block) |
 
 All parameters can be set via CLI flags or the YAML config file; an
 explicitly passed CLI flag wins, otherwise the YAML value (or its default)
@@ -571,6 +580,7 @@ persistence:
   max_wal_segment_bytes: 16777216
   max_sealed_segments: 32
   wal_fsync: false
+  snapshot_compression: false   # Zstd-compressed v3 snapshots (independent blocks, raw fallback)
 
 tls:
   enabled: false

@@ -111,6 +111,7 @@ persistence:
   max_wal_segment_bytes: 1024
   max_sealed_segments: 7
   wal_fsync: true
+  snapshot_compression: true
 )";
             }
 
@@ -130,6 +131,7 @@ persistence:
             EXPECT_EQ(cfg.persistence.max_wal_segment_bytes, 1024U);
             EXPECT_EQ(cfg.persistence.max_sealed_segments, 7U);
             EXPECT_TRUE(cfg.persistence.wal_fsync);
+            EXPECT_TRUE(cfg.persistence.snapshot_compression);
         }
 
         TEST(ConfigTest, EmptyFileUsesAllDefaults) {

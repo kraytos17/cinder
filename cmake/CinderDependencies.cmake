@@ -102,6 +102,20 @@ function(cinder_fetch_all_dependencies)
     cinder_declare_dep(xxhash SOURCE_SUBDIR build/cmake)
     FetchContent_MakeAvailable(xxhash)
 
+    # Only the static library; no programs, tests, contrib tools, or
+    # legacy-format decoders (we only read frames we wrote).
+    set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+    set(ZSTD_BUILD_STATIC ON CACHE BOOL "" FORCE)
+    set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "" FORCE)
+    cinder_declare_dep(zstd SOURCE_SUBDIR build/cmake)
+    FetchContent_MakeAvailable(zstd)
+    # zstd's legacy decoders collide under unity builds; legacy is off
+    # anyway, but keep this target out of jumbo builds regardless.
+    set_target_properties(libzstd_static PROPERTIES UNITY_BUILD OFF)
+
     cinder_declare_dep(spdlog PACKAGE spdlog VERSION 2)
     # NOTE: SPDLOG_BUILD_SHARED is deliberately NOT forced here. xxHash's
     # build/cmake declares option(BUILD_SHARED_LIBS ON), which seeds the

@@ -441,6 +441,189 @@ namespace cinder {
             EXPECT_EQ(result->entries[2].value, "w");
         }
 
+        TEST_F(PersistenceTest, SnapshotV3CompressedRoundTrip) {
+            // v3 stores the same logical entries as v2, compressed in
+            // independent blocks with raw fallback per block.
+            auto snap_path = (scratch_.path() / "snapshot_v3.dat").string();
+            std::vector<SnapshotEntry> entries;
+            // Compressible values (shared prefixes compress well).
+            for (int i = 0; i < 50; ++i) {
+                entries.push_back(
+                    SnapshotEntry{
+                        .key = "user:" + std::to_string(i),
+                        .value = std::string("user-profile-payload-")
+                            + std::to_string(i % 5)
+                            + std::string(200, 'x'),
+                        .version = static_cast<uint64_t>(i + 1),
+                        .writer_node_hash = 7,
+                        .expires_at_ms = 0,
+                        .has_ttl = false,
+                        .tombstone = false,
+                        .freq = 1,
+                    }
+                );
+            }
+            // Incompressible value forces a raw block (stored, not grown).
+            std::string random_value;
+            random_value.reserve(1000);
+            uint64_t x = 0x12345678;
+            for (int i = 0; i < 1000; ++i) {
+                x = x * 6'364'136'223'846'793'005ULL + 1'442'695'040'888'963'407ULL;
+                random_value.push_back(static_cast<char>((x >> 33U) & 0xFFU));
+            }
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "random",
+                    .value = random_value,
+                    .version = 51,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+
+            {
+                SnapshotWriter writer(snap_path, true);
+                ASSERT_TRUE(writer.write(9, entries).has_value());
+            }
+
+            // Sanity: v3 magic + version tag.
+            {
+                std::ifstream head(snap_path, std::ios::binary);
+                char magic_ver[8] = {};
+                ASSERT_TRUE(static_cast<bool>(head.read(magic_ver, sizeof(magic_ver))));
+                cinder::detail::BufferReader hdr(magic_ver, sizeof(magic_ver));
+                uint32_t magic = 0;
+                uint32_t version = 0;
+                ASSERT_TRUE(hdr.read(magic));
+                ASSERT_TRUE(hdr.read(version));
+                EXPECT_EQ(magic, 0x43534E50U);
+                EXPECT_EQ(version, 3U);
+            }
+
+            SnapshotReader reader(snap_path);
+            auto result = reader.readAll();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->next_version, 9);
+            ASSERT_EQ(result->entries.size(), entries.size());
+            for (size_t i = 0; i < entries.size(); ++i) {
+                EXPECT_EQ(result->entries[i].key, entries[i].key);
+                EXPECT_EQ(result->entries[i].value, entries[i].value);
+                EXPECT_EQ(result->entries[i].version, entries[i].version);
+                EXPECT_EQ(result->entries[i].writer_node_hash, entries[i].writer_node_hash);
+                EXPECT_EQ(result->entries[i].freq, entries[i].freq);
+            }
+
+            // Compression must actually shrink this workload: compare
+            // against an uncompressed snapshot of the same entries.
+            auto plain_path = (scratch_.path() / "snapshot_v2.dat").string();
+            {
+                SnapshotWriter writer(plain_path);
+                ASSERT_TRUE(writer.write(9, entries).has_value());
+            }
+            EXPECT_LT(
+                std::filesystem::file_size(snap_path),
+                std::filesystem::file_size(plain_path)
+            );
+        }
+
+        TEST_F(PersistenceTest, SnapshotV3SpansBlocksWithHugeEntry) {
+            // A single value larger than the 256 KiB block forces an entry
+            // to span blocks; the reader must reassemble it from staging.
+            auto snap_path = (scratch_.path() / "snapshot_v3_huge.dat").string();
+            std::vector<SnapshotEntry> entries;
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "before",
+                    .value = "v",
+                    .version = 1,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "huge",
+                    .value = std::string(300'000, 'y'),
+                    .version = 2,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = true,
+                    .freq = 4,
+                }
+            );
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "after",
+                    .value = "w",
+                    .version = 3,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+
+            {
+                SnapshotWriter writer(snap_path, true);
+                ASSERT_TRUE(writer.write(11, entries).has_value());
+            }
+
+            SnapshotReader reader(snap_path);
+            auto result = reader.readAll();
+            ASSERT_TRUE(result.has_value());
+            EXPECT_EQ(result->next_version, 11);
+            ASSERT_EQ(result->entries.size(), 3U);
+            EXPECT_EQ(result->entries[0].key, "before");
+            EXPECT_EQ(result->entries[1].key, "huge");
+            EXPECT_EQ(result->entries[1].value.size(), 300'000U);
+            EXPECT_TRUE(result->entries[1].tombstone);
+            EXPECT_EQ(result->entries[1].freq, 4U);
+            EXPECT_EQ(result->entries[2].key, "after");
+        }
+
+        TEST_F(PersistenceTest, SnapshotV3RejectsUnknownCodec) {
+            // A block header naming an unknown codec must fail closed
+            // instead of misdecoding the payload.
+            auto snap_path = (scratch_.path() / "snapshot_v3_badu.dat").string();
+            std::vector<SnapshotEntry> entries;
+            entries.push_back(
+                SnapshotEntry{
+                    .key = "k",
+                    .value = "v",
+                    .version = 1,
+                    .writer_node_hash = 7,
+                    .expires_at_ms = 0,
+                    .has_ttl = false,
+                    .tombstone = false,
+                    .freq = 0,
+                }
+            );
+            {
+                SnapshotWriter writer(snap_path, true);
+                ASSERT_TRUE(writer.write(1, entries).has_value());
+            }
+            // Header is magic(4) + version(4) + next_version(8) +
+            // count(4) + uncompressed_total(8); first block codec byte
+            // follows at offset 28.
+            {
+                std::fstream f(snap_path, std::ios::binary | std::ios::in | std::ios::out);
+                ASSERT_TRUE(static_cast<bool>(f));
+                f.seekp(28);
+                const char bad = static_cast<char>(0x7F);
+                f.write(&bad, 1);
+            }
+            SnapshotReader reader(snap_path);
+            EXPECT_FALSE(reader.readAll().has_value());
+        }
+
         TEST_F(PersistenceTest, RecoverFromSnapshotPlusWal) {
             LruStore store(1'000'000);
             PersistenceManager pm(

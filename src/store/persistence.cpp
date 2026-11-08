@@ -505,7 +505,7 @@ namespace cinder {
             all_entries.push_back(toSnapshotEntry(std::move(key), std::move(ve)));
         }
 
-        SnapshotWriter writer(snap_path.string());
+        SnapshotWriter writer(snap_path.string(), opts_.tuning.snapshot_compression);
         auto write_result = writer.write(next_version, all_entries);
         if (!write_result.has_value()) {
             return write_result;

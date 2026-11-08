@@ -163,6 +163,12 @@ namespace cinder::tools {
         );
         bindFlag(
             app,
+            "--snapshot-compression",
+            options.persistence.snapshot_compression,
+            "Compress snapshots with Zstd (independent per-block, raw fallback)"
+        );
+        bindFlag(
+            app,
             "--io-threads",
             options.io_threads,
             "Worker threads running the event loop (0 = auto: min(4, hw))"
@@ -323,6 +329,12 @@ namespace cinder::tools {
                 "--wal-fsync",
                 options.persistence.wal_fsync,
                 cfg.persistence.wal_fsync
+            );
+            applyIfUnset(
+                app,
+                "--snapshot-compression",
+                options.persistence.snapshot_compression,
+                cfg.persistence.snapshot_compression
             );
             applyIfUnset(
                 app,

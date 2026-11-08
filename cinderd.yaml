@@ -44,6 +44,7 @@ persistence:
   max_wal_segment_bytes: 16777216  # seal active WAL into wal_<seq>.log past this size (0 = disabled)
   max_sealed_segments: 32     # force compaction past this many sealed segments (0 = disabled)
   wal_fsync: false            # fdatasync on every WAL flush (durability vs throughput)
+  snapshot_compression: false   # compress snapshots with Zstd (independent per-block, raw fallback)
 
 tls:
   enabled: false
