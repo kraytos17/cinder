@@ -4,6 +4,7 @@
 
 #include "cinder/common/status.hpp"
 #include "cinder/store/crdt_counter.hpp"
+#include "cinder/store/detail/io_utils.hpp"
 #include "gtest/gtest.h"
 
 namespace cinder {
@@ -85,7 +86,7 @@ namespace cinder {
         }
 
         TEST(CrdtCounterTest, GCounterMergeIsIdempotentCommutativeAssociative) {
-            auto make = []() {
+            auto make = [] {
                 crdt::GCounter a;
                 crdt::GCounter b;
                 crdt::GCounter c;
@@ -160,7 +161,7 @@ namespace cinder {
         }
 
         TEST(CrdtCounterTest, PNCounterMergeIsIdempotentAndAssociative) {
-            auto make = []() {
+            auto make = [] {
                 crdt::PNCounter a;
                 crdt::PNCounter b;
                 crdt::PNCounter c;
@@ -271,7 +272,7 @@ namespace cinder {
             // library PRNG with a fixed seed trips seed-predictability
             // diagnostics for exactly that determinism.
             uint64_t state = 0xC0FFEEu;
-            auto next = [&]() -> uint64_t {
+            auto next = [&] -> uint64_t {
                 state = state * 6'364'136'223'846'793'005ULL + 1'442'695'040'888'963'407ULL;
                 return state >> 33U;
             };
@@ -324,6 +325,100 @@ namespace cinder {
             EXPECT_EQ(order_a, order_b);
             EXPECT_EQ(order_a, order_c);
             EXPECT_EQ(order_a.value(), expected);
+        }
+
+        TEST(CrdtCounterTest, GCounterRoundtripIsByteIdentical) {
+            crdt::GCounter c;
+            mustIncrement(c, "n2", 7);
+            mustIncrement(c, "n1", 3);
+            const std::string first = crdt::encodeCounter(c);
+            ASSERT_FALSE(first.empty());
+            // Sorted actor order makes repeat encodings identical.
+            EXPECT_EQ(crdt::encodeCounter(c), first);
+            auto back = crdt::decodeGCounter(first);
+            ASSERT_TRUE(back.has_value());
+            EXPECT_EQ(*back, c);
+            EXPECT_EQ(crdt::encodeCounter(*back), first);
+        }
+
+        TEST(CrdtCounterTest, PNCounterRoundtripIsByteIdentical) {
+            crdt::PNCounter c;
+            mustAdjust(c, "n2", 7);
+            mustAdjust(c, "n1", -3);
+            const std::string first = crdt::encodeCounter(c);
+            ASSERT_FALSE(first.empty());
+            auto back = crdt::decodePNCounter(first);
+            ASSERT_TRUE(back.has_value());
+            EXPECT_EQ(*back, c);
+            EXPECT_EQ(crdt::encodeCounter(*back), first);
+        }
+
+        TEST(CrdtCounterTest, DecodeRejectsCorruptInput) {
+            crdt::GCounter c;
+            mustIncrement(c, "n1", 3);
+            const std::string good = crdt::encodeCounter(c);
+            ASSERT_FALSE(good.empty());
+
+            EXPECT_FALSE(crdt::decodeGCounter("").has_value());
+            EXPECT_FALSE(crdt::decodeGCounter("CRDC").has_value());
+            std::string bad_magic = good;
+            bad_magic[0] = 'X';
+            EXPECT_FALSE(crdt::decodeGCounter(bad_magic).has_value());
+            // Layout: magic u32 | kind u8 (byte 4) | count u32 (bytes 5-8).
+            std::string bad_kind = good;
+            bad_kind[4] = 9;
+            EXPECT_FALSE(crdt::decodeGCounter(bad_kind).has_value());
+            EXPECT_FALSE(crdt::decodeGCounter(good.substr(0, good.size() - 1)).has_value());
+            EXPECT_FALSE(crdt::decodeGCounter(good + "trailing").has_value());
+            // Lying count that cannot fit in the remaining bytes.
+            std::string lying = good;
+            lying[5] = 100;
+            EXPECT_FALSE(crdt::decodeGCounter(lying).has_value());
+
+            // Empty actor ids never encode, so they must not decode either.
+            std::vector<std::byte> buf(4 + 1 + 4 + 4 + 8);
+            {
+                detail::BufferWriter out(buf);
+                out.write(crdt::K_CRDT_COUNTER_MAGIC);
+                out.write(crdt::K_CRDT_GCOUNTER_KIND);
+                out.write(uint32_t{1});
+                out.write(uint32_t{0});
+                out.write(uint64_t{5});
+            }
+            EXPECT_FALSE(crdt::decodeGCounter(detail::toWireString(buf)).has_value());
+        }
+
+        TEST(CrdtCounterTest, DecodeRejectsCrossKind) {
+            crdt::GCounter g;
+            mustIncrement(g, "n1", 2);
+            crdt::PNCounter p;
+            mustAdjust(p, "n1", 2);
+            // GCounter bytes are not a PNCounter and vice versa.
+            EXPECT_FALSE(crdt::decodePNCounter(crdt::encodeCounter(g)).has_value());
+            EXPECT_FALSE(crdt::decodeGCounter(crdt::encodeCounter(p)).has_value());
+        }
+
+        TEST(CrdtCounterTest, MergeCommutesWithDecode) {
+            // decode(encode(merge(a, b))) == merge(decode(encode(a)),
+            // decode(encode(b))): the wire format preserves merge semantics.
+            crdt::PNCounter a;
+            crdt::PNCounter b;
+            mustAdjust(a, "n1", 10);
+            mustAdjust(a, "n2", -3);
+            mustAdjust(b, "n2", 5);
+            mustAdjust(b, "n3", -1);
+
+            crdt::PNCounter merged = a;
+            merged.merge(b);
+            auto via_wire = crdt::decodePNCounter(crdt::encodeCounter(merged));
+            ASSERT_TRUE(via_wire.has_value());
+
+            auto da = crdt::decodePNCounter(crdt::encodeCounter(a));
+            auto db = crdt::decodePNCounter(crdt::encodeCounter(b));
+            ASSERT_TRUE(da.has_value());
+            ASSERT_TRUE(db.has_value());
+            da->merge(*db);
+            EXPECT_EQ(*via_wire, *da);
         }
 
     } // namespace
