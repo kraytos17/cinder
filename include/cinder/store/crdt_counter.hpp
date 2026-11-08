@@ -27,9 +27,10 @@
 // state unchanged. value() saturates instead of wrapping: GCounter clamps at
 // uint64 max, PNCounter clamps at int64 min/max.
 
+#include <algorithm>
+#include <btree/map.h>
 #include <cstdint>
 #include <limits>
-#include <map>
 #include <string>
 
 #include "cinder/common/status.hpp"
@@ -51,11 +52,13 @@ namespace cinder::crdt {
             if (delta == 0) {
                 return ok();
             }
+
             const auto it = components_.find(actor);
             const uint64_t current = it == components_.end() ? 0 : it->second;
             if (current > std::numeric_limits<uint64_t>::max() - delta) {
                 return err(Error(Errc::CapacityExceeded, "counter component overflow"));
             }
+
             components_[actor] = current + delta;
             return ok();
         }
@@ -64,9 +67,7 @@ namespace cinder::crdt {
         void merge(const GCounter& other) {
             for (const auto& [actor, count] : other.components_) {
                 auto& slot = components_[actor];
-                if (count > slot) {
-                    slot = count;
-                }
+                slot = std::max(count, slot);
             }
         }
 
@@ -94,7 +95,7 @@ namespace cinder::crdt {
         }
 
         [[nodiscard]]
-        auto componentCount() const -> size_t {
+        auto componentCount() const -> long {
             return components_.size();
         }
 
@@ -110,9 +111,7 @@ namespace cinder::crdt {
 
     private:
 
-        // std::map (not unordered): deterministic iteration order keeps
-        // future serialization byte-identical across replicas and runs.
-        std::map<NodeId, uint64_t> components_;
+        btree::map<NodeId, uint64_t> components_;
     };
 
     class PNCounter {
@@ -180,5 +179,4 @@ namespace cinder::crdt {
         GCounter positive_;
         GCounter negative_;
     };
-
 } // namespace cinder::crdt
