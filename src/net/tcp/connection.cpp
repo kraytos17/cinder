@@ -1,3 +1,5 @@
+#include "cinder/net/tcp/connection.hpp"
+
 #include <asio.hpp>
 #include <cassert>
 #include <chrono>
@@ -9,8 +11,7 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
-#include "cinder/net/tcp_connection.hpp"
-#include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::async_read;

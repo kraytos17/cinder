@@ -129,6 +129,7 @@ namespace cinder::net {
         const auto add = [&](size_t n) {
             return addPayloadSize(payload_size, n);
         };
+
         if (req.key.size()
             > std::numeric_limits<uint32_t>::max()
             || req.value.size()

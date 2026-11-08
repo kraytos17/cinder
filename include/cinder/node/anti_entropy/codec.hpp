@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "cinder/cluster/clock.hpp"
-#include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 
 namespace cinder::ae_codec {

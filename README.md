@@ -98,15 +98,14 @@ unstable under multi-node integration load.
 | `debug-tls` / `debug-tls-clang` | GCC / Clang | Debug + **TLS** | TLS development and testing |
 | `debug-grpc` | GCC | Debug + **gRPC gateway** | gRPC gateway development |
 | `fast` | GCC | Debug, **unity** | One-time full builds |
-| `release` | GCC | Release + LTO | Production |
-| `release-clang` | Clang | Release + LTO | Production (Clang) |
+| `release` | GCC | Release + LTO | Production (benchmarks opt-in via `release-bench`) |
+| `release-bench` | GCC | Release + LTO + benchmarks | Benchmark runs |
+| `release-clang` | Clang | Release + LTO | Production (Clang, benchmarks opt-in) |
 | `pgo-generate` | GCC | Release + LTO + PGO instrumentation | PGO training build (writes `build/pgo-data`) |
 | `pgo-use` | GCC | Release + LTO + PGO-optimized | Production build consuming PGO profiles (shares `build/pgo`) |
 | `debug-clang` | Clang | Debug, per-file | Clang dev |
 | `ci` | Clang | RelWithDebInfo + **clang-tidy** | Lint-gated CI |
-| `ci-bench` | Clang | RelWithDebInfo + **clang-tidy** + benchmarks | Lint gate incl. benchmark TUs |
 | `ci-gcc` | GCC | RelWithDebInfo + ASan/UBSan | Sanitizer CI |
-| `ci-gcc-bench` | GCC | Sanitizers + benchmarks | cppcheck compile database |
 | `asan` / `asan-clang` | GCC / Clang | Debug + ASan/UBSan | Memory checking |
 | `tsan` / `tsan-clang` | GCC / Clang | Debug + ThreadSanitizer | Race detection |
 | `tls-grpc` / `tls-grpc-clang` | GCC / Clang | Release + **TLS** + **gRPC** | TLS + gRPC gateway CI |

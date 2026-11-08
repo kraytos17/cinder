@@ -8,7 +8,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
-#include "cinder/net/tcp_server.hpp"
+#include "cinder/net/tcp/server.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "test_ports.hpp"
 

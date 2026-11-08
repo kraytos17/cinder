@@ -4,7 +4,7 @@
 #include <vector>
 #include <xxhash.h>
 
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 
 // IBLT insert/peel micro-costs at the production operating point (64
 // cells): is the XOR fold visible next to the XXH3 item hash, and what

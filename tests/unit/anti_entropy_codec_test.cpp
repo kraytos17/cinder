@@ -6,8 +6,8 @@
 #include <vector>
 #include <xxhash.h>
 
-#include "cinder/node/anti_entropy.hpp"
-#include "cinder/node/anti_entropy_codec.hpp"
+#include "cinder/node/anti_entropy/codec.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/store/detail/io_utils.hpp"
 #include "cinder/store/lru_store.hpp"
 #include "unit/anti_entropy_fixtures.hpp"

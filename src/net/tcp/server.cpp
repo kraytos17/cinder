@@ -1,3 +1,5 @@
+#include "cinder/net/tcp/server.hpp"
+
 #include <asio.hpp>
 #include <chrono>
 #include <memory>
@@ -7,7 +9,6 @@
 #include "cinder/common/metrics.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/http_parser.hpp"
-#include "cinder/net/tcp_server.hpp"
 #include "cinder/node/replication_manager.hpp"
 
 using asio::io_context;

@@ -12,10 +12,9 @@
       }
     },
     {
-      "name": "debug",
+      "name": "gcc-debug-base",
+      "hidden": true,
       "inherits": "base",
-      "displayName": "Debug",
-      "description": "Debug build with Ninja (GCC)",
       "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
@@ -23,61 +22,91 @@
       }
     },
     {
-      "name": "debug-tls",
+      "name": "clang-debug-base",
+      "hidden": true,
       "inherits": "base",
-      "displayName": "Debug + TLS",
-      "description": "Debug build with TLS/SSL enabled",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "gcc-release-base",
+      "hidden": true,
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "clang-release-base",
+      "hidden": true,
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
+      "cacheVariables": {
+        "CINDER_LINK_JOBS": "2",
+        "CMAKE_BUILD_TYPE": "Release",
+        "CINDER_ENABLE_LTO": "ON",
+        "CINDER_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "gcc-debug-base",
+      "displayName": "Debug",
+      "description": "Debug build with Ninja (GCC)"
+    },
+    {
+      "name": "debug-tls",
+      "inherits": "gcc-debug-base",
+      "displayName": "Debug + TLS",
+      "description": "Debug build with TLS/SSL enabled",
+      "cacheVariables": {
         "CINDER_ENABLE_TLS": "ON"
       }
     },
     {
       "name": "debug-tls-clang",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "Debug + TLS (Clang)",
       "description": "Clang debug build with TLS/SSL enabled",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_TLS": "ON"
       }
     },
     {
       "name": "debug-clang",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "Debug (Clang)",
-      "description": "Debug build with Ninja and Clang",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug"
-      }
+      "description": "Debug build with Ninja and Clang"
     },
     {
       "name": "release",
-      "inherits": "base",
+      "inherits": "gcc-release-base",
       "displayName": "Release",
-      "description": "Optimized release build with LTO (GCC)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
+      "description": "Optimized production release with LTO (GCC); benchmarks are opt-in"
+    },
+    {
+      "name": "release-bench",
+      "inherits": "gcc-release-base",
+      "displayName": "Release + benchmarks",
+      "description": "Optimized GCC release build with benchmark targets enabled",
       "cacheVariables": {
-        "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
       "name": "pgo-generate",
-      "inherits": "base",
+      "inherits": "gcc-release-base",
       "displayName": "PGO instrumented (GCC)",
       "description": "Release+LTO build writing .gcda into build/pgo-data; train with the throughput bench, then switch to pgo-use (same build dir so profile paths match)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "binaryDir": "${sourceDir}/build/pgo",
       "cacheVariables": {
-        "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON",
         "CINDER_PGO": "Generate",
         "CINDER_PGO_DIR": "${sourceDir}/build/pgo-data"
@@ -85,15 +114,11 @@
     },
     {
       "name": "pgo-use",
-      "inherits": "base",
+      "inherits": "gcc-release-base",
       "displayName": "PGO optimized (GCC)",
       "description": "Release+LTO build consuming build/pgo-data profiles (same build dir as pgo-generate)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "binaryDir": "${sourceDir}/build/pgo",
       "cacheVariables": {
-        "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON",
         "CINDER_PGO": "Use",
         "CINDER_PGO_DIR": "${sourceDir}/build/pgo-data"
@@ -101,89 +126,68 @@
     },
     {
       "name": "release-clang",
-      "inherits": "base",
+      "inherits": "clang-release-base",
       "displayName": "Release (Clang)",
-      "description": "Optimized release build with LTO (Clang)",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
-      "cacheVariables": {
-        "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Release",
-        "CINDER_ENABLE_LTO": "ON",
-        "CINDER_BUILD_BENCHMARKS": "ON"
-      }
+      "description": "Optimized Clang production release with LTO; benchmarks are opt-in"
     },
     {
       "name": "asan",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "ASan+UBSan",
       "description": "Debug build with ASan+UBSan; mimalloc auto-disabled",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON"
       }
     },
     {
       "name": "asan-clang",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "ASan+UBSan (Clang)",
       "description": "Clang debug with ASan+UBSan + use-after-scope/return + ignorelist; mimalloc auto-disabled",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON"
       }
     },
     {
       "name": "msan",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "MSan (Clang)",
       "description": "Clang with MemorySanitizer — requires an MSan-instrumented C++ standard library to avoid false positives from uninstrumented system libraries; not usable out of the box without that toolchain setup",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_MSAN": "ON"
       }
     },
     {
       "name": "tsan",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "TSan",
       "description": "Debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_ENABLE_TSAN": "ON",
-        "CINDER_BUILD_BENCHMARKS": "OFF"
+        "CINDER_ENABLE_TSAN": "ON"
       }
     },
     {
       "name": "tsan-clang",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "TSan (Clang)",
       "description": "Clang debug build with ThreadSanitizer; mimalloc auto-disabled (interceptor conflict)",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_ENABLE_TSAN": "ON",
-        "CINDER_BUILD_BENCHMARKS": "OFF"
+        "CINDER_ENABLE_TSAN": "ON"
       }
     },
     {
       "name": "ubsan",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "UBSan",
       "description": "Debug build with UBSan only",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_UBSAN": "ON"
       }
     },
@@ -197,15 +201,6 @@
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CINDER_ENABLE_CLANG_TIDY": "ON",
         "CINDER_BUILD_BENCHMARKS": "OFF"
-      }
-    },
-    {
-      "name": "ci-bench",
-      "inherits": "ci",
-      "displayName": "CI (Clang + tidy + benchmarks)",
-      "description": "CI lint build including benchmark translation units",
-      "cacheVariables": {
-        "CINDER_BUILD_BENCHMARKS": "ON"
       }
     },
     {
@@ -223,58 +218,40 @@
       }
     },
     {
-      "name": "ci-gcc-bench",
-      "inherits": "ci-gcc",
-      "displayName": "CI (GCC + sanitizers + benchmarks)",
-      "description": "Cppcheck compile database including benchmark translation units",
-      "cacheVariables": {
-        "CINDER_BUILD_BENCHMARKS": "ON"
-      }
-    },
-    {
       "name": "tls-grpc",
-      "inherits": "base",
+      "inherits": "gcc-release-base",
       "displayName": "TLS + gRPC",
       "description": "Release build with TLS and gRPC gateway (GCC)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CINDER_ENABLE_TLS": "ON",
         "CINDER_ENABLE_GRPC": "ON"
       }
     },
     {
       "name": "tls-grpc-clang",
-      "inherits": "base",
+      "inherits": "clang-release-base",
       "displayName": "TLS + gRPC (Clang)",
       "description": "Release build with TLS and gRPC gateway (Clang)",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CINDER_ENABLE_TLS": "ON",
         "CINDER_ENABLE_GRPC": "ON"
       }
     },
     {
       "name": "fast",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "Fast (unity + lld)",
       "description": "Debug build with unity/jumbo merging and lld (GCC) — fastest edit-compile-test loop, not representative of real performance",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_UNITY_BUILD": "ON",
-        "CINDER_BUILD_BENCHMARKS": "OFF"
+        "CINDER_UNITY_BUILD": "ON"
       }
     },
     {
       "name": "release-unity",
-      "inherits": "base",
+      "inherits": "gcc-release-base",
       "displayName": "Release + Unity",
       "description": "Optimized build with unity/jumbo merging — fast rebuilds for perf-iteration work",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
         "CINDER_UNITY_BUILD": "ON",
         "CINDER_BUILD_BENCHMARKS": "ON"
       }
@@ -293,37 +270,29 @@
     },
     {
       "name": "analyze",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "GCC Analyzer",
       "description": "Debug build with GCC's static analyzer (-fanalyzer)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_ENABLE_GCC_ANALYZER": "ON",
-        "CINDER_BUILD_BENCHMARKS": "OFF"
+        "CINDER_ENABLE_GCC_ANALYZER": "ON"
       }
     },
     {
       "name": "iwyu",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "include-what-you-use",
       "description": "Clang build running include-what-you-use during compilation",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CINDER_ENABLE_IWYU": "ON",
-        "CINDER_BUILD_BENCHMARKS": "OFF"
+        "CINDER_ENABLE_IWYU": "ON"
       }
     },
     {
       "name": "fuzz",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "Fuzz",
       "description": "Debug build with libFuzzer + ASan + UBSan (Clang); mimalloc auto-disabled",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_FUZZER": "ON",
         "CINDER_ENABLE_ASAN": "ON",
         "CINDER_ENABLE_UBSAN": "ON"
@@ -331,25 +300,21 @@
     },
     {
       "name": "fuzz-coverage",
-      "inherits": "base",
+      "inherits": "clang-debug-base",
       "displayName": "Fuzz + Coverage",
       "description": "Clang build with coverage instrumentation for corpus minimization",
-      "toolchainFile": "${sourceDir}/toolchains/clang22.cmake",
       "cacheVariables": {
         "CINDER_LINK_JOBS": "2",
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_COVERAGE": "ON",
         "CINDER_ENABLE_ASAN": "ON"
       }
     },
     {
       "name": "debug-grpc",
-      "inherits": "base",
+      "inherits": "gcc-debug-base",
       "displayName": "Debug + gRPC",
       "description": "Debug build with gRPC gateway enabled (fetches gRPC + protobuf + abseil)",
-      "toolchainFile": "${sourceDir}/toolchains/gcc16.cmake",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
         "CINDER_ENABLE_GRPC": "ON"
       }
     }
@@ -360,6 +325,7 @@
     { "name": "debug-tls-clang", "configurePreset": "debug-tls-clang" },
     { "name": "debug-clang",    "configurePreset": "debug-clang" },
     { "name": "release",        "configurePreset": "release" },
+    { "name": "release-bench",  "configurePreset": "release-bench" },
     { "name": "release-clang",  "configurePreset": "release-clang" },
     { "name": "pgo-generate",   "configurePreset": "pgo-generate" },
     { "name": "pgo-use",        "configurePreset": "pgo-use" },
@@ -370,9 +336,7 @@
     { "name": "tsan-clang",     "configurePreset": "tsan-clang" },
     { "name": "ubsan",          "configurePreset": "ubsan" },
     { "name": "ci",             "configurePreset": "ci" },
-    { "name": "ci-bench",       "configurePreset": "ci-bench" },
     { "name": "ci-gcc",         "configurePreset": "ci-gcc" },
-    { "name": "ci-gcc-bench",   "configurePreset": "ci-gcc-bench" },
     { "name": "tls-grpc",       "configurePreset": "tls-grpc" },
     { "name": "tls-grpc-clang", "configurePreset": "tls-grpc-clang" },
     { "name": "fast",           "configurePreset": "fast" },
@@ -396,8 +360,8 @@
     { "name": "release",        "configurePreset": "release",        "inherits": "test-common" },
     { "name": "release-clang",  "configurePreset": "release-clang",  "inherits": "test-common" },
     {
-      "name": "asan",
-      "configurePreset": "asan",
+      "name": "test-asan",
+      "hidden": true,
       "inherits": "test-common",
       "environment": {
         "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
@@ -405,30 +369,17 @@
       }
     },
     {
-      "name": "asan-clang",
-      "configurePreset": "asan-clang",
-      "inherits": "test-common",
-      "environment": {
-        "ASAN_OPTIONS": "detect_leaks=1:abort_on_error=1:check_initialization_order=1:strict_init_order=1:suppressions=${sourceDir}/suppressions/asan.supp",
-        "LSAN_OPTIONS": "suppressions=${sourceDir}/suppressions/lsan.supp"
-      }
-    },
-    {
-      "name": "tsan",
-      "configurePreset": "tsan",
+      "name": "test-tsan",
+      "hidden": true,
       "inherits": "test-common",
       "environment": {
         "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
       }
     },
-    {
-      "name": "tsan-clang",
-      "configurePreset": "tsan-clang",
-      "inherits": "test-common",
-      "environment": {
-        "TSAN_OPTIONS": "halt_on_error=1:second_deadlock_stack=1:history_size=7:suppressions=${sourceDir}/suppressions/tsan.supp"
-      }
-    },
+    { "name": "asan",           "configurePreset": "asan",           "inherits": "test-asan" },
+    { "name": "asan-clang",     "configurePreset": "asan-clang",     "inherits": "test-asan" },
+    { "name": "tsan",           "configurePreset": "tsan",           "inherits": "test-tsan" },
+    { "name": "tsan-clang",     "configurePreset": "tsan-clang",     "inherits": "test-tsan" },
     {
       "name": "ubsan",
       "configurePreset": "ubsan",

@@ -17,7 +17,7 @@
 #include "cinder/common/status.hpp"
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
-#include "cinder/net/tcp_connection.hpp"
+#include "cinder/net/tcp/connection.hpp"
 #include "cinder/node/cache_operations.hpp"
 #include "cinder/store/crdt_counter_store.hpp"
 

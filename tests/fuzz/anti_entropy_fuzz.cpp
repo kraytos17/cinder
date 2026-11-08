@@ -12,7 +12,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/status.hpp"
-#include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/lru_store.hpp"
 

@@ -8,7 +8,7 @@
 #include "cinder/cluster/clock.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/net/protocol.hpp"
-#include "cinder/net/tcp_transport.hpp"
+#include "cinder/net/tcp/transport.hpp"
 #include "test_ports.hpp"
 
 using asio::buffer;

@@ -1,3 +1,5 @@
+#include "cinder/node/anti_entropy/core.hpp"
+
 #include <algorithm>
 #include <ankerl/unordered_dense.h>
 #include <chrono>
@@ -8,17 +10,14 @@
 #include <xxhash.h>
 
 #include "cinder/common/tracing.hpp"
-#include "cinder/node/anti_entropy.hpp"
-#include "cinder/node/anti_entropy_codec.hpp"
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/codec.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
 using std::chrono::nanoseconds;
 
 namespace cinder {
-
-    // Wire-codec primitives live in ae_codec (see anti_entropy_codec.hpp).
 
     AntiEntropyManager::AntiEntropyManager(
         CacheStore& store,
@@ -187,6 +186,7 @@ namespace cinder {
                 }
                 pending_.clear();
             }
+
             // Self-check: accumulators and the fresh scan must agree — both
             // are exact by construction, so a mismatch is always a bug.
             // Publish unconditionally: a check must never gate the publish,
@@ -703,6 +703,7 @@ namespace cinder {
                 if (!counter.has_value()) {
                     return std::nullopt;
                 }
+
                 previous_key = key;
                 result.emplace_back(std::move(key), std::move(*counter));
             }
@@ -720,10 +721,12 @@ namespace cinder {
             if (key.size() > std::numeric_limits<uint32_t>::max()) {
                 return false;
             }
+
             const std::string state = crdt::encodeCounter(counter);
             if (state.empty() || state.size() > std::numeric_limits<uint32_t>::max()) {
                 return false;
             }
+
             writer.write(static_cast<uint32_t>(key.size()));
             writer.writeString(key);
             writer.write(static_cast<uint32_t>(state.size()));
@@ -749,9 +752,9 @@ namespace cinder {
         if (counter_store_ == nullptr || max_bytes < 2 * sizeof(uint32_t)) {
             return std::nullopt;
         }
+
         auto counters = counter_store_->liveCounters();
         std::ranges::sort(counters, [](const auto& a, const auto& b) { return a.first < b.first; });
-
         std::scoped_lock lock(counter_cursor_mutex_);
         size_t start = 0;
         if (!counter_cursor_.empty()) {
@@ -779,6 +782,7 @@ namespace cinder {
                     }
                     break;
                 }
+
                 bytes += *record_bytes;
                 selected.push_back(index);
             }
@@ -835,6 +839,7 @@ namespace cinder {
             fail(Errc::InvalidArgument);
             return;
         }
+
         // Preflight capacity for the whole incoming batch before applying any
         // item. If one key cannot fit, leave local state unchanged and ask the
         // initiator to retry in a later exchange after capacity changes.
@@ -1340,6 +1345,7 @@ namespace cinder {
                 std::erase_if(merged.rows, [&failed_sketch_buckets](const MetaRow& row) {
                     return std::ranges::binary_search(failed_sketch_buckets, row.bucket);
                 });
+
                 merged.rows.insert(
                     merged.rows.end(),
                     fallback_response->rows.begin(),
@@ -1707,6 +1713,7 @@ namespace cinder {
             span.setAttribute({"reason", "no-counter-state"});
             return;
         }
+
         partners_dirty_.store(true, std::memory_order_release);
         auto partner = pickPartner(replica_factor);
         if (!partner.has_value()) {
@@ -1714,6 +1721,7 @@ namespace cinder {
             span.setAttribute({"reason", "no-partner"});
             return;
         }
+
         span.setAttribute({"partner", *partner});
         span.setStatus(SpanStatus::Ok);
         exchangeCounterState(*partner, span.context());
@@ -1776,6 +1784,7 @@ namespace cinder {
                 }
                 ++merged_count;
             }
+
             span.setAttribute({"entries", merged_count});
             span.setAttribute({"outcome", "completed"});
             span.setStatus(SpanStatus::Ok);

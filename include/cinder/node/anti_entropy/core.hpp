@@ -21,7 +21,7 @@
 #include "cinder/common/types.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/protocol.hpp"
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 #include "cinder/store/cache_store.hpp"
 #include "cinder/store/crdt_counter_store.hpp"
 #include "cinder/store/detail/io_utils.hpp"
@@ -392,8 +392,8 @@ namespace cinder {
             std::flat_set<NodeId>& candidates,
             size_t max_candidates
         ) const;
-        auto encodeCounterBatch(size_t max_bytes) -> std::optional<std::string>;
 
+        auto encodeCounterBatch(size_t max_bytes) -> std::optional<std::string>;
         void exchangeCounterState(const NodeId& partner, SpanContext round_ctx);
         void finishRefinement(
             const std::vector<uint64_t>& local_bucket_hashes,

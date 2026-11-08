@@ -62,9 +62,9 @@ set dotenv-load
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 preset := env('CINDER_PRESET', 'debug')
-# Must be a preset with CINDER_BUILD_BENCHMARKS=ON: release, release-clang,
-# release-unity, profile, pgo-generate, pgo-use (ci-bench / ci-gcc-bench too).
-bench_preset := env('CINDER_BENCH_PRESET', 'release')
+# Must be a preset with CINDER_BUILD_BENCHMARKS=ON: release-bench,
+# release-unity, profile, pgo-generate, pgo-use.
+bench_preset := env('CINDER_BENCH_PRESET', 'release-bench')
 jobs := env('CINDER_JOBS', num_cpus())
 # Unity/sanitizer debug translation units are memory-heavy; use a conservative
 # default and allow explicit machine-specific overrides.
@@ -127,7 +127,7 @@ fast *targets:
 # ── Test ──────────────────────────────────────────────────────────────────────
 # `ctest --preset` applies the test preset's environment (ASAN_OPTIONS,
 # TSAN_OPTIONS, suppressions, …) and output-on-failure. Presets without a test
-# preset (analyze, iwyu, pgo-*, ci-bench, ci-gcc-bench, fuzz-coverage) are
+# preset (analyze, iwyu, pgo-*, fuzz-coverage) are
 # build/lint-only and get a clear error instead of an obscure ctest failure.
 
 # Full suite (every ctest label) for the current preset.
@@ -273,14 +273,14 @@ format: (_need 'clang-format') (_build preset 'format')
 [group('lint')]
 check-format: (_need 'clang-format') (_build preset 'check-format')
 
-# Run cppcheck on the ci-gcc-bench compile database (includes benchmarks).
+# Run cppcheck on the ci-gcc compile database.
 [group('lint')]
-cppcheck: (_need 'cppcheck') (_build 'ci-gcc-bench' 'cppcheck')
+cppcheck: (_need 'cppcheck') (_build 'ci-gcc' 'cppcheck')
 
 # Strict CI lint, locally (also `just ci`): clang-tidy build + check-format + cppcheck.
 [group('lint')]
-lint: (_need 'clang-tidy' 'clang-format' 'cppcheck') (_build 'ci-bench') (_build 'ci-bench' 'check-format') cppcheck
-    @echo "CI LINT PASSED: benchmark-enabled clang-tidy, check-format, cppcheck"
+lint: (_need 'clang-tidy' 'clang-format' 'cppcheck') (_build 'ci') (_build 'ci' 'check-format') cppcheck
+    @echo "CI LINT PASSED: clang-tidy, check-format, cppcheck"
 
 # Install the pre-commit hook (staged-file format/whitespace/YAML checks). CMake
 # also does this on first configure unless -DCINDER_AUTO_HOOKS=OFF.
@@ -375,7 +375,7 @@ fuzz-coverage-all: (_build 'fuzz-coverage')
 # them (bench_preset), so no preset's CMake cache is ever mutated with -D:
 #   just bench_preset=profile bench        # RelWithDebInfo + frame pointers
 
-# Run the throughput benchmark (bench_preset, default: release).
+# Run the throughput benchmark (bench_preset, default: release-bench).
 [group('perf')]
 [positional-arguments]
 bench *args: (_build bench_preset 'cinder_throughput_bench')

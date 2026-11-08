@@ -7,7 +7,7 @@
 #include "cinder/cluster/transport.hpp"
 #include "cinder/common/tracing.hpp"
 #include "cinder/hashing/consistent_hash_ring.hpp"
-#include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/store/lru_store.hpp"
 
 // Anti-entropy digest costs (P0/P1): full-scan ground truth vs the

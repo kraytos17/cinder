@@ -4,7 +4,7 @@
 #include <string>
 #include <vector>
 
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 
 namespace cinder {
     namespace {

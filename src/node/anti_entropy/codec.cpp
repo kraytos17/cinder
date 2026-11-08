@@ -1,3 +1,5 @@
+#include "cinder/node/anti_entropy/codec.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
@@ -7,8 +9,7 @@
 #include <vector>
 #include <xxhash.h>
 
-#include "cinder/node/anti_entropy_codec.hpp"
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 
 namespace cinder {
     namespace {

@@ -3,7 +3,7 @@
 #include <vector>
 
 #include "cinder/net/protocol.hpp"
-#include "cinder/node/anti_entropy.hpp"
+#include "cinder/node/anti_entropy/core.hpp"
 #include "cinder/store/crdt_counter.hpp"
 #include "cinder/store/crdt_counter_store.hpp"
 #include "cinder/store/lru_store.hpp"

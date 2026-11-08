@@ -105,7 +105,7 @@ jobs:
           restore-keys: |
             deps-
       - name: Configure (populate dependencies)
-        run: cmake --preset tls-grpc -DCINDER_BUILD_BENCHMARKS=ON
+        run: cmake --preset tls-grpc -DCINDER_BUILD_BENCHMARKS=OFF
 
       - name: Report cache size
         run: du -sh ~/.cache/cinder/deps
@@ -343,20 +343,20 @@ jobs:
       - name: Lint protos
         run: buf lint
 
-      - name: Configure (clang-tidy runs inline; benchmark sources enabled)
-        run: just preset=ci-bench configure
+      - name: Configure (clang-tidy runs inline)
+        run: just preset=ci configure
 
       - name: Build
-        run: just preset=ci-bench build
+        run: just preset=ci build
 
-      - name: Check formatting (including benchmarks)
-        run: just preset=ci-bench check-format
+      - name: Check formatting (including benchmark sources)
+        run: just preset=ci check-format
 
-      - name: Configure for cppcheck (GCC; benchmark sources enabled)
-        run: just preset=ci-gcc-bench configure
+      - name: Configure for cppcheck (GCC)
+        run: just preset=ci-gcc configure
 
-      - name: cppcheck (including benchmarks)
-        run: just preset=ci-gcc-bench build cppcheck
+      - name: cppcheck
+        run: just preset=ci-gcc build cppcheck
 
   codeql:
     needs: [build-image]
@@ -389,12 +389,20 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           languages: cpp
+          build-mode: manual
 
-      - name: Configure
-        run: just preset=${{ matrix.preset }} configure
+      - name: Configure production targets for CodeQL
+        run: >-
+          cmake --preset ${{ matrix.preset }}
+          -DCINDER_BUILD_TESTS=OFF
+          -DCINDER_BUILD_BENCHMARKS=OFF
+          -DCINDER_ENABLE_LTO=OFF
 
-      - name: Build
-        run: just preset=${{ matrix.preset }} build
+      - name: Build daemon (core and enabled gateways)
+        run: >-
+          cmake --build --preset ${{ matrix.preset }}
+          --parallel "$CINDER_BUILD_JOBS"
+          --target cinderd
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

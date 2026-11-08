@@ -8,8 +8,8 @@ one variable at a time, same machine, same build, same flags.
 ## Benchmarks (`benchmarks/`)
 
 All benchmarks live in one binary, `cinder_throughput_bench`, built by any
-preset with `CINDER_BUILD_BENCHMARKS=ON` (`release`, `release-clang`,
-`release-unity`, `profile`, `ci-bench`, `ci-gcc-bench`, plus the PGO
+preset with `CINDER_BUILD_BENCHMARKS=ON` (`release-bench`,
+`release-unity`, `profile`, plus the PGO
 presets — see AGENTS.md for the full matrix). Benchmark sources are covered
 by the format gate and by clang-tidy/cppcheck in `just lint`, like
 everything else.
@@ -19,7 +19,7 @@ everything else.
 just bench
 
 # Release build, then run a subset:
-just bench_preset=release bench -- --benchmark_filter='Quorum|ReplayBatch'
+just bench_preset=release-bench bench -- --benchmark_filter='Quorum|ReplayBatch'
 
 # Profile build (RelWithDebInfo + frame pointers) for sampling profilers:
 just bench_preset=profile bench -- --benchmark_filter='WriteQuorumSync'

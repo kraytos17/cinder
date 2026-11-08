@@ -1,4 +1,4 @@
-#include "cinder/node/iblt.hpp"
+#include "cinder/node/anti_entropy/iblt.hpp"
 
 #include <algorithm>
 #include <array>
