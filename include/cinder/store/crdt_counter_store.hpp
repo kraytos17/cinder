@@ -219,11 +219,13 @@ namespace cinder {
             }
 
             crdt::PNCounter& resident = it->second;
-            const bool new_actor = resident.positive().component(actor)
-                == 0
-                && resident.negative().component(actor)
-                == 0;
-            const size_t growth = new_actor ? actor.size() + 2 * sizeof(uint64_t) : 0;
+            // P and N are independent G-Counters: adding the first positive
+            // component for an actor does not mean its negative component
+            // already exists (and vice versa). Charge each newly-created
+            // side separately, matching counterBytes().
+            const bool side_missing = positive ? resident.positive().component(actor) == 0
+                                               : resident.negative().component(actor) == 0;
+            const size_t growth = side_missing ? addSat(actor.size(), 2 * sizeof(uint64_t)) : 0;
             if (growth
                 > 0
                 && (growth > shardCapacity() || sh.current_bytes > shardCapacity() - growth)) {
@@ -273,7 +275,8 @@ namespace cinder {
             const crdt::GCounter* sides[2] = {&counter.positive(), &counter.negative()};
             for (const crdt::GCounter* side : sides) {
                 for (const auto& entry : side->components()) {
-                    total = addSat(total, entry.first.size() + 2 * sizeof(uint64_t));
+                    total = addSat(total, entry.first.size());
+                    total = addSat(total, 2 * sizeof(uint64_t));
                 }
             }
             return total;

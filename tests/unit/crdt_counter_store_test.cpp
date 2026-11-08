@@ -95,6 +95,27 @@ namespace cinder {
             EXPECT_EQ(store.value("k").value(), 7);
         }
 
+        TEST(CrdtCounterStoreTest, CapacityChargesPositiveAndNegativeSidesSeparately) {
+            // Billable state for key "k", actor "n1", and one component is
+            // 1 + 2 + 2*u64 = 19 bytes. The opposite PN side needs another
+            // 18 bytes even though the actor already has a component on P.
+            CrdtCounterStore store(32);
+            mustAdjust(store, "k", "n1", 5);
+            EXPECT_EQ(store.value("k").value(), 5);
+
+            auto res = store.decrement("k", "n1", 1);
+            EXPECT_FALSE(res.has_value());
+            EXPECT_EQ(res.error().code(), Errc::CapacityExceeded);
+            EXPECT_EQ(store.value("k").value(), 5);
+        }
+
+        TEST(CrdtCounterStoreTest, CapacityAllowsSecondSideWhenBudgetFits) {
+            CrdtCounterStore store(64);
+            mustAdjust(store, "k", "n1", 5);
+            mustAdjust(store, "k", "n1", -2);
+            EXPECT_EQ(store.value("k").value(), 3);
+        }
+
         TEST(CrdtCounterStoreTest, FailedMergeLeavesLocalUnchanged) {
             CrdtCounterStore store(64);
             mustAdjust(store, "k", "n1", 5);
