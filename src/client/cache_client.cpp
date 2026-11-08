@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "cinder/common/tracing.hpp"
+#include "cinder/store/crdt_counter.hpp"
 
 using std::chrono::duration_cast;
 using std::chrono::milliseconds;
@@ -104,8 +105,11 @@ namespace cinder {
         return preferredNode(key);
     }
 
-    auto CacheClient::sendToOwner(const std::string& key, const net::Request& req)
-        -> Result<net::Response> {
+    auto CacheClient::sendToOwner(
+        const std::string& key,
+        const net::Request& req,
+        bool retry_transport
+    ) -> Result<net::Response> {
         // Child of the calling public operation's span (ambient context);
         // starts a fresh trace only when invoked outside one. Covers routing,
         // redirects and retries for this key as one unit.
@@ -145,7 +149,7 @@ namespace cinder {
                 );
                 node = refreshAfterFailure(key);
             }
-            if (!retryable(res) || attempt == max_retries_) {
+            if (!retryable(res) || !retry_transport || attempt == max_retries_) {
                 span.setStatus(res.has_value() ? SpanStatus::Ok : SpanStatus::Error);
                 return res;
             }
@@ -172,6 +176,87 @@ namespace cinder {
             }
             return ok();
         });
+    }
+
+    auto CacheClient::counterIncrement(const std::string& key, uint64_t delta) -> Result<void> {
+        Span span("client.counter_increment", captureTraceContext());
+        net::Request req{
+            .opcode = net::Opcode::CounterAdjust,
+            .key = key,
+            .value = {},
+            .counter_delta = delta,
+            .counter_decrement = false,
+        };
+
+        stampRequest(req, span.context());
+        // CounterAdjust is not idempotent at the request level. Do not
+        // retry on transport failure: the owner may have applied it before
+        // the response was lost. Ownership redirects are still followed.
+        auto res = sendToOwner(key, req, false);
+        if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return err(res.error());
+        }
+        if (res->status != Errc::OK) {
+            span.setStatus(SpanStatus::Error);
+            return err(Error(res->status, "counter increment failed"));
+        }
+
+        span.setStatus(SpanStatus::Ok);
+        return ok();
+    }
+
+    auto CacheClient::counterDecrement(const std::string& key, uint64_t delta) -> Result<void> {
+        Span span("client.counter_decrement", captureTraceContext());
+        net::Request req{
+            .opcode = net::Opcode::CounterAdjust,
+            .key = key,
+            .value = {},
+            .counter_delta = delta,
+            .counter_decrement = true,
+        };
+
+        stampRequest(req, span.context());
+        auto res = sendToOwner(key, req, false);
+        if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return err(res.error());
+        }
+        if (res->status != Errc::OK) {
+            span.setStatus(SpanStatus::Error);
+            return err(Error(res->status, "counter decrement failed"));
+        }
+
+        span.setStatus(SpanStatus::Ok);
+        return ok();
+    }
+
+    auto CacheClient::counterGet(const std::string& key) -> Result<int64_t> {
+        Span span("client.counter_get", captureTraceContext());
+        net::Request req{.opcode = net::Opcode::CounterGet, .key = key, .value = {}};
+        stampRequest(req, span.context());
+        auto res = sendToOwner(key, req);
+        if (!res.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return err<int64_t>(res.error());
+        }
+        if (res->status != Errc::OK) {
+            span.setStatus(SpanStatus::Error);
+            return err<int64_t>(Error(res->status, "counter read failed"));
+        }
+        if (!res->value.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return err<int64_t>(Error(Errc::CorruptData, "counter response missing state"));
+        }
+
+        auto state = crdt::decodePNCounter(*res->value);
+        if (!state.has_value()) {
+            span.setStatus(SpanStatus::Error);
+            return err<int64_t>(Error(Errc::CorruptData, "invalid counter state response"));
+        }
+
+        span.setStatus(SpanStatus::Ok);
+        return ok(state->value());
     }
 
     auto CacheClient::get(const std::string& key) -> std::optional<std::string> {

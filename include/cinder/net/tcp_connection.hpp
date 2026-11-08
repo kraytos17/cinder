@@ -27,6 +27,7 @@
 #include "cinder/net/protocol.hpp"
 #include "cinder/node/cache_operations.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/crdt_counter_store.hpp"
 
 using asio::ip::tcp;
 using std::chrono::seconds;
@@ -104,6 +105,7 @@ namespace cinder::net {
             GossipManager* gossip = nullptr,
             ConnectionCountGuard conn_counter = {},
             AntiEntropyManager* anti_entropy = nullptr,
+            CrdtCounterStore* counter_store = nullptr,
             std::string shared_secret = {},
             std::string client_shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
@@ -259,6 +261,9 @@ namespace cinder::net {
         void handleSet(const Request& req);
         void handleDelete(const Request& req);
         void handleReplicate(const Request& req, Response& res);
+        void handleCounterAdjust(const Request& req, Response& res);
+        void handleCounterMerge(const Request& req, Response& res);
+        void handleCounterGet(const Request& req, Response& res);
         void handleGossip(const Request& req, Response& res);
 
         [[nodiscard]]
@@ -329,6 +334,7 @@ namespace cinder::net {
         ReplicationManager* repl_;
         GossipManager* gossip_;
         AntiEntropyManager* anti_entropy_ = nullptr;
+        CrdtCounterStore* counter_store_ = nullptr;
         std::string_view node_id_;
         int replica_factor_;
         ConsistencyMode mode_;

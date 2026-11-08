@@ -140,7 +140,10 @@ namespace cinder::net {
             || !add(sizeof(uint64_t) * 2)
             || (req.ttl.has_value() && !add(sizeof(uint32_t)))
             || !add(sizeof(uint8_t))
-            || (req.expires_at.has_value() && !add(sizeof(uint64_t)))) {
+            || (req.expires_at.has_value() && !add(sizeof(uint64_t)))
+            || (req.opcode
+                == Opcode::CounterAdjust
+                && (!add(sizeof(uint64_t)) || !add(sizeof(uint8_t))))) {
             return err(Error(Errc::InvalidArgument, "message too large"));
         }
 
@@ -209,6 +212,10 @@ namespace cinder::net {
         if (!req.value.empty()) {
             w.writeString(req.value);
         }
+        if (req.opcode == Opcode::CounterAdjust) {
+            w.write(req.counter_delta);
+            w.writeByte(req.counter_decrement ? uint8_t{1} : uint8_t{0});
+        }
         if (has_trace) {
             w.write(req.trace_id);
             w.write(req.span_id);
@@ -235,7 +242,7 @@ namespace cinder::net {
         if (raw_opcode
             < std::to_underlying(Opcode::Get)
             || raw_opcode
-            > std::to_underlying(Opcode::AdminShutdown)) {
+            > std::to_underlying(Opcode::CounterGet)) {
             return err<DecodedRequest>(Error(Errc::InvalidArgument, "unknown opcode"));
         }
 
@@ -304,6 +311,16 @@ namespace cinder::net {
                 return err<DecodedRequest>(val_view.error());
             }
             req.value.assign(*val_view);
+        }
+        if (req.opcode == Opcode::CounterAdjust) {
+            auto delta = mustRead<uint64_t>(r);
+            auto decrement = mustRead<uint8_t>(r);
+            if (!delta || !decrement || *decrement > 1) {
+                return err<DecodedRequest>(Error(Errc::InvalidArgument, "invalid counter adjust"));
+            }
+
+            req.counter_delta = *delta;
+            req.counter_decrement = *decrement != 0;
         }
         // Trace context — optional trailing data gated by flag 0x04.
         if ((*flags & K_FLAG_HAS_TRACE) != 0 && r.remaining() >= sizeof(uint64_t) * 2) {

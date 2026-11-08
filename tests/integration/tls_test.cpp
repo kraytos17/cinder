@@ -362,6 +362,8 @@ namespace {
              {cinder::net::Opcode::Get,
               cinder::net::Opcode::Set,
               cinder::net::Opcode::Ping,
+              cinder::net::Opcode::CounterAdjust,
+              cinder::net::Opcode::CounterGet,
               cinder::net::Opcode::AdminInfo}) {
             cinder::net::Request req{
                 .opcode = op,
@@ -381,6 +383,17 @@ namespace {
         auto wrong_res = rawTlsRequest(port, req, *ssl_ctx_, wrong);
         ASSERT_TRUE(wrong_res.has_value());
         EXPECT_EQ(wrong_res.value().status, cinder::Errc::PermissionDenied);
+
+        // Counter state merge is internal replication traffic, not a client
+        // operation; it requires the node token when node auth is enabled.
+        cinder::net::Request merge_req{
+            .opcode = cinder::net::Opcode::CounterMerge,
+            .key = "counter",
+            .value = "bad-state",
+        };
+        auto merge_denied = rawTlsRequest(port, merge_req, *ssl_ctx_, token);
+        ASSERT_TRUE(merge_denied.has_value());
+        EXPECT_EQ(merge_denied->status, cinder::Errc::PermissionDenied);
 
         stopDaemon(dpid);
     }

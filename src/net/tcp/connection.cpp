@@ -35,6 +35,7 @@ namespace cinder::net {
         GossipManager* gossip,
         ConnectionCountGuard conn_counter,
         AntiEntropyManager* anti_entropy,
+        CrdtCounterStore* counter_store,
         std::string shared_secret,
         std::string client_shared_secret
 #ifdef CINDER_ENABLE_TLS
@@ -54,6 +55,7 @@ namespace cinder::net {
         repl_(repl),
         gossip_(gossip),
         anti_entropy_(anti_entropy),
+        counter_store_(counter_store),
         node_id_(node_id),
         replica_factor_(replica_factor),
         mode_(mode),
@@ -400,6 +402,12 @@ namespace cinder::net {
                 return "anti_entropy.digest";
             case AntiEntropySync:
                 return "anti_entropy.sync";
+            case CounterAdjust:
+                return "counter.adjust";
+            case CounterMerge:
+                return "counter.merge";
+            case CounterGet:
+                return "counter.get";
             case AdminInfo:
                 return "admin.info";
             case AdminCluster:
@@ -562,7 +570,8 @@ namespace cinder::net {
                 }
             }
         } else if (client_auth_enabled) {
-            // All remaining opcodes are client-facing (Get/GetVersioned/Set/Del/Ping).
+            // All remaining opcodes are client-facing, including counter
+            // adjust/read. CounterMerge is the sole internal counter opcode.
             if (!verifyClientAuthToken(client_shared_secret_, auth_token)) {
                 denyRequest(req);
                 return false;
@@ -576,7 +585,12 @@ namespace cinder::net {
         // copy and can keep serving reads after the primary fails (failover read).
         // Ownership only matters for writes and for read misses (redirect the
         // client to the ring owner).
-        bool is_read = req.opcode == Opcode::Get || req.opcode == Opcode::GetVersioned;
+        bool is_read = req.opcode
+            == Opcode::Get
+            || req.opcode
+            == Opcode::GetVersioned
+            || req.opcode
+            == Opcode::CounterGet;
         if (req.opcode == Opcode::Ping || is_read) {
             return true;
         }
@@ -672,6 +686,15 @@ namespace cinder::net {
                 return handleAntiEntropyDigest(req);
             case AntiEntropySync:
                 return handleAntiEntropySync(req);
+            case CounterAdjust:
+                handleCounterAdjust(req, res);
+                return false;
+            case CounterMerge:
+                handleCounterMerge(req, res);
+                return false;
+            case CounterGet:
+                handleCounterGet(req, res);
+                return false;
             case AdminInfo:
             case AdminCluster:
             case AdminRing:
@@ -886,6 +909,79 @@ namespace cinder::net {
 
         auto result = store_.putVersioned(req.key, std::move(entry));
         res.status = result.has_value() ? Errc::OK : result.error().code();
+    }
+
+    void TcpConnection::handleCounterAdjust(const Request& req, Response& res) {
+        if (counter_store_ == nullptr) {
+            res.status = Errc::NotSupported;
+            return;
+        }
+        if (req.counter_delta == 0) {
+            res.status = Errc::OK;
+            return;
+        }
+
+        auto adjusted = req.counter_decrement
+            ? counter_store_->decrement(req.key, std::string(node_id_), req.counter_delta)
+            : counter_store_->increment(req.key, std::string(node_id_), req.counter_delta);
+        if (!adjusted.has_value()) {
+            res.status = adjusted.error().code();
+            return;
+        }
+
+        auto state = counter_store_->get(req.key);
+        if (!state.has_value()) {
+            res.status = Errc::InternalError;
+            return;
+        }
+
+        res.status = Errc::OK;
+        if (repl_ != nullptr && replica_factor_ > 1) {
+            repl_->replicateCounterState(
+                req.key,
+                crdt::encodeCounter(*state),
+                ring_.getNodes(req.key, replica_factor_),
+                req.trace_id,
+                req.span_id
+            );
+        }
+    }
+
+    void TcpConnection::handleCounterMerge(const Request& req, Response& res) {
+        if (counter_store_ == nullptr) {
+            res.status = Errc::NotSupported;
+            return;
+        }
+
+        auto state = crdt::decodePNCounter(req.value);
+        if (!state.has_value()) {
+            res.status = Errc::InvalidArgument;
+            return;
+        }
+
+        auto merged = counter_store_->merge(req.key, *state);
+        res.status = merged.has_value() ? Errc::OK : merged.error().code();
+    }
+
+    void TcpConnection::handleCounterGet(const Request& req, Response& res) {
+        if (counter_store_ == nullptr) {
+            res.status = Errc::NotSupported;
+            return;
+        }
+
+        auto state = counter_store_->get(req.key);
+        if (!state.has_value()) {
+            if (ring_.getNode(req.key) != node_id_) {
+                res.status = Errc::NotReady;
+                res.value = redirectValue(ring_.getNode(req.key));
+                return;
+            }
+            res.status = Errc::NotFound;
+            return;
+        }
+
+        res.value = crdt::encodeCounter(*state);
+        res.status = Errc::OK;
     }
 
     void TcpConnection::handleGossip(const Request& req, Response& res) {

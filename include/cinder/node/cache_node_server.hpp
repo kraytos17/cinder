@@ -33,6 +33,7 @@
 #include "cinder/node/replication_manager.hpp"
 #include "cinder/node/shard_manager.hpp"
 #include "cinder/store/cache_store.hpp"
+#include "cinder/store/crdt_counter_store.hpp"
 #include "cinder/store/persistence.hpp"
 
 using asio::io_context;
@@ -243,6 +244,7 @@ namespace cinder {
         std::atomic<milliseconds> quarantine_interval_{milliseconds{10'000}};
         RealClock clock_;
         std::unique_ptr<CacheStore> store_;
+        CrdtCounterStore counter_store_;
 #ifdef CINDER_ENABLE_TLS
         std::optional<asio::ssl::context> ssl_ctx_;
 #endif

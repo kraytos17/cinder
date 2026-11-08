@@ -44,7 +44,10 @@ namespace {
              Op::AdminRing,
              Op::AdminCompact,
              Op::AdminConfigReload,
-             Op::AdminShutdown}
+             Op::AdminShutdown,
+             Op::CounterAdjust,
+             Op::CounterMerge,
+             Op::CounterGet}
         );
         req.trace_id = fdp.ConsumeIntegral<uint64_t>();
         // Encoder gates span on trace_id != 0; a lone span would not survive.
@@ -60,6 +63,10 @@ namespace {
         }
         if (fdp.ConsumeBool()) {
             req.expires_at = msTime(fdp.ConsumeIntegralInRange<int64_t>(0, K_MAX_EXPIRY_MS));
+        }
+        if (req.opcode == Op::CounterAdjust) {
+            req.counter_delta = fdp.ConsumeIntegral<uint64_t>();
+            req.counter_decrement = fdp.ConsumeBool();
         }
         return req;
     }
@@ -84,6 +91,8 @@ namespace {
         assert(a.writer_node_hash == b.writer_node_hash);
         assert(a.ttl == b.ttl);
         assert(a.expires_at == b.expires_at);
+        assert(a.counter_delta == b.counter_delta);
+        assert(a.counter_decrement == b.counter_decrement);
     }
 
     static void requestRoundtrip(FuzzedDataProvider& fdp) {

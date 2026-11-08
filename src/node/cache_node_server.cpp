@@ -26,6 +26,12 @@ namespace cinder {
             return store;
         }
 
+        auto counterCapacity(size_t cache_capacity) -> size_t {
+            // Keep non-evictable CRDT state from silently doubling the cache
+            // memory budget. A dedicated setting/metrics can follow later.
+            return cache_capacity / 4;
+        }
+
         auto isIdentityField(std::string_view field) -> bool {
             // Identity fields can never hot-apply and normally differ only because
             // CLI flags shadow the file — keep them out of the change report.
@@ -187,6 +193,7 @@ namespace cinder {
         ping_interval_(options.ping_interval),
         quarantine_interval_(options.quarantine_interval),
         store_(makeStore(options, &clock_)),
+        counter_store_(counterCapacity(options.capacity)),
 #ifdef CINDER_ENABLE_TLS
         ssl_ctx_(initSslContext(options)),
 #endif
@@ -264,6 +271,7 @@ namespace cinder {
                 return formatConfigJson(snapshot);
             },
             &anti_entropy_,
+            &counter_store_,
             options.shared_secret,
             options.client_shared_secret
 #ifdef CINDER_ENABLE_TLS

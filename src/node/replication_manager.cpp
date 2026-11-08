@@ -49,6 +49,36 @@ namespace cinder {
         clock_(clock),
         transport_(transport) {}
 
+    void ReplicationManager::replicateCounterState(
+        const std::string& key,
+        std::string encoded_state,
+        const std::vector<NodeId>& replica_nodes,
+        uint64_t trace_id,
+        uint64_t span_id
+    ) {
+        net::Request req;
+        req.opcode = net::Opcode::CounterMerge;
+        req.key = key;
+        req.value = std::move(encoded_state);
+        req.trace_id = trace_id;
+        req.span_id = span_id;
+        for (const auto& node : replica_nodes) {
+            if (node == self_) {
+                continue;
+            }
+            transport_.sendAsync(node, req, [node, key](Result<void> result) {
+                if (!result.has_value()) {
+                    CINDER_DEBUG(
+                        "counter state replication failed",
+                        {"key", key},
+                        {"node", node},
+                        {"reason", result.error().message()}
+                    );
+                }
+            });
+        }
+    }
+
     void ReplicationManager::writeAsync(
         const std::string& key,
         std::string value,

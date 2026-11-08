@@ -47,7 +47,7 @@ rebalance in [`docs/rebalance.md`](docs/rebalance.md).
 ## Features
 
 - **Eviction stores** — LRU and LFU with O(1) hits, intrusive TTL wheel, slab allocator
-- **Binary wire protocol (v5)** — length-prefixed TCP frames, 16 opcodes, 64 MiB max
+- **Binary wire protocol (v6)** — length-prefixed TCP frames, 19 opcodes, 64 MiB max
 - **Cluster-aware routing** — hash-ring ownership with `moved to <node>@<host>:<port>` redirects
 - **Replication** — async or quorum (`W = R/2+1`), versioned LWW, failover reads, read repair
 - **Membership** — SWIM failure detection, incarnation-guarded gossip, graceful leave
@@ -200,7 +200,7 @@ Thirteen libFuzzer harnesses with ASan + UBSan:
 
 | Target | Entry point | What it fuzzes |
 |---|---|---|
-| `protocol_decode_fuzz` | `net::decode()` / `decodeResponse()` | Malformed wire frames, truncated payloads, integer overflow in `expires_at`; protocol dictionary with opcodes 1–16 |
+| `protocol_decode_fuzz` | `net::decode()` / `decodeResponse()` | Malformed wire frames, truncated payloads, integer overflow in `expires_at`; protocol dictionary with opcodes 1–19 |
 | `gossip_parse_fuzz` | `gossip::parseEntry()` + `handleMessage()` (full `decodeView` path) | Gossip text format edge cases, semicolon-delimited multi-entry parsing |
 | `store_put_fuzz` | `LruStore` / `LfuStore` — put, get, remove, putVersioned, evictExpired, plus op-dispatch (Set/Get/Del/Ping) | Arbitrary key/value lengths, versioned writes, capacity edge cases |
 | `snapshot_fuzz` | `SnapshotReader::readAll()` | Crafted snapshot files, oversized `entry_count`, truncated data |
@@ -238,7 +238,7 @@ cinder/
 ├── suppressions/                # Sanitizer + cppcheck suppressions
 └── docs/
     ├── architecture.md          # Component map and design notes
-    ├── protocol.md              # Wire protocol v5 (opcodes, payload format, hex dump)
+    ├── protocol.md              # Wire protocol v6 (opcodes, payload format, hex dump)
     ├── rebalance.md             # Membership, failure detection, rebalance, quarantine
     ├── profiling.md             # Benchmarks, samply/perf/PGO workflow, measured numbers
     └── tracing.md               # Structured events, spans, and subscribers

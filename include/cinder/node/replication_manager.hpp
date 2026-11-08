@@ -99,6 +99,18 @@ namespace cinder {
             uint64_t trace_id = 0,
             uint64_t span_id = 0
         );
+
+        // Best-effort CRDT state dissemination. The full PN-Counter state is
+        // merged at each target; duplicate/reordered delivery is safe. Unlike
+        // LWW writes, failed sends are not converted to ordinary value hints.
+        void replicateCounterState(
+            const std::string& key,
+            std::string encoded_state,
+            const std::vector<NodeId>& replica_nodes,
+            uint64_t trace_id = 0,
+            uint64_t span_id = 0
+        );
+
         // Quorum read: reads from local store + fans out GetVersioned to replicas.
         // Returns the entry with the highest version (LWW). Stale replicas are
         // repaired in the background via a best-effort Replicate write-back.

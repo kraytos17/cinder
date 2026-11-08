@@ -94,6 +94,73 @@ namespace cinder::net {
             EXPECT_EQ(decoded.value().req.key, "delete_me");
         }
 
+        TEST(ProtocolTest, EncodeDecodeCounterAdjust) {
+            Request req;
+            req.opcode = Opcode::CounterAdjust;
+            req.key = "views";
+            req.counter_delta = 42;
+            req.counter_decrement = true;
+
+            auto encoded = encode(req);
+            ASSERT_TRUE(encoded.has_value());
+            auto decoded = decode(*encoded);
+            ASSERT_TRUE(decoded.has_value());
+            EXPECT_EQ(decoded->req.opcode, Opcode::CounterAdjust);
+            EXPECT_EQ(decoded->req.key, "views");
+            EXPECT_EQ(decoded->req.counter_delta, 42U);
+            EXPECT_TRUE(decoded->req.counter_decrement);
+        }
+
+        TEST(ProtocolTest, CounterMergeAndGetOpcodesRoundTrip) {
+            for (Opcode opcode : {Opcode::CounterMerge, Opcode::CounterGet}) {
+                Request req;
+                req.opcode = opcode;
+                req.key = "counter-key";
+                req.value = opcode == Opcode::CounterMerge ? "CRDC-state" : "";
+                auto encoded = encode(req);
+                ASSERT_TRUE(encoded.has_value());
+                auto decoded = decode(*encoded);
+                ASSERT_TRUE(decoded.has_value());
+                EXPECT_EQ(decoded->req.opcode, opcode);
+                EXPECT_EQ(decoded->req.key, req.key);
+                EXPECT_EQ(decoded->req.value, req.value);
+            }
+        }
+
+        TEST(ProtocolTest, CounterAdjustRejectsInvalidDirection) {
+            Request req;
+            req.opcode = Opcode::CounterAdjust;
+            req.key = "views";
+            req.counter_delta = 1;
+            auto encoded = encode(req);
+            ASSERT_TRUE(encoded.has_value());
+            // Final request-body byte is CounterAdjust's decrement boolean.
+            encoded->back() = std::byte{2};
+            auto decoded = decode(*encoded);
+            EXPECT_FALSE(decoded.has_value());
+            EXPECT_EQ(decoded.error().code(), Errc::InvalidArgument);
+        }
+
+        TEST(ProtocolTest, CounterAdjustRejectsTruncatedSuffix) {
+            Request req;
+            req.opcode = Opcode::CounterAdjust;
+            req.key = "views";
+            req.counter_delta = 2;
+            auto encoded = encode(req);
+            ASSERT_TRUE(encoded.has_value());
+            encoded->resize(encoded->size() - 1);
+            // Keep the frame length consistent with truncation so decode
+            // reaches the required direction-byte check.
+            const uint32_t payload_size =
+                static_cast<uint32_t>(encoded->size() - K_FRAME_HEADER_SIZE);
+            encoded->at(3) = std::byte{static_cast<uint8_t>(payload_size >> 24U)};
+            encoded->at(4) = std::byte{static_cast<uint8_t>(payload_size >> 16U)};
+            encoded->at(5) = std::byte{static_cast<uint8_t>(payload_size >> 8U)};
+            encoded->at(6) = std::byte{static_cast<uint8_t>(payload_size)};
+            auto decoded = decode(*encoded);
+            EXPECT_FALSE(decoded.has_value());
+        }
+
         TEST(ProtocolTest, DecodeBadMagic) {
             std::vector<std::byte> buf(K_FRAME_HEADER_SIZE, std::byte{0});
             auto result = decode(buf);

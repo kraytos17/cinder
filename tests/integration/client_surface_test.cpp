@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <memory>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -95,6 +96,57 @@ namespace cinder {
             EXPECT_FALSE(client_->ttl("absent").has_value());
             ASSERT_TRUE(client_->set("timeless", "v").has_value());
             EXPECT_FALSE(client_->ttl("timeless").has_value());
+        }
+
+        TEST_F(ClientSurfaceTest, CounterOperationsRoundTrip) {
+            ASSERT_TRUE(client_->counterIncrement("views", 7).has_value());
+            ASSERT_TRUE(client_->counterDecrement("views", 2).has_value());
+            auto value = client_->counterGet("views");
+            ASSERT_TRUE(value.has_value()) << value.error().message();
+            EXPECT_EQ(*value, 5);
+        }
+
+        TEST_F(ClientSurfaceTest, CounterMissingIsNotFound) {
+            auto value = client_->counterGet("missing-counter");
+            ASSERT_FALSE(value.has_value());
+            EXPECT_EQ(value.error().code(), Errc::NotFound);
+        }
+
+        TEST_F(ClientSurfaceTest, CounterStateReplicatesToReplica) {
+            const uint16_t peer_port = pickHeldPort();
+            ASSERT_NE(peer_port, 0);
+            client_.reset();
+            node_.reset();
+            NodeProcGuard first(
+                spawnNode(port_, "node1", "node2@127.0.0.1:" + std::to_string(peer_port), false, 2)
+            );
+            NodeProcGuard second(
+                spawnNode(peer_port, "node2", "node1@127.0.0.1:" + std::to_string(port_), false, 2)
+            );
+            ASSERT_TRUE(waitForNode(port_, "node1"));
+            ASSERT_TRUE(waitForNode(peer_port, "node2"));
+
+            ClusterConfig config;
+            config.nodes.push_back({"node1", "127.0.0.1", port_});
+            config.nodes.push_back({"node2", "127.0.0.1", peer_port});
+            CacheClient replicated_client(config);
+            ClusterConfig peer_config;
+            peer_config.nodes.push_back({"node2", "127.0.0.1", peer_port});
+            CacheClient peer_client(peer_config);
+            ASSERT_TRUE(replicated_client.counterIncrement("replicated-views", 11).has_value());
+
+            // The owner immediately has the local update. The second node
+            // receives a full-state CounterMerge over the internal transport.
+            // Poll through its client route until async fanout arrives.
+            bool observed = false;
+            for (int attempt = 0; attempt < 100 && !observed; ++attempt) {
+                auto value = peer_client.counterGet("replicated-views");
+                observed = value.has_value() && *value == 11;
+                if (!observed) {
+                    std::this_thread::sleep_for(milliseconds(10));
+                }
+            }
+            EXPECT_TRUE(observed);
         }
     } // namespace
 } // namespace cinder

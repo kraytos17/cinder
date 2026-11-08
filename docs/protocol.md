@@ -1,4 +1,4 @@
-# Cinder Wire Protocol v5
+# Cinder Wire Protocol v6
 
 Binary, length-prefixed, request-response protocol over TCP. All multi-byte
 integers on the wire are **big-endian** (network byte order). On-disk formats
@@ -12,15 +12,15 @@ compile time via `consteval` and verified with `static_assert`.
 | Offset | Size | Field         | Description |
 |--------|------|---------------|--------------|
 | 0      | 1    | `magic`       | `0xC1` — identifies a Cinder frame |
-| 1      | 1    | `version`     | `0x05` |
-| 2      | 1    | `opcode`      | Request: 1–16 (see [Opcodes](#opcodes)). Response: `0x00` |
+| 1      | 1    | `version`     | `0x06` |
+| 2      | 1    | `opcode`      | Request: 1–19 (see [Opcodes](#opcodes)). Response: `0x00` |
 | 3      | 4    | `payload_len` | Payload length in bytes, `uint32` |
 
 **Limits and validation:**
 - Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
   both encode and decode. On decode, `payload_len` is checked against this
   bound before the body is read.
-- `opcode` must fall in `1..16`; any other value is rejected as unknown. A
+- `opcode` must fall in `1..19`; any other value is rejected as unknown. A
   `consteval` function, `opcodeRangeCoverage()`, asserts at compile time that
   this range is contiguous with no gaps.
 
@@ -41,6 +41,8 @@ depending on which flags are set.
 | `key`               | N    | always (may be empty) |
 | `val_len`           | 4    | always |
 | `value`             | M    | always (may be empty) |
+| `counter_delta`      | 8    | `COUNTER_ADJUST` only |
+| `counter_decrement`  | 1    | `COUNTER_ADJUST` only (0 = increment, 1 = decrement) |
 | `trace_id`          | 8    | `flags & 0x04` |
 | `span_id`           | 8    | `flags & 0x04` |
 | `auth_token`        | 32   | `flags & 0x08` |
@@ -79,6 +81,12 @@ depending on which flags are set.
   `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
 - **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
   version ties. Meaningful on writes; `0` elsewhere.
+- **`counter_delta`** (`uint64`) and **`counter_decrement`** (`uint8`) are
+  appended after `value` on `COUNTER_ADJUST`; decrement must be 0 or 1.
+  Counter state itself is encoded in `value` using the `CRDC` G/PN-Counter
+  encoding. Counter adjustments are not safe to retry after a transport
+  error: the owner may have applied the operation even if the response was
+  lost. Replica state merge is safe to retry because it is idempotent.
 
 `ttl_ms` and `expires_at_ms` are mutually exclusive in practice: clients send
 the former on writes, replication uses the latter.
@@ -103,8 +111,15 @@ the former on writes, replication uses the latter.
 | 14 | `ADMIN_COMPACT` | request: empty; response: `status` = OK on success |
 | 15 | `ADMIN_CONFIG_RELOAD` | request: empty; response: `status` = OK on success |
 | 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK, then server shuts down gracefully |
+| 17 | `COUNTER_ADJUST` | client-only, owner-routed; `key`, `counter_delta`, `counter_decrement`; response carries the updated serialized PN-Counter state |
+| 18 | `COUNTER_MERGE` | internal-only; `key` + serialized PN-Counter state in `value`; receiver merges, never LWW-replaces |
+| 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
 
 Admin opcodes (11-16) bypass ring ownership checks and are client-initiated only.
+`COUNTER_MERGE` is internal/authenticated like replication; counter adjust/get
+are client-authenticated and owner-routed. Counter state is asynchronously
+replicated as full PN-Counter snapshots. Counter-aware anti-entropy and WAL/
+snapshot durability are not yet implemented.
 
 ## Response Payload
 
@@ -324,13 +339,13 @@ is missing a valid `auth_token` with status code `PermissionDenied` (9).
 
 ### Version Bump
 
-Protocol v5 (introduced in this version) is **not backward-compatible** with
-v4. The version check uses strict equality — a v5 node will reject v4 frames
+Protocol v6 (introduced in this version) is **not backward-compatible** with
+v5. The version check uses strict equality — a v6 node will reject v5 frames
 and vice versa. All nodes in a cluster must be upgraded simultaneously.
 
-The only wire-format change from v4 to v5 is the addition of `K_FLAG_HAS_AUTH`
-(bit 3) and the `auth_token` field. Nodes running v4 will reject v5 frames
-at the version check before reaching the flags byte.
+Protocol v6 adds counter opcodes 17–19 and the `COUNTER_ADJUST` suffix fields.
+Nodes running v5 reject v6 frames at the version check. All nodes in a cluster
+must be upgraded simultaneously.
 
 ## Anti-Entropy Payloads
 

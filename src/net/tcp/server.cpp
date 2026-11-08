@@ -31,6 +31,7 @@ namespace cinder::net {
         MetricsCollector* metrics,
         std::function<std::string()> config_getter,
         AntiEntropyManager* anti_entropy,
+        CrdtCounterStore* counter_store,
         std::string shared_secret,
         std::string client_shared_secret
 #ifdef CINDER_ENABLE_TLS
@@ -51,6 +52,7 @@ namespace cinder::net {
         mode_(mode),
         gossip_(gossip),
         anti_entropy_(anti_entropy),
+        counter_store_(counter_store),
         metrics_(metrics),
 #ifdef CINDER_ENABLE_TLS
         ssl_ctx_(ssl_ctx),
@@ -220,6 +222,7 @@ namespace cinder::net {
                         gossip_,
                         std::move(counter),
                         anti_entropy_,
+                        counter_store_,
                         shared_secret_,
                         client_shared_secret_
 #ifdef CINDER_ENABLE_TLS

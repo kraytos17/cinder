@@ -18,7 +18,7 @@ using std::chrono::system_clock;
 namespace cinder::net {
 
     constexpr uint8_t K_MAGIC = 0xC1;
-    constexpr uint8_t K_VERSION = 5;
+    constexpr uint8_t K_VERSION = 6;
     constexpr size_t K_MAX_MESSAGE_SIZE = 67'108'864;
 
     // Magic + version + opcode + payload-length. The flags byte is the first
@@ -60,6 +60,9 @@ namespace cinder::net {
         AdminCompact = 14,
         AdminConfigReload = 15,
         AdminShutdown = 16,
+        CounterAdjust = 17,
+        CounterMerge = 18,
+        CounterGet = 19,
     };
 
     // The decode path validates `raw_opcode ∈ [Get, AdminShutdown]`; assert at
@@ -67,7 +70,7 @@ namespace cinder::net {
     // gaps or overlap.
     consteval auto opcodeRangeCoverage() -> bool {
         const int min = std::to_underlying(Opcode::Get);
-        const int max = std::to_underlying(Opcode::AdminShutdown);
+        const int max = std::to_underlying(Opcode::CounterGet);
         int count = 0;
         for (const auto op : {
                  Opcode::Get,
@@ -86,6 +89,9 @@ namespace cinder::net {
                  Opcode::AdminCompact,
                  Opcode::AdminConfigReload,
                  Opcode::AdminShutdown,
+                 Opcode::CounterAdjust,
+                 Opcode::CounterMerge,
+                 Opcode::CounterGet,
              }) {
             if (std::to_underlying(op) < min || std::to_underlying(op) > max) {
                 return false;
@@ -115,6 +121,11 @@ namespace cinder::net {
         // Delete marker — set on Replicate/Hint carrying a tombstone so
         // replicas apply a versioned delete instead of a live write.
         bool tombstone = false;
+        // CounterAdjust only: magnitude plus direction. Keeping magnitude
+        // unsigned represents INT64_MIN-equivalent decrements without
+        // signed-negation overflow; a zero delta is a no-op.
+        uint64_t counter_delta = 0;
+        bool counter_decrement = false;
     };
 
     // Decode result. The request carries pure message data; the auth token is a

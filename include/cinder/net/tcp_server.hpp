@@ -19,6 +19,7 @@
 #include "cinder/hashing/consistent_hash_ring.hpp"
 #include "cinder/net/tcp_connection.hpp"
 #include "cinder/node/cache_operations.hpp"
+#include "cinder/store/crdt_counter_store.hpp"
 
 using asio::io_context;
 using asio::ip::tcp;
@@ -58,6 +59,7 @@ namespace cinder::net {
             MetricsCollector* metrics = nullptr,
             std::function<std::string()> config_getter = nullptr,
             AntiEntropyManager* anti_entropy = nullptr,
+            CrdtCounterStore* counter_store = nullptr,
             std::string shared_secret = {},
             std::string client_shared_secret = {}
 #ifdef CINDER_ENABLE_TLS
@@ -129,6 +131,7 @@ namespace cinder::net {
         ConsistencyMode mode_;
         GossipManager* gossip_;
         AntiEntropyManager* anti_entropy_ = nullptr;
+        CrdtCounterStore* counter_store_ = nullptr;
         MetricsCollector* metrics_ = nullptr;
 #ifdef CINDER_ENABLE_TLS
         asio::ssl::context* ssl_ctx_ = nullptr;

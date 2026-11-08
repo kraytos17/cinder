@@ -88,6 +88,14 @@ namespace cinder {
         auto get(const std::string& key) -> std::optional<std::string>;
         auto remove(const std::string& key) -> bool;
 
+        // Eventual-consistency CRDT counter operations. Increment/decrement
+        // commit locally at the ring owner and asynchronously replicate full
+        // PN-Counter state. As with ordinary async writes, a transport failure
+        // is reported as ambiguous and must not be retried blindly by the client.
+        auto counterIncrement(const std::string& key, uint64_t delta = 1) -> Result<void>;
+        auto counterDecrement(const std::string& key, uint64_t delta = 1) -> Result<void>;
+        auto counterGet(const std::string& key) -> Result<int64_t>;
+
         // Fetch many keys in one round trip per owner node.
         // Returns a map of key → value for keys that were found; missing/errored
         // keys are absent. Keys whose owner moved (stale ring view) are followed
@@ -128,7 +136,11 @@ namespace cinder {
         static constexpr int K_MAX_REDIRECT_HOPS = 4;
 
         auto routePrimary(std::string_view key) const -> NodeId;
-        auto sendToOwner(const std::string& key, const net::Request& req) -> Result<net::Response>;
+        auto sendToOwner(
+            const std::string& key,
+            const net::Request& req,
+            bool retry_transport = true
+        ) -> Result<net::Response>;
         // If res is a followable ownership redirect, register the target, learn it,
         // record the visit, and return the next node. Nullopt = not a redirect.
         auto tryFollowRedirect(
