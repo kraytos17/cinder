@@ -20,14 +20,15 @@ const (
 )
 
 // ClusterConfig configures a multi-node client. Mirrors the C++
-// ClusterConfig retry/timeout subset (client auth and anti-entropy
-// arrive with those subsystems).
+// ClusterConfig retry/timeout subset (anti-entropy arrives with that
+// subsystem).
 type ClusterConfig struct {
 	Nodes         []NodeAddr
 	MaxRetries    int           // attempts beyond the first (0 = no retry)
 	BaseBackoffMs int           // exponential: base * 2^attempt, ±20% jitter
 	RPCTimeout    time.Duration // per-RPC deadline (0 = no timeout)
 	TLS           *tls.Config   // nil = plaintext; tlscfg.Client otherwise
+	ClientSecret  string        // client auth credential (empty = open)
 }
 
 // Cluster routes requests to ring owners, following ownership redirects
@@ -63,9 +64,13 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 	if err := ring.SetNodes(ids); err != nil {
 		return nil, err
 	}
+	pool := newPoolTLS(cfg.Nodes, cfg.RPCTimeout, cfg.TLS)
+	if cfg.ClientSecret != "" {
+		pool.SetSecrets(Secrets{Client: cfg.ClientSecret})
+	}
 	return &Cluster{
 		ring:        ring,
-		pool:        newPoolTLS(cfg.Nodes, cfg.RPCTimeout, cfg.TLS),
+		pool:        pool,
 		addrs:       addrs,
 		maxRetries:  cfg.MaxRetries,
 		baseBackoff: time.Duration(cfg.BaseBackoffMs) * time.Millisecond,

@@ -29,6 +29,7 @@ type Pool struct {
 	addrs   map[string]NodeAddr
 	timeout time.Duration
 	tlsCfg  *tls.Config
+	secrets Secrets
 }
 
 // NewPool returns a pool dialing the given nodes with per-RPC timeout.
@@ -80,6 +81,20 @@ func (p *Pool) SetTLS(cfg *tls.Config) {
 	}
 }
 
+// SetSecrets installs the credentials attached to every send (minted per
+// RPC, since node tokens are time-windowed) and drops existing connections
+// so redials pick them up. Client secret wins; else the node token when a
+// shared secret and node id are set; empty disables auth.
+func (p *Pool) SetSecrets(s Secrets) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.secrets = s
+	for id, c := range p.conns {
+		delete(p.conns, id)
+		go c.Close()
+	}
+}
+
 // Send delivers one request to node, dialing on first use. A transport
 // error drops the connection and surfaces the error; the caller owns
 // retry policy.
@@ -120,6 +135,7 @@ func (p *Pool) connFor(node string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.SetSecrets(p.secrets)
 	p.conns[node] = c
 	return c, nil
 }

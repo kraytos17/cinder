@@ -279,3 +279,109 @@ func TestInteropCppClientGoTLSServer(t *testing.T) {
 		}
 	}
 }
+
+// TestInteropGoClientCppAuthServer runs the Go TLS client with a client
+// secret against a C++ TLS server requiring it: proves the token framing
+// and HMAC contract agree across implementations.
+func TestInteropGoClientCppAuthServer(t *testing.T) {
+	fx := fixturesDir(t)
+	bin := tlsCppBinary(t, "cinderd")
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	l.Close()
+	cmd := exec.Command(bin, "--port", fmt.Sprint(port), "--node-id", "node1",
+		"--tls", "--tls-cert", filepath.Join(fx, "server.pem"),
+		"--tls-key", filepath.Join(fx, "server-key.pem"),
+		"--client-shared-secret", "s3cr3t")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start cinderd: %v", err)
+	}
+	defer cmd.Process.Kill()
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	dial := func(s client.Secrets) (*client.Client, error) {
+		cfg, _ := tlscfg.Client("", "", filepath.Join(fx, "ca.pem"))
+		c, err := client.DialTLS(addr, 500*time.Millisecond, cfg)
+		if err != nil {
+			return nil, err
+		}
+		c.SetSecrets(s)
+		return c, nil
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		c, err := dial(client.Secrets{Client: "s3cr3t"})
+		if err == nil {
+			if res, err := c.Ping(); err == nil && res.Status == protocol.StatusOK {
+				c.Close()
+				break
+			}
+			c.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("C++ auth server did not become ready")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	// No token: denied even though the handshake succeeded.
+	anon, err := dial(client.Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer anon.Close()
+	if res, err := anon.Do(protocol.Request{Opcode: protocol.OpPing}); err != nil || res.Status != protocol.StatusPermissionDenied {
+		t.Fatalf("anonymous ping: %+v %v", res, err)
+	}
+	// Right token: full access.
+	good, err := dial(client.Secrets{Client: "s3cr3t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer good.Close()
+	if res, err := good.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte("k"), Value: []byte("v")}); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("authed set: %+v %v", res, err)
+	}
+	if res, err := good.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte("k")}); err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v" {
+		t.Fatalf("authed get: %+v %v", res, err)
+	}
+}
+
+// TestInteropCppClientGoAuthServer runs the real C++ TLS CLI with a client
+// secret against a Go server requiring it.
+func TestInteropCppClientGoAuthServer(t *testing.T) {
+	fx := fixturesDir(t)
+	cli := tlsCppBinary(t, "cinder-cli")
+	addr, srv := startTLSServer(t, filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem"), "")
+	_ = srv
+	if err := srv.ConfigureSecrets("", "s3cr3t"); err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(addr)
+	base := []string{"--port", port, "--tls", "--tls-ca", filepath.Join(fx, "ca.pem")}
+	// Without the secret the C++ CLI is denied.
+	cmd := exec.Command(cli, append(base, "ping")...)
+	if out, err := cmd.CombinedOutput(); err == nil {
+		t.Fatalf("anonymous C++ CLI succeeded: %q", out)
+	}
+	// With it, full access.
+	authed := append(base, "--client-secret", "s3cr3t")
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{[]string{"ping"}, "pong\n"},
+		{[]string{"set", "xcpp", "v"}, "OK\n"},
+		{[]string{"get", "xcpp"}, "v\n"},
+	} {
+		cmd := exec.Command(cli, append(authed, tc.args...)...)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("%v failed: %v", tc.args, err)
+		}
+		if string(out) != tc.want {
+			t.Fatalf("%v: got %q want %q", tc.args, out, tc.want)
+		}
+	}
+}

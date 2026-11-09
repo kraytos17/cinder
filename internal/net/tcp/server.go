@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/ae"
+	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
@@ -95,6 +97,10 @@ type Server struct {
 	tlsMu  sync.RWMutex
 	tlsCfg *tls.Config
 
+	authMu             sync.RWMutex
+	sharedSecret       string
+	clientSharedSecret string
+
 	// Rebalance on membership change. Every ring rebuild schedules one
 	// debounced scan; quarantine deferrals and migration failures
 	// reschedule through the same gate, mirroring CacheNodeServer's
@@ -147,6 +153,35 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 			return err
 		}
 		pool.SetTLS(ccfg)
+	}
+	return nil
+}
+
+// ConfigureSecrets enables authentication: sharedSecret guards internal
+// replication opcodes with time-windowed node tokens, clientSharedSecret
+// guards client/admin opcodes (and the gRPC bearer) with the static client
+// token. Empty means open. Like C++, a client secret requires TLS (its
+// bearer is replayable), so call ConfigureTLS first when setting one;
+// the node secret needs no TLS.
+func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
+	if clientSecret != "" {
+		s.tlsMu.RLock()
+		tlsCfg := s.tlsCfg
+		s.tlsMu.RUnlock()
+		if tlsCfg == nil {
+			return errors.New("tcp: client auth requires TLS (replayable bearer token)")
+		}
+	}
+	s.authMu.Lock()
+	s.sharedSecret = shared
+	s.clientSharedSecret = clientSecret
+	s.authMu.Unlock()
+	// Inter-node traffic carries node tokens minted with this node's id.
+	s.ringMu.RLock()
+	pool := s.pool
+	s.ringMu.RUnlock()
+	if pool != nil {
+		pool.SetSecrets(client.Secrets{NodeID: s.nodeID, Shared: shared})
 	}
 	return nil
 }
@@ -793,9 +828,92 @@ func (s *Server) ID() string {
 
 // Dispatch routes one request through the full TCP dispatch (ownership,
 // replication, admin). The gRPC gateway uses it so both frontends share
-// identical Get/Set/Delete semantics.
+// identical Get/Set/Delete semantics. No auth token is attached; the
+// gateway enforces its bearer separately.
 func (s *Server) Dispatch(req protocol.Request) protocol.Response {
-	return s.dispatch(req)
+	return s.dispatch(req, nil)
+}
+
+// opcodeClass mirrors TcpConnection::classifyOpcode: client opcodes are
+// ring-routed, replication and admin opcodes address this node directly.
+type opcodeClass int
+
+const (
+	classClient opcodeClass = iota
+	classReplication
+	classAdmin
+)
+
+func classifyOpcode(op protocol.Opcode) opcodeClass {
+	switch op {
+	case protocol.OpReplicate, protocol.OpHint, protocol.OpGossip,
+		protocol.OpAntiEntropyDigest, protocol.OpAntiEntropySync,
+		protocol.OpCounterAntiEntropy:
+		return classReplication
+	case protocol.OpAdminInfo, protocol.OpAdminCluster, protocol.OpAdminRing,
+		protocol.OpAdminCompact, protocol.OpAdminConfigReload, protocol.OpAdminShutdown:
+		return classAdmin
+	default:
+		return classClient
+	}
+}
+
+// checkAuth mirrors TcpConnection::checkAuth: node tokens guard internal
+// replication opcodes when a shared secret is set; the static client token
+// guards client opcodes and (preferentially) admin opcodes when a client
+// secret is set. Anything unconfigured is open. A node token is accepted
+// for the local id or any alive peer id: senders mint with their own id,
+// and verifying only self would deny every cross-node send.
+func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
+	s.authMu.RLock()
+	shared, clientSecret := s.sharedSecret, s.clientSharedSecret
+	s.authMu.RUnlock()
+	if shared == "" && clientSecret == "" {
+		return true
+	}
+	now := s.clock.Now()
+	switch classifyOpcode(op) {
+	case classReplication:
+		if shared == "" {
+			return true
+		}
+		return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+	case classAdmin:
+		if clientSecret != "" {
+			return auth.VerifyClientToken(clientSecret, token)
+		}
+		if shared != "" {
+			return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+		}
+		return true
+	default: // classClient
+		if clientSecret != "" {
+			return auth.VerifyClientToken(clientSecret, token)
+		}
+		return true
+	}
+}
+
+// verifyNodeTokenAny accepts a node token minted by self or any alive peer.
+func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) bool {
+	if auth.VerifyNodeToken(shared, s.nodeID, token, now) {
+		return true
+	}
+	s.ringMu.RLock()
+	table := s.table
+	s.ringMu.RUnlock()
+	if table == nil {
+		return false
+	}
+	for _, m := range table.Snapshot() {
+		if m.ID == s.nodeID || m.State != cluster.Alive {
+			continue
+		}
+		if auth.VerifyNodeToken(shared, m.ID, token, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // StatusOf maps store/replication errors to wire statuses, shared with
@@ -806,7 +924,9 @@ func StatusOf(err error) protocol.Status {
 
 // DeleteNoRedirect deletes without the ownership redirect, mirroring the
 // C++ gateway Delete, which bypasses checkWriteOwnership at the
-// connection layer and deletes through the operations path directly.
+// connection layer and deletes through the operations path directly. Like
+// Dispatch it performs no auth check: callers (the gateway) enforce their
+// credential first.
 func (s *Server) DeleteNoRedirect(key string) protocol.Response {
 	if m, rf, mode := s.replication(); m != nil && rf > 1 {
 		return writeResult(m.Delete(key, s.replicaNodes(key), mode, 0, 0))
@@ -895,7 +1015,7 @@ func (s *Server) handle(c net.Conn) {
 			res = protocol.Response{Status: protocol.StatusInvalidArgument}
 		} else {
 			dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
-			res = s.dispatch(dec.Req)
+			res = s.dispatch(dec.Req, dec.AuthToken)
 			res.TraceID = dec.Req.TraceID
 			res.SpanID = dec.Req.SpanID
 		}
@@ -920,9 +1040,14 @@ func writeAll(c net.Conn, b []byte) error {
 	return nil
 }
 
-// dispatch routes one decoded request. Single node: every key is local,
-// so there are no ownership redirects yet (M4).
-func (s *Server) dispatch(req protocol.Request) protocol.Response {
+// dispatch routes one decoded request: auth gate first, then ownership,
+// replication, admin by opcode.
+func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Response {
+	if !s.checkAuth(req.Opcode, authToken) {
+		// Denials carry no value (so a Get can never surface fake data)
+		// and echo the trace for correlation, like C++ denyRequest.
+		return protocol.Response{Status: protocol.StatusPermissionDenied}
+	}
 	switch req.Opcode {
 	case protocol.OpPing:
 		return protocol.Response{Status: protocol.StatusOK}

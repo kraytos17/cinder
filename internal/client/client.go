@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
@@ -25,6 +26,38 @@ type Client struct {
 	mu      sync.Mutex
 	conn    net.Conn
 	timeout time.Duration
+	secrets Secrets
+}
+
+// Secrets carries the credentials a client presents: the static client
+// token when set, else a time-windowed node token when a shared secret
+// and node id are set. Empty means open (no token attached).
+type Secrets struct {
+	NodeID string
+	Shared string
+	Client string
+}
+
+// tokenFor mirrors the C++ pool precedence: the client token wins when a
+// client secret is set, otherwise the node token when a shared secret and
+// node id are set, otherwise nothing.
+func tokenFor(s Secrets, now time.Time) []byte {
+	if s.Client != "" {
+		return auth.ClientToken(s.Client)
+	}
+	if s.Shared != "" && s.NodeID != "" {
+		return auth.NodeToken(s.Shared, s.NodeID, now)
+	}
+	return nil
+}
+
+// SetSecrets installs the credentials attached to every subsequent RPC.
+// Tokens are minted per call (node tokens are time-windowed), so updating
+// secrets takes effect immediately on this connection.
+func (c *Client) SetSecrets(s Secrets) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.secrets = s
 }
 
 // Dial opens addr with a dial timeout; timeout also bounds every RPC.
@@ -77,7 +110,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if c.conn == nil {
 		return protocol.Response{}, fmt.Errorf("client: connection closed")
 	}
-	frame, err := protocol.EncodeRequest(req, nil)
+	frame, err := protocol.EncodeRequest(req, tokenFor(c.secrets, time.Now()))
 	if err != nil {
 		return protocol.Response{}, err
 	}

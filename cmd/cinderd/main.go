@@ -41,6 +41,8 @@ func main() {
 		tlsCert       = flag.String("tls-cert", "", "path to TLS certificate chain (PEM)")
 		tlsKey        = flag.String("tls-key", "", "path to TLS private key (PEM)")
 		tlsCA         = flag.String("tls-ca", "", "path to CA certificate for peer verification (PEM)")
+		sharedSecret  = flag.String("shared-secret", "", "shared secret for node authentication (or CINDER_SHARED_SECRET)")
+		clientSecret  = flag.String("client-shared-secret", "", "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)")
 		enablePersist = flag.Bool("enable-persistence", false, "enable WAL + snapshots")
 		dataDir       = flag.String("data-dir", "", "persistence directory (required with --enable-persistence)")
 		showVers      = flag.Bool("version", false, "print version and exit")
@@ -81,6 +83,20 @@ func main() {
 			os.Exit(2)
 		}
 	}
+	shared := *sharedSecret
+	if shared == "" {
+		shared = os.Getenv("CINDER_SHARED_SECRET")
+	}
+	clientSec := *clientSecret
+	if clientSec == "" {
+		clientSec = os.Getenv("CINDER_CLIENT_SECRET")
+	}
+	if shared != "" || clientSec != "" {
+		if err := srv.ConfigureSecrets(shared, clientSec); err != nil {
+			fmt.Fprintln(os.Stderr, "cinderd:", err)
+			os.Exit(2)
+		}
+	}
 	if *enablePersist {
 		if *dataDir == "" {
 			fmt.Fprintln(os.Stderr, "cinderd: --data-dir is required with --enable-persistence")
@@ -117,6 +133,9 @@ func main() {
 			}
 			pool.SetTLS(ccfg)
 		}
+		if shared != "" {
+			pool.SetSecrets(client.Secrets{NodeID: *nodeID, Shared: shared})
+		}
 		mgr := repl.NewManager(st, *nodeID, nil, pool)
 		srv.ConfigureReplication(*replFact, mode, mgr)
 		if *enablePersist {
@@ -143,6 +162,7 @@ func main() {
 			os.Exit(1)
 		}
 		gw := grpcgw.New(srv)
+		gw.SetClientSecret(clientSec)
 		defer gw.Stop()
 		go func() {
 			if err := gw.Serve(gl); err != nil {

@@ -2,6 +2,7 @@ package grpcgw_test
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -12,8 +13,12 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
+	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/grpcgw"
 	gen "github.com/kraytos17/cinder/internal/grpcgw/gen"
 	"github.com/kraytos17/cinder/internal/net/tcp"
@@ -51,6 +56,94 @@ func startGateway(t *testing.T, id string) (gen.CinderCacheServiceClient, func()
 		srv.Shutdown()
 	})
 	return gen.NewCinderCacheServiceClient(conn), func() {}
+}
+
+// startAuthedGateway is startGateway with a client secret configured;
+// callers attach credentials via bearerCtx (or nothing, to test denial).
+func startAuthedGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
+	t.Helper()
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	go srv.Serve(tl)
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := grpcgw.New(srv)
+	gw.SetClientSecret(secret)
+	go gw.Serve(gl)
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		conn.Close()
+		gw.Stop()
+		srv.Shutdown()
+	})
+	c := gen.NewCinderCacheServiceClient(conn)
+	return c
+}
+
+// bearerCtx attaches "Bearer <hex(client-token)>" like a C++ client would.
+func bearerCtx(secret string) context.Context {
+	return metadata.NewOutgoingContext(context.Background(),
+		metadata.Pairs("authorization", "Bearer "+hex.EncodeToString(auth.ClientToken(secret))))
+}
+
+func TestGrpcAuthMissingCredentialsDenied(t *testing.T) {
+	c := startAuthedGateway(t, "s3cr3t")
+	if _, err := c.Ping(context.Background(), &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ping without bearer: %v", err)
+	}
+}
+
+func TestGrpcAuthWrongSecretDenied(t *testing.T) {
+	c := startAuthedGateway(t, "s3cr3t")
+	md := metadata.Pairs("authorization", "Bearer "+hex.EncodeToString(auth.ClientToken("wrong")))
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
+	if _, err := c.Ping(ctx, &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ping with wrong bearer: %v", err)
+	}
+	if _, err := c.Ping(context.Background(), &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("ping with empty bearer: %v", err)
+	}
+}
+
+func TestGrpcAuthSetGetWithBearer(t *testing.T) {
+	c := startAuthedGateway(t, "s3cr3t")
+	ctx := bearerCtx("s3cr3t")
+	if set, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v"}); err != nil || set.Status != OK {
+		t.Fatalf("set: %+v %v", set, err)
+	}
+	got, err := c.Get(ctx, &gen.GetRequest{Key: "k"})
+	if err != nil || got.Status != OK || got.GetValue() != "v" {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+}
+
+func TestGrpcAuthMultiSetAndInfoWithBearer(t *testing.T) {
+	c := startAuthedGateway(t, "s3cr3t")
+	ctx := bearerCtx("s3cr3t")
+	ms, err := c.MultiSet(ctx, &gen.MultiSetRequest{Requests: []*gen.SetRequest{{Key: "a", Value: "1"}}})
+	if err != nil || len(ms.Responses) != 1 || ms.Responses[0].Status != OK {
+		t.Fatalf("multiset: %+v %v", ms, err)
+	}
+	info, err := c.Info(ctx, &gen.InfoRequest{})
+	if err != nil || info.GetJson() == "" {
+		t.Fatalf("info: %+v %v", info, err)
+	}
+}
+
+func TestGrpcAuthUnconfiguredIsOpen(t *testing.T) {
+	c, _ := startGateway(t, "node1")
+	if pong, err := c.Ping(context.Background(), &gen.PingRequest{}); err != nil || pong.Status != OK {
+		t.Fatalf("open gateway ping: %+v %v", pong, err)
+	}
 }
 
 func TestGatewaySetAndGet(t *testing.T) {

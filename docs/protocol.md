@@ -504,10 +504,17 @@ connection never interleave.
 
 - **Counters** (opcodes 17–20) decode but answer `NotSupported`: there is no
   counter store. The frames above are still the contract for one.
-- **Auth** is open: the `auth_token` field parses, but no secret is ever
-  configured or verified — every opcode class is allowed, mirroring the
-  no-secret behavior. (`cinder-cli` still accepts `--client-secret` for
-  future compat; it is ignored.)
+- **Auth** is enforced per the contract above: `ConfigureSecrets` installs
+  the secrets (`cinderd --shared-secret` / `--client-shared-secret`, with
+  `CINDER_SHARED_SECRET` / `CINDER_CLIENT_SECRET` env fallbacks), the client
+  token gates client/admin opcodes and the node token gates replication
+  opcodes, and failures answer `PermissionDenied` with no value. A node
+  token minted by any known alive peer verifies (senders use their own id),
+  which deliberately differs from the retired C++ server's self-only check
+  — that check denied every cross-node replication and was never exercised
+  by a C++ test. A client secret requires TLS (rejected at configure time
+  otherwise); the gRPC bearer rule is enforced when the gateway's secret
+  is set.
 - **Trace context** is carried and echoed (`trace_id` minted when zero,
   propagated on fan-out) but not consumed: there is no tracing substrate,
   so the context is correlation metadata only. The gRPC gateway ignores

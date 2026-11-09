@@ -241,6 +241,43 @@ func TestCliTLS(t *testing.T) {
 	}
 }
 
+// TestCliClientSecret exercises --client-secret against a TLS server with
+// client auth: missing/wrong secrets are denied, the right one works.
+func TestCliClientSecret(t *testing.T) {
+	fx := "../../tests/fixtures"
+	if _, err := os.Stat(fx + "/ca.pem"); err != nil {
+		t.Skipf("no fixtures at %s", fx)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureSecrets("", "topsecret"); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(l)
+	t.Cleanup(srv.Shutdown)
+	addr := l.Addr().String()
+	base := []string{"--tls", "--tls-ca", fx + "/ca.pem"}
+	if out, errOut, code := runCLI(t, addr, append(base, "ping")...); code == 0 || !strings.Contains(errOut, "permission denied") || out != "" {
+		t.Fatalf("missing secret: out=%q err=%q code=%d", out, errOut, code)
+	}
+	if out, _, code := runCLI(t, addr, append(append(base, "--client-secret", "wrong"), "ping")...); code == 0 || out != "" {
+		t.Fatalf("wrong secret: out=%q code=%d", out, code)
+	}
+	ok := append(base, "--client-secret", "topsecret")
+	if out, errOut, code := runCLI(t, addr, append(ok, "set", "k", "v")...); out != "OK\n" || errOut != "" || code != 0 {
+		t.Fatalf("good secret set: out=%q err=%q code=%d", out, errOut, code)
+	}
+	if out, _, _ := runCLI(t, addr, append(ok, "get", "k")...); out != "v\n" {
+		t.Fatalf("good secret get: %q", out)
+	}
+}
+
 // Go CLI against the real C++ server: the v6 wire contract holds both ways.
 func TestCliAgainstCpp(t *testing.T) {
 	cppAddr := os.Getenv("CINDER_TEST_CPP_ADDR")

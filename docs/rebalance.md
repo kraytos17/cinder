@@ -544,6 +544,8 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--tls` | `false` | Enable TLS encryption (requires `--tls-cert` + `--tls-key`) |
 | `--tls-cert` / `--tls-key` | (empty) | PEM certificate chain / private key |
 | `--tls-ca` | (empty) | CA for peer verification (chain-only, like asio `verify_peer`) |
+| `--shared-secret` | (empty) | Node auth secret (or `CINDER_SHARED_SECRET`); replication opcodes require a token minted with it |
+| `--client-shared-secret` | (empty) | Client auth secret (or `CINDER_CLIENT_SECRET`); client/admin opcodes and the gRPC bearer require it; needs `--tls` |
 | `--enable-persistence` | `false` | Enable WAL + snapshots |
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
 

@@ -100,7 +100,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if clientSecret == "" {
 		clientSecret = os.Getenv("CINDER_CLIENT_SECRET")
 	}
-	_ = clientSecret // accepted for compat; not enforced yet
 	pos := fs.Args()
 	if len(pos) == 0 {
 		fmt.Fprintln(stderr, "error: command required: info|cluster|ring|compact|config-reload|shutdown")
@@ -127,11 +126,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	auth := client.Secrets{Client: clientSecret}
 	dial := func() (*client.Client, error) {
+		var c *client.Client
+		var err error
 		if tlsCfg != nil {
-			return client.DialTLS(addr, 5*time.Second, tlsCfg)
+			c, err = client.DialTLS(addr, 5*time.Second, tlsCfg)
+		} else {
+			c, err = client.Dial(addr, 5*time.Second)
 		}
-		return client.Dial(addr, 5*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		c.SetSecrets(auth)
+		return c, nil
 	}
 	c, err := dial()
 	if err != nil {
