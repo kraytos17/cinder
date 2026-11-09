@@ -554,6 +554,14 @@ go-vet:
 go-fuzz *args:
     cd go && go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@"
 
+# Benchmarks (quick smoke by default; pass -benchtime for publishable
+# numbers, e.g. `just go-bench -benchtime=1s`). -benchmem always on:
+# allocation pressure is the GC-tuning signal.
+[group('go')]
+[positional-arguments]
+go-bench *args:
+    cd go && go test -run=NONE -bench=. -benchmem "$@"
+
 # ── Private helpers (names start with _ so `just --list` hides them) ──────────
 
 # Configure `p`. Always re-run: it is cheap and picks up CMakePresets.json edits,

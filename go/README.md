@@ -71,7 +71,25 @@ Module: `github.com/kraytos17/cinder/go` (toolchain pinned to go1.27.3 in
     support, `--tls*` flags on `cinderd` and both CLIs; Go↔Go incl.
     client-auth, Go↔C++ both directions against `build/debug-tls` (rebuilt:
     the old binaries predated protocol v6).
-  - Next: gRPC gateway, benchmarks.
+  - gRPC done: protoc stubs (`internal/grpcgw/gen`, regen documented in
+    `gen/doc.go`), `Gateway` wrapping the TCP server (`Dispatch` for
+    Get/Set/Delete/Admin parity, direct store reads for GetVersioned/
+    MultiGet, owner-check + local put for MultiSet, `DeleteNoRedirect`
+    mirroring the C++ ownership bypass, expiry always 0), `--grpc-port` on
+    `cinderd`; C++ `grpc_test` cases mirrored plus versioned-meta and
+    non-owner tests; Go client ↔ C++ gateway interop via `build/tls-grpc`
+    (`debug-grpc` binaries are stale/broken — undefined abseil symbols).
+    No client auth / trace metadata (no Go auth/tracing infra yet).
+  - Next: benchmarks.
+- M5 done: benchmarks (`*_bench_test.go` in store/hashring/protocol/
+  persist/repl/ae/tcp, `just go-bench` with `-benchmem` always on):
+  store put/get/TTL/miss/eviction, ring lookup + replica sets, codec
+  encode/decode with MB/s, WAL sequential/batch appends, hint push/snapshot,
+  AE full-scan digest + IBLT build/peel, loopback RPC set/get (+ parallel).
+  Allocation counts are the GC-tuning signal (the way C++ uses sanitizers):
+  e.g. the per-round digest costs ~1 alloc/entry through `LiveEntries`.
+- M6 (next): 100% replacement — retire the C++ tree, promote `go/` to repo
+  root layout, cut over CI.
 
 ## Recipes
 

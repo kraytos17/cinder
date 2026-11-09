@@ -118,27 +118,42 @@ func TestRebalanceJoinRF2(t *testing.T) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	// Migrated-away copies are reclaimed: after every ring converged, one
-	// final scan removes keys outside their set. (Without the manual scan
-	// this races: a not-yet-converged peer can re-push a key the leaver
-	// just dropped. The extra copy is harmless — redundant, never
-	// split-brain — and the next scan reclaims it.)
+	// Migrated-away copies are reclaimed once every ring has converged: a
+	// not-yet-converged peer can re-push a key the leaver just dropped
+	// (harmless — redundant, never split-brain), so scan repeatedly until
+	// no key sits outside its set. Table convergence implies ring
+	// convergence (rebuild runs synchronously in the change callback).
 	for _, n := range c.nodes {
-		n.srv.RebalanceNow()
+		waitForAlive(t, n.srv, "node3")
 	}
-	for _, k := range keys {
-		nodes, _ := testRing3.GetNodes(k, 2)
-		want := map[string]bool{}
-		for _, id := range nodes {
-			want[id] = true
-		}
-		for id, n := range c.nodes {
-			if !want[id] {
-				if _, ok := n.mgr.Local().GetVersioned(k); ok {
-					t.Fatalf("%q lingers on %s outside its set %v", k, id, nodes)
+	lingering := func() (string, string) {
+		for _, k := range keys {
+			nodes, _ := testRing3.GetNodes(k, 2)
+			want := map[string]bool{}
+			for _, id := range nodes {
+				want[id] = true
+			}
+			for id, n := range c.nodes {
+				if !want[id] {
+					if _, ok := n.mgr.Local().GetVersioned(k); ok {
+						return k, id
+					}
 				}
 			}
 		}
+		return "", ""
+	}
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		for _, n := range c.nodes {
+			n.srv.RebalanceNow()
+		}
+		if k, id := lingering(); k == "" {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%q still lingers on %s", k, id)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -188,20 +203,33 @@ func TestRebalanceJoinRF1(t *testing.T) {
 	if moved == 0 {
 		t.Fatal("no key migrated to the joining node")
 	}
-	// Old owners release migrated keys (final scan on converged rings;
-	// see the RF=2 test for why the manual pass is needed).
+	// Old owners release migrated keys: same poll-until-clean as RF=2
+	// (rings may still be converging right after primaries land).
 	for _, n := range c.nodes {
-		n.srv.RebalanceNow()
+		waitForAlive(t, n.srv, "node3")
 	}
-	// Old owners released migrated keys.
-	for _, k := range keys {
-		nodes, _ := testRing3.GetNodes(k, 1)
-		for id, n := range c.nodes {
-			if id != nodes[0] {
-				if _, ok := n.mgr.Local().GetVersioned(k); ok {
-					t.Fatalf("%q lingers on old owner %s", k, id)
+	deadline = time.Now().Add(20 * time.Second)
+	for {
+		for _, n := range c.nodes {
+			n.srv.RebalanceNow()
+		}
+		var lingering string
+		for _, k := range keys {
+			nodes, _ := testRing3.GetNodes(k, 1)
+			for id, n := range c.nodes {
+				if id != nodes[0] {
+					if _, ok := n.mgr.Local().GetVersioned(k); ok {
+						lingering = k
+					}
 				}
 			}
 		}
+		if lingering == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%q still lingers on an old owner", lingering)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }

@@ -744,6 +744,37 @@ func (s *Server) OwnerOf(key string) string {
 	return s.ownerOf(key)
 }
 
+// ID returns this node's stable identifier.
+func (s *Server) ID() string {
+	return s.nodeID
+}
+
+// Dispatch routes one request through the full TCP dispatch (ownership,
+// replication, admin). The gRPC gateway uses it so both frontends share
+// identical Get/Set/Delete semantics.
+func (s *Server) Dispatch(req protocol.Request) protocol.Response {
+	return s.dispatch(req)
+}
+
+// StatusOf maps store/replication errors to wire statuses, shared with
+// the gRPC gateway's local-write paths (MultiSet).
+func StatusOf(err error) protocol.Status {
+	return statusOf(err)
+}
+
+// DeleteNoRedirect deletes without the ownership redirect, mirroring the
+// C++ gateway Delete, which bypasses checkWriteOwnership at the
+// connection layer and deletes through the operations path directly.
+func (s *Server) DeleteNoRedirect(key string) protocol.Response {
+	if m, rf, mode := s.replication(); m != nil && rf > 1 {
+		return writeResult(m.Delete(key, s.replicaNodes(key), mode, 0, 0))
+	}
+	if err := s.store.RemoveVersioned(key, s.store.MintVersion(), 0); err != nil {
+		return protocol.Response{Status: statusOf(err)}
+	}
+	return protocol.Response{Status: protocol.StatusOK}
+}
+
 // ownerOf resolves the ring owner, or self when standalone.
 func (s *Server) ownerOf(key string) string {
 	s.ringMu.RLock()

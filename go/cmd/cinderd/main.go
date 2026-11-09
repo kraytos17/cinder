@@ -13,6 +13,7 @@ import (
 
 	"github.com/kraytos17/cinder/go/internal/ae"
 	"github.com/kraytos17/cinder/go/internal/client"
+	"github.com/kraytos17/cinder/go/internal/grpcgw"
 	"github.com/kraytos17/cinder/go/internal/net/tcp"
 	"github.com/kraytos17/cinder/go/internal/repl"
 	"github.com/kraytos17/cinder/go/internal/store"
@@ -35,6 +36,7 @@ func main() {
 		aeInterval    = flag.Int("anti-entropy-interval-ms", 30000, "anti-entropy round interval")
 		aeBuckets     = flag.Int("anti-entropy-buckets", 256, "anti-entropy digest buckets")
 		quarantineMs  = flag.Int("quarantine-interval-ms", 10000, "rejoin warming window before a node receives migrated keys (0 = disabled)")
+		grpcPort      = flag.Int("grpc-port", 0, "gRPC gateway port (0 = disabled)")
 		tls           = flag.Bool("tls", false, "enable TLS encryption")
 		tlsCert       = flag.String("tls-cert", "", "path to TLS certificate chain (PEM)")
 		tlsKey        = flag.String("tls-key", "", "path to TLS private key (PEM)")
@@ -134,6 +136,20 @@ func main() {
 	}
 
 	go srv.Serve(l)
+	if *grpcPort > 0 {
+		gl, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cinderd: grpc listen:", err)
+			os.Exit(1)
+		}
+		gw := grpcgw.New(srv)
+		defer gw.Stop()
+		go func() {
+			if err := gw.Serve(gl); err != nil {
+				fmt.Fprintln(os.Stderr, "cinderd: grpc:", err)
+			}
+		}()
+	}
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig

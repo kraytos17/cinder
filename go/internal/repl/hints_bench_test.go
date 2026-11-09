@@ -1,0 +1,42 @@
+package repl
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/kraytos17/cinder/go/internal/net/protocol"
+)
+
+// BenchmarkHintPush measures queueing distinct keys (the outage path).
+func BenchmarkHintPush(b *testing.B) {
+	q := NewHintQueue()
+	exp := time.Now().Add(time.Hour)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q.Push(Hint{
+			Target:    "n2",
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},
+			ExpiresAt: exp,
+		})
+	}
+}
+
+// BenchmarkHintSnapshot measures the replay-scan over a full queue.
+func BenchmarkHintSnapshot(b *testing.B) {
+	q := NewHintQueue()
+	exp := time.Now().Add(time.Hour)
+	for i := 0; i < 1024; i++ {
+		q.Push(Hint{
+			Target:    "n2",
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},
+			ExpiresAt: exp,
+		})
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if got := q.Snapshot(time.Now(), ReplayBatch); len(got) == 0 {
+			b.Fatal("empty snapshot")
+		}
+	}
+}
