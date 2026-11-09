@@ -259,7 +259,7 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 	})
 	// Find a key owned by node2 and Set it through node1's gateway.
 	foreign := ""
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		if k := fmt.Sprintf("foreign-%d", i); nodes[0].srv.OwnerOf(k) == "node2" {
 			foreign = k
 			break

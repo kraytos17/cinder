@@ -26,7 +26,7 @@ func BenchmarkHintPush(b *testing.B) {
 func BenchmarkHintSnapshot(b *testing.B) {
 	q := NewHintQueue()
 	exp := time.Now().Add(time.Hour)
-	for i := 0; i < 1024; i++ {
+	for i := range 1024 {
 		q.Push(Hint{
 			Target:    "n2",
 			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},

@@ -82,6 +82,10 @@ type Server struct {
 	gossipInterval time.Duration
 	probeInterval  time.Duration
 	suspectTimeout time.Duration
+	// replayInterval is the hint-replay tick period. Like C++ scheduleReplay
+	// (~1s): hints queue on failed fan-out and drain on this cadence once
+	// their target is reachable again.
+	replayInterval time.Duration
 
 	replMu sync.RWMutex
 	repl   *repl.Manager
@@ -236,6 +240,7 @@ func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *
 		gossipInterval: time.Second,
 		probeInterval:  time.Second,
 		suspectTimeout: 3 * time.Second,
+		replayInterval: time.Second,
 		aeInterval:     30 * time.Second,
 	}
 }
@@ -391,6 +396,9 @@ func (s *Server) Serve(l net.Listener) error {
 	s.aeMu.RLock()
 	mgr := s.ae
 	s.aeMu.RUnlock()
+	s.replMu.RLock()
+	replMgr := s.repl
+	s.replMu.RUnlock()
 	var bgWG sync.WaitGroup
 	if gossip != nil && fd != nil {
 		bgWG.Add(2)
@@ -426,6 +434,23 @@ func (s *Server) Serve(l net.Listener) error {
 				case <-time.After(s.currentAEInterval()):
 				}
 				mgr.RunRound(s.replicaFactor())
+			}
+		})
+	}
+	if replMgr != nil {
+		bgWG.Go(func() {
+			for {
+				select {
+				case <-s.stopBg:
+					return
+				case <-time.After(s.currentReplayInterval()):
+				}
+				// Best-effort like C++ scheduleReplay: ticks that fire
+				// while the target is still down fail silently and the
+				// next tick retries.
+				if replMgr.HintCount() > 0 {
+					replMgr.ReplayHints()
+				}
 			}
 		})
 	}
@@ -681,6 +706,23 @@ func (s *Server) SetSuspectTimeout(d time.Duration) {
 	if s.fd != nil {
 		s.fd.SetSuspectTimeout(d)
 	}
+}
+
+// SetReplayInterval changes the hint-replay tick period (tests use short
+// ones). Zero or negative selects the 1s default.
+func (s *Server) SetReplayInterval(d time.Duration) {
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	s.replayInterval = d
+}
+
+func (s *Server) currentReplayInterval() time.Duration {
+	s.ringMu.RLock()
+	defer s.ringMu.RUnlock()
+	if s.replayInterval <= 0 {
+		return time.Second
+	}
+	return s.replayInterval
 }
 
 func (s *Server) currentGossipInterval() time.Duration {

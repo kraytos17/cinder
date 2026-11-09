@@ -37,7 +37,7 @@ func BenchmarkStoreGetHit(b *testing.B) {
 	s := NewLRUStore(1<<26, nil)
 	val := make([]byte, 256)
 	const resident = 100_000
-	for i := 0; i < resident; i++ {
+	for i := range resident {
 		if err := s.Put(fmt.Sprintf("hit-key-%d", i), val); err != nil {
 			b.Fatal(err)
 		}

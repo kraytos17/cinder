@@ -298,9 +298,10 @@ and expired records are skipped.
 - **No compaction**: the journal grows until restart. (The retired C++
   journal rewrote itself past 4,096 records; the Go one does not yet —
   long outages with persistence on keep every record.)
-- **Recovery order**: hint recovery runs before serving. There is no
-  background replay tick: replayed hints wait for an explicit
-  `ReplayHints` call (tests drive it directly).
+- **Recovery order**: hint recovery runs before serving. A background
+  replay tick (1 s, `SetReplayInterval` for tests) drains queued hints
+  once their target is reachable again; ticks that fire while it is still
+  down fail silently and the next tick retries.
 
 ## Anti-Entropy
 

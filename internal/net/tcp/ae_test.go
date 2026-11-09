@@ -17,6 +17,11 @@ import (
 func TestAEConvergesAfterRestart(t *testing.T) {
 	c := newTestCluster(t, []string{"node1", "node2"}, 2, 0)
 	defer c.shutdown()
+	// Freeze the replay tick: convergence below must come from manual
+	// anti-entropy rounds only, never from hint replay.
+	for _, n := range c.nodes {
+		n.srv.SetReplayInterval(time.Hour)
+	}
 	n1 := c.nodes["node1"]
 	d1, err := client.Dial(n1.addr, 5*time.Second)
 	if err != nil {

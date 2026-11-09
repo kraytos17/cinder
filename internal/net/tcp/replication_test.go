@@ -285,8 +285,11 @@ func TestReplAsyncHintAndReplay(t *testing.T) {
 	defer c.shutdown()
 	// Freeze failure detection: the killed node must stay ring-listed so
 	// the hint path (not the leave path) is exercised deterministically.
+	// Freeze hint replay too: this test drives ReplayHints manually, and a
+	// background tick would drain the queue first (replayed == 0 flake).
 	for _, n := range c.nodes {
 		n.srv.SetSuspectTimeout(time.Hour)
+		n.srv.SetReplayInterval(time.Hour)
 	}
 	cl := c.client()
 	defer cl.Close()

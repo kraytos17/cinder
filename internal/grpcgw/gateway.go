@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 
 	gen "github.com/kraytos17/cinder/internal/grpcgw/gen"
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -68,7 +67,7 @@ func (s *service) Get(_ context.Context, req *gen.GetRequest) (*gen.GetResponse,
 	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpGet, Key: []byte(req.GetKey())})
 	out := &gen.GetResponse{Status: toProtoStatus(res.Status)}
 	if res.HasValue {
-		out.Value = proto.String(string(res.Value))
+		out.Value = new(string(res.Value))
 	}
 	return out, nil
 }
@@ -98,7 +97,7 @@ func (s *service) GetVersioned(_ context.Context, req *gen.GetVersionedRequest) 
 		return out, nil
 	}
 	out.Status = gen.StatusCode_STATUS_CODE_UNSPECIFIED
-	out.Value = proto.String(string(e.Value))
+	out.Value = new(string(e.Value))
 	out.Version = e.Version
 	out.WriterNodeHash = e.WriterNodeHash
 	// Expiry intentionally always 0, mirroring the C++ handler.
@@ -116,7 +115,7 @@ func (s *service) MultiGet(_ context.Context, req *gen.MultiGetRequest) (*gen.Mu
 		r := &gen.GetResponse{}
 		if val, ok := s.node.Store().Get(key); ok {
 			r.Status = gen.StatusCode_STATUS_CODE_UNSPECIFIED
-			r.Value = proto.String(string(val))
+			r.Value = new(string(val))
 		} else {
 			r.Status = gen.StatusCode_STATUS_CODE_NOT_FOUND
 		}

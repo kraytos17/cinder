@@ -698,6 +698,9 @@ func TestInteropAEWithCpp(t *testing.T) {
 		srv.SetSuspectTimeout(time.Hour)
 		srv.SetGossipInterval(200 * time.Millisecond)
 		srv.SetProbeInterval(200 * time.Millisecond)
+		// Freeze the replay tick: phase A must converge through
+		// anti-entropy only, never through hint replay.
+		srv.SetReplayInterval(time.Hour)
 		pool := client.NewPool([]client.NodeAddr{{ID: "node1", Host: "127.0.0.1", Port: cPort}}, 5*time.Second)
 		mgr := repl.NewManager(st, "gonode", nil, pool)
 		srv.ConfigureReplication(2, repl.Async, mgr)
@@ -747,8 +750,8 @@ func TestInteropAEWithCpp(t *testing.T) {
 
 	// Phase A: crash recovery Go -> C++. Kill C++, write gonode-owned keys
 	// (async fan-outs fail into hints), restart C++ empty, AE converges it.
-	// Hermetic: the Go tree has no background hint replay, so only AE can
-	// deliver these keys.
+	// Hermetic: the Go replay tick is frozen above, so only AE can deliver
+	// these keys.
 	startCpp()
 	waitReady(t, cAddr)
 	startGo(gListener)
