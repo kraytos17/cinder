@@ -7,8 +7,8 @@
 //
 //	just proto-generate
 //
-// (Runs `go tool buf generate`, then flattens gen/cinder/v1/*.pb.go into
-// gen/. The flatten keeps the import path short; there is only one proto,
-// so no collisions. Config lives in buf.yaml / buf.gen.yaml.)
+// (Runs `go tool buf lint` then `go tool buf generate`; the `module=`
+// option in buf.gen.yaml emits flat files directly into gen/. Config
+// lives in buf.yaml / buf.gen.yaml.)
 // Verify with go build ./... && go test ./internal/grpcgw/.
 package gen

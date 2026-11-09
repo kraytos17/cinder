@@ -116,14 +116,12 @@ bench-trace *args:
 # Regenerate the gRPC stubs from the shared proto (see buf.gen.yaml).
 # buf compiles the proto itself — no protoc binary anywhere. Plugins run
 # through `go tool`, so the go.mod-pinned versions do the generation on a
-# fresh checkout. The mv flatten keeps the import path short; there is
-# only one proto, so no collisions. Verify with go build ./... && go test
-# ./internal/grpcgw/.
+# fresh checkout. The `module=` option emits flat files directly into
+# gen/ (no cinder/v1 nesting, no mv step). Verify with
+# go build ./... && go test ./internal/grpcgw/.
 proto-generate:
     go tool buf lint
     go tool buf generate
-    mv internal/grpcgw/gen/cinder/v1/*.pb.go internal/grpcgw/gen/
-    rm -rf internal/grpcgw/gen/cinder
 
 # Run a local node (flags pass through to cinderd).
 [positional-arguments]

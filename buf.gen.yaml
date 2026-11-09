@@ -1,18 +1,17 @@
 # Codegen for internal/grpcgw/gen. buf compiles the proto itself — no
-# protoc binary involved. Plugins run through `go tool`, so the exact
-# versions pinned in go.mod (tool directives) do the generation on any
-# machine with only the Go toolchain. `paths=source_relative`-equivalent
-# layout keeps the existing flat gen/ directory (see the mv step in the
-# Justfile recipe).
+# protoc binary anywhere. Plugins run through `go tool`, so the go.mod-pinned
+# versions do the generation on a fresh checkout with only the Go toolchain.
+# The `module=` option emits flat files directly into gen/ (no cinder/v1
+# nesting, no post-processing); the M mapping only sets the Go import path.
 version: v2
 plugins:
   - local: ["go", "tool", "google.golang.org/protobuf/cmd/protoc-gen-go"]
     out: internal/grpcgw/gen
     opt:
-      - paths=source_relative
+      - module=github.com/kraytos17/cinder/internal/grpcgw/gen
       - Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen
   - local: ["go", "tool", "google.golang.org/grpc/cmd/protoc-gen-go-grpc"]
     out: internal/grpcgw/gen
     opt:
-      - paths=source_relative
+      - module=github.com/kraytos17/cinder/internal/grpcgw/gen
       - Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen
