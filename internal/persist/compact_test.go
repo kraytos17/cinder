@@ -95,3 +95,26 @@ func TestMaybeCompactNoWAL(t *testing.T) {
 		t.Fatal("compacted with an empty WAL and no elapsed interval")
 	}
 }
+
+func TestReplayDelRespectsLWW(t *testing.T) {
+	dir := t.TempDir()
+	st := testStore(t)
+	m := NewManager(dir, st, nil)
+	mustRecover(t, m)
+	wire(t, st, m)
+	putVer(t, st, "k", "v", 5, 9)
+	if !st.Remove("k") {
+		t.Fatal("remove failed")
+	}
+	putVer(t, st, "k", "v2", 9, 9)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st2 := testStore(t)
+	m2 := NewManager(dir, st2, nil)
+	mustRecover(t, m2)
+	if got, ok := st2.Get("k"); !ok || string(got) != "v2" {
+		t.Fatalf("newer write lost to replayed delete: %q %v", got, ok)
+	}
+}

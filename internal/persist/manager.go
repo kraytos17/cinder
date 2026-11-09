@@ -245,6 +245,15 @@ func (m *Manager) Recover() error {
 				return fmt.Errorf("persist: corrupt WAL %s", path)
 			}
 			if e.Op == OpDel {
+				// Hard-erase, mirroring the live Remove: OpDel records
+				// only ever come from migration cleanup, which runs
+				// after every new holder acked — so no older live copy
+				// can win by absence that a tombstone would need to
+				// suppress. Replanting a tombstone here would be
+				// actively harmful: it carries the migrated version,
+				// ties the migrated copy, and tombstone-wins ties
+				// would delete successfully migrated data on the next
+				// anti-entropy round.
 				m.store.Remove(string(e.Key))
 				continue
 			}
