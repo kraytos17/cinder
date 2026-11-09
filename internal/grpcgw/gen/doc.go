@@ -1,21 +1,14 @@
-// Package gen holds the protoc-generated CinderCacheService stubs,
+// Package gen holds the buf-generated CinderCacheService stubs,
 // compiled from the shared cinder/v1/cache.proto (wire law lives there;
 // this package is a build artifact, never hand-edited).
 //
-// Regenerate from the repo root (protoc-gen-go and protoc-gen-go-grpc must
-// be on PATH, e.g. ~/go/bin):
+// Regenerate from the repo root (Go toolchain only — buf and both plugins
+// run via `go tool` from pinned go.mod directives):
 //
-//	protoc -I. \
-//	  --plugin=protoc-gen-go=$(which protoc-gen-go) \
-//	  --plugin=protoc-gen-grpc=$(which protoc-gen-go-grpc) \
-//	  --go_out=internal/grpcgw/gen \
-//	  '--go_opt=paths=source_relative,Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen' \
-//	  --go-grpc_out=internal/grpcgw/gen \
-//	  '--go-grpc_opt=paths=source_relative,Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen' \
-//	  cinder/v1/cache.proto
-//	mv internal/grpcgw/gen/cinder/v1/*.pb.go internal/grpcgw/gen/
-//	rm -rf internal/grpcgw/gen/cinder
+//	just proto-generate
 //
-// The mv flatten keeps the import path short; there is only one proto, so
-// no collisions. Verify with go build ./... && go test ./internal/grpcgw/.
+// (Runs `go tool buf generate`, then flattens gen/cinder/v1/*.pb.go into
+// gen/. The flatten keeps the import path short; there is only one proto,
+// so no collisions. Config lives in buf.yaml / buf.gen.yaml.)
+// Verify with go build ./... && go test ./internal/grpcgw/.
 package gen

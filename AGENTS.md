@@ -46,8 +46,9 @@ protocol (v6) with gRPC gateway and TLS 1.2.
   Profiles: `just bench-cpu` / `just bench-mem` (`-alloc_space` +
   `-inuse_space` tops) / `just bench-trace` (see docs/profiling.md).
 * Fuzz: `just fuzz` (protocol codec fixed points, 20s each).
-* gRPC stubs: `just proto-generate` (protoc + local plugins; see
-  `internal/grpcgw/gen/doc.go`).
+* gRPC stubs: `just proto-generate` (buf via `go tool`, pinned plugins; see
+  `buf.gen.yaml`). `buf lint` gates the proto; CI also checks the stubs
+  are current.
 
 ## Tests (`go test ./...` is source of truth)
 

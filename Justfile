@@ -113,16 +113,15 @@ bench-trace *args:
     go test -run=NONE -bench=. -benchtime=5s -trace=profiles/trace.out "$@"
     @echo "view with: go tool trace profiles/trace.out"
 
-# Regenerate the gRPC stubs from the shared proto (see internal/grpcgw/gen/doc.go).
+# Regenerate the gRPC stubs from the shared proto (see buf.gen.yaml).
+# buf compiles the proto itself — no protoc binary anywhere. Plugins run
+# through `go tool`, so the go.mod-pinned versions do the generation on a
+# fresh checkout. The mv flatten keeps the import path short; there is
+# only one proto, so no collisions. Verify with go build ./... && go test
+# ./internal/grpcgw/.
 proto-generate:
-    protoc -I. \
-        --plugin=protoc-gen-go=$(which protoc-gen-go) \
-        --plugin=protoc-gen-grpc=$(which protoc-gen-grpc) \
-        --go_out=internal/grpcgw/gen \
-        '--go_opt=paths=source_relative,Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen' \
-        --go-grpc_out=internal/grpcgw/gen \
-        '--go-grpc_opt=paths=source_relative,Mcinder/v1/cache.proto=github.com/kraytos17/cinder/internal/grpcgw/gen' \
-        cinder/v1/cache.proto
+    go tool buf lint
+    go tool buf generate
     mv internal/grpcgw/gen/cinder/v1/*.pb.go internal/grpcgw/gen/
     rm -rf internal/grpcgw/gen/cinder
 

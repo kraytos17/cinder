@@ -1,0 +1,12 @@
+# Buf module for Cinder's shared proto. Wire law lives in
+# cinder/v1/cache.proto; buf lints it and guards breaking changes.
+# The module root is the repo root (no path override), so import paths
+# read cinder/v1/cache.proto — matching the protoc-era layout and the
+# M mappings in buf.gen.yaml.
+version: v2
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

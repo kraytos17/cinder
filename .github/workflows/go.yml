@@ -32,6 +32,12 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Proto lint (buf, pinned via go.mod tool directives)
+        run: go tool buf lint
+
+      - name: Generated stubs are current
+        run: go tool buf generate && mv internal/grpcgw/gen/cinder/v1/*.pb.go internal/grpcgw/gen/ && rm -rf internal/grpcgw/gen/cinder && git diff --exit-code internal/grpcgw/gen/
+
       - name: Module exactness (no uncommitted tidy drift)
         run: go mod tidy && git diff --exit-code go.mod go.sum
 
