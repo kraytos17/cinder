@@ -2,10 +2,11 @@ package store
 
 import (
 	"errors"
-	"hash/fnv"
+	"hash/maphash"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unique"
 
 	"github.com/kraytos17/cinder/internal/metrics"
 )
@@ -163,10 +164,17 @@ func shardCountFor(capacityBytes uint64) int {
 	return n
 }
 
+// shardSeed is the process seed for internal shard placement. One seed
+// for the process keeps every Store/Counter instance on the same mapping,
+// which keeps tests deterministic within a run.
+var shardSeed = maphash.MakeSeed()
+
 func shardFor(key string, n int) int {
-	h := fnv.New64a()
-	h.Write([]byte(key))
-	return int(h.Sum64() % uint64(n))
+	// Internal sharding only: distribution across shards, never on the
+	// wire. maphash (stdlib, seeded per process) replaces the ported
+	// FNV-1a; restart-stable placement is not required here, unlike the
+	// ring positions and checksums where xxh3 stays byte-identical by law.
+	return int(maphash.String(shardSeed, key) % uint64(n))
 }
 
 func (s *Store) entrySize(key string, e Entry) uint64 {
@@ -385,6 +393,13 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.observeVersion(e.Version + 1)
 	idx := s.allocNode(sh)
 	n := &sh.nodes[idx]
+	// Canonicalize the key: the index map copies only the string header,
+	// but every admission otherwise parks a second copy of the bytes next
+	// to the map's. unique's table is weak-backed (verified: dropped keys
+	// are collected), so hot keys converge on one shared backing while
+	// churned keys cost nothing long-term. Lookups above intentionally use
+	// the raw param — equality needs no canonical form.
+	key = unique.Make(key).Value()
 	n.key = key
 	n.entry = e.Clone()
 	sh.index[key] = idx

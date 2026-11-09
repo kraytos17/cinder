@@ -1,6 +1,9 @@
 package client
 
 import (
+	"net"
+	"net/netip"
+	"strconv"
 	"strings"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -48,24 +51,30 @@ func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 		return target, true
 	}
 	addr := after
-	colon := strings.LastIndex(addr, ":")
-	if colon <= 0 {
+	// Prefer SplitHostPort (handles bracketed "[::1]:7002", which the
+	// server now emits for v6 peers); fall back to a last-colon split
+	// for the bare "host:port" and unbracketed-v6 forms the gossip
+	// wire format also produces.
+	host, portStr := func() (string, string) {
+		if h, p, err := net.SplitHostPort(addr); err == nil {
+			return h, p
+		}
+		if colon := strings.LastIndex(addr, ":"); colon > 0 {
+			return addr[:colon], addr[colon+1:]
+		}
+		return "", ""
+	}()
+	if host == "" {
 		return target, true
 	}
-	var port int
-	for _, d := range addr[colon+1:] {
-		if d < '0' || d > '9' {
-			return target, true
-		}
-		port = port*10 + int(d-'0')
-		if port > 65535 {
-			return target, true
-		}
-	}
-	if port == 0 {
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
 		return target, true
 	}
-	target.Host = addr[:colon]
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+	}
+	target.Host = host
 	target.Port = port
 	return target, true
 }

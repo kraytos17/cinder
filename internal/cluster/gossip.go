@@ -2,7 +2,7 @@ package cluster
 
 import (
 	"math/rand/v2"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -137,7 +137,7 @@ func (g *GossipManager) rebuildLocked() {
 			g.peers = append(g.peers, m.ID)
 		}
 	}
-	sort.Strings(g.peers)
+	slices.Sort(g.peers)
 }
 
 // EncodeView renders "id@host:port:state:incarnation" entries joined by ';'.

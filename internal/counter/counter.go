@@ -14,7 +14,7 @@ import (
 	"errors"
 	"maps"
 	"math"
-	"sort"
+	"slices"
 )
 
 // ErrInvalidActor rejects empty actor ids: identity must be attributable.
@@ -91,7 +91,7 @@ func (g GCounter) Actors() []string {
 	for actor := range g.components {
 		out = append(out, actor)
 	}
-	sort.Strings(out)
+	slices.Sort(out)
 	return out
 }
 

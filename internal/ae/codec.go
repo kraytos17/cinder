@@ -14,7 +14,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
-	"sort"
 	"time"
 
 	"github.com/zeebo/xxh3"
@@ -33,8 +32,6 @@ const (
 	MagicIBLT        uint32 = 0x41454934 // "AEI4"
 
 	BucketsPerGroup = 16
-
-	// IBLT sizing mirrors iblt::K_*.
 
 	// IBLTCount is the sketch count per bucket batch.
 	IBLTCount = 3
@@ -522,7 +519,7 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	sortedCovered := append([]uint32(nil), out.Covered...)
 	slices.Sort(sortedCovered)
 	contains := func(b uint32) bool {
-		i := sort.Search(len(sortedCovered), func(i int) bool { return sortedCovered[i] >= b })
+		i, _ := slices.BinarySearch(sortedCovered, b)
 		return i < len(sortedCovered) && sortedCovered[i] == b
 	}
 

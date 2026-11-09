@@ -17,7 +17,6 @@ import (
 	"errors"
 	"math"
 	"slices"
-	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -251,7 +250,7 @@ func (r *Ring) GetNode(key string) string {
 		return ""
 	}
 	h := hashKey(key)
-	idx := sort.Search(len(snap.hashes), func(i int) bool { return snap.hashes[i] >= h })
+	idx, _ := slices.BinarySearch(snap.hashes, h)
 	if idx == len(snap.hashes) {
 		idx = 0
 	}
@@ -270,7 +269,7 @@ func (r *Ring) GetNodes(key string, n int) ([]string, error) {
 		return nil, nil
 	}
 	h := hashKey(key)
-	start := sort.Search(len(snap.hashes), func(i int) bool { return snap.hashes[i] >= h })
+	start, _ := slices.BinarySearch(snap.hashes, h)
 	if start == len(snap.hashes) {
 		start = 0
 	}
@@ -307,7 +306,7 @@ func (r *Ring) GetNodeBounded(key string) string {
 		return ""
 	}
 	h := hashKey(key)
-	idx := sort.Search(len(snap.hashes), func(i int) bool { return snap.hashes[i] >= h })
+	idx, _ := slices.BinarySearch(snap.hashes, h)
 	if idx == len(snap.hashes) {
 		idx = 0
 	}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -270,40 +271,44 @@ func (g *gateTransport) Send(node string, req protocol.Request) (protocol.Respon
 }
 
 func TestReadSingleflight(t *testing.T) {
-	inner := newFake("n2")
-	gt := &gateTransport{inner: inner, release: make(chan struct{})}
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, gt)
-	if err := m.Local().Put("k", []byte("v")); err != nil {
-		t.Fatal(err)
-	}
-	// Identical stamp on the replica: no divergence, so no repair
-	// fan-out pollutes the send count.
-	le, _ := m.Local().GetVersioned("k")
-	if err := inner.stores["n2"].PutVersioned("k", le); err != nil {
-		t.Fatal(err)
-	}
-	const readers = 16
-	var wg sync.WaitGroup
-	errs := make([]error, readers)
-	for i := range readers {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, errs[i] = m.Read("k", []string{"n2"}, 2, 0, 0)
-		}(i)
-	}
-	// Let every reader attach (leader blocks in transport, rest in flight).
-	time.Sleep(200 * time.Millisecond)
-	close(gt.release)
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
+	synctest.Test(t, func(t *testing.T) {
+		inner := newFake("n2")
+		gt := &gateTransport{inner: inner, release: make(chan struct{})}
+		m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, gt)
+		if err := m.Local().Put("k", []byte("v")); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if n := inner.sendCount("n2"); n != 1 {
-		t.Fatalf("singleflight: %d fan-outs for %d readers", n, readers)
-	}
+		// Identical stamp on the replica: no divergence, so no repair
+		// fan-out pollutes the send count.
+		le, _ := m.Local().GetVersioned("k")
+		if err := inner.stores["n2"].PutVersioned("k", le); err != nil {
+			t.Fatal(err)
+		}
+		const readers = 16
+		var wg sync.WaitGroup
+		errs := make([]error, readers)
+		for i := range readers {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, errs[i] = m.Read("k", []string{"n2"}, 2, 0, 0)
+			}(i)
+		}
+		// Park every reader first (leader blocks in the transport gate, the
+		// rest in the flight) instead of sleeping a fixed 200ms: synctest
+		// waits exactly until all bubble goroutines are durably blocked.
+		synctest.Wait()
+		close(gt.release)
+		wg.Wait()
+		for _, err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		if n := inner.sendCount("n2"); n != 1 {
+			t.Fatalf("singleflight: %d fan-outs for %d readers", n, readers)
+		}
+	})
 }
 
 func TestHintCoalesce(t *testing.T) {

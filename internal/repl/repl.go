@@ -2,11 +2,13 @@ package repl
 
 import (
 	"hash/fnv"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
@@ -25,7 +27,7 @@ type Manager struct {
 	hints     *HintQueue
 	journal   HintJournal
 	replaying atomic.Bool
-	flights   flightRegistry
+	flights   singleflight.Group
 	met       atomic.Pointer[metrics.Collector]
 	logger    atomic.Pointer[zerolog.Logger]
 }
@@ -334,9 +336,39 @@ func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uin
 	if mt := m.metrics(); mt != nil {
 		mt.QuorumReads.Add(1)
 	}
-	return m.flights.do(m.metrics(), key, r, func() (store.Entry, error) {
+	return m.readCoalesced(key, r, func() (store.Entry, error) {
 		return m.readOnce(key, replicas, r, traceID, spanID)
 	})
+}
+
+// readCoalesced runs one quorum fan-out per (key, R) and shares its
+// result with concurrent readers, via x/sync singleflight (stdlib-adjacent
+// shared implementation replacing the ported flightRegistry). shared=true
+// marks a waiter, which is exactly the ReadsCoalesced signal; singleflight
+// forgets the flight before waking waiters, so a waiter starting a new
+// read begins a fresh flight — the same guarantee the old registry's
+// delete-before-close gave.
+func (m *Manager) readCoalesced(key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
+	v, err, shared := m.flights.Do(flightKey(key, r), func() (any, error) {
+		return run()
+	})
+	if shared {
+		if mt := m.metrics(); mt != nil {
+			mt.ReadsCoalesced.Add(1)
+		}
+	}
+	if err != nil {
+		return store.Entry{}, err
+	}
+	e, _ := v.(store.Entry)
+	return e, nil
+}
+
+// flightKey namespaces one coalesced flight. '\x00' cannot appear in a
+// way that collides: keys are arbitrary bytes-as-string, so the length
+// prefix keeps (key, R) pairs unambiguous.
+func flightKey(key string, r int) string {
+	return strconv.Itoa(r) + "\x00" + key
 }
 
 func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
@@ -457,52 +489,6 @@ func (d *reducer) winner() (store.Entry, bool) {
 		return store.Entry{}, false
 	}
 	return d.best, true
-}
-
-// flightRegistry coalesces concurrent reads per (key, R): the first caller
-// runs the fan-out, the rest block on its result. The entry is erased
-// before waiters wake, so a waiter starting a new read begins a fresh
-// flight instead of deadlocking on itself.
-type flightRegistry struct {
-	mu      sync.Mutex
-	flights map[flightKey]*flight
-}
-
-type flightKey struct {
-	key string
-	r   int
-}
-
-type flight struct {
-	done chan struct{}
-	res  store.Entry
-	err  error
-}
-
-func (f *flightRegistry) do(mt *metrics.Collector, key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
-	f.mu.Lock()
-	if f.flights == nil {
-		f.flights = make(map[flightKey]*flight)
-	}
-	k := flightKey{key, r}
-	if fl, ok := f.flights[k]; ok {
-		f.mu.Unlock()
-		<-fl.done
-		if mt != nil {
-			mt.ReadsCoalesced.Add(1)
-		}
-		return fl.res, fl.err
-	}
-	fl := &flight{done: make(chan struct{})}
-	f.flights[k] = fl
-	f.mu.Unlock()
-	res, err := run()
-	fl.res, fl.err = res, err
-	f.mu.Lock()
-	delete(f.flights, k)
-	f.mu.Unlock()
-	close(fl.done)
-	return res, err
 }
 
 // ReplayHints retries queued hints against healthy replicas, at most

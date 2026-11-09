@@ -22,11 +22,12 @@ package counter
 import (
 	"cmp"
 	"errors"
-	"hash/fnv"
+	"hash/maphash"
 	"math"
 	"slices"
 	"sync"
 	"sync/atomic"
+	"unique"
 )
 
 // ErrCapacityExceeded rejects over-budget growth, mirroring C++
@@ -43,10 +44,12 @@ func shardCountFor(capacityBytes uint64) int {
 	return n
 }
 
+// counterSeed is the process seed for internal counter-shard placement
+// (same rationale as store.shardSeed: shard-local, never on the wire).
+var counterSeed = maphash.MakeSeed()
+
 func shardFor(key string, n int) int {
-	h := fnv.New64a()
-	h.Write([]byte(key))
-	return int(h.Sum64() % uint64(n))
+	return int(maphash.String(counterSeed, key) % uint64(n))
 }
 
 // addSat is a saturating add for capacity accounting: actor-controlled
@@ -174,7 +177,9 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 		return ErrCapacityExceeded
 	}
 	sh.current += need
-	sh.index[key] = fresh
+	// Same canonicalization as store admission: one shared backing per
+	// live key instead of per-shard copies.
+	sh.index[unique.Make(key).Value()] = fresh
 	return nil
 }
 
@@ -218,7 +223,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 		return ErrCapacityExceeded
 	}
 	sh.current += need
-	sh.index[key] = remote.Clone()
+	sh.index[unique.Make(key).Value()] = remote.Clone()
 	return nil
 }
 

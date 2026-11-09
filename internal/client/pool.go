@@ -3,6 +3,9 @@ package client
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
 	"sync"
 	"time"
 
@@ -17,7 +20,9 @@ type NodeAddr struct {
 }
 
 func (a NodeAddr) dialAddr() string {
-	return fmt.Sprintf("%s:%d", a.Host, a.Port)
+	// JoinHostPort brackets IPv6 literals; the old Sprintf("%s:%d")
+	// produced undiallable "fe80::1:8080" forms for v6 peers.
+	return net.JoinHostPort(a.Host, strconv.Itoa(a.Port))
 }
 
 // Pool holds one persistent connection per node, dialed lazily. Transport
@@ -57,8 +62,13 @@ func newPoolTLS(addrs []NodeAddr, timeout time.Duration, tlsCfg *tls.Config) *Po
 // AddAddr registers (or replaces) a node's reachable address, then drops
 // any existing connection so the next send redials the new address.
 // Mirrors ConnectionPool::addAddr: redirect-learned members outside the
-// client config become reachable.
+// client config become reachable. IP literals are normalized via
+// netip.ParseAddr (collapses "::ffff:1.2.3.4", zones, case); hostnames
+// pass through untouched.
 func (p *Pool) AddAddr(id, host string, port int) {
+	if ip, err := netip.ParseAddr(host); err == nil {
+		host = ip.String()
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.addrs[id] = NodeAddr{ID: id, Host: host, Port: port}

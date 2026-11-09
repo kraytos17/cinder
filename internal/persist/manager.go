@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -393,7 +392,7 @@ func (m *Manager) latestSnapshot() string {
 	if len(names) == 0 {
 		return ""
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return filepath.Join(m.dir, names[len(names)-1])
 }
 
@@ -480,7 +479,7 @@ func (m *Manager) pruneSnapshots(keep string) {
 			names = append(names, e.Name())
 		}
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	for len(names) > snapshotsToKeep {
 		oldest := names[0]
 		names = names[1:]

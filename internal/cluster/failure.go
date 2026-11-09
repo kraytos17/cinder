@@ -1,7 +1,7 @@
 package cluster
 
 import (
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -212,7 +212,7 @@ func (f *FailureDetector) escalateLocked(now time.Time) []string {
 			st.failures = 0
 		}
 	}
-	sort.Strings(dead)
+	slices.Sort(dead)
 	return dead
 }
 
@@ -223,5 +223,5 @@ func (f *FailureDetector) rebuildLocked() {
 			f.peers = append(f.peers, m.ID)
 		}
 	}
-	sort.Strings(f.peers)
+	slices.Sort(f.peers)
 }

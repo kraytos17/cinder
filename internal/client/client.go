@@ -7,6 +7,7 @@
 package client
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/binary"
 	"fmt"
@@ -25,6 +26,7 @@ import (
 type Client struct {
 	mu      sync.Mutex
 	conn    net.Conn
+	br      *bufio.Reader
 	timeout time.Duration
 	secrets Secrets
 }
@@ -66,7 +68,7 @@ func Dial(addr string, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Client{conn: c, timeout: timeout}, nil
+	return &Client{conn: c, br: bufio.NewReader(c), timeout: timeout}, nil
 }
 
 // DialTLS opens addr over TLS with a dial timeout; timeout also bounds
@@ -80,7 +82,7 @@ func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, erro
 	if err != nil {
 		return nil, err
 	}
-	return &Client{conn: c, timeout: timeout}, nil
+	return &Client{conn: c, br: bufio.NewReader(c), timeout: timeout}, nil
 }
 
 // Close closes the connection.
@@ -92,6 +94,7 @@ func (c *Client) Close() error {
 	}
 	err := c.conn.Close()
 	c.conn = nil
+	c.br = nil
 	return err
 }
 
@@ -99,6 +102,7 @@ func (c *Client) fail(err error) error {
 	if c.conn != nil {
 		c.conn.Close()
 		c.conn = nil
+		c.br = nil
 	}
 	return err
 }
@@ -125,7 +129,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 		frame = frame[n:]
 	}
 	header := make([]byte, protocol.FrameHeaderSize)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
+	if _, err := io.ReadFull(c.br, header); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
 	if header[0] != protocol.Magic || header[1] != protocol.Version {
@@ -139,7 +143,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 		return protocol.Response{}, c.fail(fmt.Errorf("client: response too large: %d", n))
 	}
 	payload := make([]byte, n)
-	if _, err := io.ReadFull(c.conn, payload); err != nil {
+	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
 	frame = make([]byte, protocol.FrameHeaderSize+len(payload))
@@ -172,7 +176,7 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 		frame = frame[n:]
 	}
 	header := make([]byte, protocol.FrameHeaderSize)
-	if _, err := io.ReadFull(c.conn, header); err != nil {
+	if _, err := io.ReadFull(c.br, header); err != nil {
 		return nil, c.fail(err)
 	}
 	n := binary.BigEndian.Uint32(header[3:7])
@@ -180,7 +184,7 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 		return nil, c.fail(fmt.Errorf("client: response too large: %d", n))
 	}
 	payload := make([]byte, n)
-	if _, err := io.ReadFull(c.conn, payload); err != nil {
+	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return nil, c.fail(err)
 	}
 	frame = make([]byte, protocol.FrameHeaderSize+len(payload))

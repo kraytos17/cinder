@@ -6,9 +6,10 @@
 package tcp
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/binary"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -1172,7 +1173,9 @@ func (s *Server) redirectTo(owner string) string {
 	s.ringMu.RUnlock()
 	if table != nil {
 		if info, ok := table.Get(owner); ok && info.Host != "" && info.Port != 0 {
-			value.WriteString("@" + info.Host + ":" + strconv.Itoa(int(info.Port)))
+			// JoinHostPort brackets v6 literals; the client parses both
+			// bare and bracketed forms.
+			value.WriteString("@" + net.JoinHostPort(info.Host, strconv.Itoa(int(info.Port))))
 		}
 	}
 	return value.String()
@@ -1203,10 +1206,17 @@ func (s *Server) mintTrace(traceID, spanID uint64) (uint64, uint64) {
 
 func (s *Server) handle(c net.Conn) {
 	defer s.done(c)
+	// One buffered reader per connection: the old code did two syscalls
+	// per frame (header, then payload) via io.ReadFull on the raw socket.
+	// Small frames now usually complete without a second read syscall;
+	// wire behavior is unchanged (same bytes, same limits, same closes).
+	// Default 4 KiB buffer: it batches the header plus small payloads
+	// without pinning 1 MiB per connection (the cap allows 10k conns).
+	br := bufio.NewReader(c)
 	header := make([]byte, protocol.FrameHeaderSize)
 	for {
 		c.SetDeadline(time.Now().Add(idleTimeout))
-		if _, err := io.ReadFull(c, header); err != nil {
+		if _, err := io.ReadFull(br, header); err != nil {
 			return
 		}
 		if header[0] != protocol.Magic || header[1] != protocol.Version {
@@ -1217,7 +1227,7 @@ func (s *Server) handle(c net.Conn) {
 			return // oversized payload: close, like C++
 		}
 		payload := make([]byte, payloadLen)
-		if _, err := io.ReadFull(c, payload); err != nil {
+		if _, err := io.ReadFull(br, payload); err != nil {
 			return
 		}
 		frame := make([]byte, protocol.FrameHeaderSize+len(payload))

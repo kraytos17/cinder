@@ -2,8 +2,9 @@ package ae
 
 import (
 	"cmp"
+	"maps"
 	"slices"
-	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -274,7 +275,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 	}
 
 	slices.Sort(failed)
-	failed = uniqU32(failed)
+	failed = slices.Compact(failed)
 	if mt := m.metrics(); mt != nil {
 		// Sketches that survived peeling vs buckets falling back to
 		// explicit metadata.
@@ -335,20 +336,6 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		slices.Sort(reconstructedCovered)
 	}
 	return m.finishSync(local, partner, resp, reconstructed, reconstructedCovered, sketchHasDiff)
-}
-
-func uniqU32(in []uint32) []uint32 {
-	if len(in) == 0 {
-		return in
-	}
-
-	out := in[:1]
-	for _, v := range in[1:] {
-		if v != out[len(out)-1] {
-			out = append(out, v)
-		}
-	}
-	return out
 }
 
 // finishSync validates coverage, diffs, pushes winners and fetches losers.
@@ -489,7 +476,7 @@ func (m *Manager) refreshPartnersLocked(replicaFactor int) {
 	for n := range seen {
 		m.partners = append(m.partners, n)
 	}
-	sort.Strings(m.partners)
+	slices.Sort(m.partners)
 	m.partnerIdx = 0
 }
 
@@ -755,26 +742,23 @@ func (m *Manager) collectEntriesForHashes(hashes []uint64) []SyncItem {
 	}
 	sorted := append([]uint64(nil), hashes...)
 	slices.Sort(sorted)
-	sorted = uniqU64(sorted)
+	sorted = slices.Compact(sorted)
 	resolved := map[uint64]string{}
 	m.store.ForEach(func(key string, _ store.Entry) {
 		h := KeyHash(key)
-		i := sort.Search(len(sorted), func(i int) bool { return sorted[i] >= h })
+		i, _ := slices.BinarySearch(sorted, h)
 		if i < len(sorted) && sorted[i] == h {
 			if _, ok := resolved[h]; !ok {
 				resolved[h] = key
 			}
 		}
 	})
-	var ps []hashKeyPair
-	for h, k := range resolved {
-		ps = append(ps, hashKeyPair{h, k})
-	}
-	slices.SortFunc(ps, func(a, b hashKeyPair) int { return cmp.Compare(a.h, b.h) })
-	var keys []string
-	for _, p := range ps {
-		keys = append(keys, p.key)
-	}
+	// maps.Values is an iter.Seq: no temp pair slice, no second loop.
+	// The key tie-break keeps collision order deterministic (the old
+	// unstable pair sort left it to chance).
+	keys := slices.SortedFunc(maps.Values(resolved), func(a, b string) int {
+		return cmp.Or(cmp.Compare(KeyHash(a), KeyHash(b)), strings.Compare(a, b))
+	})
 	return m.CollectEntriesForKeys(keys, m.fetchBytes)
 }
 
@@ -807,17 +791,4 @@ func (m *Manager) CollectEntriesForKeys(keys []string, maxBytes int) []SyncItem 
 		}
 	}
 	return items
-}
-
-func uniqU64(in []uint64) []uint64 {
-	if len(in) == 0 {
-		return in
-	}
-	out := in[:1]
-	for _, v := range in[1:] {
-		if v != out[len(out)-1] {
-			out = append(out, v)
-		}
-	}
-	return out
 }

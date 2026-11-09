@@ -5,6 +5,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -81,38 +82,42 @@ func TestFailureThresholdTwo(t *testing.T) {
 }
 
 func TestFailureTimeoutSweep(t *testing.T) {
-	now := time.Now()
-	var cur atomic.Int64
-	cur.Store(now.UnixNano())
-	clk := func() time.Time { return time.Unix(0, cur.Load()) }
-	advance := func(d time.Duration) { cur.Add(int64(d)) }
-	tb := NewMembershipTable("n1", clk)
-	tb.Seed([]NodeInfo{{ID: "n2"}, {ID: "n3"}})
-	// n2 blackholes; n3 fails fast. The sweep must suspect n2 while its
-	// probe is still outstanding, without the tick blocking on it.
-	hang := make(chan struct{})
-	tr := SenderFunc(func(node string, req protocol.Request) (protocol.Response, error) {
-		if node == "n3" {
-			return protocol.Response{}, errors.New("refused")
+	synctest.Test(t, func(t *testing.T) {
+		now := time.Now()
+		var cur atomic.Int64
+		cur.Store(now.UnixNano())
+		clk := func() time.Time { return time.Unix(0, cur.Load()) }
+		advance := func(d time.Duration) { cur.Add(int64(d)) }
+		tb := NewMembershipTable("n1", clk)
+		tb.Seed([]NodeInfo{{ID: "n2"}, {ID: "n3"}})
+		// n2 blackholes; n3 fails fast. The sweep must suspect n2 while its
+		// probe is still outstanding, without the tick blocking on it.
+		hang := make(chan struct{})
+		tr := SenderFunc(func(node string, req protocol.Request) (protocol.Response, error) {
+			if node == "n3" {
+				return protocol.Response{}, errors.New("refused")
+			}
+			<-hang // blackhole: never acks (no lock held while parked)
+			return protocol.Response{}, errors.New("late")
+		})
+		fd := NewFailureDetector(clk, tr, tb, "n1", 100*time.Millisecond)
+		fd.Start()
+		done := make(chan struct{})
+		// First tick probes n2 (sorted round-robin) and blocks in Send.
+		go func() { fd.Tick(); close(done) }()
+		// Wait for the probe to park instead of sleeping 50ms: exact,
+		// and immune to slow-CI flakes.
+		synctest.Wait()
+		advance(200 * time.Millisecond)
+		// Second tick: sweep sees the overdue n2 probe and suspects it, then
+		// probes n3 (which fails fast, no block).
+		fd.Tick()
+		close(hang)
+		<-done
+		if n, _ := tb.Get("n2"); n.State != Suspect {
+			t.Fatalf("overdue probe must suspect: %+v", n)
 		}
-		<-hang // blackhole: never acks (no lock held while parked)
-		return protocol.Response{}, errors.New("late")
 	})
-	fd := NewFailureDetector(clk, tr, tb, "n1", 100*time.Millisecond)
-	fd.Start()
-	done := make(chan struct{})
-	// First tick probes n2 (sorted round-robin) and blocks in Send.
-	go func() { fd.Tick(); close(done) }()
-	time.Sleep(50 * time.Millisecond)
-	advance(200 * time.Millisecond)
-	// Second tick: sweep sees the overdue n2 probe and suspects it, then
-	// probes n3 (which fails fast, no block).
-	fd.Tick()
-	close(hang)
-	<-done
-	if n, _ := tb.Get("n2"); n.State != Suspect {
-		t.Fatalf("overdue probe must suspect: %+v", n)
-	}
 }
 
 func TestFailureEscalatesToDead(t *testing.T) {
