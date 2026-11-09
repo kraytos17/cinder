@@ -295,3 +295,48 @@ func TestCliAgainstCpp(t *testing.T) {
 		t.Fatalf("get: %q", out)
 	}
 }
+
+func TestCliCounterRoundTrip(t *testing.T) {
+	addr, _ := testServer(t)
+	if out, errOut, code := runCLI(t, addr, "counter-get", "c"); !strings.Contains(out, "not found") || errOut != "" || code != 0 {
+		t.Fatalf("cget miss: out=%q err=%q code=%d", out, errOut, code)
+	}
+	if out, errOut, code := runCLI(t, addr, "counter-incr", "c", "5"); out != "OK\n" || errOut != "" || code != 0 {
+		t.Fatalf("incr: out=%q err=%q code=%d", out, errOut, code)
+	}
+	if out, _, _ := runCLI(t, addr, "counter-get", "c"); out != "5\n" {
+		t.Fatalf("cget: %q, want 5", out)
+	}
+	if out, _, code := runCLI(t, addr, "counter-decr", "c", "2"); out != "OK\n" || code != 0 {
+		t.Fatalf("decr: out=%q code=%d", out, code)
+	}
+	if out, _, _ := runCLI(t, addr, "counter-get", "c"); out != "3\n" {
+		t.Fatalf("cget after decr: %q, want 3", out)
+	}
+	// Default delta is 1.
+	if out, _, code := runCLI(t, addr, "counter-incr", "d"); out != "OK\n" || code != 0 {
+		t.Fatalf("incr default: out=%q code=%d", out, code)
+	}
+	if out, _, _ := runCLI(t, addr, "counter-get", "d"); out != "1\n" {
+		t.Fatalf("cget default: %q, want 1", out)
+	}
+}
+
+func TestCliCounterBadArgs(t *testing.T) {
+	addr, _ := testServer(t)
+	if _, _, code := runCLI(t, addr, "counter-incr"); code == 0 {
+		t.Fatal("incr without key must fail")
+	}
+	if _, _, code := runCLI(t, addr, "counter-decr", "k"); code != 0 {
+		t.Fatal("decr without delta must default to 1")
+	}
+	if _, errOut, code := runCLI(t, addr, "counter-incr", "k", "nope"); code == 0 || !strings.Contains(errOut, "invalid delta") {
+		t.Fatalf("bad delta: code=%d err=%q", code, errOut)
+	}
+	if _, errOut, code := runCLI(t, addr, "counter-incr", "k", "-3"); code == 0 || !strings.Contains(errOut, "invalid delta") {
+		t.Fatalf("negative delta: code=%d err=%q", code, errOut)
+	}
+	if _, _, code := runCLI(t, addr, "counter-get"); code == 0 {
+		t.Fatal("cget without key must fail")
+	}
+}

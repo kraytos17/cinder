@@ -5,9 +5,12 @@
 //	[--ttl MS] [--client-secret S]
 //
 // Commands mirror tools/cinder_cli.cpp: get|set|del|ping|info|cluster|ring|
-// mget|mset|get-versioned. Output formats are byte-identical by design
-// (tests assert them): values print raw, misses print "(not found)",
-// get-versioned appends LWW metadata, mget/mset print "key: value" lines.
+// mget|mset|get-versioned, plus counter-incr|counter-decr|counter-get
+// (new surface: the retired C++ CLI never had counter commands; these
+// follow the existing output contract). Output formats are byte-identical
+// by design (tests assert them): values print raw, misses print
+// "(not found)", get-versioned appends LWW metadata, mget/mset print
+// "key: value" lines, counter-get prints the int64 value.
 // TLS flags are parsed for compatibility but rejected until the TLS
 // milestone lands.
 package main
@@ -24,6 +27,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
@@ -127,7 +131,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	pos := fs.Args()
 	if len(pos) == 0 {
-		fmt.Fprintln(stderr, "error: command required: get|set|del|ping|info|cluster|ring|mget|mset|get-versioned")
+		fmt.Fprintln(stderr, "error: command required: get|set|del|ping|info|cluster|ring|mget|mset|get-versioned|counter-incr|counter-decr|counter-get")
 		return 2
 	}
 
@@ -178,6 +182,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 			value = rest[1]
 		}
 		return runSingle(dial, cmd, key, value, ttlMs, stdout, stderr)
+	case "counter-incr", "counter-decr":
+		if len(rest) == 0 {
+			fmt.Fprintln(stderr, "error: "+cmd+" requires a key")
+			return 2
+		}
+		var delta uint64 = 1
+		if len(rest) > 1 {
+			var err error
+			delta, err = strconv.ParseUint(rest[1], 10, 64)
+			if err != nil {
+				fmt.Fprintln(stderr, "error: invalid delta (want 0..2^64-1)")
+				return 2
+			}
+		}
+		return runCounterAdjust(dial, rest[0], delta, cmd == "counter-decr", stdout, stderr)
+	case "counter-get":
+		if len(rest) == 0 {
+			fmt.Fprintln(stderr, "error: counter-get requires a key")
+			return 2
+		}
+		return runCounterGet(dial, rest[0], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "error: unknown command: %s\n", cmd)
 		return 1
@@ -280,8 +305,68 @@ func runSingle(
 	return 0
 }
 
-func runMultiGet(
+// runCounterAdjust applies one increment/decrement. The server answers
+// plain OK (no state), so output mirrors set: "OK" or a status word.
+func runCounterAdjust(
 	dial func() (*client.Client, error),
+	key string, delta uint64, decrement bool,
+	stdout, stderr io.Writer,
+) int {
+	c, err := dial()
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	defer c.Close()
+	res, err := c.CounterAdjust(key, delta, decrement)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if res.Status == protocol.StatusPermissionDenied {
+		fmt.Fprintln(stderr, "error: permission denied")
+		return 1
+	}
+	fmt.Fprintln(stdout, statusString(res.Status))
+	return 0
+}
+
+// runCounterGet decodes the PN-counter state and prints the int64 value;
+// a miss prints "(not found)" like get.
+func runCounterGet(
+	dial func() (*client.Client, error),
+	key string,
+	stdout, stderr io.Writer,
+) int {
+	c, err := dial()
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	defer c.Close()
+	res, err := c.CounterGet(key)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 1
+	}
+	if res.Status == protocol.StatusPermissionDenied {
+		fmt.Fprintln(stderr, "error: permission denied")
+		return 1
+	}
+	if res.Status == protocol.StatusOK && res.HasValue {
+		st, err := counter.DecodePNCounter(res.Value)
+		if err != nil {
+			fmt.Fprintln(stderr, "error: corrupt counter state")
+			return 1
+		}
+		fmt.Fprintln(stdout, st.Value())
+		return 0
+	}
+	fmt.Fprintln(stdout, statusString(res.Status))
+	return 0
+}
+
+func runMultiGet(dial func() (*client.Client, error),
 	keys []string,
 	stdout, stderr io.Writer,
 ) int {

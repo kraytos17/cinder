@@ -1,8 +1,12 @@
 package tcp_test
 
 import (
+	"fmt"
+	"net"
 	"testing"
+	"time"
 
+	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
@@ -75,7 +79,7 @@ func TestCounterOwnership(t *testing.T) {
 	// Find a key owned by n2 (from n1's ring view).
 	n1 := c.nodes["n1"].srv
 	var key string
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		cand := "counter-key-" + string([]byte{byte(i), byte(i >> 8)})
 		// Owner check via Get miss: non-owner answers NotReady.
 		res := n1.Dispatch(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(cand)})
@@ -109,5 +113,42 @@ func TestCounterAntiEntropyNoManager(t *testing.T) {
 	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAntiEntropy, Value: []byte("x")})
 	if res.Status != protocol.StatusNotSupported {
 		t.Fatalf("ae = %v, want NotSupported", res.Status)
+	}
+}
+
+func TestClusterCounterFollowsRedirect(t *testing.T) {
+	c := newTestCluster(t, []string{"n1", "n2"}, 2, 0)
+	defer func() {
+		for _, n := range c.nodes {
+			n.srv.Shutdown()
+		}
+	}()
+	var addrs []client.NodeAddr
+	for id, n := range c.nodes {
+		_, portStr, err := net.SplitHostPort(n.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var port int
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
+			t.Fatal(err)
+		}
+		addrs = append(addrs, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: port})
+	}
+	cl, err := client.NewCluster(client.ClusterConfig{Nodes: addrs, MaxRetries: 3, BaseBackoffMs: 1, RPCTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if res, err := cl.CounterAdjust("shared", 4, false); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("cluster adjust = %v %v, want OK", res.Status, err)
+	}
+	res, err := cl.CounterGet("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := counter.DecodePNCounter(res.Value)
+	if err != nil || st.Value() != 4 {
+		t.Fatalf("cluster get = %v %v, want 4", st.Value(), err)
 	}
 }

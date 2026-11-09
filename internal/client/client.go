@@ -213,6 +213,18 @@ func (c *Client) GetVersioned(key string) (protocol.Response, error) {
 	return c.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)})
 }
 
+// CounterAdjust increments (decrement=false) or decrements key's
+// PN-counter by delta as the server's node id. Zero delta is a no-op OK.
+func (c *Client) CounterAdjust(key string, delta uint64, decrement bool) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+}
+
+// CounterGet fetches key's serialized PN-counter state (decode with
+// internal/counter.DecodePNCounter); NotFound when absent.
+func (c *Client) CounterGet(key string) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(key)})
+}
+
 // Admin sends an admin opcode (11-16) with an empty key.
 func (c *Client) Admin(op protocol.Opcode) (protocol.Response, error) {
 	return c.Do(protocol.Request{Opcode: op})

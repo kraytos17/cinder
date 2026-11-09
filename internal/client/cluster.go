@@ -220,6 +220,19 @@ func (c *Cluster) GetVersioned(key string) (protocol.Response, error) {
 	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)})
 }
 
+// CounterAdjust increments/decrements key's PN-counter at its ring owner
+// (redirect-following comes free: adjusts are owner-routed NotReady
+// redirects, exactly like writes).
+func (c *Cluster) CounterAdjust(key string, delta uint64, decrement bool) (protocol.Response, error) {
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+}
+
+// CounterGet fetches key's PN-counter state via the owner (served from any
+// local copy when present, redirected on miss, like reads).
+func (c *Cluster) CounterGet(key string) (protocol.Response, error) {
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(key)})
+}
+
 // Ping pings a specific node by id (no routing).
 func (c *Cluster) Ping(node string) (protocol.Response, error) {
 	return c.pool.Send(node, protocol.Request{Opcode: protocol.OpPing})
