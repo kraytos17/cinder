@@ -208,3 +208,114 @@ func TestJournalExpiryAndLegacy(t *testing.T) {
 		t.Fatalf("corrupt tail: n=%d len=%d err=%v", n, q2.Len(), err)
 	}
 }
+
+func TestJournalCompactDropsDels(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hints.log")
+	q := repl.NewHintQueue()
+	j, _, err := OpenJournal(path, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	mkLive := func(key string) repl.Hint {
+		h := testHint("n2", key, "v", 5, 1)
+		h.ExpiresAt = time.Now().Add(time.Hour)
+		return h
+	}
+	for _, k := range []string{"a", "b", "c", "d", "e"} {
+		h := mkLive(k)
+		j.AppendAdd(h)
+		q.Push(h)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j.AppendDel("n2", "b", 5)
+	j.AppendDel("n2", "d", 5)
+	q.RemoveMatch("n2", "b", 5)
+	q.RemoveMatch("n2", "d", 5)
+	if err := j.Compact(q); err != nil {
+		t.Fatal(err)
+	}
+	if got := j.Records(); got != 3 {
+		t.Fatalf("records = %d, want 3 live", got)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Size() >= before.Size() {
+		t.Fatalf("compacted file did not shrink: %d -> %d", before.Size(), after.Size())
+	}
+	// Reopen: only live hints come back, and the file stays valid.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q2 := repl.NewHintQueue()
+	j2, n, err := OpenJournal(path, q2)
+	if err != nil || n != 3 {
+		t.Fatalf("recovered %d, err %v", n, err)
+	}
+	defer j2.Close()
+	if q2.Len() != 3 {
+		t.Fatalf("queue = %d", q2.Len())
+	}
+}
+
+func TestJournalAutoCompactsPastThreshold(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hints.log")
+	q := repl.NewHintQueue()
+	j, _, err := OpenJournal(path, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	// Same key with rising versions: the queue coalesces to one live
+	// hint, but every enqueue appends a record, so the threshold trips.
+	const total = JournalCompactRecords + 100
+	for i := range total {
+		h := testHint("n2", "k", "v", uint64(i+1), 1)
+		h.ExpiresAt = time.Now().Add(time.Hour)
+		q.Push(h)
+		j.AppendAdd(h)
+		if j.NeedsCompaction() {
+			if err := j.Compact(q); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// The file must hold only post-compact appends: 1 live record at the
+	// compact plus the 100 appends after it — not all 4k+ records.
+	if got := j.Records(); got != 101 {
+		t.Fatalf("records = %d, want 101 (1 live + 100 post-compact)", got)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) > 16384 {
+		t.Fatalf("journal did not stay bounded: %d bytes", len(raw))
+	}
+	// Reopen: the single live hint survives at the latest version.
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+	q2 := repl.NewHintQueue()
+	j2, n, err := OpenJournal(path, q2)
+	if err != nil || n != 1 {
+		t.Fatalf("recovered %d, err %v", n, err)
+	}
+	defer j2.Close()
+	found := false
+	for _, h := range q2.Snapshot(time.Now(), 16) {
+		if string(h.Req.Key) == "k" && h.Req.Version == total {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("latest version missing after compact + reopen")
+	}
+}

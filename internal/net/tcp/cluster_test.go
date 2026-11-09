@@ -77,7 +77,7 @@ func TestClusterSetGetAcrossNodes(t *testing.T) {
 	owners := map[string]int{}
 	for i := range 50 {
 		key := fmt.Sprintf("cluster-key-%d", i)
-		res, err := cl.Set(key, []byte(fmt.Sprintf("v%d", i)))
+		res, err := cl.Set(key, fmt.Appendf(nil, "v%d", i))
 		if err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set %q: %v %v", key, res.Status, err)
 		}

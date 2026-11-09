@@ -29,9 +29,9 @@ func BenchmarkRPCSetGet(b *testing.B) {
 	defer c.Close()
 	val := make([]byte, 256)
 	b.SetBytes(int64(256 * 2))
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		k := []byte(fmt.Sprintf("tput-key-%d", i%1024))
+
+	for i := 0; b.Loop(); i++ {
+		k := fmt.Appendf(nil, "tput-key-%d", i%1024)
 		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: k, Value: val}); err != nil || res.Status != protocol.StatusOK {
 			b.Fatalf("set: %+v %v", res, err)
 		}
@@ -62,7 +62,7 @@ func BenchmarkRPCSetParallel(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			i++
-			k := []byte(fmt.Sprintf("tput-p-%d", i%4096))
+			k := fmt.Appendf(nil, "tput-p-%d", i%4096)
 			if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: k, Value: val}); err != nil || res.Status != protocol.StatusOK {
 				b.Fatalf("set: %+v %v", res, err)
 			}

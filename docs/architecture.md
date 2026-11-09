@@ -95,7 +95,9 @@ store directly).
   V1/V2; writers emit WAL v2 and snapshots v2 uncompressed (v3 zstd blocks
   are rejected). Recovery loads the latest snapshot (via `CURRENT`, with
   scan fallback) and replays sealed + active segments, truncating torn
-  tails; `Compact` snapshots and rotates to a fresh WAL.
+  tails; `Compact` snapshots and truncates to a fresh WAL — on demand
+  (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s),
+  or once the active WAL passes `--max-wal-bytes` (default 64 MiB).
 - **Observability** — none yet: no metrics collector, no tracing substrate,
   no profiling endpoint. Admin JSON (`info`/`cluster`/`ring`, same payloads
   over TCP and gRPC) is the introspection surface; benchmarks are the

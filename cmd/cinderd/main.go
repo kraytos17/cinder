@@ -45,6 +45,8 @@ func main() {
 		clientSecret  = flag.String("client-shared-secret", "", "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)")
 		enablePersist = flag.Bool("enable-persistence", false, "enable WAL + snapshots")
 		dataDir       = flag.String("data-dir", "", "persistence directory (required with --enable-persistence)")
+		snapshotSecs  = flag.Int("snapshot-interval-s", 60, "seconds between automatic snapshots (0 = disabled)")
+		maxWALBytes   = flag.Uint64("max-wal-bytes", 64<<20, "active WAL bytes before out-of-cycle compact (0 = disabled)")
 		showVers      = flag.Bool("version", false, "print version and exit")
 	)
 
@@ -83,10 +85,12 @@ func main() {
 			os.Exit(2)
 		}
 	}
+
 	shared := *sharedSecret
 	if shared == "" {
 		shared = os.Getenv("CINDER_SHARED_SECRET")
 	}
+
 	clientSec := *clientSecret
 	if clientSec == "" {
 		clientSec = os.Getenv("CINDER_CLIENT_SECRET")
@@ -106,6 +110,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, "cinderd:", err)
 			os.Exit(2)
 		}
+
+		srv.SetSnapshotInterval(time.Duration(*snapshotSecs) * time.Second)
+		srv.SetMaxWALBytes(*maxWALBytes)
 	}
 	if *replFact > 1 {
 		var mode repl.Mode
@@ -136,6 +143,7 @@ func main() {
 		if shared != "" {
 			pool.SetSecrets(client.Secrets{NodeID: *nodeID, Shared: shared})
 		}
+
 		mgr := repl.NewManager(st, *nodeID, nil, pool)
 		srv.ConfigureReplication(*replFact, mode, mgr)
 		if *enablePersist {
@@ -161,6 +169,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "cinderd: grpc listen:", err)
 			os.Exit(1)
 		}
+
 		gw := grpcgw.New(srv)
 		gw.SetClientSecret(clientSec)
 		if clientSec != "" {
@@ -173,6 +182,7 @@ func main() {
 				os.Exit(2)
 			}
 		}
+
 		defer gw.Stop()
 		go func() {
 			if err := gw.Serve(gl); err != nil {
@@ -180,6 +190,7 @@ func main() {
 			}
 		}()
 	}
+
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig

@@ -377,7 +377,7 @@ func TestInteropTwoNodeCppCluster(t *testing.T) {
 	owners := map[string]int{}
 	for i := range 50 {
 		key := fmt.Sprintf("xnode-key-%d", i)
-		if res, err := cl.Set(key, []byte(fmt.Sprintf("v%d", i))); err != nil || res.Status != protocol.StatusOK {
+		if res, err := cl.Set(key, fmt.Appendf(nil, "v%d", i)); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set %q: %v %v", key, res.Status, err)
 		}
 		got, err := cl.Get(key)

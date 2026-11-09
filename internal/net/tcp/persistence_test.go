@@ -1,7 +1,9 @@
 package tcp_test
 
 import (
+	"fmt"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -113,6 +115,52 @@ func TestServerCompactAndRecover(t *testing.T) {
 		res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
 		if err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("key %q lost across compact+restart: %+v %v", key, res, err)
+		}
+	}
+}
+
+// TestServerAutoCompacts snapshotting on a timer: with a short snapshot
+// interval the server writes snapshots without any admin call, and a
+// restart recovers from them.
+func TestServerAutoCompacts(t *testing.T) {
+	dir := t.TempDir()
+	srv, addr := startPersistedServer(t, "node1", dir)
+	srv.SetSnapshotInterval(200 * time.Millisecond)
+	c, err := client.Dial(addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range 10 {
+		key := fmt.Sprintf("auto-key-%d", i)
+		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte("v")}); err != nil || res.Status != protocol.StatusOK {
+			t.Fatalf("set %q: %+v %v", key, res, err)
+		}
+	}
+	c.Close()
+	// Wait for the background tick to snapshot (no admin call).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(dir, "snapshot_*.dat"))
+		if len(matches) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("auto-compact never snapshotted")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	srv.Shutdown()
+
+	_, addr2 := startPersistedServer(t, "node1", dir)
+	c2, err := client.Dial(addr2, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close()
+	for i := range 10 {
+		key := fmt.Sprintf("auto-key-%d", i)
+		if res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK {
+			t.Fatalf("key %q lost across auto-compact + restart: %+v %v", key, res, err)
 		}
 	}
 }

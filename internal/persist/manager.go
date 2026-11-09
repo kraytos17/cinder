@@ -26,9 +26,7 @@ const (
 // Manager owns one store's durability: WAL appends, snapshot + WAL replay
 // on startup, and compaction. It mirrors PersistenceManager's file layout
 // (wal.log, wal_<seq>.log, snapshot_<nanos>.dat, CURRENT) so files are
-// interchangeable with the C++ tree. Auto-compact thresholds and metrics
-// are intentionally absent: Compact is called explicitly (server tick in
-// M5); walNeedsCompact-style scheduling belongs to that wiring.
+// interchangeable with the C++ tree.
 type Manager struct {
 	dir   string
 	store *store.LRUStore
@@ -37,14 +35,81 @@ type Manager struct {
 	mu  sync.Mutex
 	wal *Writer
 	seq uint64 // next sealed-segment sequence
+
+	snapshotInterval time.Duration
+	maxWALBytes      uint64
+	lastCompact      time.Time
 }
+
+// DefaultSnapshotInterval and DefaultMaxWALBytes are the auto-compact
+// triggers (C++ defaults: 60s snapshots, 64MiB WAL): periodic snapshots
+// bound recovery replay, the byte budget bounds the file. Zero disables
+// that trigger.
+const (
+	DefaultSnapshotInterval = 60 * time.Second
+	DefaultMaxWALBytes      = 64 << 20
+)
 
 // NewManager returns a manager over dir (created on demand) and store.
 func NewManager(dir string, st *store.LRUStore, clock func() time.Time) *Manager {
 	if clock == nil {
 		clock = time.Now
 	}
-	return &Manager{dir: dir, store: st, clock: clock}
+	m := &Manager{
+		dir:              dir,
+		store:            st,
+		clock:            clock,
+		snapshotInterval: DefaultSnapshotInterval,
+		maxWALBytes:      DefaultMaxWALBytes,
+	}
+	m.lastCompact = m.clock()
+	return m
+}
+
+// SetSnapshotInterval changes the periodic auto-compact cadence (0 disables
+// the time trigger). The countdown starts at construction/recovery.
+func (m *Manager) SetSnapshotInterval(d time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.snapshotInterval = d
+}
+
+// SetMaxWALBytes caps the active WAL past which MaybeCompact fires (0
+// disables the size trigger).
+func (m *Manager) SetMaxWALBytes(n uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxWALBytes = n
+}
+
+// MaybeCompact compacts once when a trigger fires — the snapshot interval
+// elapsed since the last compact (or startup), or the active WAL passed
+// the byte budget — and reports whether it did. The server tick calls this
+// every second; tests drive it directly with a fake clock.
+func (m *Manager) MaybeCompact() bool {
+	m.mu.Lock()
+	interval, maxBytes, last := m.snapshotInterval, m.maxWALBytes, m.lastCompact
+	var size int64 = -1
+	if m.wal != nil {
+		size = m.wal.Size()
+	}
+	now := m.clock()
+	m.mu.Unlock()
+
+	due := interval > 0 && !now.Before(last.Add(interval))
+	if !due && maxBytes > 0 && size >= 0 && uint64(size) >= maxBytes {
+		due = true
+	}
+	if !due {
+		return false
+	}
+	if err := m.Compact(); err != nil {
+		return false
+	}
+	m.mu.Lock()
+	m.lastCompact = m.clock()
+	m.mu.Unlock()
+	return true
 }
 
 // OnWrite appends one accepted mutation. It is the store persistence hook:
@@ -201,6 +266,7 @@ func (m *Manager) Recover() error {
 	}
 	m.wal = w
 	m.seq = m.maxSealedSeq() + 1
+	m.lastCompact = m.clock()
 	return nil
 }
 
@@ -245,6 +311,7 @@ func (m *Manager) Compact() error {
 	m.wal = w
 	m.deleteSealed()
 	m.pruneSnapshots(name)
+	m.lastCompact = m.clock()
 	return nil
 }
 

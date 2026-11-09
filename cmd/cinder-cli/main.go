@@ -75,6 +75,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		clientSecret string
 		ttlMs        int
 	)
+
 	fs.StringVar(&host, "host", "127.0.0.1", "Server host")
 	fs.IntVar(&port, "port", 7000, "Server port")
 	fs.IntVar(&port, "p", 7000, "Server port (shorthand)")
@@ -110,10 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "cinder-cli (go) %s\n", version)
 		return 0
 	}
-	_ = verbose
-	_ = tlsCert
-	_ = tlsKey
-	_ = tlsCA
+
 	var tlsCfg *tls.Config
 	if useTLS {
 		var err error
@@ -126,11 +124,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if clientSecret == "" {
 		clientSecret = os.Getenv("CINDER_CLIENT_SECRET")
 	}
+
 	pos := fs.Args()
 	if len(pos) == 0 {
 		fmt.Fprintln(stderr, "error: command required: get|set|del|ping|info|cluster|ring|mget|mset|get-versioned")
 		return 2
 	}
+
 	cmd, rest := pos[0], pos[1:]
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	auth := client.Secrets{Client: clientSecret}
@@ -145,9 +145,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
+
 		c.SetSecrets(auth)
 		return c, nil
 	}
+
 	switch cmd {
 	case "mget":
 		if len(rest) == 0 {
@@ -160,6 +162,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "error: mset requires key/value pairs")
 			return 1
 		}
+
 		var keys, values []string
 		for i := 0; i < len(rest); i += 2 {
 			keys = append(keys, rest[i])
@@ -192,6 +195,7 @@ func extractTTL(args []string) ([]string, string, error) {
 			if i+1 >= len(args) {
 				return nil, "", fmt.Errorf("flag --ttl requires an argument")
 			}
+
 			ttl = args[i+1]
 			i++
 			continue
@@ -233,11 +237,13 @@ func runSingle(
 	case "ring":
 		req = protocol.Request{Opcode: protocol.OpAdminRing}
 	}
+
 	c, err := dial()
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	res, err := c.Do(req)
 	if err != nil {
@@ -269,6 +275,7 @@ func runSingle(
 		}
 		return 0
 	}
+
 	fmt.Fprintln(stdout, statusString(res.Status))
 	return 0
 }
@@ -283,6 +290,7 @@ func runMultiGet(
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	failed := false
 	for _, k := range keys {
@@ -313,6 +321,7 @@ func runMultiSet(
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	failed := false
 	for i := range keys {
@@ -321,6 +330,7 @@ func runMultiSet(
 			req.HasTTL = true
 			req.TTL = time.Duration(ttlMs) * time.Millisecond
 		}
+
 		res, err := c.Do(req)
 		if err != nil {
 			fmt.Fprintf(stdout, "%s: %s\n", keys[i], err)

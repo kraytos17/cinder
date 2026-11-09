@@ -66,6 +66,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		tlsCA        string
 		clientSecret string
 	)
+
 	fs.StringVar(&host, "host", "127.0.0.1", "Server host")
 	fs.IntVar(&port, "port", 7000, "Server port")
 	fs.IntVar(&port, "p", 7000, "Server port (shorthand)")
@@ -76,6 +77,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&tlsKey, "tls-key", "", "Path to TLS private key (PEM)")
 	fs.StringVar(&tlsCA, "tls-ca", "", "Path to CA certificate for peer verification (PEM)")
 	fs.StringVar(&clientSecret, "client-secret", "", "Shared secret for client authentication (or CINDER_CLIENT_SECRET)")
+
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -84,10 +86,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "cinder-admin (go) %s\n", version)
 		return 0
 	}
-	_ = verbose
-	_ = tlsCert
-	_ = tlsKey
-	_ = tlsCA
+
 	var tlsCfg *tls.Config
 	if useTLS {
 		var err error
@@ -100,11 +99,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if clientSecret == "" {
 		clientSecret = os.Getenv("CINDER_CLIENT_SECRET")
 	}
+
 	pos := fs.Args()
 	if len(pos) == 0 {
 		fmt.Fprintln(stderr, "error: command required: info|cluster|ring|compact|config-reload|shutdown")
 		return 2
 	}
+
 	cmd := pos[0]
 	var op protocol.Opcode
 	switch cmd {
@@ -125,6 +126,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown")
 		return 1
 	}
+
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	auth := client.Secrets{Client: clientSecret}
 	dial := func() (*client.Client, error) {
@@ -138,14 +140,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 		if err != nil {
 			return nil, err
 		}
+
 		c.SetSecrets(auth)
 		return c, nil
 	}
+
 	c, err := dial()
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	res, err := c.Do(protocol.Request{Opcode: op})
 	if err != nil {

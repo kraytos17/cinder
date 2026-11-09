@@ -111,7 +111,7 @@ without periodic full scans.
 1. Broadcasts Dead first: `gossip.Leave()` marks self `Dead` (bumping the
    incarnation so the rumor overrides stale Alive entries) and sends the
    full membership view (self included, as `Dead`) to every known peer.
-2. Stops timers (gossip, probe, rebalance, eviction, quarantine, compact)
+2. Stops timers (gossip, probe, rebalance, replay, eviction, quarantine, compact)
    and closes the listener and connections.
 
 This lets peers learn the node is `Dead` from the explicit broadcast, rather
@@ -295,9 +295,10 @@ and expired records are skipped.
 
 - **Crash window**: appends are page-cache writes; only `Sync`/`Close`
   flush. A torn tail record is truncated on open.
-- **No compaction**: the journal grows until restart. (The retired C++
-  journal rewrote itself past 4,096 records; the Go one does not yet —
-  long outages with persistence on keep every record.)
+- **Compaction**: past 4,096 records the journal is rewritten from the live
+  queue snapshot (drops and expired hints fall out), keeping long outages
+  from growing the file without bound. Atomic via tmp file + rename; the
+  replication manager triggers it inline on enqueue, so retries apply.
 - **Recovery order**: hint recovery runs before serving. A background
   replay tick (1 s, `SetReplayInterval` for tests) drains queued hints
   once their target is reachable again; ticks that fire while it is still
@@ -479,9 +480,11 @@ segments, and truncates to a fresh active log.
 The snapshot gives a consistent base; the WAL captures writes since.
 
 **Compaction** — `Compact()` snapshots current store
-state, deletes the now-covered sealed segments, and rotates to a fresh active
-WAL. It runs only on demand (`cinder-admin compact`): there is no
-size- or time-triggered auto-compact.
+state, deletes the now-covered sealed segments, and truncates to a fresh
+active WAL. It runs on demand (`cinder-admin compact`), on a snapshot
+interval (default 60s, `--snapshot-interval-s`), and out-of-cycle once the
+active WAL passes `--max-wal-bytes` (default 64 MiB, `0` disables that
+trigger).
 
 **Snapshot format** — snapshots are versioned (`CSNP` magic + u32 version).
 v1/v2 store entries raw inline (v2 adds the trailing tombstone byte);
@@ -548,6 +551,8 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--client-shared-secret` | (empty) | Client auth secret (or `CINDER_CLIENT_SECRET`); client/admin opcodes and the gRPC bearer require it; needs `--tls` |
 | `--enable-persistence` | `false` | Enable WAL + snapshots |
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
+| `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
+| `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
 
 Fixed (not flags): pool RPC timeout 5 s; hint TTL 30 s with 1,024-entry /
 64 MiB budgets; tombstone GC grace 5 min; AE fetch budget 1 MiB per round;

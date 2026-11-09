@@ -199,7 +199,7 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 		nodes[id] = &node{id: id, srv: srv, mgr: mgr}
 	}
 	// Write each key to its owner (RF=2 replicates to the other node).
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		k := fmt.Sprintf("xnode-key-%d", i)
 		addr := listeners[0].Addr().String()
 		if ringOwner(t, k) != "node1" {
@@ -218,7 +218,7 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		done := true
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			k := fmt.Sprintf("xnode-key-%d", i)
 			if _, ok := nodes["node2"].mgr.Local().GetVersioned(k); !ok {
 				done = false

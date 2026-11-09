@@ -42,6 +42,10 @@ const (
 	maxConnections = 10_000
 	// idleTimeout closes connections with no completed request/response.
 	idleTimeout = 30 * time.Second
+	// compactTickInterval is the auto-compact poll cadence. The persist
+	// manager itself decides whether the snapshot interval elapsed or the
+	// WAL passed its byte budget, so this only bounds check latency.
+	compactTickInterval = time.Second
 )
 
 // Server is a v6 TCP server. Without ConfigureCluster it owns every key
@@ -212,6 +216,30 @@ func (s *Server) Compact() error {
 		return nil
 	}
 	return m.Compact()
+}
+
+// SetSnapshotInterval changes the periodic auto-compact cadence (0 disables
+// the time trigger). No-op without ConfigurePersistence.
+func (s *Server) SetSnapshotInterval(d time.Duration) {
+	s.persistMu.RLock()
+	m := s.persist
+	s.persistMu.RUnlock()
+	if m == nil {
+		return
+	}
+	m.SetSnapshotInterval(d)
+}
+
+// SetMaxWALBytes caps the active WAL past which auto-compact fires (0
+// disables the size trigger). No-op without ConfigurePersistence.
+func (s *Server) SetMaxWALBytes(n uint64) {
+	s.persistMu.RLock()
+	m := s.persist
+	s.persistMu.RUnlock()
+	if m == nil {
+		return
+	}
+	m.SetMaxWALBytes(n)
 }
 
 // ReplayHints retries queued hints; exposed for tests and the replay tick.
@@ -434,6 +462,9 @@ func (s *Server) Serve(l net.Listener) error {
 	s.replMu.RLock()
 	replMgr := s.repl
 	s.replMu.RUnlock()
+	s.persistMu.RLock()
+	pm := s.persist
+	s.persistMu.RUnlock()
 	var bgWG sync.WaitGroup
 	if gossip != nil && fd != nil {
 		bgWG.Add(2)
@@ -486,6 +517,18 @@ func (s *Server) Serve(l net.Listener) error {
 				if replMgr.HintCount() > 0 {
 					replMgr.ReplayHints()
 				}
+			}
+		})
+	}
+	if pm != nil {
+		bgWG.Go(func() {
+			for {
+				select {
+				case <-s.stopBg:
+					return
+				case <-time.After(compactTickInterval):
+				}
+				pm.MaybeCompact()
 			}
 		})
 	}

@@ -91,6 +91,9 @@ var errTooLarge = errors.New("persist: WAL entry too large")
 type Writer struct {
 	mu sync.Mutex
 	f  *os.File
+	// size tracks appended bytes for the auto-compact budget (initialized
+	// from the file on open-for-append).
+	size int64
 }
 
 // OpenWriter opens path for records. Truncate starts fresh; Append resumes.
@@ -106,7 +109,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 			f.Close()
 			return nil, err
 		}
-		return &Writer{f: f}, nil
+		return &Writer{f: f, size: 8}, nil
 	}
 	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
@@ -145,7 +148,12 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 			return nil, err
 		}
 	}
-	return &Writer{f: f}, nil
+	// Size from disk: resumed logs count what is already there.
+	var size int64
+	if fi, err := f.Stat(); err == nil {
+		size = fi.Size()
+	}
+	return &Writer{f: f, size: size}, nil
 }
 
 func validWalVersion(v uint32) bool { return v == 1 || v == 2 }
@@ -168,7 +176,8 @@ func (w *Writer) Append(e Entry) error {
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, err = w.f.Write(buf)
+	n, err := w.f.Write(buf)
+	w.size += int64(n)
 	return err
 }
 
@@ -192,11 +201,22 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	for _, buf := range bufs {
-		if _, err := w.f.Write(buf); err != nil {
+		n, err := w.f.Write(buf)
+		w.size += int64(n)
+		if err != nil {
 			return 0, err
 		}
 	}
 	return total, nil
+}
+
+// Size reports appended bytes (initialized from disk on open-for-append),
+// the auto-compact budget input. Over by at most one torn tail, which the
+// reader truncates on recovery.
+func (w *Writer) Size() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.size
 }
 
 // Sync flushes kernel buffers to disk (fdatasync equivalent).

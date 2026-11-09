@@ -26,9 +26,13 @@ type Manager struct {
 
 // HintJournal persists hints across restarts. AppendAdd records a queued
 // hint; AppendDel records a successful replay so recovery drops it.
+// NeedsCompaction/Compact bound the file: past the record budget the
+// journal is rewritten from the live queue (mirrors the C++ 4,096 rule).
 type HintJournal interface {
 	AppendAdd(h Hint)
 	AppendDel(target, key string, version uint64)
+	NeedsCompaction() bool
+	Compact(q *HintQueue) error
 }
 
 // SetHintJournal enables durable hints (nil disables).
@@ -205,6 +209,14 @@ func (m *Manager) enqueueHint(node string, req protocol.Request) {
 	m.hints.Push(h)
 	if m.journal != nil {
 		m.journal.AppendAdd(h)
+		// Bound the file like C++ appendAdd does: past the record budget
+		// rewrite from the live snapshot. Synchronous (brief lock hold),
+		// so a long outage cannot grow hints.log without bound.
+		if m.journal.NeedsCompaction() {
+			// Best-effort: failure leaves the old journal intact and
+			// the next enqueue retries.
+			_ = m.journal.Compact(m.hints)
+		}
 	}
 }
 

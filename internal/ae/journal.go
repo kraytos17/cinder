@@ -32,6 +32,83 @@ const (
 	hintTTL = 30 * time.Second
 )
 
+// JournalCompactRecords bounds the journal: past it, the journal is
+// rewritten from the live queue (mirrors the C++ 4,096-record rule), so a
+// long outage with persistence on cannot grow the file without bound.
+const JournalCompactRecords = 4096
+
+// NeedsCompaction reports whether the record count passed the rewrite
+// bound. Checked by the replication manager after every journaled enqueue.
+func (j *Journal) NeedsCompaction() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.f != nil && j.records >= JournalCompactRecords
+}
+
+// snapshotAllHints exceeds any queue depth (queues are 1024-slot bounded),
+// so the compact snapshot cannot truncate live hints.
+const snapshotAllHints = 1 << 30
+
+// Compact rewrites the journal from the queue's live snapshot, dropping
+// replayed (DEL) and expired hints. Atomic via tmp file + rename, like the
+// snapshot writer; concurrent appends block on the journal lock for the
+// duration. On any error the old journal is left intact.
+func (j *Journal) Compact(q *repl.HintQueue) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.f == nil {
+		return nil
+	}
+	live := q.Snapshot(time.Now(), snapshotAllHints)
+	tmpPath := j.path + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		return err
+	}
+	// Preserve each hint's own deadline (C++ compacts with the remaining
+	// TTL, never a fresh one, so repeated compacts cannot immortalize a
+	// hint past its outage window).
+	for _, h := range live {
+		exp := h.ExpiresAt
+		if exp.IsZero() {
+			exp = time.Now().Add(hintTTL)
+		}
+
+		rec := frameJournalRecord(encodeJournalAddPayload(h.Target, h.Req, uint64(exp.UnixMilli())))
+		if _, err := tmp.Write(rec); err != nil {
+			tmp.Close()
+			os.Remove(tmpPath)
+			return err
+		}
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, j.path); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(j.path, os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		f.Close()
+		return err
+	}
+
+	j.f.Close()
+	j.f = f
+	j.records = uint64(len(live))
+	return nil
+}
+
 // OpenJournal opens (creating) the journal and replays live hints into q.
 // A torn tail truncates. Returns the recovered count.
 func OpenJournal(path string, q *repl.HintQueue) (*Journal, int, error) {
@@ -40,10 +117,12 @@ func OpenJournal(path string, q *repl.HintQueue) (*Journal, int, error) {
 			return nil, 0, err
 		}
 	}
+
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
 	if err != nil {
 		return nil, 0, err
 	}
+
 	j := &Journal{f: f, path: path}
 	n, err := j.recover(q)
 	if err != nil {
@@ -58,6 +137,7 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	nowMs := uint64(time.Now().UnixMilli())
 	off := 0
 	decoded := 0
@@ -65,16 +145,19 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 		if len(data)-off < 12 {
 			break // torn length: truncate
 		}
+
 		ln := int(binary.LittleEndian.Uint32(data[off:]))
 		sum := binary.LittleEndian.Uint64(data[off+4:])
 		off += 12
 		if ln < 0 || len(data)-off < ln {
 			break // torn payload / corrupt length: truncate
 		}
+
 		payload := data[off : off+ln]
 		if xxh3.Hash(payload) != sum {
 			break // checksum mismatch: truncate (torn tail)
 		}
+
 		off += ln
 		if h, ok, del := decodeJournalRecord(payload, nowMs); ok {
 			decoded++
@@ -92,6 +175,7 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 			return 0, err
 		}
 	}
+
 	j.records = uint64(decoded)
 	// Append at the end: recovery read via a separate descriptor.
 	if _, err := j.f.Seek(0, io.SeekEnd); err != nil {
@@ -117,10 +201,12 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		tlen, ok := c.u32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		tb, ok := c.bytes(int(tlen))
 		if !ok {
 			return repl.Hint{}, false, nil
@@ -129,26 +215,32 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		kb, ok := c.bytes(int(klen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		vlen, ok := c.u32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		vb, ok := c.bytes(int(vlen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		ver, ok := c.u64()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		writer, ok := c.u64()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		var entryExp uint64
 		var tomb uint8 = 2
 		if c.rem() > 0 {
@@ -198,7 +290,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 	return repl.Hint{}, false, nil
 }
 
-func encodeJournalAdd(target string, req protocol.Request, sysExpiryMs uint64) []byte {
+func encodeJournalAddPayload(target string, req protocol.Request, sysExpiryMs uint64) []byte {
 	var entryExp uint64
 	if req.HasExpiresAt {
 		entryExp = uint64(req.ExpiresAt.UnixMilli())
@@ -220,7 +312,11 @@ func encodeJournalAdd(target string, req protocol.Request, sysExpiryMs uint64) [
 	payload = binary.LittleEndian.AppendUint64(payload, req.WriterNodeHash)
 	payload = binary.LittleEndian.AppendUint64(payload, entryExp)
 	payload = append(payload, tomb)
-	return frameJournalRecord(payload)
+	return payload
+}
+
+func encodeJournalAdd(target string, req protocol.Request, sysExpiryMs uint64) []byte {
+	return frameJournalRecord(encodeJournalAddPayload(target, req, sysExpiryMs))
 }
 
 func encodeJournalDel(target, key string, version uint64) []byte {
