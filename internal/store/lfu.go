@@ -13,6 +13,12 @@
 // while eviction is not the request hot path.
 package store
 
+import (
+	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/obs"
+	"github.com/kraytos17/cinder/internal/sharding"
+)
+
 // freqInit plants a fresh node at frequency 1. Mirrors C++ insertNew's
 // freq setup (freq 1, appended to bucket 1). Caller holds sh.mu; the
 // caller must have already assigned sh.index[key] = idx.
@@ -78,9 +84,7 @@ func (s *Store) lfuEvictOne(sh *shard) uint64 {
 	if victim >= 0 {
 		vec := sh.freqBuckets[minFreq]
 		idx := vec[victim]
-		if m := s.met.Load(); m != nil {
-			m.EvictionsCap.Add(1)
-		}
+		obs.IfPresent(&s.met, func(m *metrics.Collector) { m.EvictionsCap.Add(1) })
 		return s.removeNode(sh, idx)
 	}
 	return 0
@@ -93,7 +97,7 @@ func (s *Store) RestoreFreq(key string, freq uint64) {
 	if s.policy != LFUPolicy || freq <= 1 {
 		return
 	}
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	idx, ok := sh.index[key]
@@ -112,7 +116,7 @@ func (s *Store) EntryFreq(key string) uint64 {
 	if s.policy != LFUPolicy {
 		return 0
 	}
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if idx, ok := sh.index[key]; ok {

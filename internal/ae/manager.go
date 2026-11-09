@@ -14,13 +14,14 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/transport"
 )
 
-// Transport sends one request; client.Pool satisfies it.
-type Transport interface {
-	Send(node string, req protocol.Request) (protocol.Response, error)
-}
+// Transport is the shared inter-node send contract (see
+// internal/transport); *client.Pool satisfies it.
+type Transport = transport.Sender
 
 // nopLogger is the shared disabled logger for managers constructed
 // without SetLogger.
@@ -99,8 +100,6 @@ func (m *Manager) SetLogger(l *zerolog.Logger) {
 	m.logger.Store(l)
 }
 
-func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
-
 // log returns the installed logger (Nop when unset).
 func (m *Manager) log() *zerolog.Logger {
 	if l := m.logger.Load(); l != nil {
@@ -127,12 +126,11 @@ func (m *Manager) RunRound(replicaFactor int) int {
 	if !ok {
 		return 0
 	}
-	// Every Go round rehashes fully (no divert-while-scanning), so the
-	// round and the full rehash coincide.
-	if mt := m.metrics(); mt != nil {
+
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AERounds.Add(1)
 		mt.AEFullRehashes.Add(1)
-	}
+	})
 	if e := m.log().Debug(); e != nil {
 		e.Str("partner", partner).Msg("anti-entropy round")
 	}
@@ -164,9 +162,9 @@ func (m *Manager) RunRound(replicaFactor int) int {
 	if !divergent {
 		return 0 // converged round ends here
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEGroupMismatch.Add(uint64(divergentGroups))
-	}
+	})
 
 	var buckets []uint32
 	for g := range groups {
@@ -204,9 +202,9 @@ func (m *Manager) RunRound(replicaFactor int) int {
 // finishRefinement resolves IBLT sketches (with P2 fallback), diffs
 // metadata, pushes winners, fetches losers, and applies the result.
 func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestResponse) int {
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEMetaRecv.Add(uint64(len(resp.Rows)))
-	}
+	})
 	var reconstructed []MetaRow
 	var reconstructedCovered []uint32
 	sketchHasDiff := map[uint32]bool{}
@@ -276,12 +274,12 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 
 	slices.Sort(failed)
 	failed = slices.Compact(failed)
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		// Sketches that survived peeling vs buckets falling back to
 		// explicit metadata.
 		mt.AEIBLTFallback.Add(uint64(len(failed)))
 		mt.AEIBLTOk.Add(uint64(len(resp.Sketches) - len(failed)))
-	}
+	})
 	if len(failed) > 0 {
 		fbReq := Refinement{ForceMeta: true}
 		for _, b := range failed {
@@ -379,9 +377,9 @@ func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse
 	if len(divergent) == 0 {
 		return 0
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEBucketMismatch.Add(uint64(len(divergent)))
-	}
+	})
 	for _, b := range divergent {
 		if !coveredSet[b] {
 			return 0
@@ -630,10 +628,10 @@ func (m *Manager) ApplySync(msg SyncMessage) int {
 	}
 	// Single funnel for repair accounting (initiator + responder +
 	// direct callers): every applied entry converged here.
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEKeysRepaired.Add(uint64(applied))
 		mt.AEFetched.Add(uint64(len(msg.Entries)))
-	}
+	})
 	return applied
 }
 
@@ -679,9 +677,9 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 		}
 		resp.Covered = covered
 		resp.Rows = rows
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.AEMetaSent.Add(uint64(len(rows)))
-		}
+		})
 		return protocol.StatusOK, EncodeResponse(resp)
 	}
 	return m.respondRefinement(resp, requestedList)
@@ -704,9 +702,9 @@ func (m *Manager) respondRefinement(resp DigestResponse, requested []uint32) (pr
 		}
 		resp.Rows = append(resp.Rows, vec...)
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEMetaSent.Add(uint64(len(resp.Rows)))
-	}
+	})
 	return protocol.StatusOK, EncodeResponse(resp)
 }
 

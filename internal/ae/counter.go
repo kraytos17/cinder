@@ -4,7 +4,9 @@ import (
 	"sort"
 
 	"github.com/kraytos17/cinder/internal/counter"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 )
 
 // Aliases so Manager's CounterStore interface reads without a prefix.
@@ -46,9 +48,9 @@ func (m *Manager) exchangeCounterState(partner string) {
 	if encoded == nil {
 		return
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERounds.Add(1)
-	}
+	})
 	res, err := m.transport.Send(partner, protocol.Request{
 		Opcode: protocol.OpCounterAntiEntropy, Value: encoded,
 	})
@@ -62,9 +64,9 @@ func (m *Manager) exchangeCounterState(partner string) {
 	for _, e := range remote {
 		_ = cs.Merge(e.Key, e.Counter)
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERepaired.Add(uint64(len(remote)))
-	}
+	})
 	if e := m.log().Debug(); e != nil {
 		e.Str("partner", partner).Int("entries", len(remote)).Msg("counter anti-entropy repaired")
 	}
@@ -151,9 +153,9 @@ func (m *Manager) OnCounterAntiEntropy(bundle []byte) (protocol.Status, []byte) 
 			return protocol.StatusCapacityExceeded, nil
 		}
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERepaired.Add(uint64(len(remote)))
-	}
+	})
 	resp := m.EncodeCounterBatch(m.fetchBytes)
 	if resp == nil {
 		return protocol.StatusCapacityExceeded, nil

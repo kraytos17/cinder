@@ -16,6 +16,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
 
 // Wire constants. Must stay in sync with the C++ K_* constants.
@@ -248,64 +250,6 @@ func (a *payloadAcc) add(n uint64) {
 	a.ok = true
 }
 
-// reader is a bounds-checked big-endian cursor over a payload.
-type reader struct {
-	buf []byte
-	off int
-}
-
-func (r *reader) remaining() int { return len(r.buf) - r.off }
-
-func (r *reader) u8() (uint8, bool) {
-	if r.remaining() < 1 {
-		return 0, false
-	}
-	v := r.buf[r.off]
-	r.off++
-	return v, true
-}
-
-func (r *reader) u32() (uint32, bool) {
-	if r.remaining() < 4 {
-		return 0, false
-	}
-	v := binary.BigEndian.Uint32(r.buf[r.off:])
-	r.off += 4
-	return v, true
-}
-
-func (r *reader) u64() (uint64, bool) {
-	if r.remaining() < 8 {
-		return 0, false
-	}
-	v := binary.BigEndian.Uint64(r.buf[r.off:])
-	r.off += 8
-	return v, true
-}
-
-func (r *reader) bytes(n int) ([]byte, bool) {
-	if n < 0 || r.remaining() < n {
-		return nil, false
-	}
-	v := r.buf[r.off : r.off+n]
-	r.off += n
-	return v, true
-}
-
-// writer appends big-endian integers to a buffer.
-type writer struct {
-	buf []byte
-}
-
-func (w *writer) u8(v uint8)     { w.buf = append(w.buf, v) }
-func (w *writer) u32(v uint32)   { w.buf = binary.BigEndian.AppendUint32(w.buf, v) }
-func (w *writer) u64(v uint64)   { w.buf = binary.BigEndian.AppendUint64(w.buf, v) }
-func (w *writer) bytes(b []byte) { w.buf = append(w.buf, b...) }
-
-// parseFrame validates the 7-byte header and returns the opcode plus the
-// payload view, which never extends past the declared length. Callers may
-// pass a larger buffer (e.g. a coalesced TCP read); framing the stream is
-// the connection layer's job.
 func parseFrame(frame []byte) (Opcode, []byte, error) {
 	if len(frame) < FrameHeaderSize {
 		return 0, nil, errInvalid("frame too small")
@@ -326,8 +270,6 @@ func parseFrame(frame []byte) (Opcode, []byte, error) {
 	return Opcode(frame[2]), frame[FrameHeaderSize : FrameHeaderSize+payloadLen], nil
 }
 
-// EncodeRequest serializes req into a complete v6 frame. authToken, when
-// non-empty, must be exactly AuthTokenLen bytes (the HMAC-SHA256 credential).
 func EncodeRequest(req Request, authToken []byte) ([]byte, error) {
 	return EncodeRequestInto(req, authToken, nil)
 }
@@ -370,17 +312,16 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 		return nil, errInvalid("message too large")
 	}
 
-	var w writer
-	w.buf = buf[:0:cap(buf)]
+	w := codec.NewWriter(binary.BigEndian, buf[:0:cap(buf)])
 	// Reserve header + payload up front so the frame is one allocation.
 	need := FrameHeaderSize + int(acc.size)
-	if cap(w.buf) < need {
-		w.buf = make([]byte, 0, need)
+	if cap(w.Out()) < need {
+		w.Reset(make([]byte, 0, need))
 	}
-	w.u8(Magic)
-	w.u8(Version)
-	w.u8(uint8(req.Opcode))
-	w.u32(uint32(acc.size))
+	w.U8(Magic)
+	w.U8(Version)
+	w.U8(uint8(req.Opcode))
+	w.U32(uint32(acc.size))
 
 	var flags uint8
 	if req.HasTTL {
@@ -398,35 +339,35 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if hasAuth {
 		flags |= FlagHasAuth
 	}
-	w.u8(flags)
+	w.U8(flags)
 	if req.HasTTL {
-		w.u32(uint32(req.TTL.Milliseconds()))
+		w.U32(uint32(req.TTL.Milliseconds()))
 	}
 	if req.HasExpiresAt {
-		w.u64(uint64(req.ExpiresAt.UnixMilli()))
+		w.U64(uint64(req.ExpiresAt.UnixMilli()))
 	}
-	w.u64(req.Version)
-	w.u64(req.WriterNodeHash)
-	w.u32(uint32(len(req.Key)))
-	w.bytes(req.Key)
-	w.u32(uint32(len(req.Value)))
-	w.bytes(req.Value)
+	w.U64(req.Version)
+	w.U64(req.WriterNodeHash)
+	w.U32(uint32(len(req.Key)))
+	w.Bytes(req.Key)
+	w.U32(uint32(len(req.Value)))
+	w.Bytes(req.Value)
 	if req.Opcode == OpCounterAdjust {
-		w.u64(req.CounterDelta)
+		w.U64(req.CounterDelta)
 		if req.CounterDecrement {
-			w.u8(1)
+			w.U8(1)
 		} else {
-			w.u8(0)
+			w.U8(0)
 		}
 	}
 	if hasTrace {
-		w.u64(req.TraceID)
-		w.u64(req.SpanID)
+		w.U64(req.TraceID)
+		w.U64(req.SpanID)
 	}
 	if hasAuth {
-		w.bytes(authToken)
+		w.Bytes(authToken)
 	}
-	return w.buf, nil
+	return w.Out(), nil
 }
 
 // DecodeRequest parses one complete v6 frame. It mirrors the C++ decoder's
@@ -443,13 +384,13 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 	}
 	req := &out.Req
 	req.Opcode = rawOpcode
-	r := reader{buf: payload}
-	flags, ok := r.u8()
+	r := codec.NewReader(binary.BigEndian, payload)
+	flags, ok := r.U8()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
 	if flags&FlagHasTTL != 0 {
-		ttl, ok := r.u32()
+		ttl, ok := r.U32()
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
@@ -457,7 +398,7 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		req.TTL = time.Duration(ttl) * time.Millisecond
 	}
 	if flags&FlagHasExpiresAt != 0 {
-		ms, ok := r.u64()
+		ms, ok := r.U64()
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
@@ -468,44 +409,44 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		req.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
 	}
 	req.Tombstone = flags&FlagTombstone != 0
-	version, ok := r.u64()
+	version, ok := r.U64()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
 	req.Version = version
-	writerHash, ok := r.u64()
+	writerHash, ok := r.U64()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
 	req.WriterNodeHash = writerHash
-	keyLen, ok := r.u32()
+	keyLen, ok := r.U32()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
 	if keyLen > 0 {
-		key, ok := r.bytes(int(keyLen))
+		key, ok := r.Bytes(int(keyLen))
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
 		req.Key = append([]byte(nil), key...)
 	}
-	valLen, ok := r.u32()
+	valLen, ok := r.U32()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
 	if valLen > 0 {
-		val, ok := r.bytes(int(valLen))
+		val, ok := r.Bytes(int(valLen))
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
 		req.Value = append([]byte(nil), val...)
 	}
 	if req.Opcode == OpCounterAdjust {
-		delta, ok := r.u64()
+		delta, ok := r.U64()
 		if !ok {
 			return out, errInvalid("invalid counter adjust")
 		}
-		decr, ok := r.u8()
+		decr, ok := r.U8()
 		if !ok || decr > 1 {
 			return out, errInvalid("invalid counter adjust")
 		}
@@ -518,9 +459,9 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		}
 	}
 	// Trace context: optional trailing data, ignored when truncated.
-	if flags&FlagHasTrace != 0 && r.remaining() >= 16 {
-		tid, _ := r.u64()
-		sid, _ := r.u64()
+	if flags&FlagHasTrace != 0 && r.Remaining() >= 16 {
+		tid, _ := r.U64()
+		sid, _ := r.U64()
 		req.TraceID = tid
 		// Mirror the encoder (which gates span on trace_id != 0): a zero
 		// trace carries no span, so decode->encode->decode is a fixed point.
@@ -528,8 +469,8 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 			req.SpanID = sid
 		}
 	}
-	if flags&FlagHasAuth != 0 && r.remaining() >= AuthTokenLen {
-		token, _ := r.bytes(AuthTokenLen)
+	if flags&FlagHasAuth != 0 && r.Remaining() >= AuthTokenLen {
+		token, _ := r.Bytes(AuthTokenLen)
 		out.AuthToken = append([]byte(nil), token...)
 	}
 	return out, nil
@@ -577,37 +518,36 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 		return nil, errInvalid("message too large")
 	}
 
-	var w writer
-	w.buf = buf[:0:cap(buf)]
+	w := codec.NewWriter(binary.BigEndian, buf[:0:cap(buf)])
 	need := FrameHeaderSize + int(acc.size)
-	if cap(w.buf) < need {
-		w.buf = make([]byte, 0, need)
+	if cap(w.Out()) < need {
+		w.Reset(make([]byte, 0, need))
 	}
-	w.u8(Magic)
-	w.u8(Version)
-	w.u8(0) // response opcode unused
-	w.u32(uint32(acc.size))
+	w.U8(Magic)
+	w.U8(Version)
+	w.U8(0) // response opcode unused
+	w.U32(uint32(acc.size))
 
-	w.u8(uint8(res.Status))
-	w.u8(flags)
+	w.U8(uint8(res.Status))
+	w.U8(flags)
 	if hasVersionMeta {
-		w.u64(res.Version)
-		w.u64(res.WriterNodeHash)
+		w.U64(res.Version)
+		w.U64(res.WriterNodeHash)
 	}
 	if res.HasExpiresAt {
-		w.u64(uint64(res.ExpiresAt.UnixMilli()))
+		w.U64(uint64(res.ExpiresAt.UnixMilli()))
 	}
 	if res.HasValue {
-		w.u32(1)
+		w.U32(1)
 	} else {
-		w.u32(0)
+		w.U32(0)
 	}
-	w.bytes(res.Value)
+	w.Bytes(res.Value)
 	if hasTrace {
-		w.u64(res.TraceID)
-		w.u64(res.SpanID)
+		w.U64(res.TraceID)
+		w.U64(res.SpanID)
 	}
-	return w.buf, nil
+	return w.Out(), nil
 }
 
 // DecodeResponse parses one complete v6 response frame. Like the C++ side,
@@ -620,34 +560,34 @@ func DecodeResponse(frame []byte) (Response, error) {
 	if err != nil {
 		return res, err
 	}
-	r := reader{buf: payload}
-	status, ok := r.u8()
+	r := codec.NewReader(binary.BigEndian, payload)
+	status, ok := r.U8()
 	if !ok {
 		return res, errInvalid("truncated frame")
 	}
 	res.Status = Status(status)
 	var flags uint8
-	if r.remaining() > 0 {
-		flags, ok = r.u8()
+	if r.Remaining() > 0 {
+		flags, ok = r.U8()
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
 	}
 	res.Tombstone = flags&RespFlagTombstone != 0
 	if flags&RespFlagVersionMeta != 0 {
-		version, ok := r.u64()
+		version, ok := r.U64()
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
 		res.Version = version
-		writerHash, ok := r.u64()
+		writerHash, ok := r.U64()
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
 		res.WriterNodeHash = writerHash
 	}
 	if flags&RespFlagExpiresAt != 0 {
-		ms, ok := r.u64()
+		ms, ok := r.U64()
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
@@ -657,7 +597,7 @@ func DecodeResponse(frame []byte) (Response, error) {
 		res.HasExpiresAt = true
 		res.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
 	}
-	hasVal, ok := r.u32()
+	hasVal, ok := r.U32()
 	if !ok {
 		return res, errInvalid("truncated frame")
 	}
@@ -669,19 +609,19 @@ func DecodeResponse(frame []byte) (Response, error) {
 			traceSize = 16
 		}
 		valLen := 0
-		if r.remaining() > traceSize {
-			valLen = r.remaining() - traceSize
+		if r.Remaining() > traceSize {
+			valLen = r.Remaining() - traceSize
 		}
-		val, ok := r.bytes(valLen)
+		val, ok := r.Bytes(valLen)
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
 		res.HasValue = true
 		res.Value = append([]byte(nil), val...)
 	}
-	if flags&RespFlagTrace != 0 && r.remaining() >= 16 {
-		tid, _ := r.u64()
-		sid, _ := r.u64()
+	if flags&RespFlagTrace != 0 && r.Remaining() >= 16 {
+		tid, _ := r.U64()
+		sid, _ := r.U64()
 		res.TraceID = tid
 		if tid != 0 {
 			res.SpanID = sid

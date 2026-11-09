@@ -13,6 +13,7 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -63,8 +64,6 @@ func (m *Manager) SetLogger(l *zerolog.Logger) {
 	}
 	m.logger.Store(l)
 }
-
-func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
 
 // log returns the installed logger (Nop when unset, so direct
 // constructions stay silent without a SetLogger call).
@@ -131,19 +130,19 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.AsyncWrites.Add(1)
-		}
+		})
 		return nil
 	}
 	err := m.fanOutQuorum(req, replicas)
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		if err != nil {
 			mt.QuorumWritesErr.Add(1)
 		} else {
 			mt.QuorumWritesOK.Add(1)
 		}
-	}
+	})
 	if err != nil {
 		if e := m.log().Warn(); e != nil {
 			log.Fields(e, req.TraceID, req.SpanID).Str("key", key).Msg("quorum write failed")
@@ -172,19 +171,19 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.AsyncDeletes.Add(1)
-		}
+		})
 		return nil
 	}
 	err := m.fanOutQuorum(req, replicas)
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		if err != nil {
 			mt.QuorumDeletesEr.Add(1)
 		} else {
 			mt.QuorumDeletesOK.Add(1)
 		}
-	}
+	})
 	if err != nil {
 		if e := m.log().Warn(); e != nil {
 			log.Fields(e, req.TraceID, req.SpanID).Str("key", key).Msg("quorum delete failed")
@@ -284,31 +283,20 @@ func drain(out <-chan fanResult, n int, fn func(fanResult)) {
 
 func (m *Manager) enqueueHint(node string, req protocol.Request) {
 	h := Hint{Target: node, Req: req, ExpiresAt: m.clock.Now().Add(HintTTL)}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.ReplicaUnreach.Add(1)
 		mt.HintsEnqueued.Add(1)
-	}
+	})
 	m.hints.Push(h)
 	// Funnel the queue's own drop count (oversize + evictions, including
 	// pushes that bypass the manager) into the collector without
 	// double-counting: monotonic max-sync.
-	if mt := m.metrics(); mt != nil {
-		for {
-			cur := mt.HintsDropped.Load()
-			qd := m.hints.Dropped()
-			if qd <= cur || mt.HintsDropped.CompareAndSwap(cur, qd) {
-				break
-			}
-		}
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
+		obs.RetryMax(mt.HintsDropped.Load, mt.HintsDropped.CompareAndSwap, m.hints.Dropped())
 		if peak := m.hints.Bytes(); peak > mt.HintBytesPeak.Load() {
-			for {
-				cur := mt.HintBytesPeak.Load()
-				if peak <= cur || mt.HintBytesPeak.CompareAndSwap(cur, peak) {
-					break
-				}
-			}
+			obs.RetryMax(mt.HintBytesPeak.Load, mt.HintBytesPeak.CompareAndSwap, peak)
 		}
-	}
+	})
 	if m.journal != nil {
 		m.journal.AppendAdd(h)
 		// Bound the file like C++ appendAdd does: past the record budget
@@ -333,9 +321,9 @@ func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uin
 		}
 		return store.Entry{}, ErrNotFound
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.QuorumReads.Add(1)
-	}
+	})
 	return m.readCoalesced(key, r, func() (store.Entry, error) {
 		return m.readOnce(key, replicas, r, traceID, spanID)
 	})
@@ -353,9 +341,9 @@ func (m *Manager) readCoalesced(key string, r int, run func() (store.Entry, erro
 		return run()
 	})
 	if shared {
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.ReadsCoalesced.Add(1)
-		}
+		})
 	}
 	if err != nil {
 		return store.Entry{}, err
@@ -402,9 +390,9 @@ func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID
 		// the winner back everywhere best-effort.
 		_ = m.local.PutVersioned(key, best)
 		m.repair(key, replicas, best, traceID, spanID)
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.ReadRepairs.Add(1)
-		}
+		})
 	}
 	return best, nil
 }
@@ -517,8 +505,8 @@ func (m *Manager) ReplayHints() int {
 	}
 	wg.Wait()
 	n := int(replayed.Load())
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.HintsReplayed.Add(uint64(n))
-	}
+	})
 	return n
 }

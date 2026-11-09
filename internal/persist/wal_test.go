@@ -2,9 +2,12 @@ package persist
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
 
 func TestWALRoundTrip(t *testing.T) {
@@ -304,10 +307,10 @@ func TestSnapshotV3Rejected(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/snap.csp"
 	var hdr []byte
-	hdr = putU32(hdr, snapMagic)
-	hdr = putU32(hdr, 3)
-	hdr = putU64(hdr, 0)
-	hdr = putU32(hdr, 0)
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(3))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint64(0))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(0))
 	os.WriteFile(path, hdr, 0o644)
 	if _, err := NewSnapReader(path).ReadAll(); err == nil {
 		t.Fatal("v3 must fail cleanly (zstd blocks deferred)")

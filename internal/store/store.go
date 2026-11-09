@@ -9,6 +9,8 @@ import (
 	"unique"
 
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/obs"
+	"github.com/kraytos17/cinder/internal/sharding"
 )
 
 // ErrCapacityExceeded rejects a lone entry bigger than its shard slice,
@@ -45,11 +47,7 @@ const NodeOverhead = 120
 // lfuNodeOverhead matches C++ sizeof(LfuNode) (136).
 const lfuNodeOverhead = 136
 
-const (
-	maxShards     = 16
-	minShardBytes = 65_536
-	noLink        = -1
-)
+const noLink = -1
 
 // MutationSink observes every accepted write, remove, and eviction while
 // the caller holds the shard lock, so it must be leaf-only: never call
@@ -120,7 +118,7 @@ func newStore(capacityBytes uint64, clock Clock, policy Policy) *Store {
 	if clock == nil {
 		clock = SystemClock{}
 	}
-	n := shardCountFor(capacityBytes)
+	n := sharding.CountFor(capacityBytes)
 	overhead := uint64(NodeOverhead)
 	if policy == LFUPolicy {
 		overhead = lfuNodeOverhead
@@ -159,23 +157,10 @@ func NewLFUStore(capacityBytes uint64, clock Clock) *Store {
 // Policy returns the immutable eviction discipline selected at construction.
 func (s *Store) Policy() Policy { return s.policy }
 
-func shardCountFor(capacityBytes uint64) int {
-	n := min(max(int(capacityBytes/minShardBytes), 1), maxShards)
-	return n
-}
-
-// shardSeed is the process seed for internal shard placement. One seed
-// for the process keeps every Store/Counter instance on the same mapping,
-// which keeps tests deterministic within a run.
+// shardSeed is the store's placement seed (see internal/sharding): one
+// seed per process keeps every Store on the same mapping, which keeps
+// tests deterministic within a run.
 var shardSeed = maphash.MakeSeed()
-
-func shardFor(key string, n int) int {
-	// Internal sharding only: distribution across shards, never on the
-	// wire. maphash (stdlib, seeded per process) replaces the ported
-	// FNV-1a; restart-stable placement is not required here, unlike the
-	// ring positions and checksums where xxh3 stays byte-identical by law.
-	return int(maphash.String(shardSeed, key) % uint64(n))
-}
 
 func (s *Store) entrySize(key string, e Entry) uint64 {
 	return uint64(len(key)+len(e.Value)) + s.nodeOverhead
@@ -198,39 +183,31 @@ func (s *Store) SetMetrics(m *metrics.Collector) {
 }
 
 func (s *Store) bumpHits() {
-	if m := s.met.Load(); m != nil {
-		m.Hits.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.Hits.Add(1) })
 }
 
 func (s *Store) bumpMisses() {
-	if m := s.met.Load(); m != nil {
-		m.Misses.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.Misses.Add(1) })
 }
 
 func (s *Store) bumpExpiredOnRead() {
-	if m := s.met.Load(); m != nil {
-		m.ExpiresOnRead.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.ExpiresOnRead.Add(1) })
 }
 
 // bumpWrite records an accepted write: tombstones count as deletes,
 // live values as writes, and overwriting a resident also retires it
 // (mirroring C++ noteRemoved/noteAdded + the tombstone/write tail).
 func (s *Store) bumpWrite(tombstone, overwrote bool) {
-	m := s.met.Load()
-	if m == nil {
-		return
-	}
-	if overwrote {
-		m.Deletes.Add(1)
-	}
-	if tombstone {
-		m.Deletes.Add(1)
-	} else {
-		m.Writes.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) {
+		if overwrote {
+			m.Deletes.Add(1)
+		}
+		if tombstone {
+			m.Deletes.Add(1)
+		} else {
+			m.Writes.Add(1)
+		}
+	})
 }
 
 func (s *Store) emit(key string, versionAndTTL, writer uint64, removed bool) {
@@ -275,12 +252,7 @@ func (s *Store) persistDel(key string, e Entry) {
 // RestoreVersion advances the Lamport clock past recovered versions so a
 // restarted node wins LWW. Used by snapshot/WAL recovery.
 func (s *Store) RestoreVersion(v uint64) {
-	for {
-		cur := s.nextVer.Load()
-		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
-			return
-		}
-	}
+	obs.RetryMax(s.nextVer.Load, s.nextVer.CompareAndSwap, v)
 }
 
 // SetTombstoneGCInterval sets how long a delete marker survives before the
@@ -307,12 +279,7 @@ func (s *Store) MintVersion() uint64 {
 }
 
 func (s *Store) observeVersion(v uint64) {
-	for {
-		cur := s.nextVer.Load()
-		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
-			return
-		}
-	}
+	obs.RetryMax(s.nextVer.Load, s.nextVer.CompareAndSwap, v)
 }
 
 func (s *Store) shardCap() uint64 {
@@ -349,7 +316,7 @@ func (s *Store) PutVersioned(key string, e Entry) error {
 }
 
 func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
@@ -426,7 +393,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 // Get returns a copy of the live value, or false on miss, expiry, or
 // tombstone. Expired entries are reaped eagerly; tombstones stay hidden.
 func (s *Store) Get(key string) ([]byte, bool) {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
@@ -453,7 +420,7 @@ func (s *Store) Get(key string) ([]byte, bool) {
 // GetVersioned returns the resident entry (tombstones included), or false
 // on miss or expiry. Unlike Get it never touches LRU order.
 func (s *Store) GetVersioned(key string) (Entry, bool) {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
@@ -475,7 +442,7 @@ func (s *Store) GetVersioned(key string) (Entry, bool) {
 // Remove hard-erases key, returning false when absent. Unlike
 // RemoveVersioned it leaves no tombstone behind.
 func (s *Store) Remove(key string) bool {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
@@ -486,9 +453,7 @@ func (s *Store) Remove(key string) bool {
 	old := sh.nodes[idx].entry.Clone()
 	s.eraseNode(sh, idx)
 	s.persistDel(key, old)
-	if m := s.met.Load(); m != nil {
-		m.Deletes.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.Deletes.Add(1) })
 	return true
 }
 
@@ -547,9 +512,7 @@ func (s *Store) EvictExpired() int {
 					return
 				}
 				s.eraseNode(sh, id)
-				if m := s.met.Load(); m != nil {
-					m.EvictionsTTL.Add(1)
-				}
+				obs.IfPresent(&s.met, func(m *metrics.Collector) { m.EvictionsTTL.Add(1) })
 				evicted++
 			})
 		}
@@ -755,9 +718,7 @@ func (s *Store) evictOne(sh *shard) uint64 {
 	if victim == noLink {
 		return 0
 	}
-	if m := s.met.Load(); m != nil {
-		m.EvictionsCap.Add(1)
-	}
+	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.EvictionsCap.Add(1) })
 	return s.removeNode(sh, victim)
 }
 

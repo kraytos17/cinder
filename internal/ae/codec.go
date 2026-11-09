@@ -16,6 +16,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/codec"
+
 	"github.com/zeebo/xxh3"
 
 	"github.com/kraytos17/cinder/internal/store"
@@ -120,84 +122,32 @@ type IBLTDiff struct {
 	LocalOnly  []IBLTItem
 }
 
-func putU8(b []byte, v uint8) []byte   { return append(b, v) }
-func putU32(b []byte, v uint32) []byte { return binary.LittleEndian.AppendUint32(b, v) }
-func putU64(b []byte, v uint64) []byte { return binary.LittleEndian.AppendUint64(b, v) }
-func putI64(b []byte, v int64) []byte  { return binary.LittleEndian.AppendUint64(b, uint64(v)) }
-
-type cursor struct {
-	buf []byte
-	off int
-}
-
-func (c *cursor) rem() int { return len(c.buf) - c.off }
-func (c *cursor) u8() (uint8, bool) {
-	if c.rem() < 1 {
-		return 0, false
-	}
-
-	v := c.buf[c.off]
-	c.off++
-	return v, true
-}
-
-func (c *cursor) u32() (uint32, bool) {
-	if c.rem() < 4 {
-		return 0, false
-	}
-
-	v := binary.LittleEndian.Uint32(c.buf[c.off:])
-	c.off += 4
-	return v, true
-}
-
-func (c *cursor) u64() (uint64, bool) {
-	if c.rem() < 8 {
-		return 0, false
-	}
-
-	v := binary.LittleEndian.Uint64(c.buf[c.off:])
-	c.off += 8
-	return v, true
-}
-
-func (c *cursor) bytes(n int) ([]byte, bool) {
-	if n < 0 || c.rem() < n {
-		return nil, false
-	}
-
-	v := c.buf[c.off : c.off+n : c.off+n]
-	c.off += n
-	return v, true
-}
-
-// EncodeDigest serializes a legacy AEM2 flat digest.
 func EncodeDigest(digest []uint64) []byte {
 	out := make([]byte, 0, 8+8*len(digest))
-	out = putU32(out, MagicDigest)
-	out = putU32(out, uint32(len(digest)))
+	out = codec.Append(out, binary.LittleEndian, MagicDigest)
+	out = codec.AppendLen(out, binary.LittleEndian, len(digest))
 	for _, h := range digest {
-		out = putU64(out, h)
+		out = codec.Append(out, binary.LittleEndian, h)
 	}
 	return out
 }
 
 // DecodeDigest parses an AEM2 blob with exact size validation.
 func DecodeDigest(data []byte, expected int) ([]uint64, bool) {
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicDigest {
 		return nil, false
 	}
 
-	n, ok := c.u32()
-	if !ok || int(n) != expected || c.rem() != int(n)*8 {
+	n, ok := c.U32()
+	if !ok || int(n) != expected || c.Remaining() != int(n)*8 {
 		return nil, false
 	}
 
 	out := make([]uint64, 0, n)
 	for range n {
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return nil, false
 		}
@@ -218,8 +168,8 @@ func GroupFold(hashes []uint64) []uint64 {
 
 		var mat []byte
 		for b := begin; b < end; b++ {
-			mat = putU32(mat, uint32(b))
-			mat = putU64(mat, hashes[b])
+			mat = codec.Append(mat, binary.LittleEndian, uint32(b))
+			mat = codec.Append(mat, binary.LittleEndian, hashes[b])
 		}
 		out = append(out, xxh3.Hash(mat))
 	}
@@ -229,30 +179,30 @@ func GroupFold(hashes []uint64) []uint64 {
 // EncodeGroupDigest serializes an AEM3 group digest.
 func EncodeGroupDigest(groups []uint64) []byte {
 	out := make([]byte, 0, 8+8*len(groups))
-	out = putU32(out, MagicGroupDigest)
-	out = putU32(out, uint32(len(groups)))
+	out = codec.Append(out, binary.LittleEndian, MagicGroupDigest)
+	out = codec.AppendLen(out, binary.LittleEndian, len(groups))
 	for _, h := range groups {
-		out = putU64(out, h)
+		out = codec.Append(out, binary.LittleEndian, h)
 	}
 	return out
 }
 
 // DecodeGroupDigest parses an AEM3 blob with exact size validation.
 func DecodeGroupDigest(data []byte, expectedGroups int) ([]uint64, bool) {
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicGroupDigest {
 		return nil, false
 	}
 
-	n, ok := c.u32()
-	if !ok || int(n) != expectedGroups || c.rem() != int(n)*8 {
+	n, ok := c.U32()
+	if !ok || int(n) != expectedGroups || c.Remaining() != int(n)*8 {
 		return nil, false
 	}
 
 	out := make([]uint64, 0, n)
 	for range n {
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return nil, false
 		}
@@ -264,17 +214,17 @@ func DecodeGroupDigest(data []byte, expectedGroups int) ([]uint64, bool) {
 // EncodeRefinement serializes an AEB5 request.
 func EncodeRefinement(r Refinement) []byte {
 	out := make([]byte, 0, 12+12*len(r.BucketHashes))
-	out = putU32(out, MagicRefinement)
+	out = codec.Append(out, binary.LittleEndian, MagicRefinement)
 	if r.ForceMeta {
-		out = putU32(out, 1)
+		out = codec.Append(out, binary.LittleEndian, uint32(1))
 	} else {
-		out = putU32(out, 0)
+		out = codec.Append(out, binary.LittleEndian, uint32(0))
 	}
 
-	out = putU32(out, uint32(len(r.BucketHashes)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(r.BucketHashes))
 	for _, bh := range r.BucketHashes {
-		out = putU32(out, bh.Bucket)
-		out = putU64(out, bh.Hash)
+		out = codec.Append(out, binary.LittleEndian, bh.Bucket)
+		out = codec.Append(out, binary.LittleEndian, bh.Hash)
 	}
 	return out
 }
@@ -283,30 +233,30 @@ func EncodeRefinement(r Refinement) []byte {
 // C++ bound: callers pass num_buckets_; ids beyond it are rejected).
 func DecodeRefinement(data []byte, maxBucket uint32) (Refinement, bool) {
 	var out Refinement
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicRefinement {
 		return out, false
 	}
 
-	flags, ok := c.u32()
+	flags, ok := c.U32()
 	if !ok || flags&^1 != 0 {
 		return out, false
 	}
 
-	n, ok := c.u32()
-	if !ok || c.rem() != int(n)*12 {
+	n, ok := c.U32()
+	if !ok || c.Remaining() != int(n)*12 {
 		return out, false
 	}
 
 	out.ForceMeta = flags&1 != 0
 	for range n {
-		b, ok := c.u32()
+		b, ok := c.U32()
 		if !ok || b >= maxBucket {
 			return out, false
 		}
 
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return out, false
 		}
@@ -319,16 +269,16 @@ func DecodeRefinement(data []byte, maxBucket uint32) (Refinement, bool) {
 // Layout mirrors encodeMetaRows (count first, no envelope magic).
 func EncodeMetaRows(rows []MetaRow) []byte {
 	out := make([]byte, 0, 4+len(rows)*29)
-	out = putU32(out, uint32(len(rows)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(rows))
 	for _, r := range rows {
-		out = putU32(out, r.Bucket)
-		out = putU64(out, r.KeyHash)
-		out = putU64(out, r.Version)
-		out = putU64(out, r.Writer)
+		out = codec.Append(out, binary.LittleEndian, r.Bucket)
+		out = codec.Append(out, binary.LittleEndian, r.KeyHash)
+		out = codec.Append(out, binary.LittleEndian, r.Version)
+		out = codec.Append(out, binary.LittleEndian, r.Writer)
 		if r.Tombstone {
-			out = putU8(out, 1)
+			out = codec.Append(out, binary.LittleEndian, uint8(1))
 		} else {
-			out = putU8(out, 0)
+			out = codec.Append(out, binary.LittleEndian, uint8(0))
 		}
 	}
 	return out
@@ -336,9 +286,9 @@ func EncodeMetaRows(rows []MetaRow) []byte {
 
 // DecodeMetaRows parses rows with exact size validation.
 func DecodeMetaRows(data []byte) ([]MetaRow, bool) {
-	c := &cursor{buf: data}
-	n, ok := c.u32()
-	if !ok || c.rem() != int(n)*29 {
+	c := codec.NewReader(binary.LittleEndian, data)
+	n, ok := c.U32()
+	if !ok || c.Remaining() != int(n)*29 {
 		return nil, false
 	}
 
@@ -347,19 +297,19 @@ func DecodeMetaRows(data []byte) ([]MetaRow, bool) {
 		var r MetaRow
 		var tomb uint8
 		var ok bool
-		if r.Bucket, ok = c.u32(); !ok {
+		if r.Bucket, ok = c.U32(); !ok {
 			return nil, false
 		}
-		if r.KeyHash, ok = c.u64(); !ok {
+		if r.KeyHash, ok = c.U64(); !ok {
 			return nil, false
 		}
-		if r.Version, ok = c.u64(); !ok {
+		if r.Version, ok = c.U64(); !ok {
 			return nil, false
 		}
-		if r.Writer, ok = c.u64(); !ok {
+		if r.Writer, ok = c.U64(); !ok {
 			return nil, false
 		}
-		if tomb, ok = c.u8(); !ok || tomb > 1 {
+		if tomb, ok = c.U8(); !ok || tomb > 1 {
 			return nil, false
 		}
 
@@ -378,29 +328,29 @@ func EncodeResponse(r DigestResponse) []byte {
 	}
 
 	out := make([]byte, 0, 16+8*len(r.GroupHashes)+12*len(r.BucketHashes)+4*len(r.Covered)+4+len(rows)+4+sketchSize)
-	out = putU32(out, MagicResponse)
-	out = putU32(out, uint32(len(r.GroupHashes)))
+	out = codec.Append(out, binary.LittleEndian, MagicResponse)
+	out = codec.AppendLen(out, binary.LittleEndian, len(r.GroupHashes))
 	for _, h := range r.GroupHashes {
-		out = putU64(out, h)
+		out = codec.Append(out, binary.LittleEndian, h)
 	}
 
-	out = putU32(out, uint32(len(r.BucketHashes)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(r.BucketHashes))
 	for _, bh := range r.BucketHashes {
-		out = putU32(out, bh.Bucket)
-		out = putU64(out, bh.Hash)
+		out = codec.Append(out, binary.LittleEndian, bh.Bucket)
+		out = codec.Append(out, binary.LittleEndian, bh.Hash)
 	}
 
-	out = putU32(out, uint32(len(r.Covered)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(r.Covered))
 	for _, b := range r.Covered {
-		out = putU32(out, b)
+		out = codec.Append(out, binary.LittleEndian, b)
 	}
 
-	out = putU32(out, uint32(len(rows)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(rows))
 	out = append(out, rows...)
-	out = putU32(out, uint32(len(r.Sketches)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(r.Sketches))
 	for _, s := range r.Sketches {
-		out = putU32(out, s.Bucket)
-		out = putU32(out, uint32(len(s.Blob)))
+		out = codec.Append(out, binary.LittleEndian, s.Bucket)
+		out = codec.AppendLen(out, binary.LittleEndian, len(s.Blob))
 		out = append(out, s.Blob...)
 	}
 	return out
@@ -410,51 +360,51 @@ func EncodeResponse(r DigestResponse) []byte {
 // sketch uniqueness are all validated like the C++ decoder.
 func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	var out DigestResponse
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicResponse {
 		return out, false
 	}
 
-	gc, ok := c.u32()
+	gc, ok := c.U32()
 	if !ok || int(gc) != expectedGroups {
 		return out, false
 	}
 
 	out.GroupHashes = make([]uint64, 0, gc)
 	for range gc {
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return out, false
 		}
 		out.GroupHashes = append(out.GroupHashes, h)
 	}
 
-	bhc, ok := c.u32()
-	if !ok || c.rem() < int(bhc)*12 {
+	bhc, ok := c.U32()
+	if !ok || c.Remaining() < int(bhc)*12 {
 		return out, false
 	}
 	for range bhc {
-		b, ok := c.u32()
+		b, ok := c.U32()
 		if !ok {
 			return out, false
 		}
 
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return out, false
 		}
 		out.BucketHashes = append(out.BucketHashes, BucketHash{Bucket: b, Hash: h})
 	}
 
-	cc, ok := c.u32()
-	if !ok || c.rem() < int(cc)*4+4 {
+	cc, ok := c.U32()
+	if !ok || c.Remaining() < int(cc)*4+4 {
 		return out, false
 	}
 
 	covered := map[uint32]bool{}
 	for range cc {
-		b, ok := c.u32()
+		b, ok := c.U32()
 		if !ok {
 			return out, false
 		}
@@ -463,12 +413,12 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 		covered[b] = true
 	}
 
-	rs, ok := c.u32()
-	if !ok || c.rem() < int(rs)+4 {
+	rs, ok := c.U32()
+	if !ok || c.Remaining() < int(rs)+4 {
 		return out, false
 	}
 
-	rowsBytes, ok := c.bytes(int(rs))
+	rowsBytes, ok := c.Bytes(int(rs))
 	if !ok {
 		return out, false
 	}
@@ -479,29 +429,29 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	}
 
 	out.Rows = rows
-	sc, ok := c.u32()
+	sc, ok := c.U32()
 	if !ok {
 		return out, false
 	}
 	// C++ bound: sketch_count <= remaining / 8; decode-time exactness
 	// below handles the rest.
-	if uint64(sc) > uint64(c.rem())/8 {
+	if uint64(sc) > uint64(c.Remaining())/8 {
 		return out, false
 	}
 
 	seenSketch := map[uint32]bool{}
 	for range sc {
-		b, ok := c.u32()
+		b, ok := c.U32()
 		if !ok {
 			return out, false
 		}
 
-		sz, ok := c.u32()
+		sz, ok := c.U32()
 		if !ok {
 			return out, false
 		}
 
-		blob, ok := c.bytes(int(sz))
+		blob, ok := c.Bytes(int(sz))
 		if !ok || DecodeIBLT(blob) == nil {
 			return out, false
 		}
@@ -512,7 +462,7 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 		seenSketch[b] = true
 		out.Sketches = append(out.Sketches, SketchRef{Bucket: b, Blob: append([]byte(nil), blob...)})
 	}
-	if c.rem() != 0 {
+	if c.Remaining() != 0 {
 		return out, false
 	}
 
@@ -556,13 +506,13 @@ func EncodeSync(msg SyncMessage) ([]byte, error) {
 	}
 
 	out := make([]byte, 0, size)
-	out = putU32(out, MagicSync)
-	out = putU32(out, uint32(len(msg.Entries)))
+	out = codec.Append(out, binary.LittleEndian, MagicSync)
+	out = codec.AppendLen(out, binary.LittleEndian, len(msg.Entries))
 	for _, it := range msg.Entries {
-		out = putU32(out, uint32(len(it.Key)))
+		out = codec.AppendLen(out, binary.LittleEndian, len(it.Key))
 		out = append(out, it.Key...)
-		out = putU64(out, it.Entry.Version)
-		out = putU64(out, it.Entry.WriterNodeHash)
+		out = codec.Append(out, binary.LittleEndian, it.Entry.Version)
+		out = codec.Append(out, binary.LittleEndian, it.Entry.WriterNodeHash)
 
 		var flags uint8
 		if it.Entry.HasTTL {
@@ -572,18 +522,18 @@ func EncodeSync(msg SyncMessage) ([]byte, error) {
 			flags |= 2
 		}
 
-		out = putU8(out, flags)
+		out = codec.Append(out, binary.LittleEndian, flags)
 		if it.Entry.HasTTL {
-			out = putU64(out, uint64(it.Entry.ExpiresAt.UnixMilli()))
+			out = codec.Append(out, binary.LittleEndian, uint64(it.Entry.ExpiresAt.UnixMilli()))
 		}
 
-		out = putU32(out, uint32(len(it.Entry.Value)))
+		out = codec.AppendLen(out, binary.LittleEndian, len(it.Entry.Value))
 		out = append(out, it.Entry.Value...)
 	}
 
-	out = putU32(out, uint32(len(msg.Needs)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(msg.Needs))
 	for _, h := range msg.Needs {
-		out = putU64(out, h)
+		out = codec.Append(out, binary.LittleEndian, h)
 	}
 	return out, nil
 }
@@ -593,41 +543,41 @@ var errTooLarge = errors.New("ae: payload too large")
 // DecodeSync parses an AEMS message with exact-size validation.
 func DecodeSync(data []byte) (SyncMessage, bool) {
 	var msg SyncMessage
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicSync {
 		return msg, false
 	}
 
-	n, ok := c.u32()
+	n, ok := c.U32()
 	if !ok {
 		return msg, false
 	}
 	for range n {
 		var item SyncItem
-		kl, ok := c.u32()
+		kl, ok := c.U32()
 		if !ok {
 			return msg, false
 		}
 
-		kb, ok := c.bytes(int(kl))
+		kb, ok := c.Bytes(int(kl))
 		if !ok {
 			return msg, false
 		}
 
 		item.Key = string(append([]byte(nil), kb...))
 		var e store.Entry
-		ver, ok := c.u64()
+		ver, ok := c.U64()
 		if !ok {
 			return msg, false
 		}
 
-		writer, ok := c.u64()
+		writer, ok := c.U64()
 		if !ok {
 			return msg, false
 		}
 
-		flags, ok := c.u8()
+		flags, ok := c.U8()
 		if !ok || flags&^3 != 0 {
 			return msg, false
 		}
@@ -635,19 +585,19 @@ func DecodeSync(data []byte) (SyncMessage, bool) {
 		e.Version, e.WriterNodeHash = ver, writer
 		e.Tombstone = flags&2 != 0
 		if e.HasTTL = flags&1 != 0; e.HasTTL {
-			ms, ok := c.u64()
+			ms, ok := c.U64()
 			if !ok {
 				return msg, false
 			}
 			e.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
 		}
 
-		vl, ok := c.u32()
+		vl, ok := c.U32()
 		if !ok {
 			return msg, false
 		}
 
-		val, ok := c.bytes(int(vl))
+		val, ok := c.Bytes(int(vl))
 		if !ok {
 			return msg, false
 		}
@@ -657,12 +607,12 @@ func DecodeSync(data []byte) (SyncMessage, bool) {
 		msg.Entries = append(msg.Entries, item)
 	}
 
-	nc, ok := c.u32()
-	if !ok || c.rem() != int(nc)*8 {
+	nc, ok := c.U32()
+	if !ok || c.Remaining() != int(nc)*8 {
 		return msg, false
 	}
 	for range nc {
-		h, ok := c.u64()
+		h, ok := c.U64()
 		if !ok {
 			return msg, false
 		}
@@ -755,15 +705,15 @@ func EncodeIBLT(cells []IBLTCell) []byte {
 	}
 
 	out := make([]byte, 0, 8+len(cells)*IBLTCelBytes)
-	out = putU32(out, MagicIBLT)
-	out = putU32(out, uint32(len(cells)))
+	out = codec.Append(out, binary.LittleEndian, MagicIBLT)
+	out = codec.AppendLen(out, binary.LittleEndian, len(cells))
 	for _, c := range cells {
-		out = putI64(out, c.Count)
-		out = putU64(out, c.KeyXOR)
-		out = putU64(out, c.VersionXOR)
-		out = putU64(out, c.WriterXOR)
-		out = putU64(out, c.TombstoneXOR)
-		out = putU64(out, c.ChecksumXOR)
+		out = codec.Append(out, binary.LittleEndian, uint64(c.Count))
+		out = codec.Append(out, binary.LittleEndian, c.KeyXOR)
+		out = codec.Append(out, binary.LittleEndian, c.VersionXOR)
+		out = codec.Append(out, binary.LittleEndian, c.WriterXOR)
+		out = codec.Append(out, binary.LittleEndian, c.TombstoneXOR)
+		out = codec.Append(out, binary.LittleEndian, c.ChecksumXOR)
 	}
 	return out
 }
@@ -771,20 +721,20 @@ func EncodeIBLT(cells []IBLTCell) []byte {
 // DecodeIBLT parses a sketch with exact-size validation plus the C++
 // count-bounds sanity check. Returns nil on any invalid input.
 func DecodeIBLT(data []byte) []IBLTCell {
-	c := &cursor{buf: data}
-	magic, ok := c.u32()
+	c := codec.NewReader(binary.LittleEndian, data)
+	magic, ok := c.U32()
 	if !ok || magic != MagicIBLT {
 		return nil
 	}
 
-	n, ok := c.u32()
-	if !ok || int(n) < IBLTCellsMin || int(n) > IBLTCellsMax || c.rem() != int(n)*IBLTCelBytes {
+	n, ok := c.U32()
+	if !ok || int(n) < IBLTCellsMin || int(n) > IBLTCellsMax || c.Remaining() != int(n)*IBLTCelBytes {
 		return nil
 	}
 
 	out := make([]IBLTCell, 0, n)
 	for range n {
-		bits, ok := c.u64()
+		bits, ok := c.U64()
 		if !ok {
 			return nil
 		}
@@ -797,19 +747,19 @@ func DecodeIBLT(data []byte) []IBLTCell {
 
 		var cell IBLTCell
 		cell.Count = int64(bits)
-		if cell.KeyXOR, ok = c.u64(); !ok {
+		if cell.KeyXOR, ok = c.U64(); !ok {
 			return nil
 		}
-		if cell.VersionXOR, ok = c.u64(); !ok {
+		if cell.VersionXOR, ok = c.U64(); !ok {
 			return nil
 		}
-		if cell.WriterXOR, ok = c.u64(); !ok {
+		if cell.WriterXOR, ok = c.U64(); !ok {
 			return nil
 		}
-		if cell.TombstoneXOR, ok = c.u64(); !ok {
+		if cell.TombstoneXOR, ok = c.U64(); !ok {
 			return nil
 		}
-		if cell.ChecksumXOR, ok = c.u64(); !ok {
+		if cell.ChecksumXOR, ok = c.U64(); !ok {
 			return nil
 		}
 		out = append(out, cell)

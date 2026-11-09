@@ -28,29 +28,17 @@ import (
 	"sync"
 	"sync/atomic"
 	"unique"
+
+	"github.com/kraytos17/cinder/internal/sharding"
 )
 
 // ErrCapacityExceeded rejects over-budget growth, mirroring C++
 // Errc::CapacityExceeded on the counter paths.
 var ErrCapacityExceeded = errors.New("counter: exceeds capacity")
 
-const (
-	maxShards     = 16
-	minShardBytes = 65536
-)
-
-func shardCountFor(capacityBytes uint64) int {
-	n := min(max(int(capacityBytes/minShardBytes), 1), maxShards)
-	return n
-}
-
-// counterSeed is the process seed for internal counter-shard placement
-// (same rationale as store.shardSeed: shard-local, never on the wire).
+// counterSeed is the counter store's placement seed (see
+// internal/sharding): shard-local, never on the wire.
 var counterSeed = maphash.MakeSeed()
-
-func shardFor(key string, n int) int {
-	return int(maphash.String(counterSeed, key) % uint64(n))
-}
 
 // addSat is a saturating add for capacity accounting: actor-controlled
 // lengths must not wrap the budget check.
@@ -90,7 +78,7 @@ type Store struct {
 
 // NewStore returns a store with the given byte budget.
 func NewStore(capacityBytes uint64) *Store {
-	n := shardCountFor(capacityBytes)
+	n := sharding.CountFor(capacityBytes)
 	s := &Store{shards: make([]shard, n)}
 	for i := range s.shards {
 		s.shards[i].index = make(map[string]PNCounter)
@@ -118,7 +106,12 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 	if actor == "" {
 		return ErrInvalidActor
 	}
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	// Actors are node IDs (bounded vocabulary, unlike user keys), so
+	// canonicalizing converges every counter's component map on one
+	// shared backing per actor. The Merge path needs no equivalent:
+	// wire actors replace-on-max and never accumulate.
+	actor = unique.Make(actor).Value()
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if it, ok := sh.index[key]; ok {
@@ -200,7 +193,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	if remote.Empty() {
 		return nil
 	}
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if it, ok := sh.index[key]; ok {
@@ -230,7 +223,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 // Value returns the current value, or false when absent. Counters have
 // neither tombstones nor expiry.
 func (s *Store) Value(key string) (int64, bool) {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	it, ok := sh.index[key]
@@ -242,7 +235,7 @@ func (s *Store) Value(key string) (int64, bool) {
 
 // Get returns a copy of the full state for replication sends.
 func (s *Store) Get(key string) (PNCounter, bool) {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
 	it, ok := sh.index[key]
@@ -255,7 +248,7 @@ func (s *Store) Get(key string) (PNCounter, bool) {
 // Remove erases locally, returning whether anything was removed. A merge
 // from a peer that still holds the key resurrects it (no tombstones).
 func (s *Store) Remove(key string) bool {
-	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	it, ok := sh.index[key]

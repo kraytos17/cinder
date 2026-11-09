@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/codec"
+
 	"github.com/zeebo/xxh3"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -190,63 +192,63 @@ type journalDel struct {
 }
 
 func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journalDel) {
-	c := &cursor{buf: payload}
-	op, ok := c.u8()
+	c := codec.NewReader(binary.LittleEndian, payload)
+	op, ok := c.U8()
 	if !ok {
 		return repl.Hint{}, false, nil
 	}
 	if op == journalOpAdd {
-		exp, ok := c.u64()
+		exp, ok := c.U64()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		tlen, ok := c.u32()
+		tlen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		tb, ok := c.bytes(int(tlen))
+		tb, ok := c.Bytes(int(tlen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
-		klen, ok := c.u32()
-		if !ok {
-			return repl.Hint{}, false, nil
-		}
-
-		kb, ok := c.bytes(int(klen))
+		klen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		vlen, ok := c.u32()
+		kb, ok := c.Bytes(int(klen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		vb, ok := c.bytes(int(vlen))
+		vlen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		ver, ok := c.u64()
+		vb, ok := c.Bytes(int(vlen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		writer, ok := c.u64()
+		ver, ok := c.U64()
+		if !ok {
+			return repl.Hint{}, false, nil
+		}
+
+		writer, ok := c.U64()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
 		var entryExp uint64
 		var tomb uint8
-		if c.rem() > 0 {
-			if entryExp, ok = c.u64(); !ok {
+		if c.Remaining() > 0 {
+			if entryExp, ok = c.U64(); !ok {
 				return repl.Hint{}, false, nil
 			}
-			if tomb, ok = c.u8(); !ok || tomb > 1 || c.rem() != 0 {
+			if tomb, ok = c.U8(); !ok || tomb > 1 || c.Remaining() != 0 {
 				return repl.Hint{}, false, nil
 			}
 		} else {
@@ -265,28 +267,28 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		return repl.Hint{Target: string(tb), Req: req, ExpiresAt: time.Now().Add(hintTTL)}, true, nil
 	}
 	if op == journalOpDel {
-		tlen, ok := c.u32()
+		tlen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		tb, ok := c.bytes(int(tlen))
+		tb, ok := c.Bytes(int(tlen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		klen, ok := c.u32()
+		klen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		kb, ok := c.bytes(int(klen))
+		kb, ok := c.Bytes(int(klen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
 
-		ver, ok := c.u64()
-		if !ok || c.rem() != 0 {
+		ver, ok := c.U64()
+		if !ok || c.Remaining() != 0 {
 			return repl.Hint{}, false, nil
 		}
 		return repl.Hint{}, true, &journalDel{target: string(tb), key: string(kb), version: ver}
@@ -307,16 +309,13 @@ func encodeJournalAddPayload(target string, req protocol.Request, sysExpiryMs ui
 
 	payload := make([]byte, 0, 1+8+4+len(target)+4+len(req.Key)+4+len(req.Value)+8+8+8+1)
 	payload = append(payload, journalOpAdd)
-	payload = binary.LittleEndian.AppendUint64(payload, sysExpiryMs)
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(len(target)))
-	payload = append(payload, target...)
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(len(req.Key)))
-	payload = append(payload, req.Key...)
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(len(req.Value)))
-	payload = append(payload, req.Value...)
-	payload = binary.LittleEndian.AppendUint64(payload, req.Version)
-	payload = binary.LittleEndian.AppendUint64(payload, req.WriterNodeHash)
-	payload = binary.LittleEndian.AppendUint64(payload, entryExp)
+	payload = codec.Append(payload, binary.LittleEndian, sysExpiryMs)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, target)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, req.Key)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, req.Value)
+	payload = codec.Append(payload, binary.LittleEndian, req.Version)
+	payload = codec.Append(payload, binary.LittleEndian, req.WriterNodeHash)
+	payload = codec.Append(payload, binary.LittleEndian, entryExp)
 	payload = append(payload, tomb)
 	return payload
 }
@@ -328,18 +327,16 @@ func encodeJournalAdd(target string, req protocol.Request, sysExpiryMs uint64) [
 func encodeJournalDel(target, key string, version uint64) []byte {
 	payload := make([]byte, 0, 1+4+len(target)+4+len(key)+8)
 	payload = append(payload, journalOpDel)
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(len(target)))
-	payload = append(payload, target...)
-	payload = binary.LittleEndian.AppendUint32(payload, uint32(len(key)))
-	payload = append(payload, key...)
-	payload = binary.LittleEndian.AppendUint64(payload, version)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, target)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, key)
+	payload = codec.Append(payload, binary.LittleEndian, version)
 	return frameJournalRecord(payload)
 }
 
 func frameJournalRecord(payload []byte) []byte {
 	out := make([]byte, 0, 12+len(payload))
-	out = binary.LittleEndian.AppendUint32(out, uint32(len(payload)))
-	out = binary.LittleEndian.AppendUint64(out, xxh3.Hash(payload))
+	out = codec.AppendLen(out, binary.LittleEndian, len(payload))
+	out = codec.Append(out, binary.LittleEndian, xxh3.Hash(payload))
 	return append(out, payload...)
 }
 

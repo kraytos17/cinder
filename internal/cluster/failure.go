@@ -11,6 +11,7 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 )
 
 // FailureDetector probes peers round-robin with Ping: consecutive failed
@@ -142,9 +143,7 @@ func (f *FailureDetector) Tick() {
 	if target == "" {
 		return
 	}
-	if m := f.met.Load(); m != nil {
-		m.ProbeSent.Add(1)
-	}
+	obs.IfPresent(&f.met, func(m *metrics.Collector) { m.ProbeSent.Add(1) })
 	if e := f.log().Debug(); e != nil {
 		e.Str("target", target).Msg("probing")
 	}
@@ -177,9 +176,7 @@ func (f *FailureDetector) onProbeResult(peer string, acked bool) {
 	if acked {
 		info, _ := f.table.Get(peer)
 		f.table.MarkAlive(peer, info.Incarnation)
-		if m := f.met.Load(); m != nil {
-			m.ProbeReceived.Add(1)
-		}
+		obs.IfPresent(&f.met, func(m *metrics.Collector) { m.ProbeReceived.Add(1) })
 		return
 	}
 	// Sustained unreachable: suspect once the streak crosses the threshold;

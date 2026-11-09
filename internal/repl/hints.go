@@ -15,6 +15,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/transport"
 )
 
 // Mode mirrors ConsistencyMode: async fans out best-effort, quorum waits
@@ -35,10 +36,9 @@ var (
 	ErrQuorum   = errors.New("repl: quorum not reached")
 )
 
-// Transport sends one request to a node. *client.Pool satisfies it.
-type Transport interface {
-	Send(node string, req protocol.Request) (protocol.Response, error)
-}
+// Transport is the shared inter-node send contract (see
+// internal/transport); *client.Pool satisfies it.
+type Transport = transport.Sender
 
 // HintTTL bounds how long an undelivered write waits for its replica,
 // mirroring K_HINT_TTL (30s).

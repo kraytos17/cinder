@@ -21,6 +21,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
 
 // Magic and kind bytes, mirroring K_CRDT_COUNTER_MAGIC and friends.
@@ -59,7 +61,7 @@ func EncodeGCounter(g GCounter) []byte {
 	}
 	need := 4 + 1 + encodedComponentsSize(g)
 	buf := make([]byte, 0, need)
-	buf = binary.BigEndian.AppendUint32(buf, MagicCRDC)
+	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
 	buf = append(buf, KindGCounter)
 	buf = appendComponents(buf, g)
 	if buf == nil {
@@ -76,7 +78,7 @@ func EncodePNCounter(p PNCounter) []byte {
 	}
 	need := 4 + 1 + encodedComponentsSize(p.Pos) + encodedComponentsSize(p.Neg)
 	buf := make([]byte, 0, need)
-	buf = binary.BigEndian.AppendUint32(buf, MagicCRDC)
+	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
 	buf = append(buf, KindPNCounter)
 	buf = appendComponents(buf, p.Pos)
 	if buf == nil {
@@ -94,14 +96,14 @@ func appendComponents(buf []byte, g GCounter) []byte {
 	if len(actors) > math.MaxUint32 {
 		return nil
 	}
-	buf = binary.BigEndian.AppendUint32(buf, uint32(len(actors)))
+	buf = codec.AppendLen(buf, binary.BigEndian, len(actors))
 	for _, actor := range actors {
 		if actor == "" || len(actor) > math.MaxUint32 {
 			return nil
 		}
-		buf = binary.BigEndian.AppendUint32(buf, uint32(len(actor)))
+		buf = codec.AppendLen(buf, binary.BigEndian, len(actor))
 		buf = append(buf, actor...)
-		buf = binary.BigEndian.AppendUint64(buf, g.components[actor])
+		buf = codec.Append(buf, binary.BigEndian, g.components[actor])
 	}
 	return buf
 }
@@ -109,19 +111,19 @@ func appendComponents(buf []byte, g GCounter) []byte {
 // DecodeGCounter parses a GCounter body, rejecting trailing garbage.
 func DecodeGCounter(data []byte) (GCounter, error) {
 	var g GCounter
-	r := reader{buf: data}
-	magic, ok := r.u32()
+	r := codec.NewReader(binary.BigEndian, data)
+	magic, ok := r.U32()
 	if !ok || magic != MagicCRDC {
 		return g, ErrDecode
 	}
-	kind, ok := r.u8()
+	kind, ok := r.U8()
 	if !ok || kind != KindGCounter {
 		return g, ErrDecode
 	}
 	if !decodeComponents(&r, &g) {
 		return GCounter{}, ErrDecode
 	}
-	if r.remaining() != 0 {
+	if r.Remaining() != 0 {
 		return GCounter{}, ErrDecode
 	}
 	return g, nil
@@ -131,12 +133,12 @@ func DecodeGCounter(data []byte) (GCounter, error) {
 // body cannot leave a half-merged P side behind.
 func DecodePNCounter(data []byte) (PNCounter, error) {
 	var p PNCounter
-	r := reader{buf: data}
-	magic, ok := r.u32()
+	r := codec.NewReader(binary.BigEndian, data)
+	magic, ok := r.U32()
 	if !ok || magic != MagicCRDC {
 		return p, ErrDecode
 	}
-	kind, ok := r.u8()
+	kind, ok := r.U8()
 	if !ok || kind != KindPNCounter {
 		return p, ErrDecode
 	}
@@ -144,7 +146,7 @@ func DecodePNCounter(data []byte) (PNCounter, error) {
 	if !decodeComponents(&r, &pos) || !decodeComponents(&r, &neg) {
 		return PNCounter{}, ErrDecode
 	}
-	if r.remaining() != 0 {
+	if r.Remaining() != 0 {
 		return PNCounter{}, ErrDecode
 	}
 	p.Pos = pos
@@ -152,24 +154,20 @@ func DecodePNCounter(data []byte) (PNCounter, error) {
 	return p, nil
 }
 
-func decodeComponents(r *reader, g *GCounter) bool {
-	count, ok := r.u32()
+func decodeComponents(r *codec.Reader, g *GCounter) bool {
+	count, ok := r.U32()
 	if !ok {
 		return false
 	}
-	if uint64(count) > uint64(r.remaining())/uint64(minComponentBytes) {
+	if uint64(count) > uint64(r.Remaining())/uint64(minComponentBytes) {
 		return false
 	}
 	for range count {
-		ln, ok := r.u32()
-		if !ok || ln == 0 {
-			return false
-		}
-		actor, ok := r.bytes(int(ln))
+		actor, ok := r.Blob()
 		if !ok || len(actor) == 0 {
 			return false
 		}
-		val, ok := r.u64()
+		val, ok := r.U64()
 		if !ok {
 			return false
 		}
@@ -208,12 +206,12 @@ func EncodeCounterBundle(entries []BundleEntry) []byte {
 		return nil
 	}
 	buf := make([]byte, 0, need)
-	buf = binary.BigEndian.AppendUint32(buf, MagicCAE1)
-	buf = binary.BigEndian.AppendUint32(buf, uint32(len(entries)))
+	buf = codec.Append(buf, binary.BigEndian, MagicCAE1)
+	buf = codec.AppendLen(buf, binary.BigEndian, len(entries))
 	for i, e := range entries {
-		buf = binary.BigEndian.AppendUint32(buf, uint32(len(e.Key)))
+		buf = codec.AppendLen(buf, binary.BigEndian, len(e.Key))
 		buf = append(buf, e.Key...)
-		buf = binary.BigEndian.AppendUint32(buf, uint32(len(states[i])))
+		buf = codec.AppendLen(buf, binary.BigEndian, len(states[i]))
 		buf = append(buf, states[i]...)
 	}
 	return buf
@@ -222,36 +220,28 @@ func EncodeCounterBundle(entries []BundleEntry) []byte {
 // DecodeCounterBundle parses a CAE1 bundle, requiring strictly increasing
 // keys and no trailing garbage.
 func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
-	r := reader{buf: data}
-	magic, ok := r.u32()
+	r := codec.NewReader(binary.BigEndian, data)
+	magic, ok := r.U32()
 	if !ok || magic != MagicCAE1 {
 		return nil, ErrDecode
 	}
-	count, ok := r.u32()
+	count, ok := r.U32()
 	if !ok {
 		return nil, ErrDecode
 	}
-	if uint64(count) > uint64(r.remaining())/uint64(minRecordBytes) {
+	if uint64(count) > uint64(r.Remaining())/uint64(minRecordBytes) {
 		return nil, ErrDecode
 	}
 	out := make([]BundleEntry, 0, count)
 	var prev string
 	hasPrev := false
 	for range count {
-		keyLen, ok := r.u32()
-		if !ok || keyLen == 0 {
+		key, ok := r.Blob()
+		if !ok || len(key) == 0 {
 			return nil, ErrDecode
 		}
-		key, ok := r.bytes(int(keyLen))
-		if !ok {
-			return nil, ErrDecode
-		}
-		stateLen, ok := r.u32()
-		if !ok || stateLen == 0 {
-			return nil, ErrDecode
-		}
-		state, ok := r.bytes(int(stateLen))
-		if !ok {
+		state, ok := r.Blob()
+		if !ok || len(state) == 0 {
 			return nil, ErrDecode
 		}
 		if hasPrev && string(key) <= prev {
@@ -264,7 +254,7 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 		prev, hasPrev = string(key), true
 		out = append(out, BundleEntry{Key: string(key), Counter: c})
 	}
-	if r.remaining() != 0 {
+	if r.Remaining() != 0 {
 		return nil, ErrDecode
 	}
 	return out, nil
@@ -277,47 +267,4 @@ func RecordBytes(key string, p PNCounter) (int, bool) {
 		return 0, false
 	}
 	return 4 + len(key) + 4 + len(st), true
-}
-
-type reader struct {
-	buf []byte
-	off int
-}
-
-func (r *reader) remaining() int { return len(r.buf) - r.off }
-
-func (r *reader) u8() (uint8, bool) {
-	if r.remaining() < 1 {
-		return 0, false
-	}
-	v := r.buf[r.off]
-	r.off++
-	return v, true
-}
-
-func (r *reader) u32() (uint32, bool) {
-	if r.remaining() < 4 {
-		return 0, false
-	}
-	v := binary.BigEndian.Uint32(r.buf[r.off:])
-	r.off += 4
-	return v, true
-}
-
-func (r *reader) u64() (uint64, bool) {
-	if r.remaining() < 8 {
-		return 0, false
-	}
-	v := binary.BigEndian.Uint64(r.buf[r.off:])
-	r.off += 8
-	return v, true
-}
-
-func (r *reader) bytes(n int) ([]byte, bool) {
-	if n < 0 || r.remaining() < n {
-		return nil, false
-	}
-	v := r.buf[r.off : r.off+n]
-	r.off += n
-	return v, true
 }

@@ -2,7 +2,10 @@ package persist
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
 
 // FuzzSnapshot feeds arbitrary bytes to the snapshot decoder. It must
@@ -33,10 +36,10 @@ func FuzzSnapshot(f *testing.F) {
 			body = append(body, enc...)
 		}
 		hdr := make([]byte, 0, 20)
-		hdr = putU32(hdr, snapMagic)
-		hdr = putU32(hdr, 2)
-		hdr = putU64(hdr, next)
-		hdr = putU32(hdr, uint32(len(entries)))
+		hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
+		hdr = codec.Append(hdr, binary.LittleEndian, uint32(2))
+		hdr = codec.Append(hdr, binary.LittleEndian, next)
+		hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
 		back, err := decodeEntries(append(hdr, body...))
 		if err != nil {
 			t.Fatalf("re-decode failed: %v", err)
@@ -92,10 +95,10 @@ func buildSnapSeeds() [][]byte {
 			body = append(body, enc...)
 		}
 		hdr := make([]byte, 0, 20)
-		hdr = putU32(hdr, snapMagic)
-		hdr = putU32(hdr, 2)
-		hdr = putU64(hdr, next)
-		hdr = putU32(hdr, uint32(len(entries)))
+		hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
+		hdr = codec.Append(hdr, binary.LittleEndian, uint32(2))
+		hdr = codec.Append(hdr, binary.LittleEndian, next)
+		hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
 		return append(hdr, body...)
 	}
 	out = append(out, mk(7, []SnapEntry{{Key: []byte("k"), Value: []byte("v"), Version: 1, Writer: 2, Freq: 3}}))

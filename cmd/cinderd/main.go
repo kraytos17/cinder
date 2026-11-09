@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,7 +28,32 @@ import (
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
 
+// version is the release tag, stamped by the build. Plain `go build`
+// leaves it "dev"; use -ldflags "-X main.version=X" for releases, or
+// rely on the build-info fallback below (module version + VCS revision
+// when built from a clean tree).
 var version = "dev"
+
+// buildVersion reports the stamped version, falling back to the module
+// build info (and finally "dev") when no tag was stamped.
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	for _, s := range info.Settings {
+		if s.Key == "vcs.revision" && len(s.Value) >= 7 {
+			return "dev-" + s.Value[:7]
+		}
+	}
+	return version
+}
 
 func main() {
 	var (
@@ -65,7 +93,7 @@ func main() {
 
 	flag.Parse()
 	if *showVers {
-		fmt.Printf("cinderd (go) %s\n", version)
+		fmt.Printf("cinderd (go) %s\n", buildVersion())
 		return
 	}
 
@@ -205,7 +233,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 
 	lc := net.ListenConfig{}
-	l, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *port))
+	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)))
 	if err != nil {
 		logger.Error().Err(err).Msg("listen")
 		os.Exit(1)
@@ -224,13 +252,21 @@ func main() {
 	// Plain HTTP like the gRPC gateway pre-TLS: scrape behind the same
 	// firewall rules as the admin surface.
 	if *metricsPort > 0 {
-		ml, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *metricsPort))
+		ml, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*metricsPort)))
 		if err != nil {
 			logger.Error().Err(err).Msg("metrics listen")
 			os.Exit(1)
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.NewHandler(srv.Metrics(), srv.MetricGauges))
+		// Standard pprof endpoints on the same localhost-only listener,
+		// so the docs/profiling.md workflow runs against a live node.
+		// Same firewall posture as /metrics above.
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 		msrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
 			if err := msrv.Serve(ml); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -239,7 +275,7 @@ func main() {
 		}()
 	}
 	if *grpcPort > 0 {
-		gl, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
+		gl, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*grpcPort)))
 		if err != nil {
 			logger.Error().Err(err).Msg("grpc listen")
 			os.Exit(1)

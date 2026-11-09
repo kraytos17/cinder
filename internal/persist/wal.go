@@ -13,6 +13,8 @@ import (
 	"os"
 	"sync"
 
+	"github.com/kraytos17/cinder/internal/codec"
+
 	"github.com/zeebo/xxh3"
 )
 
@@ -49,10 +51,6 @@ type Entry struct {
 	Tombstone bool
 }
 
-func putU8(b []byte, v uint8) []byte   { return append(b, v) }
-func putU32(b []byte, v uint32) []byte { return binary.LittleEndian.AppendUint32(b, v) }
-func putU64(b []byte, v uint64) []byte { return binary.LittleEndian.AppendUint64(b, v) }
-
 // encodeRecord serializes one v2 record plus its XXH3 checksum. The
 // checksum covers exactly the on-disk record bytes, like the C++
 // encodeWalRecord.
@@ -63,25 +61,25 @@ func encodeRecord(e Entry) ([]byte, error) {
 	size := 1 + 4 + len(e.Key) + 4 + len(e.Value) + 8 + 8 + 8 + 1 + 1 + 8
 	out := make([]byte, 0, size)
 	start := len(out)
-	out = putU8(out, uint8(e.Op))
-	out = putU32(out, uint32(len(e.Key)))
+	out = codec.Append(out, binary.LittleEndian, uint8(e.Op))
+	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
 	out = append(out, e.Key...)
-	out = putU32(out, uint32(len(e.Value)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(e.Value))
 	out = append(out, e.Value...)
-	out = putU64(out, e.Version)
-	out = putU64(out, e.Writer)
-	out = putU64(out, e.ExpiresMs)
+	out = codec.Append(out, binary.LittleEndian, e.Version)
+	out = codec.Append(out, binary.LittleEndian, e.Writer)
+	out = codec.Append(out, binary.LittleEndian, e.ExpiresMs)
 	if e.HasTTL {
-		out = putU8(out, 1)
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	} else {
-		out = putU8(out, 0)
+		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
 	if e.Tombstone {
-		out = putU8(out, 1)
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	} else {
-		out = putU8(out, 0)
+		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
-	out = putU64(out, xxh3.Hash(out[start:]))
+	out = codec.Append(out, binary.LittleEndian, xxh3.Hash(out[start:]))
 	return out, nil
 }
 
@@ -314,115 +312,74 @@ func (r *Reader) ValidSize() uint64 { return r.commit }
 // Corrupted reports structural invalidity seen by Next.
 func (r *Reader) Corrupted() bool { return r.corrupted }
 
-type cursor struct {
-	buf []byte
-	off int
-}
-
-func (c *cursor) u8() (uint8, bool) {
-	if len(c.buf)-c.off < 1 {
-		return 0, false
-	}
-	v := c.buf[c.off]
-	c.off++
-	return v, true
-}
-
-func (c *cursor) u32() (uint32, bool) {
-	if len(c.buf)-c.off < 4 {
-		return 0, false
-	}
-	v := binary.LittleEndian.Uint32(c.buf[c.off:])
-	c.off += 4
-	return v, true
-}
-
-func (c *cursor) u64() (uint64, bool) {
-	if len(c.buf)-c.off < 8 {
-		return 0, false
-	}
-	v := binary.LittleEndian.Uint64(c.buf[c.off:])
-	c.off += 8
-	return v, true
-}
-
-func (c *cursor) bytes(n int) ([]byte, bool) {
-	if n < 0 || len(c.buf)-c.off < n {
-		return nil, false
-	}
-	v := c.buf[c.off : c.off+n : c.off+n]
-	c.off += n
-	return v, true
-}
-
 // Next decodes one record. Truncation (torn crash tail) stops cleanly
 // without setting Corrupted; semantic invalidity sets it.
 func (r *Reader) Next() (Entry, bool) {
 	var zero Entry
-	c := &cursor{buf: r.data}
-	c.off = r.pos
-	start := c.off
-	op, ok := c.u8()
+	c := codec.NewReader(binary.LittleEndian, r.data)
+	c.SetPos(r.pos)
+	start := c.Pos()
+	op, ok := c.U8()
 	if !ok {
 		return zero, false // clean EOF
 	}
 	if op != uint8(OpSet) && op != uint8(OpDel) {
 		r.corrupted = true
-		r.pos = c.off
+		r.pos = c.Pos()
 		return zero, false
 	}
-	klen, ok := c.u32()
+	klen, ok := c.U32()
 	if !ok {
 		return zero, false
 	}
-	key, ok := c.bytes(int(klen))
+	key, ok := c.Bytes(int(klen))
 	if !ok {
 		return zero, false
 	}
-	vlen, ok := c.u32()
+	vlen, ok := c.U32()
 	if !ok {
 		return zero, false
 	}
-	val, ok := c.bytes(int(vlen))
+	val, ok := c.Bytes(int(vlen))
 	if !ok {
 		return zero, false
 	}
-	ver, ok := c.u64()
+	ver, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
-	writer, ok := c.u64()
+	writer, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
-	expires, ok := c.u64()
+	expires, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
-	hasTTL, ok := c.u8()
+	hasTTL, ok := c.U8()
 	if !ok {
 		return zero, false
 	}
 	var tomb uint8
 	if r.format == FormatV2 {
-		tomb, ok = c.u8()
+		tomb, ok = c.U8()
 		if !ok {
 			return zero, false
 		}
 		if tomb > 1 {
 			r.corrupted = true
-			r.pos = c.off
+			r.pos = c.Pos()
 			return zero, false
 		}
 	}
 	if r.format != FormatLegacy {
-		sum, ok := c.u64()
+		sum, ok := c.U64()
 		if !ok {
 			return zero, false // truncated checksum: torn tail
 		}
-		if xxh3.Hash(r.data[start:c.off-8]) != sum {
+		if xxh3.Hash(r.data[start:c.Pos()-8]) != sum {
 			r.corrupted = true
-			r.pos = c.off
+			r.pos = c.Pos()
 			return zero, false
 		}
 	}
@@ -431,7 +388,7 @@ func (r *Reader) Next() (Entry, bool) {
 		Version: ver, Writer: writer, ExpiresMs: expires,
 		HasTTL: hasTTL != 0, Tombstone: tomb != 0,
 	}
-	r.pos = c.off
-	r.commit = uint64(c.off)
+	r.pos = c.Pos()
+	r.commit = uint64(c.Pos())
 	return e, true
 }

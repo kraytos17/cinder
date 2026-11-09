@@ -523,34 +523,46 @@ func (s *Server) Serve(l net.Listener) error {
 		bgWG.Add(2)
 		go func() {
 			defer bgWG.Done()
+			// NewTimer+Reset instead of time.After: After allocates a
+			// timer per tick that lingers until it fires; Reset reuses
+			// one. The interval is re-read per tick, so runtime
+			// retuning still applies.
+			t := time.NewTimer(s.currentGossipInterval())
+			defer t.Stop()
 			for {
 				select {
 				case <-s.stopBg:
 					return
-				case <-time.After(s.currentGossipInterval()):
+				case <-t.C:
 				}
 				gossip.Tick()
+				t.Reset(s.currentGossipInterval())
 			}
 		}()
 		go func() {
 			defer bgWG.Done()
+			t := time.NewTimer(s.currentProbeInterval())
+			defer t.Stop()
 			for {
 				select {
 				case <-s.stopBg:
 					return
-				case <-time.After(s.currentProbeInterval()):
+				case <-t.C:
 				}
 				fd.Tick()
+				t.Reset(s.currentProbeInterval())
 			}
 		}()
 	}
 	if mgr != nil {
 		bgWG.Go(func() {
+			t := time.NewTimer(s.currentAEInterval())
+			defer t.Stop()
 			for {
 				select {
 				case <-s.stopBg:
 					return
-				case <-time.After(s.currentAEInterval()):
+				case <-t.C:
 				}
 				mgr.RunRound(s.replicaFactor())
 				// Counter repair rides the same tick, mirroring C++
@@ -559,17 +571,21 @@ func (s *Server) Serve(l net.Listener) error {
 				// gate as below in spirit: partnerless rounds
 				// no-op inside PickPartner).
 				mgr.RunCounterRound(s.replicaFactor())
+				t.Reset(s.currentAEInterval())
 			}
 		})
 	}
 	if replMgr != nil {
 		bgWG.Go(func() {
+			t := time.NewTimer(s.currentReplayInterval())
+			defer t.Stop()
 			for {
 				select {
 				case <-s.stopBg:
 					return
-				case <-time.After(s.currentReplayInterval()):
+				case <-t.C:
 				}
+				t.Reset(s.currentReplayInterval())
 				// Best-effort like C++ scheduleReplay: ticks that fire
 				// while the target is still down fail silently and the
 				// next tick retries.
@@ -581,12 +597,15 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 	if pm != nil {
 		bgWG.Go(func() {
+			t := time.NewTimer(compactTickInterval)
+			defer t.Stop()
 			for {
 				select {
 				case <-s.stopBg:
 					return
-				case <-time.After(compactTickInterval):
+				case <-t.C:
 				}
+				t.Reset(compactTickInterval)
 				pm.MaybeCompact()
 			}
 		})

@@ -14,6 +14,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/obs"
 )
 
 // NodeState mirrors the C++ NodeState.
@@ -190,9 +191,7 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 		changed = true
 	}
 	if changed {
-		if m := t.met.Load(); m != nil {
-			m.RefutedRumors.Add(1)
-		}
+		obs.IfPresent(&t.met, func(m *metrics.Collector) { m.RefutedRumors.Add(1) })
 		if e := t.log().Debug(); e != nil {
 			e.Str("rumor_state", rumor.State.String()).Uint64("incarnation", rumor.Incarnation).Msg("refuted self rumor")
 		}
@@ -210,9 +209,7 @@ func (t *MembershipTable) MarkSuspect(id string) {
 	}
 	n.State = Suspect
 	t.mu.Unlock()
-	if m := t.met.Load(); m != nil {
-		m.SuspectMarked.Add(1)
-	}
+	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.SuspectMarked.Add(1) })
 	t.fire()
 }
 
@@ -226,9 +223,7 @@ func (t *MembershipTable) MarkDead(id string) {
 	}
 	n.State = Dead
 	t.mu.Unlock()
-	if m := t.met.Load(); m != nil {
-		m.DeadMarked.Add(1)
-	}
+	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.DeadMarked.Add(1) })
 	// A node death is ops-relevant at info; id only, no user data.
 	t.log().Info().Str("node", id).Msg("marked dead")
 	t.fire()
@@ -253,9 +248,7 @@ func (t *MembershipTable) MarkAlive(id string, incarnation uint64) {
 	n.State = Alive
 	n.Incarnation = incarnation
 	t.mu.Unlock()
-	if m := t.met.Load(); m != nil {
-		m.AliveMarked.Add(1)
-	}
+	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.AliveMarked.Add(1) })
 	t.fire()
 }
 

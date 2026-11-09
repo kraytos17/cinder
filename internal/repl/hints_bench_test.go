@@ -16,7 +16,7 @@ func BenchmarkHintPush(b *testing.B) {
 	for i := range b.N {
 		q.Push(Hint{
 			Target:    "n2",
-			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: fmt.Appendf(nil, "hint-key-%d", i), Value: make([]byte, 64)},
 			ExpiresAt: exp,
 		})
 	}
@@ -29,12 +29,12 @@ func BenchmarkHintSnapshot(b *testing.B) {
 	for i := range 1024 {
 		q.Push(Hint{
 			Target:    "n2",
-			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: fmt.Appendf(nil, "hint-key-%d", i), Value: make([]byte, 64)},
 			ExpiresAt: exp,
 		})
 	}
-	b.ResetTimer()
-	for range b.N {
+
+	for b.Loop() {
 		if got := q.Snapshot(time.Now(), ReplayBatch); len(got) == 0 {
 			b.Fatal("empty snapshot")
 		}

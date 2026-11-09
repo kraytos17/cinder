@@ -31,13 +31,14 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/transport"
 )
 
-// Transport sends one request; *client.Pool satisfies it.
-type Transport interface {
-	Send(node string, req protocol.Request) (protocol.Response, error)
-}
+// Transport is the shared inter-node send contract (see
+// internal/transport); *client.Pool satisfies it.
+type Transport = transport.Sender
 
 // nopLogger is the shared disabled logger for managers constructed
 // without SetLogger.
@@ -96,8 +97,6 @@ func (m *Manager) SetOnMigrationFailed(cb func()) {
 func (m *Manager) SetMetrics(c *metrics.Collector) {
 	m.met.Store(c)
 }
-
-func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
 
 // SetLogger installs the operational logger (nil selects Nop).
 func (m *Manager) SetLogger(l *zerolog.Logger) {
@@ -178,10 +177,10 @@ func (m *Manager) Rebalance() bool {
 	for _, c := range copies {
 		m.pushReplica(c.key, c.entry, c.owner)
 	}
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.RebalanceCopies.Add(uint64(len(copies)))
 		mt.RebalanceMigrations.Add(uint64(len(migrates)))
-	}
+	})
 	for _, mg := range migrates {
 		m.migrateKey(mg.key, mg.entry, mg.primary, mg.peers)
 	}
@@ -244,9 +243,9 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 		if ev := m.log().Warn(); ev != nil {
 			ev.Str("key", key).Str("primary", primary).Msg("migration failed")
 		}
-		if mt := m.metrics(); mt != nil {
+		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.RebalanceMigFailures.Add(1)
-		}
+		})
 		if m.onMigrationFailed != nil {
 			m.onMigrationFailed()
 		}
@@ -261,9 +260,9 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 	}
 	// Otherwise retained-underreplicated: still served locally, retried
 	// next round; hinted handoff and anti-entropy cover it independently.
-	if mt := m.metrics(); mt != nil {
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.RebalanceDroppedUnder.Add(1)
-	}
+	})
 }
 
 // pushReplica sends one idempotent copy. Failures are best-effort (the

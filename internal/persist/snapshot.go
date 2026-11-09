@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
 
 // SnapEntry is one decoded snapshot row: key, value, LWW identity,
@@ -34,23 +36,23 @@ func encodeSnapEntry(e SnapEntry) ([]byte, error) {
 		return nil, errTooLarge
 	}
 	out := make([]byte, 0, 4+len(e.Key)+4+len(e.Value)+8+8+8+1+8+1)
-	out = putU32(out, uint32(len(e.Key)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
 	out = append(out, e.Key...)
-	out = putU32(out, uint32(len(e.Value)))
+	out = codec.AppendLen(out, binary.LittleEndian, len(e.Value))
 	out = append(out, e.Value...)
-	out = putU64(out, e.Version)
-	out = putU64(out, e.Writer)
-	out = putU64(out, e.ExpiresMs)
+	out = codec.Append(out, binary.LittleEndian, e.Version)
+	out = codec.Append(out, binary.LittleEndian, e.Writer)
+	out = codec.Append(out, binary.LittleEndian, e.ExpiresMs)
 	if e.HasTTL {
-		out = putU8(out, 1)
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	} else {
-		out = putU8(out, 0)
+		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
-	out = putU64(out, e.Freq)
+	out = codec.Append(out, binary.LittleEndian, e.Freq)
 	if e.Tombstone {
-		out = putU8(out, 1)
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	} else {
-		out = putU8(out, 0)
+		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
 	return out, nil
 }
@@ -75,10 +77,10 @@ func (w *SnapWriter) Write(nextVersion uint64, entries []SnapEntry) error {
 		body = append(body, buf...)
 	}
 	hdr := make([]byte, 0, 20)
-	hdr = putU32(hdr, snapMagic)
-	hdr = putU32(hdr, snapVersion)
-	hdr = putU64(hdr, nextVersion)
-	hdr = putU32(hdr, uint32(len(entries)))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapVersion))
+	hdr = codec.Append(hdr, binary.LittleEndian, nextVersion)
+	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
 	tmp := w.path + ".tmp"
 	if err := os.WriteFile(tmp, append(hdr, body...), 0o644); err != nil {
 		return err
@@ -152,10 +154,10 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	}
 	nextVersion := binary.LittleEndian.Uint64(raw[8:16])
 	count := binary.LittleEndian.Uint32(raw[16:20])
-	c := &cursor{buf: raw}
-	c.off = 20
+	c := codec.NewReader(binary.LittleEndian, raw)
+	c.SetPos(20)
 	for i := range count {
-		e, ok := decodeSnapEntry(c, format)
+		e, ok := decodeSnapEntry(&c, format)
 		if !ok {
 			return 0, fmt.Errorf("persist: truncated snapshot entry %d", i)
 		}
@@ -166,47 +168,47 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	return nextVersion, nil
 }
 
-func decodeSnapEntry(c *cursor, format snapFormat) (SnapEntry, bool) {
+func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 	var e SnapEntry
-	klen, ok := c.u32()
+	klen, ok := c.U32()
 	if !ok {
 		return e, false
 	}
-	key, ok := c.bytes(int(klen))
+	key, ok := c.Bytes(int(klen))
 	if !ok {
 		return e, false
 	}
-	vlen, ok := c.u32()
+	vlen, ok := c.U32()
 	if !ok {
 		return e, false
 	}
-	val, ok := c.bytes(int(vlen))
+	val, ok := c.Bytes(int(vlen))
 	if !ok {
 		return e, false
 	}
-	ver, ok := c.u64()
+	ver, ok := c.U64()
 	if !ok {
 		return e, false
 	}
-	writer, ok := c.u64()
+	writer, ok := c.U64()
 	if !ok {
 		return e, false
 	}
-	expires, ok := c.u64()
+	expires, ok := c.U64()
 	if !ok {
 		return e, false
 	}
-	hasTTL, ok := c.u8()
+	hasTTL, ok := c.U8()
 	if !ok {
 		return e, false
 	}
-	freq, ok := c.u64()
+	freq, ok := c.U64()
 	if !ok {
 		return e, false
 	}
 	var tomb uint8
 	if format >= snapV2 {
-		tomb, ok = c.u8()
+		tomb, ok = c.U8()
 		if !ok || tomb > 1 {
 			return e, false
 		}

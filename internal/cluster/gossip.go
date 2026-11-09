@@ -14,6 +14,7 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
 )
 
 // Sender delivers one request; *client.Pool satisfies it.
@@ -88,9 +89,7 @@ func (g *GossipManager) Tick() {
 	}
 	target := g.peers[rand.IntN(len(g.peers))]
 	g.mu.Unlock()
-	if m := g.met.Load(); m != nil {
-		m.GossipRounds.Add(1)
-	}
+	obs.IfPresent(&g.met, func(m *metrics.Collector) { m.GossipRounds.Add(1) })
 	if e := g.log().Debug(); e != nil {
 		e.Str("target", target).Msg("gossip")
 	}
