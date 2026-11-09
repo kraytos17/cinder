@@ -3,6 +3,7 @@ package counter
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"testing"
 )
 
@@ -52,10 +53,10 @@ func TestCodecRoundTrip(t *testing.T) {
 	// GCounter body must not decode as PNCounter and vice versa.
 	var g GCounter
 	_ = g.Increment("a", 1)
-	if _, err := DecodePNCounter(EncodeGCounter(g)); err != ErrDecode {
+	if _, err := DecodePNCounter(EncodeGCounter(g)); !errors.Is(err, ErrDecode) {
 		t.Fatalf("cross-kind decode err = %v, want ErrDecode", err)
 	}
-	if _, err := DecodeGCounter(enc); err != ErrDecode {
+	if _, err := DecodeGCounter(enc); !errors.Is(err, ErrDecode) {
 		t.Fatalf("cross-kind decode err = %v, want ErrDecode", err)
 	}
 }
@@ -73,10 +74,10 @@ func TestCodecRejects(t *testing.T) {
 		"bad kind":    append(append([]byte(nil), good[:4]...), 0x7F),
 	}
 	for name, data := range cases {
-		if _, err := DecodeGCounter(data); err != ErrDecode {
+		if _, err := DecodeGCounter(data); !errors.Is(err, ErrDecode) {
 			t.Fatalf("%s: err = %v, want ErrDecode", name, err)
 		}
-		if _, err := DecodePNCounter(data); err != ErrDecode {
+		if _, err := DecodePNCounter(data); !errors.Is(err, ErrDecode) {
 			t.Fatalf("%s (pn): err = %v, want ErrDecode", name, err)
 		}
 	}
@@ -123,12 +124,12 @@ func TestBundleRejectsUnsorted(t *testing.T) {
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(st)))
 		buf = append(buf, st...)
 	}
-	if _, err := DecodeCounterBundle(buf); err != ErrDecode {
+	if _, err := DecodeCounterBundle(buf); !errors.Is(err, ErrDecode) {
 		t.Fatalf("unsorted err = %v, want ErrDecode", err)
 	}
 	// Duplicate keys also fail the strictly-increasing rule.
 	dup := EncodeCounterBundle([]BundleEntry{{Key: "k", Counter: a}, {Key: "k", Counter: a}})
-	if _, err := DecodeCounterBundle(dup); err != ErrDecode {
+	if _, err := DecodeCounterBundle(dup); !errors.Is(err, ErrDecode) {
 		t.Fatalf("duplicate err = %v, want ErrDecode", err)
 	}
 }

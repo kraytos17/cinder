@@ -22,7 +22,7 @@ func BenchmarkRingGetNode(b *testing.B) {
 				b.Fatal(err)
 			}
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				_ = r.GetNode(keys[i%len(keys)])
 			}
 		})
@@ -45,7 +45,7 @@ func BenchmarkRingGetNodes(b *testing.B) {
 				b.Fatal(err)
 			}
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				if _, err := r.GetNodes(keys[i%len(keys)], rf); err != nil {
 					b.Fatal(err)
 				}

@@ -18,7 +18,7 @@ func BenchmarkWalAppendSequential(b *testing.B) {
 			}
 			b.SetBytes(int64(n * 256))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				w, err := OpenWriter(filepath.Join(dir, fmt.Sprintf("seq_%d.wal", i)), true)
 				if err != nil {
 					b.Fatal(err)
@@ -45,7 +45,7 @@ func BenchmarkWalAppendBatch(b *testing.B) {
 			}
 			b.SetBytes(int64(n * 256))
 			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
+			for i := range b.N {
 				w, err := OpenWriter(filepath.Join(dir, fmt.Sprintf("batch_%d.wal", i)), true)
 				if err != nil {
 					b.Fatal(err)

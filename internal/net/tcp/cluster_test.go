@@ -13,23 +13,6 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// clusterServer starts one Go node with a full two-node ring view.
-func clusterServer(t *testing.T, id string, peers []tcp.Peer) (addr string, stop func()) {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := l.Addr().(*net.TCPAddr).Port
-	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer(id, port, st, nil)
-	if err := srv.ConfigureCluster(peers); err != nil {
-		t.Fatal(err)
-	}
-	go srv.Serve(l)
-	return l.Addr().String(), srv.Shutdown
-}
-
 // goCluster spins two Go nodes that know each other.
 func goCluster(t *testing.T) (addrs map[string]string, stop func()) {
 	t.Helper()

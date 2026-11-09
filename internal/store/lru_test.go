@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -103,7 +104,7 @@ func TestLRUTTLExpiry(t *testing.T) {
 
 func TestLRUValueLargerThanCapacity(t *testing.T) {
 	s := NewLRUStore(50, nil)
-	if err := s.Put("key", make([]byte, 100)); err != ErrCapacityExceeded {
+	if err := s.Put("key", make([]byte, 100)); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("expected ErrCapacityExceeded, got %v", err)
 	}
 }

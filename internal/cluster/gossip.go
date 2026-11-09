@@ -9,10 +9,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
-	"github.com/rs/zerolog"
 )
 
 // Sender delivers one request; *client.Pool satisfies it.
@@ -97,8 +98,13 @@ func (g *GossipManager) Tick() {
 	g.transport.Send(target, req)
 }
 
-// HandleMessage applies one incoming gossip view.
+// HandleMessage applies one incoming gossip view. The sender id is
+// best-effort (the connection layer knows only its own node id); debug
+// logs tag it for trace correlation.
 func (g *GossipManager) HandleMessage(from string, value []byte) {
+	if e := g.log().Debug(); e != nil {
+		e.Str("from", from).Int("bytes", len(value)).Msg("gossip received")
+	}
 	for _, rumor := range DecodeView(string(value)) {
 		g.table.ApplyRumor(rumor)
 	}

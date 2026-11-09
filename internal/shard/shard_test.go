@@ -86,15 +86,6 @@ func putVer(t *testing.T, st *store.LRUStore, key, val string, ver, writer uint6
 	}
 }
 
-func ringNodes(t *testing.T, ring *hashring.Ring, key string, rf int) []string {
-	t.Helper()
-	nodes, err := ring.GetNodes(key, rf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return nodes
-}
-
 // Staying members keep the key and push copies to the other set members.
 func TestStayingPushesReplicas(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)

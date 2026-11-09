@@ -151,7 +151,8 @@ func waitForTombHint(t *testing.T, m *repl.Manager, target, key string) {
 
 func waitForHints(t *testing.T, m interface {
 	HintCount() int
-}, n int) {
+}, n int,
+) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for m.HintCount() < n {

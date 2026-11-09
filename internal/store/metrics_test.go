@@ -77,7 +77,7 @@ func TestStoreMetricsCapacityEviction(t *testing.T) {
 	st := NewLRUStore(256, nil)
 	m := metrics.NewCollector()
 	st.SetMetrics(m)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		_ = st.Put(string(rune('a'+i%26))+string(rune('0'+i/26)), make([]byte, 32))
 	}
 	if got := m.EvictionsCap.Load(); got == 0 {

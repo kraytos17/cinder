@@ -118,7 +118,7 @@ func TestWALTornTail(t *testing.T) {
 	// the end of record 1.
 	raw, _ := os.ReadFile(path)
 	cut := raw[:len(raw)-3]
-	if err := os.WriteFile(path, cut, 0644); err != nil {
+	if err := os.WriteFile(path, cut, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	r, err := OpenReader(path)
@@ -175,7 +175,7 @@ func TestWALCorruptionDetected(t *testing.T) {
 	w.Close()
 	raw, _ := os.ReadFile(path)
 	raw[len(raw)-1] ^= 0xFF // flip a checksum bit
-	os.WriteFile(path, raw, 0644)
+	os.WriteFile(path, raw, 0o644)
 	r, err := OpenReader(path)
 	if err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestWALCorruptionDetected(t *testing.T) {
 	// Bad opcode is structural corruption, not a torn tail.
 	raw2 := append([]byte{}, raw...)
 	raw2[8] = 0x42
-	os.WriteFile(path, raw2, 0644)
+	os.WriteFile(path, raw2, 0o644)
 	r2, _ := OpenReader(path)
 	if _, ok := r2.Next(); ok {
 		t.Fatal("bad opcode decoded")
@@ -226,7 +226,7 @@ func TestWALAppendMode(t *testing.T) {
 		t.Fatalf("n=%d corrupt=%v", n, r.Corrupted())
 	}
 	// Garbage file in append mode restarts fresh.
-	os.WriteFile(path, []byte("garbage-bytes-here!!"), 0644)
+	os.WriteFile(path, []byte("garbage-bytes-here!!"), 0o644)
 	w3, err := OpenWriter(path, false)
 	if err != nil {
 		t.Fatal(err)
@@ -308,7 +308,7 @@ func TestSnapshotV3Rejected(t *testing.T) {
 	hdr = putU32(hdr, 3)
 	hdr = putU64(hdr, 0)
 	hdr = putU32(hdr, 0)
-	os.WriteFile(path, hdr, 0644)
+	os.WriteFile(path, hdr, 0o644)
 	if _, err := NewSnapReader(path).ReadAll(); err == nil {
 		t.Fatal("v3 must fail cleanly (zstd blocks deferred)")
 	}
@@ -317,7 +317,7 @@ func TestSnapshotV3Rejected(t *testing.T) {
 func TestSnapshotStreamEarlyStop(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/snap.csp"
-	var entries []SnapEntry
+	entries := make([]SnapEntry, 0, 10)
 	for i := range 10 {
 		entries = append(entries, SnapEntry{Key: []byte{byte('a' + i)}, Value: []byte("v")})
 	}

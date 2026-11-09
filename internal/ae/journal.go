@@ -8,12 +8,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zeebo/xxh3"
+
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
-	"github.com/zeebo/xxh3"
 )
 
-// Hint journal: durable hint queue (add/del records, torn-tail truncation
+// Journal is the durable hint queue (add/del records, torn-tail truncation
 // on open). Record framing: len u32 + XXH3 u64 + payload. ADD payload: op
 // u8=1, sys_expiry u64, target, key, value (+lengths), version, writer,
 // entry_expiry u64, tombstone u8. DEL payload: op u8=2, target, key,
@@ -62,7 +63,7 @@ func (j *Journal) Compact(q *repl.HintQueue) error {
 
 	live := q.Snapshot(time.Now(), snapshotAllHints)
 	tmpPath := j.path + ".tmp"
-	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
@@ -92,7 +93,7 @@ func (j *Journal) Compact(q *repl.HintQueue) error {
 		return err
 	}
 
-	f, err := os.OpenFile(j.path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(j.path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
 	}
@@ -111,12 +112,12 @@ func (j *Journal) Compact(q *repl.HintQueue) error {
 // A torn tail truncates. Returns the recovered count.
 func OpenJournal(path string, q *repl.HintQueue) (*Journal, int, error) {
 	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, 0, err
 		}
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -240,7 +241,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		}
 
 		var entryExp uint64
-		var tomb uint8 = 2
+		var tomb uint8
 		if c.rem() > 0 {
 			if entryExp, ok = c.u64(); !ok {
 				return repl.Hint{}, false, nil

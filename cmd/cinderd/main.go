@@ -2,6 +2,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -87,6 +89,10 @@ func main() {
 	}
 	if *tombstoneMs < 0 {
 		fmt.Fprintln(os.Stderr, "cinderd: --tombstone-gc-ms must be >= 0")
+		os.Exit(2)
+	}
+	if *aeBuckets <= 0 {
+		fmt.Fprintln(os.Stderr, "cinderd: --anti-entropy-buckets must be positive")
 		os.Exit(2)
 	}
 	if *tombstoneMs > 0 {
@@ -191,40 +197,50 @@ func main() {
 		}
 	}
 
-	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+
+	lc := net.ListenConfig{}
+	l, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
 		logger.Error().Err(err).Msg("listen")
 		os.Exit(1)
 	}
 
-	go srv.Serve(l)
+	go func() {
+		if err := srv.Serve(l); err != nil {
+			logger.Error().Err(err).Msg("serve")
+		}
+	}()
+	// Auxiliary servers close explicitly at shutdown (no defers: setup
+	// failures os.Exit, which would skip deferred calls).
+	var msrv *http.Server
+	var gw *grpcgw.Gateway
 	// Prometheus endpoint, mirroring C++ metrics_port (0 = disabled).
 	// Plain HTTP like the gRPC gateway pre-TLS: scrape behind the same
 	// firewall rules as the admin surface.
 	if *metricsPort > 0 {
-		ml, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *metricsPort))
+		ml, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *metricsPort))
 		if err != nil {
 			logger.Error().Err(err).Msg("metrics listen")
 			os.Exit(1)
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.NewHandler(srv.Metrics(), srv.MetricGauges))
-		msrv := &http.Server{Handler: mux}
-		defer msrv.Close()
+		msrv = &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		go func() {
-			if err := msrv.Serve(ml); err != nil && err != http.ErrServerClosed {
+			if err := msrv.Serve(ml); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				logger.Error().Err(err).Msg("metrics")
 			}
 		}()
 	}
 	if *grpcPort > 0 {
-		gl, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
+		gl, err := lc.Listen(ctx, "tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
 		if err != nil {
 			logger.Error().Err(err).Msg("grpc listen")
 			os.Exit(1)
 		}
 
-		gw := grpcgw.New(srv)
+		gw = grpcgw.New(srv)
 		gw.SetClientSecret(clientSec)
 		if clientSec != "" {
 			// Gateway TLS follows the client secret (not --tls alone),
@@ -237,7 +253,6 @@ func main() {
 			}
 		}
 
-		defer gw.Stop()
 		go func() {
 			if err := gw.Serve(gl); err != nil {
 				logger.Error().Err(err).Msg("grpc")
@@ -245,8 +260,14 @@ func main() {
 		}()
 	}
 
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	<-sig
+	<-ctx.Done()
+	stop()
+	logger.Info().Msg("shutting down")
+	if msrv != nil {
+		_ = msrv.Close()
+	}
+	if gw != nil {
+		gw.Stop()
+	}
 	srv.Shutdown()
 }

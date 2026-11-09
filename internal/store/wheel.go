@@ -83,7 +83,10 @@ func (w *Wheel) Tick(onExpired func(id int)) {
 		onExpired(id)
 	}
 	for len(w.heap) > 0 && w.heap[0].fireAt <= w.ticks {
-		item := heap.Pop(w).(wheelItem)
+		item, ok := heap.Pop(w).(wheelItem)
+		if !ok {
+			panic("store: heap held a non-wheelItem")
+		}
 		onExpired(item.id)
 	}
 }
@@ -93,7 +96,10 @@ func (w *Wheel) TickCount() uint64 { return w.ticks }
 
 // Push implements heap.Interface (exported only for container/heap).
 func (w *Wheel) Push(x any) {
-	it := x.(wheelItem)
+	it, ok := x.(wheelItem)
+	if !ok {
+		panic("store: Push called with non-wheelItem")
+	}
 	w.pos[it.id] = len(w.heap)
 	w.heap = append(w.heap, it)
 }

@@ -36,7 +36,7 @@ func newTestCluster(t *testing.T, ids []string, rf int, mode repl.Mode) *testClu
 	c := &testCluster{t: t, nodes: map[string]*testNode{}, rf: rf, mode: mode}
 	addrs := map[string]string{}
 	ports := map[string]int{}
-	var listeners []net.Listener
+	listeners := make([]net.Listener, 0, len(ids))
 	for _, id := range ids {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -117,7 +117,7 @@ func (c *testCluster) restart(id string, port int, ids []string) {
 
 func (c *testCluster) client() *client.Cluster {
 	c.t.Helper()
-	var nodes []client.NodeAddr
+	nodes := make([]client.NodeAddr, 0, len(c.nodes))
 	for id, n := range c.nodes {
 		_, port, err := net.SplitHostPort(n.addr)
 		if err != nil {
@@ -337,7 +337,8 @@ func TestReplAsyncHintAndReplay(t *testing.T) {
 
 func waitForHint(t *testing.T, m interface {
 	HintCount() int
-}, n int) {
+}, n int,
+) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for m.HintCount() < n {

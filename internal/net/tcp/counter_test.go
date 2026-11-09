@@ -123,7 +123,7 @@ func TestClusterCounterFollowsRedirect(t *testing.T) {
 			n.srv.Shutdown()
 		}
 	}()
-	var addrs []client.NodeAddr
+	addrs := make([]client.NodeAddr, 0, len(c.nodes))
 	for id, n := range c.nodes {
 		_, portStr, err := net.SplitHostPort(n.addr)
 		if err != nil {

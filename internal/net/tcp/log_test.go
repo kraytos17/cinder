@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/store"
-	"github.com/rs/zerolog"
 )
 
 // Denied requests log a warn line carrying the request's trace IDs;
@@ -27,7 +28,7 @@ func TestDispatchLogsCarryTraceIDs(t *testing.T) {
 		t.Fatalf("status = %v", denied.Status)
 	}
 	var lines []map[string]any
-	for _, line := range bytes.Split(buf.Bytes(), []byte("\n")) {
+	for line := range bytes.SplitSeq(buf.Bytes(), []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}

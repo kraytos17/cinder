@@ -212,7 +212,7 @@ func TestHandlerRoundTrip(t *testing.T) {
 	kb := BucketFor("k", 64)
 	fb := Refinement{}
 	for b := (kb / BucketsPerGroup) * BucketsPerGroup; b < (kb/BucketsPerGroup+1)*BucketsPerGroup && b < 64; b++ {
-		fb.BucketHashes = append(fb.BucketHashes, BucketHash{Bucket: uint32(b), Hash: local[uint32(b)]})
+		fb.BucketHashes = append(fb.BucketHashes, BucketHash{Bucket: b, Hash: local[b]})
 	}
 	st, val2 := mb.OnBucketRefinement(EncodeRefinement(fb))
 	if st != protocol.StatusOK {
@@ -224,7 +224,7 @@ func TestHandlerRoundTrip(t *testing.T) {
 	}
 	// Diff remote rows (empty: b has nothing) against local: everything is
 	// "have" (local wins by absence), nothing needed.
-	diff := ma.DiffRows(dec.Rows, []uint32{uint32(BucketFor("k", 64))}, dec.Covered)
+	diff := ma.DiffRows(dec.Rows, []uint32{BucketFor("k", 64)}, dec.Covered)
 	if len(diff.Need) != 0 || len(diff.Have) != 1 {
 		t.Fatalf("diff = %+v", diff)
 	}

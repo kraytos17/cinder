@@ -36,7 +36,7 @@ func TestHistogramPercentile(t *testing.T) {
 	}
 	// 100 samples at exactly 1000ns: bucket idx = floor(log2(1000)) = 9
 	// ([512,1024)), upper bound 1024.
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		h.Record(1000)
 	}
 	if got := h.Percentile(0.5); got != 1024 {

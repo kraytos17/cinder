@@ -82,7 +82,7 @@ func TestRebalanceJoinRF2(t *testing.T) {
 	defer c.shutdown()
 	fastGossip(c)
 
-	var keys []string
+	keys := make([]string, 0, 50)
 	for i := range 50 {
 		k := fmt.Sprintf("rb2-key-%d", i)
 		keys = append(keys, k)
@@ -164,7 +164,7 @@ func TestRebalanceJoinRF1(t *testing.T) {
 	defer c.shutdown()
 	fastGossip(c)
 
-	var keys []string
+	keys := make([]string, 0, 30)
 	for i := range 30 {
 		k := fmt.Sprintf("rb1-key-%d", i)
 		keys = append(keys, k)
@@ -173,7 +173,7 @@ func TestRebalanceJoinRF1(t *testing.T) {
 	addNode(t, c, "node3", []string{"node1", "node2", "node3"})
 	waitForAlive(t, c.nodes["node1"].srv, "node3")
 
-	moved := 0
+	var moved int
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		moved = 0

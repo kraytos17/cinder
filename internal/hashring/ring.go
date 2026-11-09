@@ -104,7 +104,7 @@ func (r *Ring) AddNode(id string) {
 		phys := uint16(len(snap.nodes))
 		snap.nodes = append(snap.nodes, id)
 		snap.loads = append(snap.loads, &atomic.Uint64{})
-		for i := 0; i < r.vnodes; i++ {
+		for i := range r.vnodes {
 			snap.hashes = append(snap.hashes, hashVnode(id, i))
 			snap.nodeIx = append(snap.nodeIx, phys)
 		}
@@ -196,7 +196,7 @@ func (r *Ring) SetNodes(ids []string) error {
 			}
 		}
 		for pi, id := range snap.nodes {
-			for i := 0; i < r.vnodes; i++ {
+			for i := range r.vnodes {
 				snap.hashes = append(snap.hashes, hashVnode(id, i))
 				snap.nodeIx = append(snap.nodeIx, uint16(pi))
 			}

@@ -1,15 +1,19 @@
 package store
 
-// LWW ordering shared by every convergence path (store apply, quorum
-// reads, anti-entropy, hints, read repair). Mirrors compareLww in
+// LWWOrder orders two stamps: less, equal, or greater. It is shared by
+// every convergence path (store apply, quorum reads, anti-entropy,
+// hints, read repair), mirroring compareLww in
 // include/cinder/common/types.hpp: version, then writer hash, then a
 // contradictory tombstone bit resolving tombstone-wins so replicas
 // converge instead of disagreeing by arrival order.
 type LWWOrder int
 
 const (
+	// LWWLess orders the incoming stamp strictly before the resident.
 	LWWLess LWWOrder = iota
+	// LWWEqual orders identical stamps (idempotent refresh, no outcome change).
 	LWWEqual
+	// LWWGreater orders the incoming stamp strictly after the resident.
 	LWWGreater
 )
 

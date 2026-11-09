@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/client"
@@ -33,7 +35,6 @@ import (
 	"github.com/kraytos17/cinder/internal/shard"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
-	"github.com/rs/zerolog"
 )
 
 const (
@@ -1208,7 +1209,9 @@ func (s *Server) handle(c net.Conn) {
 		if _, err := io.ReadFull(c, payload); err != nil {
 			return
 		}
-		frame := append(header, payload...)
+		frame := make([]byte, protocol.FrameHeaderSize+len(payload))
+		copy(frame, header)
+		copy(frame[protocol.FrameHeaderSize:], payload)
 		dec, err := protocol.DecodeRequest(frame)
 		var res protocol.Response
 		if err != nil {
@@ -1285,7 +1288,7 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 		if m, rf, _ := s.replication(); m != nil && rf > 1 {
 			e, err := m.Read(string(req.Key), s.replicaNodes(string(req.Key)), rf, req.TraceID, req.SpanID)
 			if err != nil {
-				if err == repl.ErrNotFound {
+				if errors.Is(err, repl.ErrNotFound) {
 					return protocol.Response{Status: protocol.StatusNotFound}
 				}
 				return protocol.Response{Status: protocol.StatusNotReady}
@@ -1474,12 +1477,12 @@ func (s *Server) handleCounterGet(req protocol.Request) protocol.Response {
 // counterStatusOf maps counter errors to wire statuses, mirroring the
 // C++ counter paths (overflow surfaces as CapacityExceeded).
 func counterStatusOf(err error) protocol.Status {
-	switch err {
-	case nil:
+	switch {
+	case err == nil:
 		return protocol.StatusOK
-	case counter.ErrCapacityExceeded:
+	case errors.Is(err, counter.ErrCapacityExceeded):
 		return protocol.StatusCapacityExceeded
-	case counter.ErrInvalidActor:
+	case errors.Is(err, counter.ErrInvalidActor):
 		return protocol.StatusInvalidArgument
 	default:
 		return protocol.StatusInternalError
@@ -1513,14 +1516,14 @@ func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 }
 
 func statusOf(err error) protocol.Status {
-	switch err {
-	case nil:
+	switch {
+	case err == nil:
 		return protocol.StatusOK
-	case store.ErrCapacityExceeded, counter.ErrCapacityExceeded:
+	case errors.Is(err, store.ErrCapacityExceeded), errors.Is(err, counter.ErrCapacityExceeded):
 		return protocol.StatusCapacityExceeded
-	case repl.ErrQuorum:
+	case errors.Is(err, repl.ErrQuorum):
 		return protocol.StatusNotReady
-	case repl.ErrNotFound:
+	case errors.Is(err, repl.ErrNotFound):
 		return protocol.StatusNotFound
 	default:
 		return protocol.StatusInternalError
@@ -1591,8 +1594,10 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		var nodes []adminClusterNode
 		if table != nil {
 			for _, m := range table.Snapshot() {
-				state := "alive"
+				state := m.State.String()
 				switch m.State {
+				case cluster.Alive:
+					state = "alive"
 				case cluster.Suspect:
 					state = "suspect"
 				case cluster.Dead:

@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/kraytos17/cinder/internal/metrics"
@@ -41,7 +42,7 @@ func TestReplMetrics(t *testing.T) {
 	}
 	// Quorum write against a down replica fails closed and counts it.
 	ft.fail["n2"], ft.fail["n3"] = true, true
-	if err := m.Write("q", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != ErrQuorum {
+	if err := m.Write("q", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("err = %v, want ErrQuorum", err)
 	}
 	if got := c.QuorumWritesErr.Load(); got != 1 {

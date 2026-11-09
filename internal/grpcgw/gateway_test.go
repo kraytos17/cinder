@@ -308,9 +308,9 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 		cli  gen.CinderCacheServiceClient
 		conn *grpc.ClientConn
 	}
-	var nodes []node
+	nodes := make([]node, 0, 2)
 	addrs := map[string]string{}
-	var listeners []net.Listener
+	listeners := make([]net.Listener, 0, 2)
 	for _, id := range []string{"node1", "node2"} {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
@@ -391,7 +391,10 @@ func cppGrpcBinary(t *testing.T) string {
 	if p := os.Getenv("CINDER_TEST_CINDERD_GRPC_PATH"); p != "" {
 		return p
 	}
-	_, file, _, _ := runtime.Caller(0)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
 	root := filepath.Join(filepath.Dir(file), "..", "..")
 	for _, preset := range []string{"tls-grpc", "debug-grpc"} {
 		p := filepath.Join(root, "build", preset, "bin", "cinderd")
@@ -471,7 +474,10 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 // suite).
 func fixturesDir(t *testing.T) string {
 	t.Helper()
-	_, file, _, _ := runtime.Caller(0)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
 	dir := filepath.Join(filepath.Dir(file), "..", "..", "tests", "fixtures")
 	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); err != nil {
 		t.Skipf("no fixtures at %s", dir)

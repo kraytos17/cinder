@@ -60,6 +60,9 @@ TCP set/get round-trip (+ parallel variant) in `net/tcp`.
 # Record while running the benchmark you care about:
 go test -bench='BenchmarkStorePut' -benchtime=5s -cpuprofile=/tmp/cpu.out ./internal/store/
 
+# Same via just (profiles/ is gitignored scratch, prints top15):
+just bench-cpu -bench='BenchmarkStorePut' ./internal/store/
+
 # Interactive exploration:
 go tool pprof /tmp/cpu.out
 #   (pprof) top10 -cum

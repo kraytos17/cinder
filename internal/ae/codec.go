@@ -17,12 +17,14 @@ import (
 	"sort"
 	"time"
 
-	"github.com/kraytos17/cinder/internal/store"
 	"github.com/zeebo/xxh3"
+
+	"github.com/kraytos17/cinder/internal/store"
 )
 
+// Magic prefixes (u32 LE). Each magic tags one AE payload shape;
+// layouts live with their codecs below and in docs/protocol.md.
 const (
-	// Magic prefixes (u32 LE).
 	MagicDigest      uint32 = 0x41454D32 // "AEM2" legacy flat digest
 	MagicGroupDigest uint32 = 0x41454D33 // "AEM3"
 	MagicResponse    uint32 = 0x41455236 // "AER6"
@@ -33,10 +35,16 @@ const (
 	BucketsPerGroup = 16
 
 	// IBLT sizing mirrors iblt::K_*.
-	IBLTCount     = 3
-	IBLTCellsMin  = 3
-	IBLTCellsMax  = 4096
-	IBLTCells     = 64
+
+	// IBLTCount is the sketch count per bucket batch.
+	IBLTCount = 3
+	// IBLTCellsMin is the smallest admissible sketch width.
+	IBLTCellsMin = 3
+	// IBLTCellsMax is the largest admissible sketch width.
+	IBLTCellsMax = 4096
+	// IBLTCells is the production sketch width.
+	IBLTCells = 64
+	// IBLTMinRows is the row count below which explicit metadata wins over sketches.
 	IBLTMinRows   = 32
 	IBLTCelBytes  = 6 * 8
 	MaxMetaBytes  = 4 << 20

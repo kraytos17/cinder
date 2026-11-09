@@ -256,8 +256,10 @@ func TestDecodeErrors(t *testing.T) {
 }
 
 func TestDecodeExpiresAtOverflow(t *testing.T) {
-	req := Request{Opcode: OpSet, Key: []byte("k"), HasExpiresAt: true,
-		ExpiresAt: time.UnixMilli(math.MaxInt64 / 1_000_000).UTC()}
+	req := Request{
+		Opcode: OpSet, Key: []byte("k"), HasExpiresAt: true,
+		ExpiresAt: time.UnixMilli(math.MaxInt64 / 1_000_000).UTC(),
+	}
 	frame, err := EncodeRequest(req, nil)
 	if err != nil {
 		t.Fatal(err)

@@ -48,7 +48,7 @@ func (h *Histogram) Percentile(q float64) uint64 {
 	}
 	target := uint64(q*float64(c)) + 1
 	var cum uint64
-	for i := 0; i < numBuckets; i++ {
+	for i := range numBuckets {
 		cum += h.buckets[i].Load()
 		if cum >= target {
 			if i == numBuckets-1 {

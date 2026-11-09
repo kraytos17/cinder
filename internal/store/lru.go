@@ -455,7 +455,7 @@ func (s *LRUStore) EvictExpired() int {
 			}
 		}
 		sh.lastTick = now
-		for t := uint64(0); t < ticks; t++ {
+		for range ticks {
 			sh.wheel.Tick(func(id int) {
 				n, ok := s.nodeIfResident(sh, id)
 				if !ok {
@@ -643,8 +643,8 @@ func (s *LRUStore) evictOne(sh *shard) uint64 {
 }
 
 func (s *LRUStore) evictIfNeeded(sh *shard) {
-	cap := s.shardCap()
-	for sh.current > cap && sh.head != noLink {
+	sliceCap := s.shardCap()
+	for sh.current > sliceCap && sh.head != noLink {
 		if s.evictOne(sh) == 0 {
 			break
 		}
@@ -653,5 +653,5 @@ func (s *LRUStore) evictIfNeeded(sh *shard) {
 
 // subAtomic subtracts n from an atomic counter.
 func subAtomic(u *atomic.Uint64, n uint64) {
-	u.Add(^uint64(n - 1))
+	u.Add(^(n - 1))
 }

@@ -262,14 +262,15 @@ func TestCliClientSecret(t *testing.T) {
 	go srv.Serve(l)
 	t.Cleanup(srv.Shutdown)
 	addr := l.Addr().String()
-	base := []string{"--tls", "--tls-ca", fx + "/ca.pem"}
+	base := make([]string, 0, 4)
+	base = append(base, "--tls", "--tls-ca", fx+"/ca.pem")
 	if out, errOut, code := runCLI(t, addr, append(base, "ping")...); code == 0 || !strings.Contains(errOut, "permission denied") || out != "" {
 		t.Fatalf("missing secret: out=%q err=%q code=%d", out, errOut, code)
 	}
 	if out, _, code := runCLI(t, addr, append(append(base, "--client-secret", "wrong"), "ping")...); code == 0 || out != "" {
 		t.Fatalf("wrong secret: out=%q code=%d", out, code)
 	}
-	ok := append(base, "--client-secret", "topsecret")
+	ok := append(base, "--client-secret", "topsecret") //nolint:gocritic // base is reused for multiple arg variants below; aliasing is intended
 	if out, errOut, code := runCLI(t, addr, append(ok, "set", "k", "v")...); out != "OK\n" || errOut != "" || code != 0 {
 		t.Fatalf("good secret set: out=%q err=%q code=%d", out, errOut, code)
 	}

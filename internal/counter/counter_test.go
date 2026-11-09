@@ -1,6 +1,7 @@
 package counter
 
 import (
+	"errors"
 	"math"
 	"testing"
 )
@@ -30,7 +31,7 @@ func TestGCounterIncrementAndValue(t *testing.T) {
 
 func TestGCounterRejectsEmptyActor(t *testing.T) {
 	var g GCounter
-	if err := g.Increment("", 1); err != ErrInvalidActor {
+	if err := g.Increment("", 1); !errors.Is(err, ErrInvalidActor) {
 		t.Fatalf("err = %v, want ErrInvalidActor", err)
 	}
 }
@@ -40,7 +41,7 @@ func TestGCounterOverflowFailsClean(t *testing.T) {
 	if err := g.Increment("a", math.MaxUint64); err != nil {
 		t.Fatal(err)
 	}
-	if err := g.Increment("a", 1); err != ErrOverflow {
+	if err := g.Increment("a", 1); !errors.Is(err, ErrOverflow) {
 		t.Fatalf("err = %v, want ErrOverflow", err)
 	}
 	if got := g.Component("a"); got != math.MaxUint64 {

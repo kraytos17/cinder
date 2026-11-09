@@ -28,7 +28,10 @@ import (
 // suite: ca.pem, server.pem, server-key.pem).
 func fixturesDir(t *testing.T) string {
 	t.Helper()
-	_, file, _, _ := runtime.Caller(0)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
 	dir := filepath.Join(filepath.Dir(file), "..", "..", "..", "tests", "fixtures")
 	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); err != nil {
 		t.Skipf("no fixtures at %s", dir)
@@ -195,7 +198,10 @@ func tlsCppBinary(t *testing.T, name string) string {
 	if p := os.Getenv("CINDER_TEST_TLS_" + name); p != "" {
 		return p
 	}
-	_, file, _, _ := runtime.Caller(0)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
 	p := filepath.Join(root, "build", "debug-tls", "bin", name)
 	if _, err := os.Stat(p); err != nil {
@@ -366,7 +372,7 @@ func TestInteropCppClientGoAuthServer(t *testing.T) {
 		t.Fatalf("anonymous C++ CLI succeeded: %q", out)
 	}
 	// With it, full access.
-	authed := append(base, "--client-secret", "s3cr3t")
+	authed := append(base, "--client-secret", "s3cr3t") //nolint:gocritic // base is reused for multiple arg variants below; aliasing is intended
 	for _, tc := range []struct {
 		args []string
 		want string

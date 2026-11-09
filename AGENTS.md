@@ -34,9 +34,17 @@ protocol (v6) with gRPC gateway and TLS 1.2.
 ## Daily loop (Justfile)
 
 * `just build` / `just test` / `just vet` (gofmt + vet gate).
-  `just verify` is the fast pre-push gate (fmt + vet + `go test -race ./...`).
+  `just lint` is the golangci-lint suite (`.golangci.yml`, pinned via
+  `go tool` — no installs); `just verify` is the fast pre-push gate
+  (fmt + vet + lint + `go test -race ./...`, goleak mains included).
+* `just vuln` scans the module graph (govulncheck, also pinned).
+  `just tidy` keeps go.mod/go.sum exact; `just fix` applies `go fix`
+  rewrites (usually a no-op, never in CI).
+* Coverage: `just cover` (func summary + cover.out), `just cover-html`.
 * Benchmarks: `just bench` (`-benchmem` always on — allocation counts are the
   GC-tuning signal); pass `-benchtime` for publishable numbers.
+  Profiles: `just bench-cpu` / `just bench-mem` (`-alloc_space` +
+  `-inuse_space` tops) / `just bench-trace` (see docs/profiling.md).
 * Fuzz: `just fuzz` (protocol codec fixed points, 20s each).
 * gRPC stubs: `just proto-generate` (protoc + local plugins; see
   `internal/grpcgw/gen/doc.go`).
@@ -58,15 +66,17 @@ protocol (v6) with gRPC gateway and TLS 1.2.
 
 ## Lint gate (this is what CI enforces)
 
-* `gofmt -l .` empty, `go vet ./...` clean, `go build ./...`,
-  `go test -race ./...`, plus the two 20s protocol fuzz targets.
+* `gofmt -l .` empty, `go vet ./...` clean, `go tool golangci-lint run ./...`
+  clean (see `.golangci.yml`; exclusions carry their reasons), `go build ./...`,
+  `go test -race ./...` (goleak mains fail on leaked goroutines), plus
+  `go tool govulncheck ./...` and the eight 20s protocol fuzz targets.
 * Pre-commit hook (catches the cheap half before push):
   `just hooks-install` sets repo-local `core.hooksPath=.githooks`
   (`just hooks-run` runs the same checks manually). The hook checks staged
   files only: whitespace errors (`git diff --check`, `*.md` excluded so
   hard-breaks pass), gofmt on staged Go blobs, YAML syntax on staged
-  workflows, Justfile formatting. Slow checks (vet, race tests, fuzz) stay in
-  `just verify` and CI. Bypass with `git commit --no-verify`.
+  workflows, Justfile formatting. Slow checks (vet, lint, race tests, vuln,
+  fuzz) stay in `just verify` and CI. Bypass with `git commit --no-verify`.
 
 ## Gotchas for agents
 

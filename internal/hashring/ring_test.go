@@ -1,6 +1,7 @@
 package hashring
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sync"
@@ -205,7 +206,7 @@ func TestEmptyRingLookupsAreSafe(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	for _, n := range []int{0, -1, 33} {
-		if _, err := r.GetNodes("key", n); err != ErrInvalidReplicaCount {
+		if _, err := r.GetNodes("key", n); !errors.Is(err, ErrInvalidReplicaCount) {
 			t.Fatalf("n=%d: err = %v", n, err)
 		}
 	}

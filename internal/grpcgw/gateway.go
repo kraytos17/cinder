@@ -75,6 +75,7 @@ func toProtoStatus(s protocol.Status) gen.StatusCode {
 // service implements CinderCacheService over one TCP server node.
 type service struct {
 	gen.UnimplementedCinderCacheServiceServer
+
 	node         *tcp.Server
 	clientSecret atomic.Value // string; set via SetClientSecret before Serve
 }
@@ -135,7 +136,7 @@ func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.Dele
 	if err := s.checkAuth(ctx); err != nil {
 		return &gen.DeleteResponse{}, err
 	}
-	res := s.node.DeleteNoRedirect(string(req.GetKey()))
+	res := s.node.DeleteNoRedirect(req.GetKey())
 	return &gen.DeleteResponse{Status: toProtoStatus(res.Status)}, nil
 }
 
@@ -159,7 +160,7 @@ func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest
 	return out, nil
 }
 
-func (s *service) Ping(ctx context.Context, req *gen.PingRequest) (*gen.PingResponse, error) {
+func (s *service) Ping(ctx context.Context, _ *gen.PingRequest) (*gen.PingResponse, error) {
 	if err := s.checkAuth(ctx); err != nil {
 		return &gen.PingResponse{}, err
 	}
@@ -209,7 +210,7 @@ func (s *service) MultiSet(ctx context.Context, req *gen.MultiSetRequest) (*gen.
 	return out, nil
 }
 
-func (s *service) Info(ctx context.Context, req *gen.InfoRequest) (*gen.InfoResponse, error) {
+func (s *service) Info(ctx context.Context, _ *gen.InfoRequest) (*gen.InfoResponse, error) {
 	if err := s.checkAuth(ctx); err != nil {
 		return &gen.InfoResponse{}, err
 	}
@@ -217,7 +218,7 @@ func (s *service) Info(ctx context.Context, req *gen.InfoRequest) (*gen.InfoResp
 	return &gen.InfoResponse{Json: string(res.Value)}, nil
 }
 
-func (s *service) ClusterInfo(ctx context.Context, req *gen.ClusterInfoRequest) (*gen.ClusterInfoResponse, error) {
+func (s *service) ClusterInfo(ctx context.Context, _ *gen.ClusterInfoRequest) (*gen.ClusterInfoResponse, error) {
 	if err := s.checkAuth(ctx); err != nil {
 		return &gen.ClusterInfoResponse{}, err
 	}
@@ -225,7 +226,7 @@ func (s *service) ClusterInfo(ctx context.Context, req *gen.ClusterInfoRequest) 
 	return &gen.ClusterInfoResponse{Json: string(res.Value)}, nil
 }
 
-func (s *service) RingInfo(ctx context.Context, req *gen.RingInfoRequest) (*gen.RingInfoResponse, error) {
+func (s *service) RingInfo(ctx context.Context, _ *gen.RingInfoRequest) (*gen.RingInfoResponse, error) {
 	if err := s.checkAuth(ctx); err != nil {
 		return &gen.RingInfoResponse{}, err
 	}
@@ -306,7 +307,7 @@ func (g *Gateway) Serve(lis net.Listener) error {
 	return srv.Serve(lis)
 }
 
-// Stop halts the gateway immediately (in-flight RPCs are cancelled).
+// Stop halts the gateway immediately (in-flight RPCs are canceled).
 // No-op before Serve.
 func (g *Gateway) Stop() {
 	g.mu.Lock()

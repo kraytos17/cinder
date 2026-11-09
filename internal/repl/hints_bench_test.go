@@ -13,7 +13,7 @@ func BenchmarkHintPush(b *testing.B) {
 	q := NewHintQueue()
 	exp := time.Now().Add(time.Hour)
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		q.Push(Hint{
 			Target:    "n2",
 			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(fmt.Sprintf("hint-key-%d", i)), Value: make([]byte, 64)},
@@ -34,7 +34,7 @@ func BenchmarkHintSnapshot(b *testing.B) {
 		})
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if got := q.Snapshot(time.Now(), ReplayBatch); len(got) == 0 {
 			b.Fatal("empty snapshot")
 		}

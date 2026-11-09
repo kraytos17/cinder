@@ -20,7 +20,7 @@ func BenchmarkEncodeRequest(b *testing.B) {
 	req := benchRequest()
 	b.SetBytes(int64(len(req.Key) + len(req.Value)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := EncodeRequest(req, nil); err != nil {
 			b.Fatal(err)
 		}
@@ -35,7 +35,7 @@ func BenchmarkDecodeRequest(b *testing.B) {
 	}
 	b.SetBytes(int64(len(raw)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := DecodeRequest(raw); err != nil {
 			b.Fatal(err)
 		}
@@ -46,7 +46,7 @@ func BenchmarkDecodeRequest(b *testing.B) {
 func BenchmarkEncodeResponse(b *testing.B) {
 	res := benchResponse()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := EncodeResponse(res); err != nil {
 			b.Fatal(err)
 		}
@@ -60,7 +60,7 @@ func BenchmarkDecodeResponse(b *testing.B) {
 	}
 	b.SetBytes(int64(len(raw)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		if _, err := DecodeResponse(raw); err != nil {
 			b.Fatal(err)
 		}

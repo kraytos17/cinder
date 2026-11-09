@@ -8,8 +8,12 @@ import (
 )
 
 // Aliases so Manager's CounterStore interface reads without a prefix.
-type BundleEntry = counter.BundleEntry
-type PNCounter = counter.PNCounter
+// BundleEntry is one CAE1 record: key plus its full counter state.
+// PNCounter is the merge-based increment/decrement counter.
+type (
+	BundleEntry = counter.BundleEntry
+	PNCounter   = counter.PNCounter
+)
 
 // RunCounterRound runs one CRDT repair round against a replica partner.
 // Skipped when counter state is absent or partnerless, mirroring C++

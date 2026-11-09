@@ -10,15 +10,17 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
-	"github.com/rs/zerolog"
 )
 
 // NodeState mirrors the C++ NodeState.
 type NodeState int
 
 const (
+	// Alive marks a reachable member; the table's default assumption.
 	Alive NodeState = iota
 	Suspect
 	Dead

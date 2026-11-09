@@ -44,7 +44,11 @@ func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 // together) present a client certificate for servers that verify peers.
 func Client(certFile, keyFile, caFile string) (*tls.Config, error) {
 	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
+		MinVersion: tls.VersionTLS12,
+		//nolint:gosec // G402: InsecureSkipVerify only skips the default
+		// verifier; when caFile is set the custom chainOnlyVerifier below
+		// still runs on every handshake. Without a CA this is verify_none,
+		// matching the C++ no-CA behavior.
 		InsecureSkipVerify: true,
 	}
 	if (certFile == "") != (keyFile == "") {
@@ -62,6 +66,10 @@ func Client(certFile, keyFile, caFile string) (*tls.Config, error) {
 		if err != nil {
 			return nil, err
 		}
+		//nolint:gosec // G123: resumed sessions skip VerifyPeerCertificate
+		// in both this code and the C++ asio verify_peer it mirrors; the
+		// pool holds long-lived connections, so resumption is rare and the
+		// trade matches upstream behavior byte-for-byte.
 		cfg.VerifyPeerCertificate = chainOnlyVerifier(pool)
 	}
 	return cfg, nil

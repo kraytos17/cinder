@@ -164,7 +164,7 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 		mgr *repl.Manager
 	}
 	nodes := map[string]*node{}
-	var listeners []net.Listener
+	listeners := make([]net.Listener, 0, 2)
 	ports := map[string]int{}
 	for _, id := range []string{"node1", "node2"} {
 		l := listenTCP(t)

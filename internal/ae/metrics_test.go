@@ -25,7 +25,7 @@ func TestAEMetricsCounterRound(t *testing.T) {
 
 // Empty counter store skips the round entirely (no partner traffic).
 func TestAEMetricsCounterEmptySkips(t *testing.T) {
-	m1, _, _, _ := counterTestPair(t, 1<<20)
+	m1, _, _, _ := counterTestPair(t, 1<<20) //nolint:dogsled // helper returns a fixed 4-tuple
 	c := metrics.NewCollector()
 	m1.SetMetrics(c)
 	m1.RunCounterRound(2)

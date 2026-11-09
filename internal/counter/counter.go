@@ -12,6 +12,7 @@ package counter
 
 import (
 	"errors"
+	"maps"
 	"math"
 	"sort"
 )
@@ -116,9 +117,7 @@ func (g GCounter) Clone() GCounter {
 		return GCounter{}
 	}
 	out := make(map[string]uint64, len(g.components))
-	for actor, count := range g.components {
-		out[actor] = count
-	}
+	maps.Copy(out, g.components)
 	return GCounter{components: out}
 }
 

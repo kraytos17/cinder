@@ -7,12 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
-	"github.com/rs/zerolog"
 )
 
 // Transport sends one request; client.Pool satisfies it.
@@ -316,7 +317,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 			}
 		}
 
-		reconstructed = append(kept, fbResp.Rows...)
+		reconstructed = append(reconstructed[:len(kept)], fbResp.Rows...)
 		coveredSet := map[uint32]bool{}
 		for _, b := range reconstructedCovered {
 			if !failedSet[b] {
@@ -381,7 +382,7 @@ func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse
 		}
 	}
 	var divergent []uint32
-	for b := uint32(0); b < m.numBuckets; b++ {
+	for b := range m.numBuckets {
 		if h, ok := remoteBuckets[b]; ok && h != local[b] {
 			divergent = append(divergent, b)
 		} else if sketched[b] && coveredSet[b] && sketchHasDiff[b] {
@@ -535,7 +536,7 @@ func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []u
 	var rows []MetaRow
 	var covered []uint32
 	bytes := 8 // outer row-count + covered-count u32s
-	for b := uint32(0); b < m.numBuckets; b++ {
+	for b := range m.numBuckets {
 		if !wanted[b] {
 			continue
 		}
@@ -705,7 +706,7 @@ func (m *Manager) respondRefinement(resp DigestResponse, requested []uint32) (pr
 		resp.Covered = append(resp.Covered, b)
 		vec := perBucket[b]
 		if len(vec) >= IBLTMinRows {
-			var items []IBLTItem
+			items := make([]IBLTItem, 0, len(vec))
 			for _, r := range vec {
 				items = append(items, IBLTItem{KeyHash: r.KeyHash, Version: r.Version, Writer: r.Writer, Tombstone: r.Tombstone})
 			}
@@ -785,7 +786,7 @@ func (m *Manager) CollectEntriesForKeys(keys []string, maxBytes int) []SyncItem 
 		ps = append(ps, hashKeyPair{KeyHash(k), k})
 	}
 	slices.SortFunc(ps, func(a, b hashKeyPair) int { return cmp.Compare(a.h, b.h) })
-	var items []SyncItem
+	items := make([]SyncItem, 0, len(ps))
 	bytes := 0
 	for _, p := range ps {
 		e, ok := m.store.GetVersioned(p.key)

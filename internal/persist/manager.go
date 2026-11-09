@@ -13,9 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/store"
-	"github.com/rs/zerolog"
 )
 
 const (
@@ -244,7 +245,7 @@ func entryFromSnap(e SnapEntry, now time.Time) (store.Entry, bool) {
 // mode for serving; the caller wires the store hook after Recover returns.
 // Recovering twice closes the previous writer first.
 func (m *Manager) Recover() error {
-	if err := os.MkdirAll(m.dir, 0755); err != nil {
+	if err := os.MkdirAll(m.dir, 0o755); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -333,8 +334,10 @@ func (m *Manager) Compact() error {
 		if p.Entry.Version >= nextVersion {
 			nextVersion = p.Entry.Version + 1
 		}
-		se := SnapEntry{Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
-			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone}
+		se := SnapEntry{
+			Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
+			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone,
+		}
 		if p.Entry.HasTTL {
 			se.HasTTL = true
 			se.ExpiresMs = uint64(p.Entry.ExpiresAt.UnixMilli())
@@ -346,7 +349,7 @@ func (m *Manager) Compact() error {
 	if err := NewSnapWriter(path).Write(nextVersion, snaps); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0o644); err != nil {
 		return err
 	}
 	m.mu.Lock()
@@ -397,6 +400,8 @@ func isSnapshotName(name string) bool {
 }
 
 func fileExists(path string) bool {
+	//nolint:gosec // G703: both call sites pass constants or names
+	// pre-validated by isSnapshotName; no remote input reaches Stat.
 	_, err := os.Stat(path)
 	return err == nil
 }
@@ -432,7 +437,7 @@ func (m *Manager) walFiles() []string {
 }
 
 func (m *Manager) maxSealedSeq() uint64 {
-	var max uint64
+	var maxSeq uint64
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
 		return 0
@@ -441,12 +446,12 @@ func (m *Manager) maxSealedSeq() uint64 {
 		name := e.Name()
 		if strings.HasPrefix(name, walSegmentPre) && strings.HasSuffix(name, walSegmentSuf) {
 			mid := name[len(walSegmentPre) : len(name)-len(walSegmentSuf)]
-			if seq, err := strconv.ParseUint(mid, 10, 64); err == nil && seq > max {
-				max = seq
+			if seq, err := strconv.ParseUint(mid, 10, 64); err == nil && seq > maxSeq {
+				maxSeq = seq
 			}
 		}
 	}
-	return max
+	return maxSeq
 }
 
 func (m *Manager) deleteSealed() {

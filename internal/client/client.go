@@ -62,7 +62,7 @@ func (c *Client) SetSecrets(s Secrets) {
 
 // Dial opens addr with a dial timeout; timeout also bounds every RPC.
 func Dial(addr string, timeout time.Duration) (*Client, error) {
-	c, err := net.DialTimeout("tcp", addr, timeout)
+	c, err := net.DialTimeout("tcp", addr, timeout) //nolint:noctx // no caller context to propagate; timeout is the deadline mechanism
 	if err != nil {
 		return nil, err
 	}
@@ -76,7 +76,7 @@ func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, erro
 	if cfg == nil {
 		cfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only path
 	}
-	c, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
+	c, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg) //nolint:noctx // no caller context to propagate; timeout is the deadline mechanism
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +142,10 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if _, err := io.ReadFull(c.conn, payload); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
-	res, err := protocol.DecodeResponse(append(header, payload...))
+	frame = make([]byte, protocol.FrameHeaderSize+len(payload))
+	copy(frame, header)
+	copy(frame[protocol.FrameHeaderSize:], payload)
+	res, err := protocol.DecodeResponse(frame)
 	if err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
@@ -180,7 +183,10 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 	if _, err := io.ReadFull(c.conn, payload); err != nil {
 		return nil, c.fail(err)
 	}
-	return append(header, payload...), nil
+	frame = make([]byte, protocol.FrameHeaderSize+len(payload))
+	copy(frame, header)
+	copy(frame[protocol.FrameHeaderSize:], payload)
+	return frame, nil
 }
 
 // Ping checks liveness.

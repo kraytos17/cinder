@@ -99,9 +99,7 @@ func TestMetricsConnectionsAndHandler(t *testing.T) {
 	// handle() runs per-connection; shutdown drains them, which bumps
 	// the close counter. Poll briefly for the async accounting.
 	for i := 0; i < 200 && m.ConnsClosed.Load() < 2; i++ {
-		select {
-		case <-time.After(time.Millisecond):
-		}
+		time.Sleep(time.Millisecond)
 	}
 	if got := m.ConnsOpened.Load(); got < 2 {
 		t.Fatalf("opened = %d, want >= 2", got)
@@ -137,7 +135,7 @@ func TestMetricsRedirects(t *testing.T) {
 	n1 := c.nodes["n1"].srv
 	before := n1.Metrics().Redirects.Load()
 	var key string
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		cand := fmt.Sprintf("redir-%d", i)
 		if res := n1.Dispatch(protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(cand), CounterDelta: 1}); res.Status == protocol.StatusNotReady {
 			key = cand

@@ -12,7 +12,7 @@ func BenchmarkStorePut(b *testing.B) {
 	val := make([]byte, 256)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if err := s.Put(fmt.Sprintf("put-key-%d", i), val); err != nil {
 			b.Fatal(err)
 		}
@@ -25,7 +25,7 @@ func BenchmarkStorePutTTL(b *testing.B) {
 	val := make([]byte, 256)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if err := s.PutWithTTL(fmt.Sprintf("ttl-key-%d", i), val, time.Hour); err != nil {
 			b.Fatal(err)
 		}
@@ -44,7 +44,7 @@ func BenchmarkStoreGetHit(b *testing.B) {
 	}
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		v, ok := s.Get(fmt.Sprintf("hit-key-%d", i%resident))
 		if !ok || len(v) != 256 {
 			b.Fatal("miss")
@@ -57,7 +57,7 @@ func BenchmarkStoreGetMiss(b *testing.B) {
 	s := NewLRUStore(1<<26, nil)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if _, ok := s.Get(fmt.Sprintf("absent-%d", i)); ok {
 			b.Fatal("hit")
 		}
@@ -71,7 +71,7 @@ func BenchmarkStoreEvictPressure(b *testing.B) {
 	val := make([]byte, 256)
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for i := range b.N {
 		if err := s.Put(fmt.Sprintf("evict-key-%d", i), val); err != nil {
 			b.Fatal(err)
 		}

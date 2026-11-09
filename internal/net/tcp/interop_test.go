@@ -43,7 +43,10 @@ func cppBinary(t *testing.T) string {
 	if p := os.Getenv("CINDER_TEST_CINDERD_PATH"); p != "" {
 		return p
 	}
-	_, file, _, _ := runtime.Caller(0)
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("no caller")
+	}
 	root := filepath.Join(filepath.Dir(file), "..", "..", "..")
 	return filepath.Join(root, "build", "debug", "bin", "cinderd")
 }
@@ -777,8 +780,10 @@ func TestInteropAEWithCpp(t *testing.T) {
 		t.Helper()
 		c := dial(t, addr)
 		mustStatus(t, protocol.StatusOK, func() (protocol.Response, error) {
-			return c.Do(protocol.Request{Opcode: protocol.OpReplicate,
-				Key: []byte(key), Value: []byte(val), Version: ver, WriterNodeHash: writer})
+			return c.Do(protocol.Request{
+				Opcode: protocol.OpReplicate,
+				Key:    []byte(key), Value: []byte(val), Version: ver, WriterNodeHash: writer,
+			})
 		})
 	}
 	for i, k := range cOnly {
@@ -797,8 +802,10 @@ func TestInteropAEWithCpp(t *testing.T) {
 	// Tombstone converges to the Go side through AE.
 	c := dial(t, cAddr)
 	mustStatus(t, protocol.StatusOK, func() (protocol.Response, error) {
-		return c.Do(protocol.Request{Opcode: protocol.OpHint,
-			Key: []byte(cOnly[0]), Version: 5000, WriterNodeHash: 111, Tombstone: true})
+		return c.Do(protocol.Request{
+			Opcode: protocol.OpHint,
+			Key:    []byte(cOnly[0]), Version: 5000, WriterNodeHash: 111, Tombstone: true,
+		})
 	})
 	deadline := time.Now().Add(30 * time.Second)
 	for {
@@ -1054,7 +1061,9 @@ func TestInteropOversizedCloses(t *testing.T) {
 		c := dial(t, addr)
 		// 2 MiB payload exceeds the 1 MiB connection buffer: close, no response.
 		hdr := []byte{protocol.Magic, protocol.Version, 4, 0x00, 0x20, 0x00, 0x00}
-		big := append(hdr, make([]byte, 2<<20)...)
+		big := make([]byte, 0, len(hdr)+(2<<20))
+		big = append(big, hdr...)
+		big = append(big, make([]byte, 2<<20)...)
 		if _, err := c.Raw(big); err == nil {
 			t.Fatalf("[%s] oversized frame must close the connection", name)
 		}

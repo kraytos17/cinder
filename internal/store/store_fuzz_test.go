@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -32,10 +33,7 @@ func FuzzStoreSequence(f *testing.F) {
 			if pos >= len(data) {
 				return nil
 			}
-			end := pos + n
-			if end > len(data) {
-				end = len(data)
-			}
+			end := min(pos+n, len(data))
 			out := data[pos:end]
 			pos = end
 			return out
@@ -48,7 +46,7 @@ func FuzzStoreSequence(f *testing.F) {
 			return v
 		}
 		ops := 1 + int(data[0])%64
-		for i := 0; i < ops; i++ {
+		for range ops {
 			ob := next(1)
 			if len(ob) == 0 {
 				return
@@ -66,7 +64,7 @@ func FuzzStoreSequence(f *testing.F) {
 				}
 				before, hadBefore := st.GetVersioned(key)
 				err := st.Put(key, val)
-				if err != nil && err != ErrCapacityExceeded {
+				if err != nil && !errors.Is(err, ErrCapacityExceeded) {
 					t.Fatalf("put err = %v", err)
 				}
 				if hadBefore {
@@ -84,7 +82,7 @@ func FuzzStoreSequence(f *testing.F) {
 				}
 				before, hadBefore := st.GetVersioned(key)
 				err := st.PutVersioned(key, e)
-				if err != nil && err != ErrCapacityExceeded {
+				if err != nil && !errors.Is(err, ErrCapacityExceeded) {
 					t.Fatalf("putVersioned err = %v", err)
 				}
 				if hadBefore {
@@ -99,7 +97,7 @@ func FuzzStoreSequence(f *testing.F) {
 				// putVersioned's stale-reject).
 				rv := u64(arg) &^ (1 << 63)
 				err := st.RemoveVersioned(key, rv, u64(arg))
-				if err != nil && err != ErrCapacityExceeded {
+				if err != nil && !errors.Is(err, ErrCapacityExceeded) {
 					t.Fatalf("removeVersioned err = %v", err)
 				}
 				if err != nil {

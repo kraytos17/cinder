@@ -16,6 +16,10 @@ generated/
 *.bak
 *.swp
 *.prof
+cover.out
+
+# Benchmark profiles (just bench-cpu/bench-mem/bench-trace scratch)
+profiles/
 
 # Local working notes (not tracked)
 plan/

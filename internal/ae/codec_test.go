@@ -169,8 +169,10 @@ func TestOracleDigestResponse(t *testing.T) {
 	}
 	// Duplicate sketch buckets are rejected.
 	sk := EncodeIBLT(BuildIBLT([]IBLTItem{{KeyHash: 1, Version: 1}}, 64))
-	dup := DigestResponse{GroupHashes: groups, Covered: []uint32{3},
-		Sketches: []SketchRef{{Bucket: 3, Blob: sk}, {Bucket: 3, Blob: sk}}}
+	dup := DigestResponse{
+		GroupHashes: groups, Covered: []uint32{3},
+		Sketches: []SketchRef{{Bucket: 3, Blob: sk}, {Bucket: 3, Blob: sk}},
+	}
 	if _, ok := DecodeResponse(EncodeResponse(dup), 2); ok {
 		t.Fatal("duplicate sketch accepted")
 	}

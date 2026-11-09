@@ -6,11 +6,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rs/zerolog"
+
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
-	"github.com/rs/zerolog"
 )
 
 // Manager coordinates writes to the primary plus replicas. The store is
@@ -133,7 +134,7 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool
 		}
 		return nil
 	}
-	err := m.fanOutQuorum(key, req, replicas)
+	err := m.fanOutQuorum(req, replicas)
 	if mt := m.metrics(); mt != nil {
 		if err != nil {
 			mt.QuorumWritesErr.Add(1)
@@ -174,7 +175,7 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 		}
 		return nil
 	}
-	err := m.fanOutQuorum(key, req, replicas)
+	err := m.fanOutQuorum(req, replicas)
 	if mt := m.metrics(); mt != nil {
 		if err != nil {
 			mt.QuorumDeletesEr.Add(1)
@@ -208,8 +209,10 @@ func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []strin
 	}
 	out := m.launch(req, replicas)
 	go func() {
-		for r := range out {
-			if r.err != nil {
+		// Counted drain: launch sends exactly len(replicas) results and
+		// never closes the channel, so ranging would park forever.
+		for range replicas {
+			if r := <-out; r.err != nil {
 				m.enqueueHint(r.node, req)
 			}
 		}
@@ -220,7 +223,7 @@ func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []strin
 // write. Success fires at W without waiting out stragglers, but a
 // background drain continues so late failures still enqueue hints.
 // Impossibility (acks + pending < W) fails fast with ErrQuorum.
-func (m *Manager) fanOutQuorum(key string, req protocol.Request, replicas []string) error {
+func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 	total := len(replicas) + 1
 	w := total/2 + 1
 	if w <= 1 {

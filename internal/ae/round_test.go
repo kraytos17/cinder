@@ -58,10 +58,10 @@ func (d *directTransport) Send(node string, req protocol.Request) (protocol.Resp
 
 func (d *directTransport) sends(node string) { d.sent[node]++ }
 
-type unknownErr string
+type unknownError string
 
-func (e unknownErr) Error() string { return "unknown node: " + string(e) }
-func errUnknown(node string) error { return unknownErr(node) }
+func (e unknownError) Error() string { return "unknown node: " + string(e) }
+func errUnknown(node string) error   { return unknownError(node) }
 
 func testRing(t *testing.T, ids ...string) *hashring.Ring {
 	t.Helper()

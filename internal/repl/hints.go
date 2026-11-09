@@ -17,7 +17,8 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// Consistency modes mirror ConsistencyMode.
+// Mode mirrors ConsistencyMode: async fans out best-effort, quorum waits
+// for W acknowledgements. See Async/Quorum for the contract.
 type Mode int
 
 const (
@@ -126,7 +127,7 @@ func (q *HintQueue) Push(h Hint) bool {
 
 // Snapshot copies up to max live hints FIFO, reaping expired ones. Entries
 // past the bound stay queued for a later call.
-func (q *HintQueue) Snapshot(now time.Time, max int) []Hint {
+func (q *HintQueue) Snapshot(now time.Time, limit int) []Hint {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var out []Hint
@@ -136,7 +137,7 @@ func (q *HintQueue) Snapshot(now time.Time, max int) []Hint {
 			q.bytes -= hintBytes(h)
 			continue
 		}
-		if len(out) < max {
+		if len(out) < limit {
 			out = append(out, h)
 		}
 		kept = append(kept, h)

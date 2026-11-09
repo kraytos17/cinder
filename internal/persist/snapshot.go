@@ -7,11 +7,11 @@ import (
 	"os"
 )
 
-// Snapshot entry framing (frozen CSNP layout, v2): klen u32, key, vlen
-// u32, value, version u64, writer u64, expires_ms u64, has_ttl u8,
-// freq u64, tombstone u8. V1 omits the tombstone byte; V3 (compressed
-// blocks) is rejected — writers here emit V2 uncompressed, matching the
-// C++ default.
+// SnapEntry is one decoded snapshot row: key, value, LWW identity,
+// TTL deadline, LFU frequency, and tombstone marker. Framing is the
+// frozen CSNP layout v2 (klen u32, key, vlen u32, value, version u64,
+// writer u64, expires_ms u64, has_ttl u8, freq u64, tombstone u8); V1
+// omits the tombstone byte and V3 compressed blocks are rejected.
 type SnapEntry struct {
 	Key       []byte
 	Value     []byte
@@ -80,7 +80,7 @@ func (w *SnapWriter) Write(nextVersion uint64, entries []SnapEntry) error {
 	hdr = putU64(hdr, nextVersion)
 	hdr = putU32(hdr, uint32(len(entries)))
 	tmp := w.path + ".tmp"
-	if err := os.WriteFile(tmp, append(hdr, body...), 0644); err != nil {
+	if err := os.WriteFile(tmp, append(hdr, body...), 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmp, w.path)

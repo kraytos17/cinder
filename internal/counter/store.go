@@ -39,10 +39,7 @@ const (
 )
 
 func shardCountFor(capacityBytes uint64) int {
-	n := max(int(capacityBytes/minShardBytes), 1)
-	if n > maxShards {
-		n = maxShards
-	}
+	n := min(max(int(capacityBytes/minShardBytes), 1), maxShards)
 	return n
 }
 
@@ -61,10 +58,10 @@ func addSat(a, b uint64) uint64 {
 	return a + b
 }
 
-// CounterBytes is the billable size: key plus every actor id plus its two
+// Bytes is the billable size: key plus every actor id plus its two
 // component slots. Deterministic and cheap; recomputed on merge rather
 // than cached per write.
-func CounterBytes(key string, p PNCounter) uint64 {
+func Bytes(key string, p PNCounter) uint64 {
 	total := uint64(len(key))
 	for _, side := range []GCounter{p.Pos, p.Neg} {
 		for _, actor := range side.Actors() {
@@ -135,20 +132,20 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 		if _, exists := side.components[actor]; !exists {
 			growth = uint64(len(actor)) + 2*8
 		}
-		cap := s.shardCapacity()
-		if growth > 0 && (growth > cap || sh.current > cap-growth) {
+		sliceCap := s.shardCapacity()
+		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
 			return ErrCapacityExceeded
 		}
 		if positive {
 			if err := it.Pos.Increment(actor, delta); err != nil {
-				if err == ErrOverflow {
+				if errors.Is(err, ErrOverflow) {
 					return ErrCapacityExceeded
 				}
 				return err
 			}
 		} else {
 			if err := it.Neg.Increment(actor, delta); err != nil {
-				if err == ErrOverflow {
+				if errors.Is(err, ErrOverflow) {
 					return ErrCapacityExceeded
 				}
 				return err
@@ -166,14 +163,14 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 		err = fresh.Decrement(actor, delta)
 	}
 	if err != nil {
-		if err == ErrOverflow {
+		if errors.Is(err, ErrOverflow) {
 			return ErrCapacityExceeded
 		}
 		return err
 	}
-	need := CounterBytes(key, fresh)
-	cap := s.shardCapacity()
-	if need > cap || sh.current > cap-need {
+	need := Bytes(key, fresh)
+	sliceCap := s.shardCapacity()
+	if need > sliceCap || sh.current > sliceCap-need {
 		return ErrCapacityExceeded
 	}
 	sh.current += need
@@ -204,20 +201,20 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	if it, ok := sh.index[key]; ok {
 		merged := it.Clone()
 		merged.Merge(remote)
-		oldSize, newSize := CounterBytes(key, it), CounterBytes(key, merged)
+		oldSize, newSize := Bytes(key, it), Bytes(key, merged)
 		// Merge only adds components, so the size never shrinks.
 		growth := newSize - oldSize
-		cap := s.shardCapacity()
-		if growth > 0 && (growth > cap || sh.current > cap-growth) {
+		sliceCap := s.shardCapacity()
+		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
 			return ErrCapacityExceeded
 		}
 		sh.current += growth
 		sh.index[key] = merged
 		return nil
 	}
-	need := CounterBytes(key, remote)
-	cap := s.shardCapacity()
-	if need > cap || sh.current > cap-need {
+	need := Bytes(key, remote)
+	sliceCap := s.shardCapacity()
+	if need > sliceCap || sh.current > sliceCap-need {
 		return ErrCapacityExceeded
 	}
 	sh.current += need
@@ -260,7 +257,7 @@ func (s *Store) Remove(key string) bool {
 	if !ok {
 		return false
 	}
-	sh.current -= CounterBytes(key, it)
+	sh.current -= Bytes(key, it)
 	delete(sh.index, key)
 	return true
 }

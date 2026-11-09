@@ -1,7 +1,7 @@
-// Wire codecs for CRDT counters: byte-exact ports of
+// Wire codecs for the state-based CRDT counters: byte-exact ports of
 // cinder/store/crdt_counter.hpp (CRDC bodies) and the CAE1 bundle in
-// src/node/anti_entropy/core.cpp. Network byte order is big-endian on both
-// sides, matching internal/net/protocol.
+// src/node/anti_entropy/core.cpp. Network byte order is big-endian on
+// both sides, matching internal/net/protocol.
 //
 // Layouts:
 //

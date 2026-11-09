@@ -154,7 +154,7 @@ func TestWriteQuorum(t *testing.T) {
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
 	// Two down: local alone cannot reach W=2.
 	ft.fail["n2"] = true
-	if err := m.Write("k3", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != ErrQuorum {
+	if err := m.Write("k3", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("expected ErrQuorum, got %v", err)
 	}
 }
@@ -200,7 +200,7 @@ func TestReadLocalOnly(t *testing.T) {
 	if err != nil || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
-	if _, err := m.Read("missing", nil, 1, 0, 0); err != ErrNotFound {
+	if _, err := m.Read("missing", nil, 1, 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 func TestReadQuorumMiss(t *testing.T) {
 	ft := newFake("n2")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
-	if _, err := m.Read("ghost", []string{"n2"}, 2, 0, 0); err != ErrNotFound {
+	if _, err := m.Read("ghost", []string{"n2"}, 2, 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
 }

@@ -168,7 +168,7 @@ func TestJournalTornTail(t *testing.T) {
 	j.Close()
 	raw, _ := os.ReadFile(path)
 	cut := raw[:len(raw)-3]
-	if err := os.WriteFile(path, cut, 0644); err != nil {
+	if err := os.WriteFile(path, cut, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	q2 := repl.NewHintQueue()
@@ -202,7 +202,7 @@ func TestJournalExpiryAndLegacy(t *testing.T) {
 	// Corrupt the checksum: recovery stops there (treated as torn tail).
 	raw, _ := os.ReadFile(path)
 	raw[len(raw)-1] ^= 0xFF
-	os.WriteFile(path, raw, 0644)
+	os.WriteFile(path, raw, 0o644)
 	q2 := repl.NewHintQueue()
 	if _, n, err := OpenJournal(path, q2); err != nil || n != 0 || q2.Len() != 0 {
 		t.Fatalf("corrupt tail: n=%d len=%d err=%v", n, q2.Len(), err)

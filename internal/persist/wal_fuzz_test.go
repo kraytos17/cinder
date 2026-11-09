@@ -49,7 +49,7 @@ func FuzzWALReader(f *testing.F) {
 }
 
 func buildWALSeeds() [][]byte {
-	var out [][]byte
+	out := make([][]byte, 0, 8)
 	mk := func(e Entry) []byte {
 		enc, err := encodeRecord(e)
 		if err != nil {

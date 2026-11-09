@@ -1,6 +1,7 @@
 package counter
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -84,7 +85,7 @@ func TestStoreCapacityNoEvict(t *testing.T) {
 	s := NewStore(64)
 	_ = s.Increment("a", "n", 1)
 	before := s.SizeBytes()
-	if err := s.Increment("b", "other-actor-with-long-id-0123456789", 1); err != ErrCapacityExceeded {
+	if err := s.Increment("b", "other-actor-with-long-id-0123456789", 1); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("err = %v, want ErrCapacityExceeded", err)
 	}
 	// Existing state untouched; the neighbor was not evicted.
@@ -97,7 +98,7 @@ func TestStoreCapacityNoEvict(t *testing.T) {
 	// Merge growth also fails closed without partial apply.
 	var big PNCounter
 	_ = big.Increment("another-long-actor-id-0123456789", 9)
-	if err := s.Merge("a", big); err != ErrCapacityExceeded {
+	if err := s.Merge("a", big); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("merge err = %v, want ErrCapacityExceeded", err)
 	}
 	if v, _ := s.Value("a"); v != 1 {
@@ -112,7 +113,7 @@ func TestStoreSetCapacityNeverEvicts(t *testing.T) {
 	if v, ok := s.Value("a"); !ok || v != 5 {
 		t.Fatalf("shrink evicted: %d %v", v, ok)
 	}
-	if err := s.Increment("b", "n", 1); err != ErrCapacityExceeded {
+	if err := s.Increment("b", "n", 1); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("err = %v, want ErrCapacityExceeded", err)
 	}
 }
@@ -135,7 +136,7 @@ func TestStoreMergeFailureLeavesResidentUntouched(t *testing.T) {
 	_ = s.Increment("a", "n", 1)
 	var big PNCounter
 	_ = big.Increment("another-long-actor-id-0123456789", 9)
-	if err := s.Merge("a", big); err != ErrCapacityExceeded {
+	if err := s.Merge("a", big); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("err = %v, want ErrCapacityExceeded", err)
 	}
 	got, _ := s.Get("a")

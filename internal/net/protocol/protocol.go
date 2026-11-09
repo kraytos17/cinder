@@ -55,6 +55,8 @@ const (
 // Opcode is a v6 request opcode (1-20). Response frames always carry 0x00.
 type Opcode uint8
 
+// Request opcodes for the v6 binary protocol (1-20). Members are
+// self-describing numeric codes; semantics live in docs/protocol.md.
 const (
 	OpGet                Opcode = 1
 	OpSet                Opcode = 2
@@ -129,6 +131,8 @@ func (o Opcode) String() string {
 // Status is a v6 response status code (0-10).
 type Status uint8
 
+// Response status codes for the v6 binary protocol. Members are
+// self-describing numeric codes; semantics live in docs/protocol.md.
 const (
 	StatusOK               Status = 0
 	StatusNotFound         Status = 1

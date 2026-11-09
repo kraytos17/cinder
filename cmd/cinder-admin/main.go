@@ -157,15 +157,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
-	if res.Status == protocol.StatusPermissionDenied {
+	switch {
+	case res.Status == protocol.StatusPermissionDenied:
 		fmt.Fprintln(stderr, "error: permission denied")
 		return 1
-	}
-	if res.HasValue {
+	case res.HasValue:
 		fmt.Fprintln(stdout, string(res.Value))
-	} else if res.Status == protocol.StatusOK {
+	case res.Status == protocol.StatusOK:
 		fmt.Fprintln(stdout, "OK")
-	} else {
+	default:
 		fmt.Fprintln(stdout, statusString(res.Status))
 	}
 	return 0

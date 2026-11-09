@@ -26,11 +26,13 @@ const (
 	maxU32 = uint64(1<<32 - 1)
 )
 
-// Op mirrors WalEntry::Op.
+// Op mirrors WalEntry::Op: the WAL record kind.
 type Op uint8
 
 const (
+	// OpSet appends (or overwrites) a live value.
 	OpSet Op = 1
+	// OpDel hard-erases a key on replay.
 	OpDel Op = 2
 )
 
@@ -106,7 +108,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 	var f *os.File
 	var err error
 	if truncate {
-		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +118,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 		}
 		return &Writer{f: f, size: 8}, nil
 	}
-	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
@@ -141,7 +143,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 		if n < 8 || binary.LittleEndian.Uint32(hdr[:4]) != walMagic || !validWalVersion(binary.LittleEndian.Uint32(hdr[4:])) {
 			needHeader = true // garbage file: start fresh
 			f.Close()
-			f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+			f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 			if err != nil {
 				return nil, err
 			}
@@ -250,9 +252,12 @@ func (w *Writer) Name() string { return w.f.Name() }
 type Format uint32
 
 const (
+	// FormatLegacy is the pre-magic WAL without checksums.
 	FormatLegacy Format = 0
-	FormatV1     Format = 1
-	FormatV2     Format = 2
+	// FormatV1 adds the magic header with checksummed records (no tombstone byte).
+	FormatV1 Format = 1
+	// FormatV2 is the current layout: checksums plus tombstone byte.
+	FormatV2 Format = 2
 )
 
 // Reader replays one WAL file from a whole-file image. next() yields

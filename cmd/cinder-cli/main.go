@@ -380,12 +380,13 @@ func runMultiGet(dial func() (*client.Client, error),
 	failed := false
 	for _, k := range keys {
 		res, err := c.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(k)})
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Fprintf(stdout, "%s: %s\n", k, err)
 			failed = true
-		} else if res.HasValue {
+		case res.HasValue:
 			fmt.Fprintf(stdout, "%s: %s\n", k, res.Value)
-		} else {
+		default:
 			fmt.Fprintf(stdout, "%s: %s\n", k, statusString(res.Status))
 			failed = true
 		}
@@ -417,12 +418,13 @@ func runMultiSet(
 		}
 
 		res, err := c.Do(req)
-		if err != nil {
+		switch {
+		case err != nil:
 			fmt.Fprintf(stdout, "%s: %s\n", keys[i], err)
 			failed = true
-		} else if res.Status == protocol.StatusOK {
+		case res.Status == protocol.StatusOK:
 			fmt.Fprintf(stdout, "%s: OK\n", keys[i])
-		} else {
+		default:
 			fmt.Fprintf(stdout, "%s: %s\n", keys[i], statusString(res.Status))
 			failed = true
 		}
