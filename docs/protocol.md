@@ -20,9 +20,8 @@ compile time via `consteval` and verified with `static_assert`.
 - Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
   both encode and decode. On decode, `payload_len` is checked against this
   bound before the body is read.
-- `opcode` must fall in `1..20`; any other value is rejected as unknown. A
-  `consteval` function, `opcodeRangeCoverage()`, asserts at compile time that
-  this range is contiguous with no gaps.
+- `opcode` must fall in `1..20`; any other value is rejected as unknown.
+  The range is contiguous with no gaps (asserted by test).
 
 ## Request Payload
 
@@ -180,10 +179,11 @@ failed quorum writes.
 
 ## Decode Safety
 
-Decoding goes through `mustRead<T>()`, which returns `Result<T>` instead of
-throwing. Truncated payloads, oversized integers, and corrupted headers all
-surface as `Result` errors that propagate through the connection handler,
-rather than as exceptions (`std::bad_expected_access`) or undefined behavior.
+Decoding goes through a bounded cursor that returns errors instead of
+panicking. Truncated payloads, oversized integers, and corrupted headers
+all surface as decode errors that the connection handler answers with
+`InvalidArgument` (or drops the connection on framing violations) — never
+as crashes or undefined behavior.
 
 ## Worked Example: `SET "foo" "bar"`, 30s TTL
 
@@ -487,14 +487,29 @@ same instant.
 
 ## Implementation Reference
 
-Defined in `include/cinder/net/protocol.hpp` and `src/net/protocol.cpp`:
+Defined in `internal/net/protocol` (`protocol.go`, byte-exact vectors in
+`protocol_test.go`, fixed-point fuzz targets in `fuzz_test.go`):
 
-- `net::encode(const Request&) -> Result<vector<byte>>` (`net::encodeInto` for buffer reuse)
-- `net::decode(span<const byte>) -> Result<Request>`
-- `net::encode(const Response&) -> Result<vector<byte>>` (`net::encodeInto` for buffer reuse)
-- `net::decodeResponse(span<const byte>) -> Result<Response>`
+- `EncodeRequest(req, authToken) / EncodeRequestInto` (buffer reuse)
+- `DecodeRequest(frame) -> (DecodedRequest, error)`
+- `EncodeResponse(res) / EncodeResponseInto`
+- `DecodeResponse(frame) -> (Response, error)`
 
-Decoded requests are dispatched to `TcpConnection::handleRequest()`, which
-routes by opcode to the corresponding store, replication, gossip, or
-anti-entropy handler. Each connection runs on its own `asio::strand`, so
-concurrent requests on the same connection never interleave.
+Decoded requests are dispatched by opcode to the corresponding store,
+replication, gossip, or anti-entropy handler. Each connection serves one
+request-response exchange at a time, so concurrent requests on the same
+connection never interleave.
+
+## Go implementation notes
+
+- **Counters** (opcodes 17–20) decode but answer `NotSupported`: there is no
+  counter store. The frames above are still the contract for one.
+- **Auth** is open: the `auth_token` field parses, but no secret is ever
+  configured or verified — every opcode class is allowed, mirroring the
+  no-secret behavior. (`cinder-cli` still accepts `--client-secret` for
+  future compat; it is ignored.)
+- **Trace context** is carried and echoed (`trace_id` minted when zero,
+  propagated on fan-out) but not consumed: there is no tracing substrate,
+  so the context is correlation metadata only. The gRPC gateway ignores
+  request metadata, including the `cinder-trace-id` / `cinder-span-id`
+  keys a tracing peer would send.

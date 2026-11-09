@@ -1,130 +1,32 @@
 # Tracing
 
-Cinder's tracing substrate (`cinder/common/tracing.hpp`) provides spans with
-explicit cross-thread context, typed structured events, and a pluggable
-subscriber backend. This note covers the conventions.
+Cinder propagates trace context on the wire but has no in-process tracing
+substrate yet: there are no spans, no subscribers, no exporters, and no
+overhead to budget. What exists:
 
-## Operation naming
+- **TCP frames** carry `trace_id` / `span_id` (`uint64` each, appended when
+  the flags say so). The server mints a `trace_id` when the client sends
+  zero, echoes it in the response, and propagates it to replicas on
+  `REPLICATE`/`HINT`. The values are correlation metadata only — nothing
+  reads them locally.
+- **gRPC** ignores request metadata, including the `cinder-trace-id` /
+  `cinder-span-id` keys a tracing peer would send (lowercase, ASCII
+  decimal, first value wins — the contract is reserved for when a
+  substrate lands).
 
-Stable dotted names, one per operation boundary:
+Reserved conventions for that landing (kept stable so a future
+implementation does not need a wire change):
 
-- `client.*` — public client ops (`client.get`, `client.multi_set`, …).
-- `tcp.*` — ingress handling (`tcp.request.get`, `tcp.sendResponse`, …).
-- `replication.*`, `transport.*` / `pool.*`, `cluster.*` (`gossip.tick`,
-  `membership.apply_rumor`, `failure.probe`), `shard.*`, `anti_entropy.*`,
-  `persistence.*`, `config.*`, `grpc.*`.
-
-## Spans
-
-- A span is created per operation; nested spans use the live parent, remote
-  parents (wire requests, async callbacks on other executors) use the explicit
-  `SpanContext` overload — never infer remote trace identity from ambient
-  thread-local state.
-- `setStatus(Ok|Error|Cancelled|Timeout)` records the outcome; last call wins,
-  destruction always closes exactly once. Unset means "never reported".
-- `setAttribute(FieldValue)` records one typed attribute (reuses the
-  `CINDER_*` field vocabulary: ints, uints, bools, short strings). Low
-  cardinality only — opcode, phase, counts, bytes, attempts. Never keys,
-  values, secrets, or bearer material. Last write wins per key.
-- `addEvent(name, fields={})` records a timestamped milestone (phase
-  transitions, async hop boundaries) with optional typed fields. Prefer
-  `CINDER_*` events for hot paths.
-- Spans only manage context without a subscriber; lifecycle, status,
-  attributes and events are delivered to the installed subscriber when one
-  was present at construction. `LayeredSubscriber` fans all four out to
-  every layer; `RecordingSubscriber` owns copies (last-wins per key).
-
-## Client propagation
-
-Public client operations (`client.*`) create a root span and stamp its
-context onto every outbound request (`client.route` covers a key's
-redirect/retry chain as one child unit), so the server joins the client trace
-instead of minting a fresh root. Batch operations stamp the batch span's
-context on all sub-requests.
-
-`cinder-cli` / `cinder-admin` wrap each invocation in a `cli.command` root
-(`tool`, `cmd`, `host`, `port` attributes; `exit_code` plus `Ok`/`Error` at
-exit). Pool sends join it as children, so one CLI call is traceable
-server-side. Never records keys, values, or the client secret.
-
-Span status convention: `Ok` when the operation was served (including cache
-misses and ownership redirects — those are well-formed answers), `Error` on
-transport failure or store/replication failure. Ambiguous outcomes (e.g. a TTL
-lookup that returns empty on miss, timeless key or failure) stay `Unset`; the
-child span holds the detail.
-
-## Async propagation
-
-Quorum fan-out captures the submitting thread's trace identity; completions
-draining inline already run under it, while the async tail (system-executor
-threads with unrelated TLS) re-attaches it around every terminal callback —
-never across a suspension. Per-replica child spans
-(`replication.write.replica`, `replication.read.replica`) parent to the
-fanout span; quorum decisions and hint-replay outcomes record `Ok`/`Error`.
-Transport and pool exchanges join the request's trace when it carries one
-(fresh root for background traffic) and report
-`Ok`/`Error`/`Timeout`/`Cancelled` outcomes.
-
-## Recording
-
-`RecordingSubscriber` captures complete span records (ids, parentage,
-operation, monotonic start/end, status, events) plus correlated log events.
-It owns copies of all strings and swallows its own faults. Use it in tests and
-as the base for future exporters — there is no network exporter by default.
-
-## Inbound trace metadata (gRPC)
-
-Callers propagate a trace parent with two request metadata entries:
-
-- `cinder-trace-id`: ASCII decimal uint64, nonzero
-- `cinder-span-id`: ASCII decimal uint64, nonzero
-
-Only the first value of each key is honored. Absent or malformed values are
-ignored and the RPC starts a fresh local trace — a bad trace parent never
-fails the request. Keys are lowercase per gRPC convention; values are parsed
-strictly (no whitespace, signs, hex, or >20 digits) so a truncated or binary
-value can never alias another trace. Metadata contents are never logged.
-
-TCP needs no equivalent: the v5 frame already carries `trace_id`/`span_id`.
-
-## Threading
-
-Subscriber callbacks are `noexcept` and must stay cheap. `LayeredSubscriber`
-dispatches without holding its composition lock: layers must be thread-safe,
-but reentrant use (emitting events from inside a callback) is safe.
-
-## Background work and membership
-
-Timer callbacks run on I/O threads with unrelated ambient context, so each
-scheduled run starts a fresh trace root (`timer.evict`, gossip ticks, failure
-probes, anti-entropy rounds, shard rebalances). The node startup/shutdown
-sequences are likewise fresh roots (`node.start`, `node.shutdown`).
-
-Work *caused* by another trace joins it instead: `rebuildRing` runs
-synchronously inside the membership mutation that triggered it, gossip/probe
-handlers run under the ingress span, and async completions re-attach the
-captured parent with `TraceScope` at callback entry (never across a
-`co_await`, which may resume on another thread). Timer callbacks that fire
-follow-up RPCs (gossip, probes, anti-entropy, hint replay) stamp the outgoing
-request with the run's context so the peer side joins the same trace.
-
-## Storage
-
-`persistence.recover/compact/replay/flush/shutdown`, `snapshot.write/read`,
-and `hint.journal.open/compact` report `Ok`/`Error` outcomes. WAL appends
-happen only in batched drains covered by the flush span; per-hint journal
-appends ride the calling span instead of minting their own.
-
-## Performance
-
-Measured with `benchmarks/tracing_bench.cpp` (release, `cinder_throughput_bench
---benchmark_filter=bmSpan`): a bare span costs ~24ns with no subscriber, and
-adding status + 3 attributes + a field-carrying event keeps it at ~25ns — the
-unobserved path does no allocation. The opted-in `RecordingSubscriber` path
-costs ~81µs/span (µs, not ns: mutex + string copies + linear lookup), rising
-with attributes/events; acceptable for tests and debugging, not for
-always-on production use. No exporter exists yet, so there is no always-on
-overhead to budget.
+- One root span per operation; nested spans use the live parent, remote
+  parents use the explicit context — never ambient state.
+- Spans record outcome (`Ok` on served operations including misses and
+  redirects, `Error` on transport/store/replication failure), low-cardinality
+  attributes (opcode, phase, counts, bytes), and never keys, values,
+  secrets, or bearer material.
+- Client operations stamp their context onto every outbound request so the
+  server joins the client trace instead of minting a fresh root.
+- Timer callbacks (gossip, probes, anti-entropy, rebalance) start fresh
+  roots; work caused by another trace joins it instead.
 
 ## Privacy
 
