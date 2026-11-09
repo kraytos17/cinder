@@ -8,7 +8,8 @@
 //	just proto-generate
 //
 // (Runs `go tool buf lint` then `go tool buf generate`; the `module=`
-// option in buf.gen.yaml emits flat files directly into gen/. Config
-// lives in buf.yaml / buf.gen.yaml.)
+// option in buf.gen.yaml emits flat files directly into gen/. The Go
+// import path comes from the `go_package` option in the proto itself.
+// Config lives in buf.yaml / buf.gen.yaml.)
 // Verify with go build ./... && go test ./internal/grpcgw/.
 package gen

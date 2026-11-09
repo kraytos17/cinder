@@ -1077,7 +1077,7 @@ const file_cinder_v1_cache_proto_rawDesc = "" +
 	"\bMultiSet\x12\x1a.cinder.v1.MultiSetRequest\x1a\x1b.cinder.v1.MultiSetResponse\x127\n" +
 	"\x04Info\x12\x16.cinder.v1.InfoRequest\x1a\x17.cinder.v1.InfoResponse\x12L\n" +
 	"\vClusterInfo\x12\x1d.cinder.v1.ClusterInfoRequest\x1a\x1e.cinder.v1.ClusterInfoResponse\x12C\n" +
-	"\bRingInfo\x12\x1a.cinder.v1.RingInfoRequest\x1a\x1b.cinder.v1.RingInfoResponseB\x03\xf8\x01\x01b\x06proto3"
+	"\bRingInfo\x12\x1a.cinder.v1.RingInfoRequest\x1a\x1b.cinder.v1.RingInfoResponseB8Z3github.com/kraytos17/cinder/internal/grpcgw/gen;gen\xf8\x01\x01b\x06proto3"
 
 var (
 	file_cinder_v1_cache_proto_rawDescOnce sync.Once

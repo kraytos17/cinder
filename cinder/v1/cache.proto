@@ -2,6 +2,9 @@ syntax = "proto3";
 package cinder.v1;
 
 option cc_enable_arenas = true;
+// Go import path for the generated stubs (internal/grpcgw/gen). The
+// package name (gen) comes from the last path element.
+option go_package = "github.com/kraytos17/cinder/internal/grpcgw/gen;gen";
 
 // Status codes mirroring cinder::Errc.
 enum StatusCode {
