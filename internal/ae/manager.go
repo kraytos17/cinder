@@ -30,7 +30,7 @@ var nopLogger = log.Nop()
 // rehash is a plain full scan every round (no divert-while-scanning),
 // which is behaviorally identical.
 type Manager struct {
-	store      *store.LRUStore
+	store      *store.Store
 	ring       *hashring.Ring
 	self       string
 	transport  Transport
@@ -69,7 +69,7 @@ func (m *Manager) SetCounterStore(s CounterStore) {
 
 // NewManager returns a manager. numBuckets 0 selects 256; fetchBytes 0
 // selects 1 MiB.
-func NewManager(st *store.LRUStore, ring *hashring.Ring, self string, t Transport, numBuckets uint32, fetchBytes int) *Manager {
+func NewManager(st *store.Store, ring *hashring.Ring, self string, t Transport, numBuckets uint32, fetchBytes int) *Manager {
 	if numBuckets == 0 {
 		numBuckets = 256
 	}

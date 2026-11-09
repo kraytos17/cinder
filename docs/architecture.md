@@ -46,9 +46,14 @@ store directly).
 
 ## Storage
 
-- **LRU store** — sharded (`LRUStore`, one shard per CPU-friendly slice of
-  capacity), LRU lists with O(1) touch/evict, per-entry versions. No LFU:
-  only the LRU policy was ported.
+- **Eviction store** — sharded (`store.Store`, one shard per 64 KiB
+  capacity slice, clamped to 16), per-entry versions, TTL wheel and
+  tombstones. `--eviction-policy=lru` uses O(1) recency lists;
+  `--eviction-policy=lfu` uses per-shard frequency buckets (read/write
+  counts, minimum-frequency victim, least-recently-incremented tie-break).
+  LFU charges the larger 136-byte node in capacity accounting and
+  preserves frequencies across snapshots; WAL replay rebuilds them from
+  subsequent accesses (WAL records do not carry policy state).
 - **TTL wheel** — 256-slot wheel for near-term expiries plus a min-heap for
   long TTLs; tombstone GC rides the same machinery.
 - **Reads/writes** go through `Get`/`Put` (live views) and

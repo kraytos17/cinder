@@ -14,10 +14,35 @@ import (
 // exactly like the C++ store (even when it would fit global capacity).
 var ErrCapacityExceeded = errors.New("store: value exceeds capacity")
 
-// NodeOverhead is the per-entry accounting constant. It matches C++
-// sizeof(LruNode) (120) byte-for-byte so capacity behavior, eviction
-// thresholds, and tests stay identical across the two trees.
+// Policy selects the capacity-eviction discipline. It is fixed at
+// construction: shards are sized from capacity alone, but victim choice,
+// access bookkeeping, and per-node accounting differ per policy.
+type Policy int
+
+const (
+	// LRUPolicy evicts the least-recently-used live entry (C++ LruStore).
+	LRUPolicy Policy = iota
+	// LFUPolicy evicts the lowest-frequency live entry, ties broken by
+	// least-recently-incremented (C++ LfuStore).
+	LFUPolicy
+)
+
+// String renders the policy name for admin JSON and logs.
+func (p Policy) String() string {
+	if p == LFUPolicy {
+		return "lfu"
+	}
+	return "lru"
+}
+
+// NodeOverhead is the per-entry accounting constant for the LRU policy.
+// It matches C++ sizeof(LruNode) (120) byte-for-byte so capacity behavior,
+// eviction thresholds, and tests stay identical across the two trees.
+// LFU nodes carry freq/freqIdx (C++ sizeof(LfuNode) = 136); see nodeOverhead.
 const NodeOverhead = 120
+
+// lfuNodeOverhead matches C++ sizeof(LfuNode) (136).
+const lfuNodeOverhead = 136
 
 const (
 	maxShards     = 16
@@ -34,8 +59,15 @@ type node struct {
 	key   string
 	entry Entry
 	// LRU linkage (indices into the shard's node slice, noLink = none).
+	// Maintained only under LRUPolicy; LFU orders victims by frequency.
 	lruPrev int
 	lruNext int
+	// LFU bookkeeping, mirroring C++ LfuNode. freq counts accepted
+	// writes + live reads; freqIdx is the node's position in its
+	// shard.freqBuckets[freq] vector for O(1) swap-remove. Unused (zero)
+	// under LRUPolicy.
+	freq    uint64
+	freqIdx int
 }
 
 type shard struct {
@@ -48,14 +80,18 @@ type shard struct {
 	wheel    *Wheel
 	current  uint64
 	lastTick time.Time
+	// freqBuckets orders LFU victims: freq -> node indices in
+	// least-recently-incremented order. Nil under LRUPolicy.
+	freqBuckets map[uint64][]int
 }
 
-// LRUStore is a sharded LRU eviction store with TTL-wheel expiry, LWW
+// Store is a sharded eviction store with TTL-wheel expiry, LWW
 // versioned writes, and tombstones. It mirrors LruStore /
 // EvictionStoreBase: per-shard capacity slices, tombstone exemption from
 // capacity eviction, lazy expiry on read, and a global Lamport clock.
-type LRUStore struct {
+type Store struct {
 	clock     Clock
+	policy    Policy
 	shards    []shard
 	capacity  atomic.Uint64
 	nextVer   atomic.Uint64
@@ -64,6 +100,9 @@ type LRUStore struct {
 	totalSize atomic.Uint64
 	totalNum  atomic.Uint64
 	met       atomic.Pointer[metrics.Collector]
+	// nodeOverhead is the per-entry accounting constant: 120 under LRU
+	// (C++ sizeof(LruNode)), 136 under LFU (C++ sizeof(LfuNode)).
+	nodeOverhead uint64
 
 	persistMu   sync.RWMutex
 	persistHook PersistHook
@@ -73,15 +112,19 @@ type mutationSink struct {
 	fn MutationSink
 }
 
-// NewLRUStore returns a store with capacityBytes total capacity. Sharding
+// newStore builds a store with the given eviction policy. Sharding
 // follows the C++ rule: one shard per 64 KiB, clamped to [1, 16], so tiny
 // stores stay single-shard and behave exactly like a single-mutex store.
-func NewLRUStore(capacityBytes uint64, clock Clock) *LRUStore {
+func newStore(capacityBytes uint64, clock Clock, policy Policy) *Store {
 	if clock == nil {
 		clock = SystemClock{}
 	}
 	n := shardCountFor(capacityBytes)
-	s := &LRUStore{clock: clock, shards: make([]shard, n)}
+	overhead := uint64(NodeOverhead)
+	if policy == LFUPolicy {
+		overhead = lfuNodeOverhead
+	}
+	s := &Store{clock: clock, policy: policy, shards: make([]shard, n), nodeOverhead: overhead}
 	s.capacity.Store(capacityBytes)
 	s.nextVer.Store(uint64(clock.Now().UnixNano()))
 	s.tombstone.Store(int64(5 * time.Minute))
@@ -91,10 +134,29 @@ func NewLRUStore(capacityBytes uint64, clock Clock) *LRUStore {
 		sh.tail = noLink
 		sh.index = make(map[string]int)
 		sh.wheel = NewWheel()
+		if policy == LFUPolicy {
+			sh.freqBuckets = make(map[uint64][]int)
+		}
 		sh.lastTick = clock.Now()
 	}
 	return s
 }
+
+// NewLRUStore returns a store with capacityBytes total capacity and
+// least-recently-used eviction.
+func NewLRUStore(capacityBytes uint64, clock Clock) *Store {
+	return newStore(capacityBytes, clock, LRUPolicy)
+}
+
+// NewLFUStore returns a store with capacityBytes total capacity and
+// least-frequently-used eviction (ties broken by
+// least-recently-incremented), mirroring C++ LfuStore.
+func NewLFUStore(capacityBytes uint64, clock Clock) *Store {
+	return newStore(capacityBytes, clock, LFUPolicy)
+}
+
+// Policy returns the immutable eviction discipline selected at construction.
+func (s *Store) Policy() Policy { return s.policy }
 
 func shardCountFor(capacityBytes uint64) int {
 	n := min(max(int(capacityBytes/minShardBytes), 1), maxShards)
@@ -107,12 +169,12 @@ func shardFor(key string, n int) int {
 	return int(h.Sum64() % uint64(n))
 }
 
-func entrySize(key string, e Entry) uint64 {
-	return uint64(len(key)+len(e.Value)) + NodeOverhead
+func (s *Store) entrySize(key string, e Entry) uint64 {
+	return uint64(len(key)+len(e.Value)) + s.nodeOverhead
 }
 
 // SetMutationSink registers the anti-entropy incremental-digest feed.
-func (s *LRUStore) SetMutationSink(fn MutationSink) {
+func (s *Store) SetMutationSink(fn MutationSink) {
 	if fn == nil {
 		s.sink.Store(nil)
 		return
@@ -123,23 +185,23 @@ func (s *LRUStore) SetMutationSink(fn MutationSink) {
 // SetMetrics wires the observability collector (nil disables). Like C++
 // setMetrics: every bump is nil-checked, so unconfigured stores pay only
 // a pointer load.
-func (s *LRUStore) SetMetrics(m *metrics.Collector) {
+func (s *Store) SetMetrics(m *metrics.Collector) {
 	s.met.Store(m)
 }
 
-func (s *LRUStore) bumpHits() {
+func (s *Store) bumpHits() {
 	if m := s.met.Load(); m != nil {
 		m.Hits.Add(1)
 	}
 }
 
-func (s *LRUStore) bumpMisses() {
+func (s *Store) bumpMisses() {
 	if m := s.met.Load(); m != nil {
 		m.Misses.Add(1)
 	}
 }
 
-func (s *LRUStore) bumpExpiredOnRead() {
+func (s *Store) bumpExpiredOnRead() {
 	if m := s.met.Load(); m != nil {
 		m.ExpiresOnRead.Add(1)
 	}
@@ -148,7 +210,7 @@ func (s *LRUStore) bumpExpiredOnRead() {
 // bumpWrite records an accepted write: tombstones count as deletes,
 // live values as writes, and overwriting a resident also retires it
 // (mirroring C++ noteRemoved/noteAdded + the tombstone/write tail).
-func (s *LRUStore) bumpWrite(tombstone, overwrote bool) {
+func (s *Store) bumpWrite(tombstone, overwrote bool) {
 	m := s.met.Load()
 	if m == nil {
 		return
@@ -163,7 +225,7 @@ func (s *LRUStore) bumpWrite(tombstone, overwrote bool) {
 	}
 }
 
-func (s *LRUStore) emit(key string, versionAndTTL, writer uint64, removed bool) {
+func (s *Store) emit(key string, versionAndTTL, writer uint64, removed bool) {
 	if ms := s.sink.Load(); ms != nil {
 		ms.fn(key, versionAndTTL, writer, removed)
 	}
@@ -178,13 +240,13 @@ func (s *LRUStore) emit(key string, versionAndTTL, writer uint64, removed bool) 
 type PersistHook func(key string, e Entry, hardDelete bool)
 
 // SetPersistence registers the WAL hook (nil unregisters).
-func (s *LRUStore) SetPersistence(fn PersistHook) {
+func (s *Store) SetPersistence(fn PersistHook) {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 	s.persistHook = fn
 }
 
-func (s *LRUStore) persistPut(key string, e Entry) {
+func (s *Store) persistPut(key string, e Entry) {
 	s.persistMu.RLock()
 	fn := s.persistHook
 	s.persistMu.RUnlock()
@@ -193,7 +255,7 @@ func (s *LRUStore) persistPut(key string, e Entry) {
 	}
 }
 
-func (s *LRUStore) persistDel(key string, e Entry) {
+func (s *Store) persistDel(key string, e Entry) {
 	s.persistMu.Lock()
 	fn := s.persistHook
 	s.persistMu.Unlock()
@@ -204,7 +266,7 @@ func (s *LRUStore) persistDel(key string, e Entry) {
 
 // RestoreVersion advances the Lamport clock past recovered versions so a
 // restarted node wins LWW. Used by snapshot/WAL recovery.
-func (s *LRUStore) RestoreVersion(v uint64) {
+func (s *Store) RestoreVersion(v uint64) {
 	for {
 		cur := s.nextVer.Load()
 		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
@@ -215,13 +277,13 @@ func (s *LRUStore) RestoreVersion(v uint64) {
 
 // SetTombstoneGCInterval sets how long a delete marker survives before the
 // TTL wheel reaps it.
-func (s *LRUStore) SetTombstoneGCInterval(d time.Duration) {
+func (s *Store) SetTombstoneGCInterval(d time.Duration) {
 	s.tombstone.Store(int64(d))
 }
 
 // SetCapacity changes capacity at runtime; the shard count stays fixed and
 // only the per-shard slice changes.
-func (s *LRUStore) SetCapacity(capacityBytes uint64) {
+func (s *Store) SetCapacity(capacityBytes uint64) {
 	s.capacity.Store(capacityBytes)
 	for i := range s.shards {
 		sh := &s.shards[i]
@@ -232,11 +294,11 @@ func (s *LRUStore) SetCapacity(capacityBytes uint64) {
 }
 
 // MintVersion returns a fresh monotonic Lamport version.
-func (s *LRUStore) MintVersion() uint64 {
+func (s *Store) MintVersion() uint64 {
 	return s.nextVer.Add(1) - 1
 }
 
-func (s *LRUStore) observeVersion(v uint64) {
+func (s *Store) observeVersion(v uint64) {
 	for {
 		cur := s.nextVer.Load()
 		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
@@ -245,19 +307,19 @@ func (s *LRUStore) observeVersion(v uint64) {
 	}
 }
 
-func (s *LRUStore) shardCap() uint64 {
+func (s *Store) shardCap() uint64 {
 	return s.capacity.Load() / uint64(len(s.shards))
 }
 
 // Put stores value under key with a fresh minted version and no TTL.
-func (s *LRUStore) Put(key string, value []byte) error {
+func (s *Store) Put(key string, value []byte) error {
 	e := Entry{Value: append([]byte(nil), value...), Version: s.MintVersion()}
 	return s.PutVersioned(key, e)
 }
 
 // PutWithTTL stores value under key with a fresh minted version and a
 // relative TTL. A zero TTL expires on the next read, like the C++ store.
-func (s *LRUStore) PutWithTTL(key string, value []byte, ttl time.Duration) error {
+func (s *Store) PutWithTTL(key string, value []byte, ttl time.Duration) error {
 	now := s.clock.Now()
 	e := Entry{
 		Value:     append([]byte(nil), value...),
@@ -270,7 +332,7 @@ func (s *LRUStore) PutWithTTL(key string, value []byte, ttl time.Duration) error
 
 // PutVersioned applies entry idempotently: a strictly losing LWW stamp is
 // rejected as a no-op success; everything else overwrites.
-func (s *LRUStore) PutVersioned(key string, e Entry) error {
+func (s *Store) PutVersioned(key string, e Entry) error {
 	var at time.Time
 	if e.HasTTL {
 		at = s.clock.Now()
@@ -278,7 +340,7 @@ func (s *LRUStore) PutVersioned(key string, e Entry) error {
 	return s.putVersionedAt(key, e, at)
 }
 
-func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
+func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	sh := &s.shards[shardFor(key, len(s.shards))]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -291,12 +353,12 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 		oldPacked := resident.entry.VersionAndTTL()
 		oldWriter := resident.entry.WriterNodeHash
 		s.observeVersion(e.Version + 1)
-		oldSize := entrySize(key, resident.entry)
+		oldSize := s.entrySize(key, resident.entry)
 		sh.current -= oldSize
 		subAtomic(&s.totalSize, oldSize)
 		resident.entry = e.Clone()
-		s.touch(sh, idx)
-		newSize := entrySize(key, resident.entry)
+		s.onAccess(sh, idx)
+		newSize := s.entrySize(key, resident.entry)
 		sh.current += newSize
 		s.totalSize.Add(newSize)
 		s.evictIfNeeded(sh)
@@ -316,7 +378,7 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 		return nil
 	}
 
-	size := entrySize(key, e)
+	size := s.entrySize(key, e)
 	if size > s.shardCap() {
 		return ErrCapacityExceeded
 	}
@@ -325,8 +387,12 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 	n := &sh.nodes[idx]
 	n.key = key
 	n.entry = e.Clone()
-	s.linkHead(sh, idx)
 	sh.index[key] = idx
+	if s.policy == LFUPolicy {
+		s.freqInit(sh, idx)
+	} else {
+		s.linkHead(sh, idx)
+	}
 	sh.current += size
 	s.totalSize.Add(size)
 	s.totalNum.Add(1)
@@ -344,7 +410,7 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 
 // Get returns a copy of the live value, or false on miss, expiry, or
 // tombstone. Expired entries are reaped eagerly; tombstones stay hidden.
-func (s *LRUStore) Get(key string) ([]byte, bool) {
+func (s *Store) Get(key string) ([]byte, bool) {
 	sh := &s.shards[shardFor(key, len(s.shards))]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -364,14 +430,14 @@ func (s *LRUStore) Get(key string) ([]byte, bool) {
 		s.bumpMisses()
 		return nil, false
 	}
-	s.touch(sh, idx)
+	s.onAccess(sh, idx)
 	s.bumpHits()
 	return append([]byte(nil), n.entry.Value...), true
 }
 
 // GetVersioned returns the resident entry (tombstones included), or false
 // on miss or expiry. Unlike Get it never touches LRU order.
-func (s *LRUStore) GetVersioned(key string) (Entry, bool) {
+func (s *Store) GetVersioned(key string) (Entry, bool) {
 	sh := &s.shards[shardFor(key, len(s.shards))]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -393,7 +459,7 @@ func (s *LRUStore) GetVersioned(key string) (Entry, bool) {
 
 // Remove hard-erases key, returning false when absent. Unlike
 // RemoveVersioned it leaves no tombstone behind.
-func (s *LRUStore) Remove(key string) bool {
+func (s *Store) Remove(key string) bool {
 	sh := &s.shards[shardFor(key, len(s.shards))]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -414,7 +480,7 @@ func (s *LRUStore) Remove(key string) bool {
 // RemoveVersioned plants a tombstone that wins or loses LWW exactly like a
 // put. The marker carries a GC deadline on the TTL wheel so replicas
 // observe the delete before it is reaped.
-func (s *LRUStore) RemoveVersioned(key string, version, writer uint64) error {
+func (s *Store) RemoveVersioned(key string, version, writer uint64) error {
 	now := s.clock.Now()
 	tomb := Entry{
 		Version:        version,
@@ -427,7 +493,7 @@ func (s *LRUStore) RemoveVersioned(key string, version, writer uint64) error {
 }
 
 // Size counts index entries, tombstones included.
-func (s *LRUStore) Size() int {
+func (s *Store) Size() int {
 	total := 0
 	for i := range s.shards {
 		sh := &s.shards[i]
@@ -441,7 +507,7 @@ func (s *LRUStore) Size() int {
 // EvictExpired advances every shard wheel to now, reaping entries whose
 // deadline passed and re-scheduling early firers (wheel wrap or
 // sub-second drift) for their true expiry.
-func (s *LRUStore) EvictExpired() int {
+func (s *Store) EvictExpired() int {
 	now := s.clock.Now()
 	evicted := 0
 	for i := range s.shards {
@@ -477,27 +543,41 @@ func (s *LRUStore) EvictExpired() int {
 	return evicted
 }
 
-// EntryPair is one live snapshot row.
+// EntryPair is one live snapshot row. Freq carries the node's frequency
+// for snapshot persistence (0 under LRU, which never tracks it).
 type EntryPair struct {
 	Key   string
 	Entry Entry
+	Freq  uint64
 }
 
 // LiveEntries returns a point-in-time copy of all present entries,
 // tombstones included, expired entries skipped. The store may be mutated
 // freely while iterating the result.
-func (s *LRUStore) LiveEntries() []EntryPair {
+func (s *Store) LiveEntries() []EntryPair {
 	now := s.clock.Now()
 	var out []EntryPair
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
-		for idx := sh.head; idx != noLink; idx = sh.nodes[idx].lruNext {
-			e := sh.nodes[idx].entry
-			if e.Expired(now) {
-				continue
+		if s.policy == LFUPolicy {
+			// Map order is fine: digests XOR-fold (order-independent)
+			// and snapshot recovery is LWW order-independent.
+			for _, idx := range sh.index {
+				e := sh.nodes[idx].entry
+				if e.Expired(now) {
+					continue
+				}
+				out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone(), Freq: sh.nodes[idx].freq})
 			}
-			out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone()})
+		} else {
+			for idx := sh.head; idx != noLink; idx = sh.nodes[idx].lruNext {
+				e := sh.nodes[idx].entry
+				if e.Expired(now) {
+					continue
+				}
+				out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone()})
+			}
 		}
 		sh.mu.Unlock()
 	}
@@ -506,7 +586,7 @@ func (s *LRUStore) LiveEntries() []EntryPair {
 
 // ForEach visits a point-in-time snapshot, so the visitor may safely call
 // back into the store.
-func (s *LRUStore) ForEach(fn func(key string, e Entry)) {
+func (s *Store) ForEach(fn func(key string, e Entry)) {
 	for _, p := range s.LiveEntries() {
 		fn(p.Key, p.Entry)
 	}
@@ -526,7 +606,7 @@ func expiryTicks(expiresAt, at time.Time) uint64 {
 	return ticks
 }
 
-func (s *LRUStore) nodeIfResident(sh *shard, idx int) (*node, bool) {
+func (s *Store) nodeIfResident(sh *shard, idx int) (*node, bool) {
 	if idx < 0 || idx >= len(sh.nodes) {
 		return nil, false
 	}
@@ -538,7 +618,7 @@ func (s *LRUStore) nodeIfResident(sh *shard, idx int) (*node, bool) {
 	return n, true
 }
 
-func (s *LRUStore) allocNode(sh *shard) int {
+func (s *Store) allocNode(sh *shard) int {
 	if len(sh.free) > 0 {
 		idx := sh.free[len(sh.free)-1]
 		sh.free = sh.free[:len(sh.free)-1]
@@ -550,7 +630,7 @@ func (s *LRUStore) allocNode(sh *shard) int {
 	return idx
 }
 
-func (s *LRUStore) linkHead(sh *shard, idx int) {
+func (s *Store) linkHead(sh *shard, idx int) {
 	n := &sh.nodes[idx]
 	n.lruPrev = noLink
 	n.lruNext = sh.head
@@ -563,7 +643,7 @@ func (s *LRUStore) linkHead(sh *shard, idx int) {
 	}
 }
 
-func (s *LRUStore) unlink(sh *shard, idx int) {
+func (s *Store) unlink(sh *shard, idx int) {
 	n := &sh.nodes[idx]
 	if n.lruPrev != noLink {
 		sh.nodes[n.lruPrev].lruNext = n.lruNext
@@ -578,7 +658,7 @@ func (s *LRUStore) unlink(sh *shard, idx int) {
 	n.lruPrev, n.lruNext = noLink, noLink
 }
 
-func (s *LRUStore) touch(sh *shard, idx int) {
+func (s *Store) touch(sh *shard, idx int) {
 	if sh.head == idx {
 		return
 	}
@@ -586,7 +666,19 @@ func (s *LRUStore) touch(sh *shard, idx int) {
 	s.linkHead(sh, idx)
 }
 
-func (s *LRUStore) updateWheel(sh *shard, idx int, at time.Time) {
+// onAccess records a live read (Get) or an accepted overwrite for
+// victim ordering: MRU re-link under LRU, frequency increment under LFU.
+// GetVersioned intentionally never calls it in either policy, mirroring
+// the C++ read paths. Caller holds sh.mu.
+func (s *Store) onAccess(sh *shard, idx int) {
+	if s.policy == LFUPolicy {
+		s.incrementFreq(sh, idx)
+		return
+	}
+	s.touch(sh, idx)
+}
+
+func (s *Store) updateWheel(sh *shard, idx int, at time.Time) {
 	n := &sh.nodes[idx]
 	if n.entry.HasTTL {
 		sh.wheel.Insert(idx, expiryTicks(n.entry.ExpiresAt, at))
@@ -597,20 +689,22 @@ func (s *LRUStore) updateWheel(sh *shard, idx int, at time.Time) {
 }
 
 // eraseNode drops index/list/wheel for a node. Caller holds sh.mu.
-func (s *LRUStore) eraseNode(sh *shard, idx int) {
+func (s *Store) eraseNode(sh *shard, idx int) {
 	s.removeNode(sh, idx)
 }
 
 // removeNode unlinks one node and updates all accounting, returning the
 // bytes freed. Caller holds sh.mu.
-func (s *LRUStore) removeNode(sh *shard, idx int) uint64 {
+func (s *Store) removeNode(sh *shard, idx int) uint64 {
 	n := &sh.nodes[idx]
 	s.emit(n.key, n.entry.VersionAndTTL(), n.entry.WriterNodeHash, true)
-	freed := entrySize(n.key, n.entry)
+	freed := s.entrySize(n.key, n.entry)
 	s.onEvictExpired(sh, idx)
 	sh.wheel.Remove(idx)
 	delete(sh.index, n.key)
-	s.unlink(sh, idx)
+	if s.policy == LRUPolicy {
+		s.unlink(sh, idx)
+	}
 	sh.free = append(sh.free, idx)
 	sh.current -= freed
 	subAtomic(&s.totalSize, freed)
@@ -618,14 +712,24 @@ func (s *LRUStore) removeNode(sh *shard, idx int) uint64 {
 	return freed
 }
 
-// onEvictExpired is the LRU policy hook (no-op; LFU overrides it later).
-func (s *LRUStore) onEvictExpired(_ *shard, _ int) {}
+// onEvictExpired runs on every node removal (expiry, eviction, hard
+// remove): a no-op under LRU, and the freq-bucket unlink under LFU.
+// Mirrors C++ onEvictExpired. Caller holds sh.mu.
+func (s *Store) onEvictExpired(sh *shard, idx int) {
+	if s.policy == LFUPolicy {
+		s.removeFromFreqBucket(sh, idx, sh.nodes[idx].freq)
+	}
+}
 
-// evictOne removes the LRU live entry, skipping tombstones wherever they
+// evictOne removes one live entry, skipping tombstones wherever they
 // sit: evicting a live delete marker would resurrect the key on the next
 // anti-entropy round. Returns bytes freed, or 0 when only tombstones
-// remain (their GC deadline reaps them instead).
-func (s *LRUStore) evictOne(sh *shard) uint64 {
+// remain (their GC deadline reaps them instead). Victim choice is
+// tail-first under LRU and min-frequency-first under LFU.
+func (s *Store) evictOne(sh *shard) uint64 {
+	if s.policy == LFUPolicy {
+		return s.lfuEvictOne(sh)
+	}
 	victim := noLink
 	for idx := sh.tail; idx != noLink; idx = sh.nodes[idx].lruPrev {
 		if !sh.nodes[idx].entry.Tombstone {
@@ -642,13 +746,23 @@ func (s *LRUStore) evictOne(sh *shard) uint64 {
 	return s.removeNode(sh, victim)
 }
 
-func (s *LRUStore) evictIfNeeded(sh *shard) {
+func (s *Store) evictIfNeeded(sh *shard) {
 	sliceCap := s.shardCap()
-	for sh.current > sliceCap && sh.head != noLink {
+	for sh.current > sliceCap && s.shardNonEmpty(sh) {
 		if s.evictOne(sh) == 0 {
 			break
 		}
 	}
+}
+
+// shardNonEmpty reports whether any node (live or tombstone) is resident.
+// LRU tracks the list head; LFU leaves the linkage unmaintained and uses
+// the index instead. Caller holds sh.mu (or the shard is quiescent).
+func (s *Store) shardNonEmpty(sh *shard) bool {
+	if s.policy == LFUPolicy {
+		return len(sh.index) > 0
+	}
+	return sh.head != noLink
 }
 
 // subAtomic subtracts n from an atomic counter.

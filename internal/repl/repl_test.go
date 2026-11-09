@@ -14,13 +14,13 @@ import (
 // failure injection.
 type fakeTransport struct {
 	mu     sync.Mutex
-	stores map[string]*store.LRUStore
+	stores map[string]*store.Store
 	fail   map[string]bool
 	sends  map[string]int
 }
 
 func newFake(nodes ...string) *fakeTransport {
-	ft := &fakeTransport{stores: map[string]*store.LRUStore{}, fail: map[string]bool{}, sends: map[string]int{}}
+	ft := &fakeTransport{stores: map[string]*store.Store{}, fail: map[string]bool{}, sends: map[string]int{}}
 	for _, n := range nodes {
 		ft.stores[n] = store.NewLRUStore(1<<20, nil)
 	}
@@ -178,7 +178,7 @@ func TestDeleteQuorum(t *testing.T) {
 	// The quorum decision fires at W; straggler replicas drain in the
 	// background, so convergence assertions poll.
 	waitFor(t, "tombstone everywhere", func() bool {
-		for _, st := range []*store.LRUStore{m.Local(), ft.stores["n2"], ft.stores["n3"]} {
+		for _, st := range []*store.Store{m.Local(), ft.stores["n2"], ft.stores["n3"]} {
 			e, ok := st.GetVersioned("k")
 			if !ok || !e.Tombstone {
 				return false
@@ -209,7 +209,7 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 	ft := newFake("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	// Divergent versions: n2 ahead, local stale, n3 empty.
-	putVer := func(st *store.LRUStore, v string, ver uint64, w uint64) {
+	putVer := func(st *store.Store, v string, ver uint64, w uint64) {
 		t.Helper()
 		if err := st.PutVersioned("k", store.Entry{Value: []byte(v), Version: ver, WriterNodeHash: w}); err != nil {
 			t.Fatal(err)

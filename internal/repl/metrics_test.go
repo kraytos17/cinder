@@ -33,6 +33,9 @@ func TestReplMetrics(t *testing.T) {
 		t.Fatalf("dropped = %d, want 0", got)
 	}
 	// Heal the replica and replay: HintsReplayed bumps.
+	waitFor(t, "initial async sends", func() bool {
+		return ft.sendCount("n2") == 1 && ft.sendCount("n3") == 1
+	})
 	ft.fail["n3"] = false
 	if n := m.ReplayHints(); n != 1 {
 		t.Fatalf("replayed = %d, want 1", n)

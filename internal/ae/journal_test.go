@@ -17,11 +17,11 @@ import (
 type fakeTransport struct {
 	mu     sync.Mutex
 	fail   map[string]bool
-	stores map[string]*store.LRUStore
+	stores map[string]*store.Store
 }
 
 func newFakeTransport(nodes ...string) *fakeTransport {
-	ft := &fakeTransport{fail: map[string]bool{}, stores: map[string]*store.LRUStore{}}
+	ft := &fakeTransport{fail: map[string]bool{}, stores: map[string]*store.Store{}}
 	for _, n := range nodes {
 		ft.stores[n] = store.NewLRUStore(1<<20, nil)
 	}

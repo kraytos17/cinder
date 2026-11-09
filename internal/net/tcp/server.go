@@ -64,7 +64,7 @@ var nopLogger = log.Nop()
 // Auth is open: with no secrets configured every opcode class is allowed,
 // mirroring the C++ no-secret behavior.
 type Server struct {
-	store  *store.LRUStore
+	store  *store.Store
 	nodeID string
 	port   int
 	clock  store.Clock
@@ -327,7 +327,7 @@ func (s *Server) replicaFactor() int {
 }
 
 // NewServer returns a server over an existing store.
-func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *Server {
+func NewServer(nodeID string, port int, st *store.Store, clock store.Clock) *Server {
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
@@ -809,7 +809,7 @@ func (s *Server) AntiEntropy() *ae.Manager {
 }
 
 // Store exposes the underlying store for introspection and tests.
-func (s *Server) Store() *store.LRUStore {
+func (s *Server) Store() *store.Store {
 	return s.store
 }
 
@@ -1584,7 +1584,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminInfo{
 			NodeID: s.nodeID, Port: s.port, CapacityBytes: s.store.Capacity(),
 			CurrentBytes: curBytes, CurrentEntries: curEntries,
-			EvictionPolicy: "lru", ReplicaFactor: 1, Consistency: "async",
+			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: 1, Consistency: "async",
 			LogLevel: "info", Peers: []any{},
 		})}
 	case protocol.OpAdminCluster:

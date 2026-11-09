@@ -9,12 +9,12 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-func testStore(t *testing.T) *store.LRUStore {
+func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	return store.NewLRUStore(1<<20, nil)
 }
 
-func wire(t *testing.T, st *store.LRUStore, m *Manager) {
+func wire(t *testing.T, st *store.Store, m *Manager) {
 	t.Helper()
 	st.SetPersistence(func(key string, e store.Entry, hardDelete bool) {
 		m.OnWrite(key, e, hardDelete)
@@ -162,7 +162,7 @@ func mustRecover(t *testing.T, m *Manager) {
 	}
 }
 
-func putVer(t *testing.T, st *store.LRUStore, key, value string, ver, writer uint64) {
+func putVer(t *testing.T, st *store.Store, key, value string, ver, writer uint64) {
 	t.Helper()
 	e := store.Entry{Value: []byte(value), Version: ver, WriterNodeHash: writer}
 	if err := st.PutVersioned(key, e); err != nil {
@@ -183,4 +183,33 @@ func snapshotsIn(t *testing.T, dir string) []string {
 		}
 	}
 	return out
+}
+
+func TestCompactRestoresLFUFrequency(t *testing.T) {
+	dir := t.TempDir()
+	st := store.NewLFUStore(1<<20, nil)
+	m := NewManager(dir, st, nil)
+	mustRecover(t, m)
+	wire(t, st, m)
+	if err := st.Put("hot", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		if _, ok := st.Get("hot"); !ok {
+			t.Fatal("hot key missing")
+		}
+	}
+	if got := st.EntryFreq("hot"); got != 5 {
+		t.Fatalf("pre-compact freq=%d, want 5", got)
+	}
+	if err := m.Compact(); err != nil {
+		t.Fatal(err)
+	}
+
+	st2 := store.NewLFUStore(1<<20, nil)
+	m2 := NewManager(dir, st2, nil)
+	mustRecover(t, m2)
+	if got := st2.EntryFreq("hot"); got != 5 {
+		t.Fatalf("restored freq=%d, want 5", got)
+	}
 }

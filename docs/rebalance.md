@@ -559,7 +559,7 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget in bytes |
 | `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
 | `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
-| `--eviction-policy` | `lru` | Eviction policy: `lru` only (`lfu` is rejected, not ported) |
+| `--eviction-policy` | `lru` | Eviction policy: `lru` or `lfu` |
 | `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
 
 Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2
@@ -569,8 +569,7 @@ read); compaction on demand via `cinder-admin compact` only.
 Deliberately unported C++ flags: `-C,--config` (no YAML by design;
 `config-reload` is accepted and answers OK), `--listen-fd` /
 `--metrics-listen-fd` (test-harness socket passing; Go tests bind their
-own listeners), `--io-threads` (Go runtime schedules), `--log-level` (no
-logging infra), `--snapshot-compression` (v3 rejected by design),
+own listeners), `--io-threads` (Go runtime schedules), `--snapshot-compression` (v3 rejected by design),
 `--wal-fsync` (writes already land per-append; `Sync` gates durability),
 `--max-wal-segment-bytes` / `--max-sealed-segments` (sealing has no
 size trigger; rotation happens on compact).

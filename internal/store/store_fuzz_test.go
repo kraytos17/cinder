@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// FuzzStoreSequence feeds op sequences to a small store under a manual
-// clock, mirroring the C++ store_put fuzz: small capacity forces eviction
+// FuzzStoreSequence feeds op sequences to both LRU and LFU stores under a
+// manual clock, mirroring the C++ store_put fuzz: small capacity forces eviction
 // pressure, a small key pool forces collisions, and every op carries
 // invariants — no panics, Put results are nil or ErrCapacityExceeded
 // only, and a resident key's version never decreases across a mutating op
@@ -22,13 +22,21 @@ func FuzzStoreSequence(f *testing.F) {
 			return
 		}
 		clk := NewManualClock(time.Unix(1_700_000_000, 0))
-		st := NewLRUStore(4096, clk)
+		policy := LRUPolicy
+		if data[1]&1 != 0 {
+			policy = LFUPolicy
+		}
+		capacity := uint64(4096)
+		if policy == LFUPolicy {
+			capacity += (lfuNodeOverhead - NodeOverhead) * 8
+		}
+		st := newStore(capacity, clk, policy)
 		poolSize := int(data[0]%8) + 1
 		keys := make([]string, poolSize)
 		for i := range keys {
 			keys[i] = string([]byte{byte('a' + i), byte('0' + i%10)})
 		}
-		pos := 1
+		pos := 2
 		next := func(n int) []byte {
 			if pos >= len(data) {
 				return nil

@@ -37,7 +37,7 @@ var nopLogger = log.Nop()
 // interchangeable with the C++ tree.
 type Manager struct {
 	dir   string
-	store *store.LRUStore
+	store *store.Store
 	clock func() time.Time
 
 	mu     sync.Mutex
@@ -62,7 +62,7 @@ const (
 )
 
 // NewManager returns a manager over dir (created on demand) and store.
-func NewManager(dir string, st *store.LRUStore, clock func() time.Time) *Manager {
+func NewManager(dir string, st *store.Store, clock func() time.Time) *Manager {
 	if clock == nil {
 		clock = time.Now
 	}
@@ -264,6 +264,7 @@ func (m *Manager) Recover() error {
 				return true // skip expired, don't resurrect
 			}
 			_ = m.store.PutVersioned(string(e.Key), ve)
+			m.store.RestoreFreq(string(e.Key), e.Freq)
 			return true
 		})
 		if err != nil {
@@ -337,6 +338,7 @@ func (m *Manager) Compact() error {
 		se := SnapEntry{
 			Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
 			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone,
+			Freq: p.Freq,
 		}
 		if p.Entry.HasTTL {
 			se.HasTTL = true

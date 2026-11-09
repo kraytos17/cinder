@@ -47,7 +47,7 @@ var nopLogger = log.Nop()
 // concurrent Rebalance calls; the server serializes them through its
 // debounce gate.
 type Manager struct {
-	store      *store.LRUStore
+	store      *store.Store
 	ring       *hashring.Ring
 	transport  Transport
 	table      *cluster.MembershipTable
@@ -64,7 +64,7 @@ type Manager struct {
 // NewManager returns a Manager. rf < 1 selects 1 (no replication).
 // A nil now selects time.Now.
 func NewManager(
-	st *store.LRUStore,
+	st *store.Store,
 	ring *hashring.Ring,
 	t Transport,
 	table *cluster.MembershipTable,

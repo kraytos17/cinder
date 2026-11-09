@@ -75,11 +75,11 @@ func testRing(t *testing.T, ids ...string) *hashring.Ring {
 	return r
 }
 
-func testManager(st *store.LRUStore, ring *hashring.Ring, self string, t *directTransport) *ae.Manager {
+func testManager(st *store.Store, ring *hashring.Ring, self string, t *directTransport) *ae.Manager {
 	return ae.NewManager(st, ring, self, t, 256, 1<<20)
 }
 
-func putAE(t *testing.T, st *store.LRUStore, key, val string, ver, writer uint64) {
+func putAE(t *testing.T, st *store.Store, key, val string, ver, writer uint64) {
 	t.Helper()
 	e := store.Entry{Value: []byte(val), Version: ver, WriterNodeHash: writer}
 	if err := st.PutVersioned(key, e); err != nil {

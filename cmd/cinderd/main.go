@@ -58,7 +58,7 @@ func main() {
 		aeFetchBytes  = flag.Int("anti-entropy-fetch-bytes", 1<<20, "per-round anti-entropy repair fetch budget in bytes")
 		maxHintBytes  = flag.Uint64("max-hint-bytes", 0, "hinted-handoff byte budget (0 = default 64MiB)")
 		tombstoneMs   = flag.Int("tombstone-gc-ms", 0, "delete-marker GC grace in milliseconds (0 = default 5min)")
-		evictPolicy   = flag.String("eviction-policy", "lru", "eviction policy: lru only (lfu is not ported)")
+		evictPolicy   = flag.String("eviction-policy", "lru", "eviction policy: lru|lfu")
 		logLevel      = flag.String("log-level", "info", "log level: trace|debug|info|warn|error")
 		showVers      = flag.Bool("version", false, "print version and exit")
 	)
@@ -82,9 +82,14 @@ func main() {
 		os.Exit(2)
 	}
 
-	st := store.NewLRUStore(*capacity, nil)
-	if *evictPolicy != "lru" {
-		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy lfu is not ported (lru only)")
+	var st *store.Store
+	switch *evictPolicy {
+	case "lru":
+		st = store.NewLRUStore(*capacity, nil)
+	case "lfu":
+		st = store.NewLFUStore(*capacity, nil)
+	default:
+		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy must be lru|lfu")
 		os.Exit(2)
 	}
 	if *tombstoneMs < 0 {

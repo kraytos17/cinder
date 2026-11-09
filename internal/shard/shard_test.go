@@ -16,12 +16,12 @@ import (
 type fakeTransport struct {
 	mu     sync.Mutex
 	fail   map[string]bool
-	stores map[string]*store.LRUStore
+	stores map[string]*store.Store
 	sent   map[string]int
 }
 
 func newFakeTransport(nodes ...string) *fakeTransport {
-	ft := &fakeTransport{fail: map[string]bool{}, stores: map[string]*store.LRUStore{}, sent: map[string]int{}}
+	ft := &fakeTransport{fail: map[string]bool{}, stores: map[string]*store.Store{}, sent: map[string]int{}}
 	for _, n := range nodes {
 		ft.stores[n] = store.NewLRUStore(1<<20, nil)
 	}
@@ -57,7 +57,7 @@ func (f *fakeTransport) Send(node string, req protocol.Request) (protocol.Respon
 	return protocol.Response{Status: protocol.StatusOK}, nil
 }
 
-func testSetup(t *testing.T, ids []string, self string, rf int, quarantine time.Duration) (*store.LRUStore, *hashring.Ring, *cluster.MembershipTable, *fakeTransport) {
+func testSetup(t *testing.T, ids []string, self string, rf int, quarantine time.Duration) (*store.Store, *hashring.Ring, *cluster.MembershipTable, *fakeTransport) {
 	t.Helper()
 	st := store.NewLRUStore(1<<20, nil)
 	ring, err := hashring.New(hashring.DefaultVNodes, 0)
@@ -79,7 +79,7 @@ func testSetup(t *testing.T, ids []string, self string, rf int, quarantine time.
 	return st, ring, table, ft
 }
 
-func putVer(t *testing.T, st *store.LRUStore, key, val string, ver, writer uint64) {
+func putVer(t *testing.T, st *store.Store, key, val string, ver, writer uint64) {
 	t.Helper()
 	if err := st.PutVersioned(key, store.Entry{Value: []byte(val), Version: ver, WriterNodeHash: writer}); err != nil {
 		t.Fatal(err)

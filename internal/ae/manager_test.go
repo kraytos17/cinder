@@ -7,11 +7,11 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-func testStore(n uint64) *store.LRUStore {
+func testStore(n uint64) *store.Store {
 	return store.NewLRUStore(1<<20, nil)
 }
 
-func putVer(t *testing.T, st *store.LRUStore, key, val string, ver, writer uint64) {
+func putVer(t *testing.T, st *store.Store, key, val string, ver, writer uint64) {
 	t.Helper()
 	e := store.Entry{Value: []byte(val), Version: ver, WriterNodeHash: writer}
 	if err := st.PutVersioned(key, e); err != nil {
@@ -131,7 +131,7 @@ func allBuckets(n uint32) []uint32 {
 	return out
 }
 
-func remoteRows(t *testing.T, st *store.LRUStore, _ []uint32) []MetaRow {
+func remoteRows(t *testing.T, st *store.Store, _ []uint32) []MetaRow {
 	t.Helper()
 	var rows []MetaRow
 	st.ForEach(func(key string, e store.Entry) {
@@ -140,7 +140,7 @@ func remoteRows(t *testing.T, st *store.LRUStore, _ []uint32) []MetaRow {
 	return rows
 }
 
-func keyByHash(t *testing.T, st *store.LRUStore, h uint64) string {
+func keyByHash(t *testing.T, st *store.Store, h uint64) string {
 	t.Helper()
 	found := ""
 	st.ForEach(func(key string, _ store.Entry) {

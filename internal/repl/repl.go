@@ -17,7 +17,7 @@ import (
 // Manager coordinates writes to the primary plus replicas. The store is
 // the single version authority; every replica apply is idempotent LWW.
 type Manager struct {
-	local     *store.LRUStore
+	local     *store.Store
 	self      string
 	writer    uint64
 	clock     store.Clock
@@ -75,7 +75,7 @@ func (m *Manager) log() *zerolog.Logger {
 
 // NewManager returns a replication manager. Transport may be nil only when
 // every call passes an empty replica list.
-func NewManager(local *store.LRUStore, self string, clock store.Clock, t Transport) *Manager {
+func NewManager(local *store.Store, self string, clock store.Clock, t Transport) *Manager {
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
@@ -97,7 +97,7 @@ func (m *Manager) HintsDropped() uint64 { return m.hints.Dropped() }
 func (m *Manager) SetMaxHintBytes(n uint64) { m.hints.SetMaxBytes(n) }
 
 // Local exposes the underlying store for serving and tests.
-func (m *Manager) Local() *store.LRUStore { return m.local }
+func (m *Manager) Local() *store.Store { return m.local }
 
 // HintQueue exposes the hint queue for journal recovery wiring.
 func (m *Manager) HintQueue() *HintQueue { return m.hints }
