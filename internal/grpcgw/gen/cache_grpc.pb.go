@@ -19,16 +19,18 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	CinderCacheService_Get_FullMethodName          = "/cinder.v1.CinderCacheService/Get"
-	CinderCacheService_Set_FullMethodName          = "/cinder.v1.CinderCacheService/Set"
-	CinderCacheService_Delete_FullMethodName       = "/cinder.v1.CinderCacheService/Delete"
-	CinderCacheService_GetVersioned_FullMethodName = "/cinder.v1.CinderCacheService/GetVersioned"
-	CinderCacheService_Ping_FullMethodName         = "/cinder.v1.CinderCacheService/Ping"
-	CinderCacheService_MultiGet_FullMethodName     = "/cinder.v1.CinderCacheService/MultiGet"
-	CinderCacheService_MultiSet_FullMethodName     = "/cinder.v1.CinderCacheService/MultiSet"
-	CinderCacheService_Info_FullMethodName         = "/cinder.v1.CinderCacheService/Info"
-	CinderCacheService_ClusterInfo_FullMethodName  = "/cinder.v1.CinderCacheService/ClusterInfo"
-	CinderCacheService_RingInfo_FullMethodName     = "/cinder.v1.CinderCacheService/RingInfo"
+	CinderCacheService_Get_FullMethodName           = "/cinder.v1.CinderCacheService/Get"
+	CinderCacheService_Set_FullMethodName           = "/cinder.v1.CinderCacheService/Set"
+	CinderCacheService_Delete_FullMethodName        = "/cinder.v1.CinderCacheService/Delete"
+	CinderCacheService_GetVersioned_FullMethodName  = "/cinder.v1.CinderCacheService/GetVersioned"
+	CinderCacheService_Ping_FullMethodName          = "/cinder.v1.CinderCacheService/Ping"
+	CinderCacheService_CounterAdjust_FullMethodName = "/cinder.v1.CinderCacheService/CounterAdjust"
+	CinderCacheService_CounterGet_FullMethodName    = "/cinder.v1.CinderCacheService/CounterGet"
+	CinderCacheService_MultiGet_FullMethodName      = "/cinder.v1.CinderCacheService/MultiGet"
+	CinderCacheService_MultiSet_FullMethodName      = "/cinder.v1.CinderCacheService/MultiSet"
+	CinderCacheService_Info_FullMethodName          = "/cinder.v1.CinderCacheService/Info"
+	CinderCacheService_ClusterInfo_FullMethodName   = "/cinder.v1.CinderCacheService/ClusterInfo"
+	CinderCacheService_RingInfo_FullMethodName      = "/cinder.v1.CinderCacheService/RingInfo"
 )
 
 // CinderCacheServiceClient is the client API for CinderCacheService service.
@@ -41,6 +43,9 @@ type CinderCacheServiceClient interface {
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
 	GetVersioned(ctx context.Context, in *GetVersionedRequest, opts ...grpc.CallOption) (*GetVersionedResponse, error)
 	Ping(ctx context.Context, in *PingRequest, opts ...grpc.CallOption) (*PingResponse, error)
+	// Counter operations (CRDT PN-counters; merge-based, unlike LWW values)
+	CounterAdjust(ctx context.Context, in *CounterAdjustRequest, opts ...grpc.CallOption) (*CounterAdjustResponse, error)
+	CounterGet(ctx context.Context, in *CounterGetRequest, opts ...grpc.CallOption) (*CounterGetResponse, error)
 	// Bulk operations
 	MultiGet(ctx context.Context, in *MultiGetRequest, opts ...grpc.CallOption) (*MultiGetResponse, error)
 	MultiSet(ctx context.Context, in *MultiSetRequest, opts ...grpc.CallOption) (*MultiSetResponse, error)
@@ -108,6 +113,26 @@ func (c *cinderCacheServiceClient) Ping(ctx context.Context, in *PingRequest, op
 	return out, nil
 }
 
+func (c *cinderCacheServiceClient) CounterAdjust(ctx context.Context, in *CounterAdjustRequest, opts ...grpc.CallOption) (*CounterAdjustResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CounterAdjustResponse)
+	err := c.cc.Invoke(ctx, CinderCacheService_CounterAdjust_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *cinderCacheServiceClient) CounterGet(ctx context.Context, in *CounterGetRequest, opts ...grpc.CallOption) (*CounterGetResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CounterGetResponse)
+	err := c.cc.Invoke(ctx, CinderCacheService_CounterGet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *cinderCacheServiceClient) MultiGet(ctx context.Context, in *MultiGetRequest, opts ...grpc.CallOption) (*MultiGetResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(MultiGetResponse)
@@ -168,6 +193,9 @@ type CinderCacheServiceServer interface {
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
 	GetVersioned(context.Context, *GetVersionedRequest) (*GetVersionedResponse, error)
 	Ping(context.Context, *PingRequest) (*PingResponse, error)
+	// Counter operations (CRDT PN-counters; merge-based, unlike LWW values)
+	CounterAdjust(context.Context, *CounterAdjustRequest) (*CounterAdjustResponse, error)
+	CounterGet(context.Context, *CounterGetRequest) (*CounterGetResponse, error)
 	// Bulk operations
 	MultiGet(context.Context, *MultiGetRequest) (*MultiGetResponse, error)
 	MultiSet(context.Context, *MultiSetRequest) (*MultiSetResponse, error)
@@ -199,6 +227,12 @@ func (UnimplementedCinderCacheServiceServer) GetVersioned(context.Context, *GetV
 }
 func (UnimplementedCinderCacheServiceServer) Ping(context.Context, *PingRequest) (*PingResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Ping not implemented")
+}
+func (UnimplementedCinderCacheServiceServer) CounterAdjust(context.Context, *CounterAdjustRequest) (*CounterAdjustResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CounterAdjust not implemented")
+}
+func (UnimplementedCinderCacheServiceServer) CounterGet(context.Context, *CounterGetRequest) (*CounterGetResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CounterGet not implemented")
 }
 func (UnimplementedCinderCacheServiceServer) MultiGet(context.Context, *MultiGetRequest) (*MultiGetResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method MultiGet not implemented")
@@ -326,6 +360,42 @@ func _CinderCacheService_Ping_Handler(srv interface{}, ctx context.Context, dec 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _CinderCacheService_CounterAdjust_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CounterAdjustRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CinderCacheServiceServer).CounterAdjust(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CinderCacheService_CounterAdjust_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CinderCacheServiceServer).CounterAdjust(ctx, req.(*CounterAdjustRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _CinderCacheService_CounterGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CounterGetRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(CinderCacheServiceServer).CounterGet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: CinderCacheService_CounterGet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(CinderCacheServiceServer).CounterGet(ctx, req.(*CounterGetRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _CinderCacheService_MultiGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(MultiGetRequest)
 	if err := dec(in); err != nil {
@@ -442,6 +512,14 @@ var CinderCacheService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Ping",
 			Handler:    _CinderCacheService_Ping_Handler,
+		},
+		{
+			MethodName: "CounterAdjust",
+			Handler:    _CinderCacheService_CounterAdjust_Handler,
+		},
+		{
+			MethodName: "CounterGet",
+			Handler:    _CinderCacheService_CounterGet_Handler,
 		},
 		{
 			MethodName: "MultiGet",

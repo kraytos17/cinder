@@ -585,6 +585,210 @@ func (x *PingResponse) GetStatus() StatusCode {
 	return StatusCode_STATUS_CODE_UNSPECIFIED
 }
 
+type CounterAdjustRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Key   string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	// Increment (or decrement) amount; 0 is a no-op success.
+	Delta uint64 `protobuf:"varint,2,opt,name=delta,proto3" json:"delta,omitempty"`
+	// Decrement instead of increment by delta.
+	Decrement     bool `protobuf:"varint,3,opt,name=decrement,proto3" json:"decrement,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CounterAdjustRequest) Reset() {
+	*x = CounterAdjustRequest{}
+	mi := &file_cinder_v1_cache_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CounterAdjustRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CounterAdjustRequest) ProtoMessage() {}
+
+func (x *CounterAdjustRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cinder_v1_cache_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CounterAdjustRequest.ProtoReflect.Descriptor instead.
+func (*CounterAdjustRequest) Descriptor() ([]byte, []int) {
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *CounterAdjustRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *CounterAdjustRequest) GetDelta() uint64 {
+	if x != nil {
+		return x.Delta
+	}
+	return 0
+}
+
+func (x *CounterAdjustRequest) GetDecrement() bool {
+	if x != nil {
+		return x.Decrement
+	}
+	return false
+}
+
+type CounterAdjustResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        StatusCode             `protobuf:"varint,1,opt,name=status,proto3,enum=cinder.v1.StatusCode" json:"status,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CounterAdjustResponse) Reset() {
+	*x = CounterAdjustResponse{}
+	mi := &file_cinder_v1_cache_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CounterAdjustResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CounterAdjustResponse) ProtoMessage() {}
+
+func (x *CounterAdjustResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cinder_v1_cache_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CounterAdjustResponse.ProtoReflect.Descriptor instead.
+func (*CounterAdjustResponse) Descriptor() ([]byte, []int) {
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *CounterAdjustResponse) GetStatus() StatusCode {
+	if x != nil {
+		return x.Status
+	}
+	return StatusCode_STATUS_CODE_UNSPECIFIED
+}
+
+type CounterGetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CounterGetRequest) Reset() {
+	*x = CounterGetRequest{}
+	mi := &file_cinder_v1_cache_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CounterGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CounterGetRequest) ProtoMessage() {}
+
+func (x *CounterGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_cinder_v1_cache_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CounterGetRequest.ProtoReflect.Descriptor instead.
+func (*CounterGetRequest) Descriptor() ([]byte, []int) {
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *CounterGetRequest) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+type CounterGetResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Status StatusCode             `protobuf:"varint,1,opt,name=status,proto3,enum=cinder.v1.StatusCode" json:"status,omitempty"`
+	// Merged counter value. Present only when status is OK
+	// (NOT_FOUND for absent counters).
+	Value         *int64 `protobuf:"varint,2,opt,name=value,proto3,oneof" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CounterGetResponse) Reset() {
+	*x = CounterGetResponse{}
+	mi := &file_cinder_v1_cache_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CounterGetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CounterGetResponse) ProtoMessage() {}
+
+func (x *CounterGetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_cinder_v1_cache_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CounterGetResponse.ProtoReflect.Descriptor instead.
+func (*CounterGetResponse) Descriptor() ([]byte, []int) {
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *CounterGetResponse) GetStatus() StatusCode {
+	if x != nil {
+		return x.Status
+	}
+	return StatusCode_STATUS_CODE_UNSPECIFIED
+}
+
+func (x *CounterGetResponse) GetValue() int64 {
+	if x != nil && x.Value != nil {
+		return *x.Value
+	}
+	return 0
+}
+
 type InfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -593,7 +797,7 @@ type InfoRequest struct {
 
 func (x *InfoRequest) Reset() {
 	*x = InfoRequest{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[10]
+	mi := &file_cinder_v1_cache_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -605,7 +809,7 @@ func (x *InfoRequest) String() string {
 func (*InfoRequest) ProtoMessage() {}
 
 func (x *InfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[10]
+	mi := &file_cinder_v1_cache_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -618,7 +822,7 @@ func (x *InfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
 func (*InfoRequest) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{10}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{14}
 }
 
 type InfoResponse struct {
@@ -630,7 +834,7 @@ type InfoResponse struct {
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[11]
+	mi := &file_cinder_v1_cache_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -642,7 +846,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[11]
+	mi := &file_cinder_v1_cache_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -655,7 +859,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{11}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *InfoResponse) GetJson() string {
@@ -673,7 +877,7 @@ type ClusterInfoRequest struct {
 
 func (x *ClusterInfoRequest) Reset() {
 	*x = ClusterInfoRequest{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[12]
+	mi := &file_cinder_v1_cache_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -685,7 +889,7 @@ func (x *ClusterInfoRequest) String() string {
 func (*ClusterInfoRequest) ProtoMessage() {}
 
 func (x *ClusterInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[12]
+	mi := &file_cinder_v1_cache_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -698,7 +902,7 @@ func (x *ClusterInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterInfoRequest.ProtoReflect.Descriptor instead.
 func (*ClusterInfoRequest) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{12}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{16}
 }
 
 type ClusterInfoResponse struct {
@@ -710,7 +914,7 @@ type ClusterInfoResponse struct {
 
 func (x *ClusterInfoResponse) Reset() {
 	*x = ClusterInfoResponse{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[13]
+	mi := &file_cinder_v1_cache_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -722,7 +926,7 @@ func (x *ClusterInfoResponse) String() string {
 func (*ClusterInfoResponse) ProtoMessage() {}
 
 func (x *ClusterInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[13]
+	mi := &file_cinder_v1_cache_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -735,7 +939,7 @@ func (x *ClusterInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClusterInfoResponse.ProtoReflect.Descriptor instead.
 func (*ClusterInfoResponse) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{13}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ClusterInfoResponse) GetJson() string {
@@ -753,7 +957,7 @@ type RingInfoRequest struct {
 
 func (x *RingInfoRequest) Reset() {
 	*x = RingInfoRequest{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[14]
+	mi := &file_cinder_v1_cache_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -765,7 +969,7 @@ func (x *RingInfoRequest) String() string {
 func (*RingInfoRequest) ProtoMessage() {}
 
 func (x *RingInfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[14]
+	mi := &file_cinder_v1_cache_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -778,7 +982,7 @@ func (x *RingInfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RingInfoRequest.ProtoReflect.Descriptor instead.
 func (*RingInfoRequest) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{14}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{18}
 }
 
 type RingInfoResponse struct {
@@ -790,7 +994,7 @@ type RingInfoResponse struct {
 
 func (x *RingInfoResponse) Reset() {
 	*x = RingInfoResponse{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[15]
+	mi := &file_cinder_v1_cache_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -802,7 +1006,7 @@ func (x *RingInfoResponse) String() string {
 func (*RingInfoResponse) ProtoMessage() {}
 
 func (x *RingInfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[15]
+	mi := &file_cinder_v1_cache_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -815,7 +1019,7 @@ func (x *RingInfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RingInfoResponse.ProtoReflect.Descriptor instead.
 func (*RingInfoResponse) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{15}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RingInfoResponse) GetJson() string {
@@ -834,7 +1038,7 @@ type MultiGetRequest struct {
 
 func (x *MultiGetRequest) Reset() {
 	*x = MultiGetRequest{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[16]
+	mi := &file_cinder_v1_cache_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -846,7 +1050,7 @@ func (x *MultiGetRequest) String() string {
 func (*MultiGetRequest) ProtoMessage() {}
 
 func (x *MultiGetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[16]
+	mi := &file_cinder_v1_cache_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -859,7 +1063,7 @@ func (x *MultiGetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiGetRequest.ProtoReflect.Descriptor instead.
 func (*MultiGetRequest) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{16}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *MultiGetRequest) GetKeys() []string {
@@ -878,7 +1082,7 @@ type MultiGetResponse struct {
 
 func (x *MultiGetResponse) Reset() {
 	*x = MultiGetResponse{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[17]
+	mi := &file_cinder_v1_cache_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -890,7 +1094,7 @@ func (x *MultiGetResponse) String() string {
 func (*MultiGetResponse) ProtoMessage() {}
 
 func (x *MultiGetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[17]
+	mi := &file_cinder_v1_cache_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -903,7 +1107,7 @@ func (x *MultiGetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiGetResponse.ProtoReflect.Descriptor instead.
 func (*MultiGetResponse) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{17}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *MultiGetResponse) GetResponses() []*GetResponse {
@@ -922,7 +1126,7 @@ type MultiSetRequest struct {
 
 func (x *MultiSetRequest) Reset() {
 	*x = MultiSetRequest{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[18]
+	mi := &file_cinder_v1_cache_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -934,7 +1138,7 @@ func (x *MultiSetRequest) String() string {
 func (*MultiSetRequest) ProtoMessage() {}
 
 func (x *MultiSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[18]
+	mi := &file_cinder_v1_cache_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -947,7 +1151,7 @@ func (x *MultiSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiSetRequest.ProtoReflect.Descriptor instead.
 func (*MultiSetRequest) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{18}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *MultiSetRequest) GetRequests() []*SetRequest {
@@ -966,7 +1170,7 @@ type MultiSetResponse struct {
 
 func (x *MultiSetResponse) Reset() {
 	*x = MultiSetResponse{}
-	mi := &file_cinder_v1_cache_proto_msgTypes[19]
+	mi := &file_cinder_v1_cache_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -978,7 +1182,7 @@ func (x *MultiSetResponse) String() string {
 func (*MultiSetResponse) ProtoMessage() {}
 
 func (x *MultiSetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_cinder_v1_cache_proto_msgTypes[19]
+	mi := &file_cinder_v1_cache_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -991,7 +1195,7 @@ func (x *MultiSetResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiSetResponse.ProtoReflect.Descriptor instead.
 func (*MultiSetResponse) Descriptor() ([]byte, []int) {
-	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{19}
+	return file_cinder_v1_cache_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *MultiSetResponse) GetResponses() []*SetResponse {
@@ -1035,7 +1239,19 @@ const file_cinder_v1_cache_proto_rawDesc = "" +
 	"\x06_value\"\r\n" +
 	"\vPingRequest\"=\n" +
 	"\fPingResponse\x12-\n" +
-	"\x06status\x18\x01 \x01(\x0e2\x15.cinder.v1.StatusCodeR\x06status\"\r\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x15.cinder.v1.StatusCodeR\x06status\"\\\n" +
+	"\x14CounterAdjustRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05delta\x18\x02 \x01(\x04R\x05delta\x12\x1c\n" +
+	"\tdecrement\x18\x03 \x01(\bR\tdecrement\"F\n" +
+	"\x15CounterAdjustResponse\x12-\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x15.cinder.v1.StatusCodeR\x06status\"%\n" +
+	"\x11CounterGetRequest\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\"h\n" +
+	"\x12CounterGetResponse\x12-\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x15.cinder.v1.StatusCodeR\x06status\x12\x19\n" +
+	"\x05value\x18\x02 \x01(\x03H\x00R\x05value\x88\x01\x01B\b\n" +
+	"\x06_value\"\r\n" +
 	"\vInfoRequest\"\"\n" +
 	"\fInfoResponse\x12\x12\n" +
 	"\x04json\x18\x01 \x01(\tR\x04json\"\x14\n" +
@@ -1066,13 +1282,16 @@ const file_cinder_v1_cache_proto_rawDesc = "" +
 	"\x15STATUS_CODE_NOT_READY\x10\b\x12!\n" +
 	"\x1dSTATUS_CODE_PERMISSION_DENIED\x10\t\x12\x1c\n" +
 	"\x18STATUS_CODE_CORRUPT_DATA\x10\n" +
-	"2\x9f\x05\n" +
+	"2\xbe\x06\n" +
 	"\x12CinderCacheService\x124\n" +
 	"\x03Get\x12\x15.cinder.v1.GetRequest\x1a\x16.cinder.v1.GetResponse\x124\n" +
 	"\x03Set\x12\x15.cinder.v1.SetRequest\x1a\x16.cinder.v1.SetResponse\x12=\n" +
 	"\x06Delete\x12\x18.cinder.v1.DeleteRequest\x1a\x19.cinder.v1.DeleteResponse\x12O\n" +
 	"\fGetVersioned\x12\x1e.cinder.v1.GetVersionedRequest\x1a\x1f.cinder.v1.GetVersionedResponse\x127\n" +
-	"\x04Ping\x12\x16.cinder.v1.PingRequest\x1a\x17.cinder.v1.PingResponse\x12C\n" +
+	"\x04Ping\x12\x16.cinder.v1.PingRequest\x1a\x17.cinder.v1.PingResponse\x12R\n" +
+	"\rCounterAdjust\x12\x1f.cinder.v1.CounterAdjustRequest\x1a .cinder.v1.CounterAdjustResponse\x12I\n" +
+	"\n" +
+	"CounterGet\x12\x1c.cinder.v1.CounterGetRequest\x1a\x1d.cinder.v1.CounterGetResponse\x12C\n" +
 	"\bMultiGet\x12\x1a.cinder.v1.MultiGetRequest\x1a\x1b.cinder.v1.MultiGetResponse\x12C\n" +
 	"\bMultiSet\x12\x1a.cinder.v1.MultiSetRequest\x1a\x1b.cinder.v1.MultiSetResponse\x127\n" +
 	"\x04Info\x12\x16.cinder.v1.InfoRequest\x1a\x17.cinder.v1.InfoResponse\x12L\n" +
@@ -1092,29 +1311,33 @@ func file_cinder_v1_cache_proto_rawDescGZIP() []byte {
 }
 
 var file_cinder_v1_cache_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_cinder_v1_cache_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_cinder_v1_cache_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
 var file_cinder_v1_cache_proto_goTypes = []any{
-	(StatusCode)(0),              // 0: cinder.v1.StatusCode
-	(*GetRequest)(nil),           // 1: cinder.v1.GetRequest
-	(*GetResponse)(nil),          // 2: cinder.v1.GetResponse
-	(*SetRequest)(nil),           // 3: cinder.v1.SetRequest
-	(*SetResponse)(nil),          // 4: cinder.v1.SetResponse
-	(*DeleteRequest)(nil),        // 5: cinder.v1.DeleteRequest
-	(*DeleteResponse)(nil),       // 6: cinder.v1.DeleteResponse
-	(*GetVersionedRequest)(nil),  // 7: cinder.v1.GetVersionedRequest
-	(*GetVersionedResponse)(nil), // 8: cinder.v1.GetVersionedResponse
-	(*PingRequest)(nil),          // 9: cinder.v1.PingRequest
-	(*PingResponse)(nil),         // 10: cinder.v1.PingResponse
-	(*InfoRequest)(nil),          // 11: cinder.v1.InfoRequest
-	(*InfoResponse)(nil),         // 12: cinder.v1.InfoResponse
-	(*ClusterInfoRequest)(nil),   // 13: cinder.v1.ClusterInfoRequest
-	(*ClusterInfoResponse)(nil),  // 14: cinder.v1.ClusterInfoResponse
-	(*RingInfoRequest)(nil),      // 15: cinder.v1.RingInfoRequest
-	(*RingInfoResponse)(nil),     // 16: cinder.v1.RingInfoResponse
-	(*MultiGetRequest)(nil),      // 17: cinder.v1.MultiGetRequest
-	(*MultiGetResponse)(nil),     // 18: cinder.v1.MultiGetResponse
-	(*MultiSetRequest)(nil),      // 19: cinder.v1.MultiSetRequest
-	(*MultiSetResponse)(nil),     // 20: cinder.v1.MultiSetResponse
+	(StatusCode)(0),               // 0: cinder.v1.StatusCode
+	(*GetRequest)(nil),            // 1: cinder.v1.GetRequest
+	(*GetResponse)(nil),           // 2: cinder.v1.GetResponse
+	(*SetRequest)(nil),            // 3: cinder.v1.SetRequest
+	(*SetResponse)(nil),           // 4: cinder.v1.SetResponse
+	(*DeleteRequest)(nil),         // 5: cinder.v1.DeleteRequest
+	(*DeleteResponse)(nil),        // 6: cinder.v1.DeleteResponse
+	(*GetVersionedRequest)(nil),   // 7: cinder.v1.GetVersionedRequest
+	(*GetVersionedResponse)(nil),  // 8: cinder.v1.GetVersionedResponse
+	(*PingRequest)(nil),           // 9: cinder.v1.PingRequest
+	(*PingResponse)(nil),          // 10: cinder.v1.PingResponse
+	(*CounterAdjustRequest)(nil),  // 11: cinder.v1.CounterAdjustRequest
+	(*CounterAdjustResponse)(nil), // 12: cinder.v1.CounterAdjustResponse
+	(*CounterGetRequest)(nil),     // 13: cinder.v1.CounterGetRequest
+	(*CounterGetResponse)(nil),    // 14: cinder.v1.CounterGetResponse
+	(*InfoRequest)(nil),           // 15: cinder.v1.InfoRequest
+	(*InfoResponse)(nil),          // 16: cinder.v1.InfoResponse
+	(*ClusterInfoRequest)(nil),    // 17: cinder.v1.ClusterInfoRequest
+	(*ClusterInfoResponse)(nil),   // 18: cinder.v1.ClusterInfoResponse
+	(*RingInfoRequest)(nil),       // 19: cinder.v1.RingInfoRequest
+	(*RingInfoResponse)(nil),      // 20: cinder.v1.RingInfoResponse
+	(*MultiGetRequest)(nil),       // 21: cinder.v1.MultiGetRequest
+	(*MultiGetResponse)(nil),      // 22: cinder.v1.MultiGetResponse
+	(*MultiSetRequest)(nil),       // 23: cinder.v1.MultiSetRequest
+	(*MultiSetResponse)(nil),      // 24: cinder.v1.MultiSetResponse
 }
 var file_cinder_v1_cache_proto_depIdxs = []int32{
 	0,  // 0: cinder.v1.GetResponse.status:type_name -> cinder.v1.StatusCode
@@ -1122,34 +1345,40 @@ var file_cinder_v1_cache_proto_depIdxs = []int32{
 	0,  // 2: cinder.v1.DeleteResponse.status:type_name -> cinder.v1.StatusCode
 	0,  // 3: cinder.v1.GetVersionedResponse.status:type_name -> cinder.v1.StatusCode
 	0,  // 4: cinder.v1.PingResponse.status:type_name -> cinder.v1.StatusCode
-	2,  // 5: cinder.v1.MultiGetResponse.responses:type_name -> cinder.v1.GetResponse
-	3,  // 6: cinder.v1.MultiSetRequest.requests:type_name -> cinder.v1.SetRequest
-	4,  // 7: cinder.v1.MultiSetResponse.responses:type_name -> cinder.v1.SetResponse
-	1,  // 8: cinder.v1.CinderCacheService.Get:input_type -> cinder.v1.GetRequest
-	3,  // 9: cinder.v1.CinderCacheService.Set:input_type -> cinder.v1.SetRequest
-	5,  // 10: cinder.v1.CinderCacheService.Delete:input_type -> cinder.v1.DeleteRequest
-	7,  // 11: cinder.v1.CinderCacheService.GetVersioned:input_type -> cinder.v1.GetVersionedRequest
-	9,  // 12: cinder.v1.CinderCacheService.Ping:input_type -> cinder.v1.PingRequest
-	17, // 13: cinder.v1.CinderCacheService.MultiGet:input_type -> cinder.v1.MultiGetRequest
-	19, // 14: cinder.v1.CinderCacheService.MultiSet:input_type -> cinder.v1.MultiSetRequest
-	11, // 15: cinder.v1.CinderCacheService.Info:input_type -> cinder.v1.InfoRequest
-	13, // 16: cinder.v1.CinderCacheService.ClusterInfo:input_type -> cinder.v1.ClusterInfoRequest
-	15, // 17: cinder.v1.CinderCacheService.RingInfo:input_type -> cinder.v1.RingInfoRequest
-	2,  // 18: cinder.v1.CinderCacheService.Get:output_type -> cinder.v1.GetResponse
-	4,  // 19: cinder.v1.CinderCacheService.Set:output_type -> cinder.v1.SetResponse
-	6,  // 20: cinder.v1.CinderCacheService.Delete:output_type -> cinder.v1.DeleteResponse
-	8,  // 21: cinder.v1.CinderCacheService.GetVersioned:output_type -> cinder.v1.GetVersionedResponse
-	10, // 22: cinder.v1.CinderCacheService.Ping:output_type -> cinder.v1.PingResponse
-	18, // 23: cinder.v1.CinderCacheService.MultiGet:output_type -> cinder.v1.MultiGetResponse
-	20, // 24: cinder.v1.CinderCacheService.MultiSet:output_type -> cinder.v1.MultiSetResponse
-	12, // 25: cinder.v1.CinderCacheService.Info:output_type -> cinder.v1.InfoResponse
-	14, // 26: cinder.v1.CinderCacheService.ClusterInfo:output_type -> cinder.v1.ClusterInfoResponse
-	16, // 27: cinder.v1.CinderCacheService.RingInfo:output_type -> cinder.v1.RingInfoResponse
-	18, // [18:28] is the sub-list for method output_type
-	8,  // [8:18] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	0,  // 5: cinder.v1.CounterAdjustResponse.status:type_name -> cinder.v1.StatusCode
+	0,  // 6: cinder.v1.CounterGetResponse.status:type_name -> cinder.v1.StatusCode
+	2,  // 7: cinder.v1.MultiGetResponse.responses:type_name -> cinder.v1.GetResponse
+	3,  // 8: cinder.v1.MultiSetRequest.requests:type_name -> cinder.v1.SetRequest
+	4,  // 9: cinder.v1.MultiSetResponse.responses:type_name -> cinder.v1.SetResponse
+	1,  // 10: cinder.v1.CinderCacheService.Get:input_type -> cinder.v1.GetRequest
+	3,  // 11: cinder.v1.CinderCacheService.Set:input_type -> cinder.v1.SetRequest
+	5,  // 12: cinder.v1.CinderCacheService.Delete:input_type -> cinder.v1.DeleteRequest
+	7,  // 13: cinder.v1.CinderCacheService.GetVersioned:input_type -> cinder.v1.GetVersionedRequest
+	9,  // 14: cinder.v1.CinderCacheService.Ping:input_type -> cinder.v1.PingRequest
+	11, // 15: cinder.v1.CinderCacheService.CounterAdjust:input_type -> cinder.v1.CounterAdjustRequest
+	13, // 16: cinder.v1.CinderCacheService.CounterGet:input_type -> cinder.v1.CounterGetRequest
+	21, // 17: cinder.v1.CinderCacheService.MultiGet:input_type -> cinder.v1.MultiGetRequest
+	23, // 18: cinder.v1.CinderCacheService.MultiSet:input_type -> cinder.v1.MultiSetRequest
+	15, // 19: cinder.v1.CinderCacheService.Info:input_type -> cinder.v1.InfoRequest
+	17, // 20: cinder.v1.CinderCacheService.ClusterInfo:input_type -> cinder.v1.ClusterInfoRequest
+	19, // 21: cinder.v1.CinderCacheService.RingInfo:input_type -> cinder.v1.RingInfoRequest
+	2,  // 22: cinder.v1.CinderCacheService.Get:output_type -> cinder.v1.GetResponse
+	4,  // 23: cinder.v1.CinderCacheService.Set:output_type -> cinder.v1.SetResponse
+	6,  // 24: cinder.v1.CinderCacheService.Delete:output_type -> cinder.v1.DeleteResponse
+	8,  // 25: cinder.v1.CinderCacheService.GetVersioned:output_type -> cinder.v1.GetVersionedResponse
+	10, // 26: cinder.v1.CinderCacheService.Ping:output_type -> cinder.v1.PingResponse
+	12, // 27: cinder.v1.CinderCacheService.CounterAdjust:output_type -> cinder.v1.CounterAdjustResponse
+	14, // 28: cinder.v1.CinderCacheService.CounterGet:output_type -> cinder.v1.CounterGetResponse
+	22, // 29: cinder.v1.CinderCacheService.MultiGet:output_type -> cinder.v1.MultiGetResponse
+	24, // 30: cinder.v1.CinderCacheService.MultiSet:output_type -> cinder.v1.MultiSetResponse
+	16, // 31: cinder.v1.CinderCacheService.Info:output_type -> cinder.v1.InfoResponse
+	18, // 32: cinder.v1.CinderCacheService.ClusterInfo:output_type -> cinder.v1.ClusterInfoResponse
+	20, // 33: cinder.v1.CinderCacheService.RingInfo:output_type -> cinder.v1.RingInfoResponse
+	22, // [22:34] is the sub-list for method output_type
+	10, // [10:22] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_cinder_v1_cache_proto_init() }
@@ -1159,13 +1388,14 @@ func file_cinder_v1_cache_proto_init() {
 	}
 	file_cinder_v1_cache_proto_msgTypes[1].OneofWrappers = []any{}
 	file_cinder_v1_cache_proto_msgTypes[7].OneofWrappers = []any{}
+	file_cinder_v1_cache_proto_msgTypes[13].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_cinder_v1_cache_proto_rawDesc), len(file_cinder_v1_cache_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   20,
+			NumMessages:   24,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

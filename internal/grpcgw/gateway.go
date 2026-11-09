@@ -2,15 +2,17 @@
 //
 // It mirrors CinderCacheServiceImpl RPC-for-RPC: OK maps to
 // STATUS_CODE_UNSPECIFIED (the proto uses 0 for success), Get/Set/Delete go
-// through the same TCP dispatch (ownership, replication), GetVersioned
-// reads the local store directly (tombstones and misses both report
-// NOT_FOUND, expiry always 0), MultiSet owner-checks then puts locally
-// without replication fan-out, and the admin RPCs return the same JSON as
-// the admin opcodes.
+// through the same TCP dispatch (ownership, replication), as do counter
+// adjust (owner-routed) and counter get (local-hit, redirect on miss).
+// GetVersioned reads the local store directly (tombstones and misses both
+// report NOT_FOUND, expiry always 0), MultiSet owner-checks then puts
+// locally without replication fan-out, and the admin RPCs return the same
+// JSON as the admin opcodes.
 //
 // Deliberate simplification: no trace-metadata propagation (no Go tracing
 // infra); every RPC returns gRPC OK with the outcome in the status field,
-// exactly like the C++ handlers on the success path. Client auth is
+// exactly like the C++ handlers on the success path. CounterMerge has no
+// RPC: it is inter-node replication traffic, like Replicate/Hint. Client auth is
 // enforced when configured (SetClientSecret): the C++
 // "authorization: Bearer <hex>" contract, UNAUTHENTICATED otherwise.
 // A secret refuses plaintext: pair it with SetTLS (same PEM chain + key
@@ -36,6 +38,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/kraytos17/cinder/internal/auth"
+	"github.com/kraytos17/cinder/internal/counter"
 	gen "github.com/kraytos17/cinder/internal/grpcgw/gen"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
@@ -166,6 +169,36 @@ func (s *service) Ping(ctx context.Context, _ *gen.PingRequest) (*gen.PingRespon
 	}
 	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpPing})
 	return &gen.PingResponse{Status: toProtoStatus(res.Status)}, nil
+}
+
+func (s *service) CounterAdjust(ctx context.Context, req *gen.CounterAdjustRequest) (*gen.CounterAdjustResponse, error) {
+	if err := s.checkAuth(ctx); err != nil {
+		return &gen.CounterAdjustResponse{}, err
+	}
+	res := s.node.Dispatch(protocol.Request{
+		Opcode: protocol.OpCounterAdjust, Key: []byte(req.GetKey()),
+		CounterDelta: req.GetDelta(), CounterDecrement: req.GetDecrement(),
+	})
+	return &gen.CounterAdjustResponse{Status: toProtoStatus(res.Status)}, nil
+}
+
+func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*gen.CounterGetResponse, error) {
+	if err := s.checkAuth(ctx); err != nil {
+		return &gen.CounterGetResponse{}, err
+	}
+	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(req.GetKey())})
+	out := &gen.CounterGetResponse{Status: toProtoStatus(res.Status)}
+	if res.Status == protocol.StatusOK && res.HasValue {
+		if c, err := counter.DecodePNCounter(res.Value); err == nil {
+			v := c.Value()
+			out.Value = &v
+		} else {
+			// Unreachable in practice: the store only holds states this
+			// codec produced. Reported, not hidden, via CORRUPT_DATA.
+			out.Status = gen.StatusCode_STATUS_CODE_CORRUPT_DATA
+		}
+	}
+	return out, nil
 }
 
 func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.MultiGetResponse, error) {

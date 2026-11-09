@@ -676,3 +676,45 @@ func TestInteropGoClientCppGrpcTLSAuth(t *testing.T) {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 }
+
+func TestGatewayCounterRoundTrip(t *testing.T) {
+	c, _ := startGateway(t, "node1")
+	ctx := context.Background()
+	if res, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "c", Delta: 5}); err != nil || res.Status != OK {
+		t.Fatalf("incr: %+v %v", res, err)
+	}
+	got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"})
+	if err != nil || got.Status != OK || got.GetValue() != 5 {
+		t.Fatalf("get: %+v %v", got, err)
+	}
+	if res, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "c", Delta: 2, Decrement: true}); err != nil || res.Status != OK {
+		t.Fatalf("decr: %+v %v", res, err)
+	}
+	got, err = c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"})
+	if err != nil || got.Status != OK || got.GetValue() != 3 {
+		t.Fatalf("get after decr: %+v %v", got, err)
+	}
+	// Zero delta is a no-op OK that creates nothing.
+	if res, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "fresh"}); err != nil || res.Status != OK {
+		t.Fatalf("zero adjust: %+v %v", res, err)
+	}
+	if got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "fresh"}); err != nil || got.Status != NotFound {
+		t.Fatalf("fresh get: %+v %v", got, err)
+	}
+}
+
+func TestGatewayCounterAuthDenied(t *testing.T) {
+	c := startAuthedGateway(t, "s3cr3t")
+	if _, err := c.CounterAdjust(context.Background(), &gen.CounterAdjustRequest{Key: "c", Delta: 1}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("adjust without bearer: %v", err)
+	}
+	if _, err := c.CounterGet(context.Background(), &gen.CounterGetRequest{Key: "c"}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("get without bearer: %v", err)
+	}
+	if _, err := c.CounterAdjust(bearerCtx("s3cr3t"), &gen.CounterAdjustRequest{Key: "c", Delta: 1}); err != nil {
+		t.Fatalf("authed adjust: %v", err)
+	}
+	if got, err := c.CounterGet(bearerCtx("s3cr3t"), &gen.CounterGetRequest{Key: "c"}); err != nil || got.Status != OK || got.GetValue() != 1 {
+		t.Fatalf("authed get: %+v %v", got, err)
+	}
+}
