@@ -4,8 +4,10 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -31,6 +33,7 @@ type Manager struct {
 	partners   []string
 	partnerIdx int
 	journal    *Journal
+	met        atomic.Pointer[metrics.Collector]
 
 	counters   CounterStore
 	counterMu  sync.Mutex
@@ -72,6 +75,13 @@ func (m *Manager) SetHintJournal(j *Journal) {
 	m.journal = j
 }
 
+// SetMetrics wires the observability collector (nil disables).
+func (m *Manager) SetMetrics(c *metrics.Collector) {
+	m.met.Store(c)
+}
+
+func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
+
 // ComputeDigest XOR-folds entry hashes per bucket over a full scan.
 func (m *Manager) ComputeDigest() []uint64 {
 	digest := make([]uint64, m.numBuckets)
@@ -89,6 +99,12 @@ func (m *Manager) RunRound(replicaFactor int) int {
 	partner, ok := m.PickPartner(replicaFactor)
 	if !ok {
 		return 0
+	}
+	// Every Go round rehashes fully (no divert-while-scanning), so the
+	// round and the full rehash coincide.
+	if mt := m.metrics(); mt != nil {
+		mt.AERounds.Add(1)
+		mt.AEFullRehashes.Add(1)
 	}
 
 	local := m.ComputeDigest()
@@ -108,14 +124,18 @@ func (m *Manager) RunRound(replicaFactor int) int {
 
 	localGroups := GroupFold(local)
 	divergent := false
+	var divergentGroups int
 	for g := range localGroups {
 		if g >= len(remote.GroupHashes) || localGroups[g] != remote.GroupHashes[g] {
 			divergent = true
-			break
+			divergentGroups++
 		}
 	}
 	if !divergent {
 		return 0 // converged round ends here
+	}
+	if mt := m.metrics(); mt != nil {
+		mt.AEGroupMismatch.Add(uint64(divergentGroups))
 	}
 
 	var buckets []uint32
@@ -150,6 +170,9 @@ func (m *Manager) RunRound(replicaFactor int) int {
 // finishRefinement resolves IBLT sketches (with P2 fallback), diffs
 // metadata, pushes winners, fetches losers, and applies the result.
 func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestResponse) int {
+	if mt := m.metrics(); mt != nil {
+		mt.AEMetaRecv.Add(uint64(len(resp.Rows)))
+	}
 	var reconstructed []MetaRow
 	var reconstructedCovered []uint32
 	sketchHasDiff := map[uint32]bool{}
@@ -219,6 +242,12 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 
 	slices.Sort(failed)
 	failed = uniqU32(failed)
+	if mt := m.metrics(); mt != nil {
+		// Sketches that survived peeling vs buckets falling back to
+		// explicit metadata.
+		mt.AEIBLTFallback.Add(uint64(len(failed)))
+		mt.AEIBLTOk.Add(uint64(len(resp.Sketches) - len(failed)))
+	}
 	if len(failed) > 0 {
 		fbReq := Refinement{ForceMeta: true}
 		for _, b := range failed {
@@ -329,6 +358,9 @@ func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse
 	}
 	if len(divergent) == 0 {
 		return 0
+	}
+	if mt := m.metrics(); mt != nil {
+		mt.AEBucketMismatch.Add(uint64(len(divergent)))
 	}
 	for _, b := range divergent {
 		if !coveredSet[b] {
@@ -576,6 +608,12 @@ func (m *Manager) ApplySync(msg SyncMessage) int {
 		}
 		_ = m.store.PutVersioned(item.Key, item.Entry)
 	}
+	// Single funnel for repair accounting (initiator + responder +
+	// direct callers): every applied entry converged here.
+	if mt := m.metrics(); mt != nil {
+		mt.AEKeysRepaired.Add(uint64(applied))
+		mt.AEFetched.Add(uint64(len(msg.Entries)))
+	}
 	return applied
 }
 
@@ -621,6 +659,9 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 		}
 		resp.Covered = covered
 		resp.Rows = rows
+		if mt := m.metrics(); mt != nil {
+			mt.AEMetaSent.Add(uint64(len(rows)))
+		}
 		return protocol.StatusOK, EncodeResponse(resp)
 	}
 	return m.respondRefinement(resp, requestedList)
@@ -642,6 +683,9 @@ func (m *Manager) respondRefinement(resp DigestResponse, requested []uint32) (pr
 			}
 		}
 		resp.Rows = append(resp.Rows, vec...)
+	}
+	if mt := m.metrics(); mt != nil {
+		mt.AEMetaSent.Add(uint64(len(resp.Rows)))
 	}
 	return protocol.StatusOK, EncodeResponse(resp)
 }

@@ -25,6 +25,7 @@ import (
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
@@ -64,6 +65,11 @@ type Server struct {
 	// (no flag, no CLI surface). Sized at a quarter of the LWW capacity,
 	// mirroring counterCapacity.
 	counters *counter.Store
+	// met is the observability collector, always on like C++ (no
+	// flag; the /metrics endpoint gates exposure, not recording).
+	// Wired into the store, replication, AE, gossip, FD, and
+	// rebalance managers where configured.
+	met *metrics.Collector
 
 	listener net.Listener
 	mu       sync.Mutex
@@ -136,6 +142,9 @@ func (s *Server) ConfigureReplication(rf int, mode repl.Mode, m *repl.Manager) {
 	s.rf = rf
 	s.mode = mode
 	s.replMu.Unlock()
+	if m != nil {
+		m.SetMetrics(s.met)
+	}
 }
 
 // ConfigureTLS enables TLS with a cert chain + key, optionally verifying
@@ -301,9 +310,10 @@ func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *
 	// counterCapacity. Zero LWW capacity still yields a usable minimum:
 	// the counter store clamps to one shard regardless.
 	counterCap := st.Capacity() / 4
-	return &Server{
+	srv := &Server{
 		store:          st,
 		counters:       counter.NewStore(counterCap),
+		met:            metrics.NewCollector(),
 		nodeID:         nodeID,
 		port:           port,
 		clock:          clock,
@@ -316,6 +326,8 @@ func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *
 		replayInterval: time.Second,
 		aeInterval:     30 * time.Second,
 	}
+	st.SetMetrics(srv.met)
+	return srv
 }
 
 // ConfigureRebalance creates the shard manager over the live ring, pool,
@@ -330,6 +342,7 @@ func (s *Server) ConfigureRebalance(rf int, quarantine time.Duration) {
 	s.ringMu.RUnlock()
 	m := shard.NewManager(s.store, ring, pool, table, s.nodeID, rf, quarantine, nil)
 	m.SetOnMigrationFailed(func() { s.scheduleMigrationRetry() })
+	m.SetMetrics(s.met)
 	s.shardMu.Lock()
 	s.shard = m
 	s.quarantineInterval = quarantine
@@ -426,6 +439,7 @@ func (s *Server) scheduleMigrationRetry() {
 		if s.shut.Load() {
 			return
 		}
+		s.met.RebalanceMigRetries.Add(1)
 		s.scheduleRebalanceDebounced()
 	})
 	s.shardMu.Unlock()
@@ -570,6 +584,7 @@ func (s *Server) Serve(l net.Listener) error {
 		s.conns[c] = struct{}{}
 		s.wg.Add(1)
 		s.mu.Unlock()
+		s.met.ConnsOpened.Add(1)
 		go s.handle(c)
 	}
 }
@@ -631,6 +646,7 @@ func (s *Server) done(c net.Conn) {
 	s.mu.Lock()
 	delete(s.conns, c)
 	s.mu.Unlock()
+	s.met.ConnsClosed.Add(1)
 	<-s.sem
 	s.wg.Done()
 }
@@ -696,6 +712,9 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	pool := client.NewPool(addrs, 5*time.Second)
 	gossip := cluster.NewGossipManager(now, pool, table, s.nodeID, s.gossipInterval)
 	fd := cluster.NewFailureDetector(now, pool, table, s.nodeID, s.suspectTimeout)
+	table.SetMetrics(s.met)
+	gossip.SetMetrics(s.met)
+	fd.SetMetrics(s.met)
 	s.ringMu.Lock()
 	s.table = table
 	s.gossip = gossip
@@ -728,6 +747,7 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 	s.ringMu.RUnlock()
 	m := ae.NewManager(s.store, ring, s.nodeID, pool, numBuckets, fetchBytes)
 	m.SetCounterStore(s.counters)
+	m.SetMetrics(s.met)
 	s.aeMu.Lock()
 	s.ae = m
 	s.aeMu.Unlock()
@@ -764,6 +784,25 @@ func (s *Server) Store() *store.LRUStore {
 // CounterStore exposes the CRDT counter store for introspection and tests.
 func (s *Server) CounterStore() *counter.Store {
 	return s.counters
+}
+
+// Metrics exposes the observability collector.
+func (s *Server) Metrics() *metrics.Collector {
+	return s.met
+}
+
+// MetricGauges snapshots live store sizes for a Prometheus scrape.
+func (s *Server) MetricGauges() metrics.StoreGauges {
+	b, e := s.store.Stats()
+	g := metrics.StoreGauges{Bytes: b, Entries: e, Capacity: s.store.Capacity()}
+	s.replMu.RLock()
+	m := s.repl
+	s.replMu.RUnlock()
+	if m != nil {
+		g.HintEntries = uint64(m.HintCount())
+		g.HintBytes = m.HintBytes()
+	}
+	return g
 }
 
 // Pool exposes the node's connection pool (transport for gossip, failure
@@ -1040,6 +1079,7 @@ func (s *Server) redirectTo(owner string) string {
 }
 
 func (s *Server) notReady(owner string) protocol.Response {
+	s.met.Redirects.Add(1)
 	return protocol.Response{Status: protocol.StatusNotReady, HasValue: true, Value: []byte(s.redirectTo(owner))}
 }
 
@@ -1085,6 +1125,7 @@ func (s *Server) handle(c net.Conn) {
 		var res protocol.Response
 		if err != nil {
 			// Decode failures answer InvalidArgument without trace echo.
+			s.met.DecodeFailures.Add(1)
 			res = protocol.Response{Status: protocol.StatusInvalidArgument}
 		} else {
 			dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
@@ -1094,9 +1135,11 @@ func (s *Server) handle(c net.Conn) {
 		}
 		out, err := protocol.EncodeResponse(res)
 		if err != nil {
+			s.met.WriteFailures.Add(1)
 			return
 		}
 		if err := writeAll(c, out); err != nil {
+			s.met.WriteFailures.Add(1)
 			return
 		}
 	}
@@ -1114,8 +1157,17 @@ func writeAll(c net.Conn, b []byte) error {
 }
 
 // dispatch routes one decoded request: auth gate first, then ownership,
-// replication, admin by opcode.
+// replication, admin by opcode. Every decoded request bumps its opcode
+// counter and latency, mirroring C++ recordOpcodeMetric (denials count
+// too: "one increment per request").
 func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Response {
+	start := s.clock.Now()
+	res := s.dispatchInner(req, authToken)
+	s.met.Record(req.Opcode, uint64(s.clock.Now().Sub(start).Nanoseconds()))
+	return res
+}
+
+func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.Response {
 	if !s.checkAuth(req.Opcode, authToken) {
 		// Denials carry no value (so a Get can never surface fake data)
 		// and echo the trace for correlation, like C++ denyRequest.

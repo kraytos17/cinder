@@ -6,8 +6,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
@@ -28,6 +30,7 @@ type GossipManager struct {
 
 	mu    sync.Mutex
 	peers []string
+	met   atomic.Pointer[metrics.Collector]
 }
 
 // NewGossipManager builds a gossip manager; Start loads peers and wires
@@ -51,6 +54,11 @@ func (g *GossipManager) Start() {
 	})
 }
 
+// SetMetrics wires the observability collector (nil disables).
+func (g *GossipManager) SetMetrics(m *metrics.Collector) {
+	g.met.Store(m)
+}
+
 // Tick sends this node's view to a random peer.
 func (g *GossipManager) Tick() {
 	g.mu.Lock()
@@ -60,6 +68,9 @@ func (g *GossipManager) Tick() {
 	}
 	target := g.peers[rand.IntN(len(g.peers))]
 	g.mu.Unlock()
+	if m := g.met.Load(); m != nil {
+		m.GossipRounds.Add(1)
+	}
 	req := protocol.Request{Opcode: protocol.OpGossip, Key: nil, Value: []byte(EncodeView(g.table.Snapshot()))}
 	g.transport.Send(target, req)
 }

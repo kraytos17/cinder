@@ -98,10 +98,14 @@ store directly).
   tails; `Compact` snapshots and truncates to a fresh WAL — on demand
   (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s),
   or once the active WAL passes `--max-wal-bytes` (default 64 MiB).
-- **Observability** — none yet: no metrics collector, no tracing substrate,
-  no profiling endpoint. Admin JSON (`info`/`cluster`/`ring`, same payloads
-  over TCP and gRPC) is the introspection surface; benchmarks are the
-  performance story (`just bench`, `-benchmem` always on).
+- **Observability** — metrics only, no tracing: `internal/metrics`
+  records per-opcode counters with log2-bucketed latency histograms plus
+  store/replication/AE/cluster/rebalance/connection counters, exposed as
+  Prometheus text at `GET /metrics` on `--metrics-port` (`0` = disabled).
+  Metric names match the retired C++ exposition (plus the four counter
+  opcodes, which postdate it). Admin JSON (`info`/`cluster`/`ring`, same
+  payloads over TCP and gRPC) stays the introspection surface; benchmarks
+  are the performance story (`just bench`, `-benchmem` always on).
 - **Configuration** — flags only (`cinderd --help` is authoritative);
   `config-reload` is accepted and answers OK. No YAML, no hot-reload.
 - **TLS** — opt-in (`--tls --tls-cert --tls-key [--tls-ca]`, TLS 1.2+);

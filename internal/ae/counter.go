@@ -42,6 +42,9 @@ func (m *Manager) exchangeCounterState(partner string) {
 	if encoded == nil {
 		return
 	}
+	if mt := m.metrics(); mt != nil {
+		mt.CounterAERounds.Add(1)
+	}
 	res, err := m.transport.Send(partner, protocol.Request{
 		Opcode: protocol.OpCounterAntiEntropy, Value: encoded,
 	})
@@ -54,6 +57,9 @@ func (m *Manager) exchangeCounterState(partner string) {
 	}
 	for _, e := range remote {
 		_ = cs.Merge(e.Key, e.Counter)
+	}
+	if mt := m.metrics(); mt != nil {
+		mt.CounterAERepaired.Add(uint64(len(remote)))
 	}
 }
 
@@ -137,6 +143,9 @@ func (m *Manager) OnCounterAntiEntropy(bundle []byte) (protocol.Status, []byte) 
 		if err := cs.Merge(e.Key, e.Counter); err != nil {
 			return protocol.StatusCapacityExceeded, nil
 		}
+	}
+	if mt := m.metrics(); mt != nil {
+		mt.CounterAERepaired.Add(uint64(len(remote)))
 	}
 	resp := m.EncodeCounterBatch(m.fetchBytes)
 	if resp == nil {

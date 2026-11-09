@@ -15,8 +15,7 @@
 // keep the local copy and fire the migration-failed callback so the owner
 // can schedule a delayed re-rebalance; push failures are best-effort.
 //
-// Deliberate simplifications vs C++: no metrics counters (the Go tree has
-// no metrics collector yet) and no tracing spans.
+// Deliberate simplifications vs C++: no tracing spans.
 package shard
 
 import (
@@ -27,6 +26,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -50,6 +50,7 @@ type Manager struct {
 	quarantine time.Duration
 
 	onMigrationFailed func()
+	met               atomic.Pointer[metrics.Collector]
 }
 
 // NewManager returns a Manager. rf < 1 selects 1 (no replication).
@@ -82,6 +83,13 @@ func NewManager(
 func (m *Manager) SetOnMigrationFailed(cb func()) {
 	m.onMigrationFailed = cb
 }
+
+// SetMetrics wires the observability collector (nil disables).
+func (m *Manager) SetMetrics(c *metrics.Collector) {
+	m.met.Store(c)
+}
+
+func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
 
 // Rebalance pushes keys this node no longer owns to their new ring owners.
 // It returns true when at least one key was deferred because an owner is
@@ -145,6 +153,10 @@ func (m *Manager) Rebalance() bool {
 	for _, c := range copies {
 		m.pushReplica(c.key, c.entry, c.owner)
 	}
+	if mt := m.metrics(); mt != nil {
+		mt.RebalanceCopies.Add(uint64(len(copies)))
+		mt.RebalanceMigrations.Add(uint64(len(migrates)))
+	}
 	for _, mg := range migrates {
 		m.migrateKey(mg.key, mg.entry, mg.primary, mg.peers)
 	}
@@ -201,6 +213,9 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 	_, err := m.transport.Send(primary, makeReplicateRequest(key, e))
 	wg.Wait()
 	if err != nil {
+		if mt := m.metrics(); mt != nil {
+			mt.RebalanceMigFailures.Add(1)
+		}
 		if m.onMigrationFailed != nil {
 			m.onMigrationFailed()
 		}
@@ -211,9 +226,13 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 		// orphan. Hard erase (tombstones migrate like any entry; only
 		// this post-handoff cleanup erases).
 		m.store.Remove(key)
+		return
 	}
 	// Otherwise retained-underreplicated: still served locally, retried
 	// next round; hinted handoff and anti-entropy cover it independently.
+	if mt := m.metrics(); mt != nil {
+		mt.RebalanceDroppedUnder.Add(1)
+	}
 }
 
 // pushReplica sends one idempotent copy. Failures are best-effort (the

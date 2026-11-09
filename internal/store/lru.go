@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/metrics"
 )
 
 // ErrCapacityExceeded rejects a lone entry bigger than its shard slice,
@@ -61,6 +63,7 @@ type LRUStore struct {
 	sink      atomic.Pointer[mutationSink]
 	totalSize atomic.Uint64
 	totalNum  atomic.Uint64
+	met       atomic.Pointer[metrics.Collector]
 
 	persistMu   sync.RWMutex
 	persistHook PersistHook
@@ -115,6 +118,49 @@ func (s *LRUStore) SetMutationSink(fn MutationSink) {
 		return
 	}
 	s.sink.Store(&mutationSink{fn: fn})
+}
+
+// SetMetrics wires the observability collector (nil disables). Like C++
+// setMetrics: every bump is nil-checked, so unconfigured stores pay only
+// a pointer load.
+func (s *LRUStore) SetMetrics(m *metrics.Collector) {
+	s.met.Store(m)
+}
+
+func (s *LRUStore) bumpHits() {
+	if m := s.met.Load(); m != nil {
+		m.Hits.Add(1)
+	}
+}
+
+func (s *LRUStore) bumpMisses() {
+	if m := s.met.Load(); m != nil {
+		m.Misses.Add(1)
+	}
+}
+
+func (s *LRUStore) bumpExpiredOnRead() {
+	if m := s.met.Load(); m != nil {
+		m.ExpiresOnRead.Add(1)
+	}
+}
+
+// bumpWrite records an accepted write: tombstones count as deletes,
+// live values as writes, and overwriting a resident also retires it
+// (mirroring C++ noteRemoved/noteAdded + the tombstone/write tail).
+func (s *LRUStore) bumpWrite(tombstone, overwrote bool) {
+	m := s.met.Load()
+	if m == nil {
+		return
+	}
+	if overwrote {
+		m.Deletes.Add(1)
+	}
+	if tombstone {
+		m.Deletes.Add(1)
+	} else {
+		m.Writes.Add(1)
+	}
 }
 
 func (s *LRUStore) emit(key string, versionAndTTL, writer uint64, removed bool) {
@@ -266,6 +312,7 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
 		s.updateWheel(sh, fresh, at)
 		s.persistPut(key, r.entry)
+		s.bumpWrite(e.Tombstone, true)
 		return nil
 	}
 
@@ -291,6 +338,7 @@ func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
 	s.updateWheel(sh, sh.index[key], at)
 	s.persistPut(key, r.entry)
+	s.bumpWrite(e.Tombstone, false)
 	return nil
 }
 
@@ -303,17 +351,21 @@ func (s *LRUStore) Get(key string) ([]byte, bool) {
 
 	idx, ok := sh.index[key]
 	if !ok {
+		s.bumpMisses()
 		return nil, false
 	}
 	n := &sh.nodes[idx]
 	if n.entry.Expired(s.clock.Now()) {
 		s.eraseNode(sh, idx)
+		s.bumpExpiredOnRead()
 		return nil, false
 	}
 	if n.entry.Tombstone {
+		s.bumpMisses()
 		return nil, false
 	}
 	s.touch(sh, idx)
+	s.bumpHits()
 	return append([]byte(nil), n.entry.Value...), true
 }
 
@@ -326,13 +378,16 @@ func (s *LRUStore) GetVersioned(key string) (Entry, bool) {
 
 	idx, ok := sh.index[key]
 	if !ok {
+		s.bumpMisses()
 		return Entry{}, false
 	}
 	n := &sh.nodes[idx]
 	if n.entry.Expired(s.clock.Now()) {
 		s.eraseNode(sh, idx)
+		s.bumpExpiredOnRead()
 		return Entry{}, false
 	}
+	s.bumpHits()
 	return n.entry.Clone(), true
 }
 
@@ -350,6 +405,9 @@ func (s *LRUStore) Remove(key string) bool {
 	old := sh.nodes[idx].entry.Clone()
 	s.eraseNode(sh, idx)
 	s.persistDel(key, old)
+	if m := s.met.Load(); m != nil {
+		m.Deletes.Add(1)
+	}
 	return true
 }
 
@@ -408,6 +466,9 @@ func (s *LRUStore) EvictExpired() int {
 					return
 				}
 				s.eraseNode(sh, id)
+				if m := s.met.Load(); m != nil {
+					m.EvictionsTTL.Add(1)
+				}
 				evicted++
 			})
 		}
@@ -574,6 +635,9 @@ func (s *LRUStore) evictOne(sh *shard) uint64 {
 	}
 	if victim == noLink {
 		return 0
+	}
+	if m := s.met.Load(); m != nil {
+		m.EvictionsCap.Add(1)
 	}
 	return s.removeNode(sh, victim)
 }

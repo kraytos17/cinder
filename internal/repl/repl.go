@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -22,6 +23,7 @@ type Manager struct {
 	journal   HintJournal
 	replaying atomic.Bool
 	flights   flightRegistry
+	met       atomic.Pointer[metrics.Collector]
 }
 
 // HintJournal persists hints across restarts. AppendAdd records a queued
@@ -40,6 +42,13 @@ func (m *Manager) SetHintJournal(j HintJournal) {
 	m.journal = j
 }
 
+// SetMetrics wires the observability collector (nil disables).
+func (m *Manager) SetMetrics(c *metrics.Collector) {
+	m.met.Store(c)
+}
+
+func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
+
 // NewManager returns a replication manager. Transport may be nil only when
 // every call passes an empty replica list.
 func NewManager(local *store.LRUStore, self string, clock store.Clock, t Transport) *Manager {
@@ -53,6 +62,9 @@ func NewManager(local *store.LRUStore, self string, clock store.Clock, t Transpo
 
 // HintCount returns the queued hint count.
 func (m *Manager) HintCount() int { return m.hints.Len() }
+
+// HintBytes returns the live estimated hint byte depth.
+func (m *Manager) HintBytes() uint64 { return m.hints.Bytes() }
 
 // HintsDropped returns the lifetime drop count.
 func (m *Manager) HintsDropped() uint64 { return m.hints.Dropped() }
@@ -93,9 +105,20 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
+		if mt := m.metrics(); mt != nil {
+			mt.AsyncWrites.Add(1)
+		}
 		return nil
 	}
-	return m.fanOutQuorum(key, req, replicas)
+	err := m.fanOutQuorum(key, req, replicas)
+	if mt := m.metrics(); mt != nil {
+		if err != nil {
+			mt.QuorumWritesErr.Add(1)
+		} else {
+			mt.QuorumWritesOK.Add(1)
+		}
+	}
+	return err
 }
 
 // Delete tombstones locally, then fans out. Mirrors deleteAsync: a quorum
@@ -118,9 +141,20 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
+		if mt := m.metrics(); mt != nil {
+			mt.AsyncDeletes.Add(1)
+		}
 		return nil
 	}
-	return m.fanOutQuorum(key, req, replicas)
+	err := m.fanOutQuorum(key, req, replicas)
+	if mt := m.metrics(); mt != nil {
+		if err != nil {
+			mt.QuorumDeletesEr.Add(1)
+		} else {
+			mt.QuorumDeletesOK.Add(1)
+		}
+	}
+	return err
 }
 
 type fanResult struct {
@@ -206,7 +240,31 @@ func drain(out <-chan fanResult, n int, fn func(fanResult)) {
 
 func (m *Manager) enqueueHint(node string, req protocol.Request) {
 	h := Hint{Target: node, Req: req, ExpiresAt: m.clock.Now().Add(HintTTL)}
+	if mt := m.metrics(); mt != nil {
+		mt.ReplicaUnreach.Add(1)
+		mt.HintsEnqueued.Add(1)
+	}
 	m.hints.Push(h)
+	// Funnel the queue's own drop count (oversize + evictions, including
+	// pushes that bypass the manager) into the collector without
+	// double-counting: monotonic max-sync.
+	if mt := m.metrics(); mt != nil {
+		for {
+			cur := mt.HintsDropped.Load()
+			qd := m.hints.Dropped()
+			if qd <= cur || mt.HintsDropped.CompareAndSwap(cur, qd) {
+				break
+			}
+		}
+		if peak := m.hints.Bytes(); peak > mt.HintBytesPeak.Load() {
+			for {
+				cur := mt.HintBytesPeak.Load()
+				if peak <= cur || mt.HintBytesPeak.CompareAndSwap(cur, peak) {
+					break
+				}
+			}
+		}
+	}
 	if m.journal != nil {
 		m.journal.AppendAdd(h)
 		// Bound the file like C++ appendAdd does: past the record budget
@@ -231,7 +289,10 @@ func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uin
 		}
 		return store.Entry{}, ErrNotFound
 	}
-	return m.flights.do(key, r, func() (store.Entry, error) {
+	if mt := m.metrics(); mt != nil {
+		mt.QuorumReads.Add(1)
+	}
+	return m.flights.do(m.metrics(), key, r, func() (store.Entry, error) {
 		return m.readOnce(key, replicas, r, traceID, spanID)
 	})
 }
@@ -267,6 +328,9 @@ func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID
 		// the winner back everywhere best-effort.
 		_ = m.local.PutVersioned(key, best)
 		m.repair(key, replicas, best, traceID, spanID)
+		if mt := m.metrics(); mt != nil {
+			mt.ReadRepairs.Add(1)
+		}
 	}
 	return best, nil
 }
@@ -373,7 +437,7 @@ type flight struct {
 	err  error
 }
 
-func (f *flightRegistry) do(key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
+func (f *flightRegistry) do(mt *metrics.Collector, key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
 	f.mu.Lock()
 	if f.flights == nil {
 		f.flights = make(map[flightKey]*flight)
@@ -382,6 +446,9 @@ func (f *flightRegistry) do(key string, r int, run func() (store.Entry, error)) 
 	if fl, ok := f.flights[k]; ok {
 		f.mu.Unlock()
 		<-fl.done
+		if mt != nil {
+			mt.ReadsCoalesced.Add(1)
+		}
 		return fl.res, fl.err
 	}
 	fl := &flight{done: make(chan struct{})}
@@ -421,5 +488,9 @@ func (m *Manager) ReplayHints() int {
 		}(h)
 	}
 	wg.Wait()
-	return int(replayed.Load())
+	n := int(replayed.Load())
+	if mt := m.metrics(); mt != nil {
+		mt.HintsReplayed.Add(uint64(n))
+	}
+	return n
 }

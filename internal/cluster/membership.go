@@ -7,7 +7,10 @@ package cluster
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/metrics"
 )
 
 // NodeState mirrors the C++ NodeState.
@@ -50,6 +53,13 @@ type MembershipTable struct {
 	nodes map[string]*NodeInfo
 	cbs   []func()
 	clock func() time.Time
+	met   atomic.Pointer[metrics.Collector]
+}
+
+// SetMetrics wires the observability collector (nil disables). Marks and
+// refutations bump only on actual state changes, mirroring C++.
+func (t *MembershipTable) SetMetrics(m *metrics.Collector) {
+	t.met.Store(m)
 }
 
 // NewMembershipTable returns a table containing only self (alive, inc 0).
@@ -156,6 +166,11 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 		self.State = Alive
 		changed = true
 	}
+	if changed {
+		if m := t.met.Load(); m != nil {
+			m.RefutedRumors.Add(1)
+		}
+	}
 	return changed
 }
 
@@ -169,6 +184,9 @@ func (t *MembershipTable) MarkSuspect(id string) {
 	}
 	n.State = Suspect
 	t.mu.Unlock()
+	if m := t.met.Load(); m != nil {
+		m.SuspectMarked.Add(1)
+	}
 	t.fire()
 }
 
@@ -182,6 +200,9 @@ func (t *MembershipTable) MarkDead(id string) {
 	}
 	n.State = Dead
 	t.mu.Unlock()
+	if m := t.met.Load(); m != nil {
+		m.DeadMarked.Add(1)
+	}
 	t.fire()
 }
 
@@ -204,6 +225,9 @@ func (t *MembershipTable) MarkAlive(id string, incarnation uint64) {
 	n.State = Alive
 	n.Incarnation = incarnation
 	t.mu.Unlock()
+	if m := t.met.Load(); m != nil {
+		m.AliveMarked.Add(1)
+	}
 	t.fire()
 }
 

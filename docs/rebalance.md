@@ -18,7 +18,7 @@ documented in `protocol.md`.
 > `internal/persist` for anti-entropy and durability, `internal/store`
 > for tombstones and TTL). Behavior matches the retired C++ tree; where
 > the Go port deliberately diverges (full-scan digests, uncompressed
-> snapshots only, no metrics collector), it is called out inline.
+> snapshots only), it is called out inline.
 
 ## Membership State Machine
 
@@ -186,9 +186,9 @@ value, `version`, `writer_node_hash`, and `expires_at` when applicable
 
 **Liveness check** — before any push or migrate send, the shard manager
 checks the membership table; sends to `Suspect` or `Dead` targets are
-skipped, avoiding wasted I/O to nodes that won't ack. (There is no metrics
-collector: failures and retries are visible only as behavior — retained
-copies and timer-driven re-runs.)
+skipped, avoiding wasted I/O to nodes that won't ack. Skipped sends,
+failures, and retries are counted (`cluster_rebalance_*`, failures fire
+the 2s migration-retry timer which counts `rebalance_migration_retries`).
 
 ## Quarantine Window
 
@@ -544,6 +544,7 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--anti-entropy-interval-ms` | `30000` | Anti-entropy round interval (`0` disables it) |
 | `--anti-entropy-buckets` | `256` | Digest buckets |
 | `--grpc-port` | `0` | gRPC gateway port (`0` disables it) |
+| `--metrics-port` | `0` | Prometheus `/metrics` HTTP port (`0` disables it) |
 | `--tls` | `false` | Enable TLS encryption (requires `--tls-cert` + `--tls-key`) |
 | `--tls-cert` / `--tls-key` | (empty) | PEM certificate chain / private key |
 | `--tls-ca` | (empty) | CA for peer verification (chain-only, like asio `verify_peer`) |

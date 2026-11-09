@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/grpcgw"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
@@ -37,6 +39,7 @@ func main() {
 		aeBuckets     = flag.Int("anti-entropy-buckets", 256, "anti-entropy digest buckets")
 		quarantineMs  = flag.Int("quarantine-interval-ms", 10000, "rejoin warming window before a node receives migrated keys (0 = disabled)")
 		grpcPort      = flag.Int("grpc-port", 0, "gRPC gateway port (0 = disabled)")
+		metricsPort   = flag.Int("metrics-port", 0, "Prometheus /metrics HTTP port (0 = disabled)")
 		tls           = flag.Bool("tls", false, "enable TLS encryption")
 		tlsCert       = flag.String("tls-cert", "", "path to TLS certificate chain (PEM)")
 		tlsKey        = flag.String("tls-key", "", "path to TLS private key (PEM)")
@@ -163,6 +166,25 @@ func main() {
 	}
 
 	go srv.Serve(l)
+	// Prometheus endpoint, mirroring C++ metrics_port (0 = disabled).
+	// Plain HTTP like the gRPC gateway pre-TLS: scrape behind the same
+	// firewall rules as the admin surface.
+	if *metricsPort > 0 {
+		ml, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *metricsPort))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "cinderd: metrics listen:", err)
+			os.Exit(1)
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", metrics.NewHandler(srv.Metrics(), srv.MetricGauges))
+		msrv := &http.Server{Handler: mux}
+		defer msrv.Close()
+		go func() {
+			if err := msrv.Serve(ml); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintln(os.Stderr, "cinderd: metrics:", err)
+			}
+		}()
+	}
 	if *grpcPort > 0 {
 		gl, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
 		if err != nil {

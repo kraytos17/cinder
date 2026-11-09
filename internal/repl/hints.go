@@ -187,6 +187,13 @@ func (q *HintQueue) Dropped() uint64 {
 	return q.dropped
 }
 
+// Bytes returns the live estimated byte depth.
+func (q *HintQueue) Bytes() uint64 {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.bytes
+}
+
 func lwwCoversReq(a, b protocol.Request) bool {
 	as := store.Stamp{Version: a.Version, Writer: a.WriterNodeHash, Tombstone: a.Tombstone}
 	bs := store.Stamp{Version: b.Version, Writer: b.WriterNodeHash, Tombstone: b.Tombstone}

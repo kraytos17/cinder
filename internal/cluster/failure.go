@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
@@ -25,6 +26,7 @@ type FailureDetector struct {
 	peers []string
 	next  int
 	state map[string]*peerState
+	met   atomic.Pointer[metrics.Collector]
 }
 
 type peerState struct {
@@ -62,6 +64,11 @@ func (f *FailureDetector) Start() {
 
 // SetSuspectTimeout changes the timeout at runtime.
 func (f *FailureDetector) SetSuspectTimeout(d time.Duration) { f.timeout.Store(int64(d)) }
+
+// SetMetrics wires the observability collector (nil disables).
+func (f *FailureDetector) SetMetrics(m *metrics.Collector) {
+	f.met.Store(m)
+}
 
 func (f *FailureDetector) suspectTimeout() time.Duration {
 	return time.Duration(f.timeout.Load())
@@ -115,6 +122,9 @@ func (f *FailureDetector) Tick() {
 	if target == "" {
 		return
 	}
+	if m := f.met.Load(); m != nil {
+		m.ProbeSent.Add(1)
+	}
 	res, err := f.transport.Send(target, protocol.Request{Opcode: protocol.OpPing})
 	f.onProbeResult(target, err == nil && res.Status == protocol.StatusOK)
 }
@@ -144,6 +154,9 @@ func (f *FailureDetector) onProbeResult(peer string, acked bool) {
 	if acked {
 		info, _ := f.table.Get(peer)
 		f.table.MarkAlive(peer, info.Incarnation)
+		if m := f.met.Load(); m != nil {
+			m.ProbeReceived.Add(1)
+		}
 		return
 	}
 	// Sustained unreachable: suspect once the streak crosses the threshold;
