@@ -530,6 +530,30 @@ clean: (_need-preset 'configure' preset)
 clean-all:
     rm -rf -- build/
 
+# ── Go (replacement implementation; C++ frozen except protocol fixes) ────────
+
+# Build all Go packages.
+[group('go')]
+go-build:
+    cd go && go build ./...
+
+# Run the Go test suite (unit + fuzz seed corpus).
+[group('go')]
+[positional-arguments]
+go-test *args:
+    cd go && go test ./... "$@"
+
+# vet + gofmt gate (mirrors the go.yml CI job).
+[group('go')]
+go-vet:
+    cd go && go vet ./... && test -z "$(gofmt -l .)"
+
+# Short fuzz of the protocol codec fixed-point properties.
+[group('go')]
+[positional-arguments]
+go-fuzz *args:
+    cd go && go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@"
+
 # ── Private helpers (names start with _ so `just --list` hides them) ──────────
 
 # Configure `p`. Always re-run: it is cheap and picks up CMakePresets.json edits,

@@ -80,6 +80,19 @@ protocol (v5, 16 opcodes) with opt-in gRPC gateway and opt-in TLS 1.2.
   (`asan.supp`, `asan_ignorelist.txt`, `lsan.supp`, `tsan.supp`, `ubsan.supp`,
   `cppcheck.supp`).
 
+## Go port (`go/` — will eventually replace the C++ tree 100%)
+
+* Module `github.com/kraytos17/cinder/go`, toolchain pinned to go1.27.3 in
+  `go/go.mod`. Recipes: `just go-build`, `just go-test`, `just go-vet`,
+  `just go-fuzz`; CI job in `.github/workflows/go.yml`.
+* **Wire compatibility is law**: `go/internal/net/protocol` must stay
+  byte-identical with C++ `src/net/protocol.cpp` (protocol v6). Disagreements
+  resolve in favor of C++ until the C++ tree is retired.
+* **Hot path stays pointer-light**: flat `[]byte` slabs, integer handles, no
+  pointer graphs in the store. Tune with `GOGC`/`GOMEMLIMIT` + `pprof`, the
+  way C++ uses sanitizers.
+* Port tests first: every behavior mirrors a C++ unit test case-for-case.
+
 ## Tests (ctest -L labels are source of truth)
 
 * `just test-unit` → `-L unit` (22 files under `tests/unit`, compiled as four

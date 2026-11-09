@@ -1,0 +1,593 @@
+package store
+
+import (
+	"errors"
+	"hash/fnv"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+// ErrCapacityExceeded rejects a lone entry bigger than its shard slice,
+// exactly like the C++ store (even when it would fit global capacity).
+var ErrCapacityExceeded = errors.New("store: value exceeds capacity")
+
+// NodeOverhead is the per-entry accounting constant. It matches C++
+// sizeof(LruNode) (120) byte-for-byte so capacity behavior, eviction
+// thresholds, and tests stay identical across the two trees.
+const NodeOverhead = 120
+
+const (
+	maxShards     = 16
+	minShardBytes = 65_536
+	noLink        = -1
+)
+
+// MutationSink observes every accepted write, remove, and eviction while
+// the caller holds the shard lock, so it must be leaf-only: never call
+// back into the store, never block. Removal passes removed=true.
+type MutationSink func(key string, versionAndTTL, writer uint64, removed bool)
+
+type node struct {
+	key   string
+	entry Entry
+	// LRU linkage (indices into the shard's node slice, noLink = none).
+	lruPrev int
+	lruNext int
+}
+
+type shard struct {
+	mu       sync.Mutex
+	nodes    []node
+	free     []int
+	head     int // MRU
+	tail     int // LRU victim end
+	index    map[string]int
+	wheel    *Wheel
+	current  uint64
+	lastTick time.Time
+}
+
+// LRUStore is a sharded LRU eviction store with TTL-wheel expiry, LWW
+// versioned writes, and tombstones. It mirrors LruStore /
+// EvictionStoreBase: per-shard capacity slices, tombstone exemption from
+// capacity eviction, lazy expiry on read, and a global Lamport clock.
+type LRUStore struct {
+	clock     Clock
+	shards    []shard
+	capacity  atomic.Uint64
+	nextVer   atomic.Uint64
+	tombstone atomic.Int64 // GC grace in nanoseconds
+	sink      atomic.Pointer[mutationSink]
+	totalSize atomic.Uint64
+	totalNum  atomic.Uint64
+
+	persistMu   sync.RWMutex
+	persistHook PersistHook
+}
+
+type mutationSink struct {
+	fn MutationSink
+}
+
+// NewLRUStore returns a store with capacityBytes total capacity. Sharding
+// follows the C++ rule: one shard per 64 KiB, clamped to [1, 16], so tiny
+// stores stay single-shard and behave exactly like a single-mutex store.
+func NewLRUStore(capacityBytes uint64, clock Clock) *LRUStore {
+	if clock == nil {
+		clock = SystemClock{}
+	}
+	n := shardCountFor(capacityBytes)
+	s := &LRUStore{clock: clock, shards: make([]shard, n)}
+	s.capacity.Store(capacityBytes)
+	s.nextVer.Store(uint64(clock.Now().UnixNano()))
+	s.tombstone.Store(int64(5 * time.Minute))
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.head = noLink
+		sh.tail = noLink
+		sh.index = make(map[string]int)
+		sh.wheel = NewWheel()
+		sh.lastTick = clock.Now()
+	}
+	return s
+}
+
+func shardCountFor(capacityBytes uint64) int {
+	n := min(max(int(capacityBytes/minShardBytes), 1), maxShards)
+	return n
+}
+
+func shardFor(key string, n int) int {
+	h := fnv.New64a()
+	h.Write([]byte(key))
+	return int(h.Sum64() % uint64(n))
+}
+
+func entrySize(key string, e Entry) uint64 {
+	return uint64(len(key)+len(e.Value)) + NodeOverhead
+}
+
+// SetMutationSink registers the anti-entropy incremental-digest feed.
+func (s *LRUStore) SetMutationSink(fn MutationSink) {
+	if fn == nil {
+		s.sink.Store(nil)
+		return
+	}
+	s.sink.Store(&mutationSink{fn: fn})
+}
+
+func (s *LRUStore) emit(key string, versionAndTTL, writer uint64, removed bool) {
+	if ms := s.sink.Load(); ms != nil {
+		ms.fn(key, versionAndTTL, writer, removed)
+	}
+}
+
+// PersistHook observes every accepted write and every hard remove for
+// the WAL. It runs under the shard lock, so it must be leaf-only: never
+// call back into the store, never block. hardDelete replays as a hard
+// remove; accepted writes replay as versioned applies (tombstones
+// included). Expiry and capacity evictions are NOT reported: absolute
+// expiries re-skip and capacity re-evicts deterministically on replay.
+type PersistHook func(key string, e Entry, hardDelete bool)
+
+// SetPersistence registers the WAL hook (nil unregisters).
+func (s *LRUStore) SetPersistence(fn PersistHook) {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	s.persistHook = fn
+}
+
+func (s *LRUStore) persistPut(key string, e Entry) {
+	s.persistMu.RLock()
+	fn := s.persistHook
+	s.persistMu.RUnlock()
+	if fn != nil {
+		fn(key, e, false)
+	}
+}
+
+func (s *LRUStore) persistDel(key string, e Entry) {
+	s.persistMu.Lock()
+	fn := s.persistHook
+	s.persistMu.Unlock()
+	if fn != nil {
+		fn(key, e, true)
+	}
+}
+
+// RestoreVersion advances the Lamport clock past recovered versions so a
+// restarted node wins LWW. Used by snapshot/WAL recovery.
+func (s *LRUStore) RestoreVersion(v uint64) {
+	for {
+		cur := s.nextVer.Load()
+		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+// SetTombstoneGCInterval sets how long a delete marker survives before the
+// TTL wheel reaps it.
+func (s *LRUStore) SetTombstoneGCInterval(d time.Duration) {
+	s.tombstone.Store(int64(d))
+}
+
+// SetCapacity changes capacity at runtime; the shard count stays fixed and
+// only the per-shard slice changes.
+func (s *LRUStore) SetCapacity(capacityBytes uint64) {
+	s.capacity.Store(capacityBytes)
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		s.evictIfNeeded(sh)
+		sh.mu.Unlock()
+	}
+}
+
+// MintVersion returns a fresh monotonic Lamport version.
+func (s *LRUStore) MintVersion() uint64 {
+	return s.nextVer.Add(1) - 1
+}
+
+func (s *LRUStore) observeVersion(v uint64) {
+	for {
+		cur := s.nextVer.Load()
+		if v <= cur || s.nextVer.CompareAndSwap(cur, v) {
+			return
+		}
+	}
+}
+
+func (s *LRUStore) shardCap() uint64 {
+	return s.capacity.Load() / uint64(len(s.shards))
+}
+
+// Put stores value under key with a fresh minted version and no TTL.
+func (s *LRUStore) Put(key string, value []byte) error {
+	e := Entry{Value: append([]byte(nil), value...), Version: s.MintVersion()}
+	return s.PutVersioned(key, e)
+}
+
+// PutWithTTL stores value under key with a fresh minted version and a
+// relative TTL. A zero TTL expires on the next read, like the C++ store.
+func (s *LRUStore) PutWithTTL(key string, value []byte, ttl time.Duration) error {
+	now := s.clock.Now()
+	e := Entry{
+		Value:     append([]byte(nil), value...),
+		Version:   s.MintVersion(),
+		HasTTL:    true,
+		ExpiresAt: now.Add(ttl),
+	}
+	return s.putVersionedAt(key, e, now)
+}
+
+// PutVersioned applies entry idempotently: a strictly losing LWW stamp is
+// rejected as a no-op success; everything else overwrites.
+func (s *LRUStore) PutVersioned(key string, e Entry) error {
+	var at time.Time
+	if e.HasTTL {
+		at = s.clock.Now()
+	}
+	return s.putVersionedAt(key, e, at)
+}
+
+func (s *LRUStore) putVersionedAt(key string, e Entry, at time.Time) error {
+	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	if idx, ok := sh.index[key]; ok {
+		resident := &sh.nodes[idx]
+		if CompareLWW(stampOf(e), stampOf(resident.entry)) == LWWLess {
+			return nil // stale replay: reject, no-op success
+		}
+		oldPacked := resident.entry.VersionAndTTL()
+		oldWriter := resident.entry.WriterNodeHash
+		s.observeVersion(e.Version + 1)
+		oldSize := entrySize(key, resident.entry)
+		sh.current -= oldSize
+		subAtomic(&s.totalSize, oldSize)
+		resident.entry = e.Clone()
+		s.touch(sh, idx)
+		newSize := entrySize(key, resident.entry)
+		sh.current += newSize
+		s.totalSize.Add(newSize)
+		s.evictIfNeeded(sh)
+		// evictIfNeeded may have taken this very node (it can be the
+		// minimum); re-derive instead of touching a dead index.
+		fresh, ok := sh.index[key]
+		if !ok {
+			s.emit(key, oldPacked, oldWriter, true)
+			return nil
+		}
+		r := &sh.nodes[fresh]
+		s.emit(key, oldPacked, oldWriter, true)
+		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
+		s.updateWheel(sh, fresh, at)
+		s.persistPut(key, r.entry)
+		return nil
+	}
+
+	size := entrySize(key, e)
+	if size > s.shardCap() {
+		return ErrCapacityExceeded
+	}
+	s.observeVersion(e.Version + 1)
+	idx := s.allocNode(sh)
+	n := &sh.nodes[idx]
+	n.key = key
+	n.entry = e.Clone()
+	s.linkHead(sh, idx)
+	sh.index[key] = idx
+	sh.current += size
+	s.totalSize.Add(size)
+	s.totalNum.Add(1)
+	s.evictIfNeeded(sh)
+	if _, ok := sh.index[key]; !ok {
+		return nil // self-evicted under pressure: nothing to report
+	}
+	r := &sh.nodes[sh.index[key]]
+	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
+	s.updateWheel(sh, sh.index[key], at)
+	s.persistPut(key, r.entry)
+	return nil
+}
+
+// Get returns a copy of the live value, or false on miss, expiry, or
+// tombstone. Expired entries are reaped eagerly; tombstones stay hidden.
+func (s *LRUStore) Get(key string) ([]byte, bool) {
+	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	idx, ok := sh.index[key]
+	if !ok {
+		return nil, false
+	}
+	n := &sh.nodes[idx]
+	if n.entry.Expired(s.clock.Now()) {
+		s.eraseNode(sh, idx)
+		return nil, false
+	}
+	if n.entry.Tombstone {
+		return nil, false
+	}
+	s.touch(sh, idx)
+	return append([]byte(nil), n.entry.Value...), true
+}
+
+// GetVersioned returns the resident entry (tombstones included), or false
+// on miss or expiry. Unlike Get it never touches LRU order.
+func (s *LRUStore) GetVersioned(key string) (Entry, bool) {
+	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	idx, ok := sh.index[key]
+	if !ok {
+		return Entry{}, false
+	}
+	n := &sh.nodes[idx]
+	if n.entry.Expired(s.clock.Now()) {
+		s.eraseNode(sh, idx)
+		return Entry{}, false
+	}
+	return n.entry.Clone(), true
+}
+
+// Remove hard-erases key, returning false when absent. Unlike
+// RemoveVersioned it leaves no tombstone behind.
+func (s *LRUStore) Remove(key string) bool {
+	sh := &s.shards[shardFor(key, len(s.shards))]
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	idx, ok := sh.index[key]
+	if !ok {
+		return false
+	}
+	old := sh.nodes[idx].entry.Clone()
+	s.eraseNode(sh, idx)
+	s.persistDel(key, old)
+	return true
+}
+
+// RemoveVersioned plants a tombstone that wins or loses LWW exactly like a
+// put. The marker carries a GC deadline on the TTL wheel so replicas
+// observe the delete before it is reaped.
+func (s *LRUStore) RemoveVersioned(key string, version, writer uint64) error {
+	now := s.clock.Now()
+	tomb := Entry{
+		Version:        version,
+		WriterNodeHash: writer,
+		Tombstone:      true,
+		HasTTL:         true,
+		ExpiresAt:      now.Add(time.Duration(s.tombstone.Load())),
+	}
+	return s.putVersionedAt(key, tomb, now)
+}
+
+// Size counts index entries, tombstones included.
+func (s *LRUStore) Size() int {
+	total := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		total += len(sh.index)
+		sh.mu.Unlock()
+	}
+	return total
+}
+
+// EvictExpired advances every shard wheel to now, reaping entries whose
+// deadline passed and re-scheduling early firers (wheel wrap or
+// sub-second drift) for their true expiry.
+func (s *LRUStore) EvictExpired() int {
+	now := s.clock.Now()
+	evicted := 0
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		elapsed := now.Sub(sh.lastTick)
+		var ticks uint64 = 1
+		if elapsed > 0 {
+			if t := uint64(elapsed / time.Second); t > 1 {
+				ticks = t
+			}
+		}
+		sh.lastTick = now
+		for t := uint64(0); t < ticks; t++ {
+			sh.wheel.Tick(func(id int) {
+				n, ok := s.nodeIfResident(sh, id)
+				if !ok {
+					return
+				}
+				if !n.entry.HasTTL || n.entry.ExpiresAt.After(now) {
+					sh.wheel.Insert(id, expiryTicks(n.entry.ExpiresAt, now))
+					return
+				}
+				s.eraseNode(sh, id)
+				evicted++
+			})
+		}
+		sh.mu.Unlock()
+	}
+	return evicted
+}
+
+// EntryPair is one live snapshot row.
+type EntryPair struct {
+	Key   string
+	Entry Entry
+}
+
+// LiveEntries returns a point-in-time copy of all present entries,
+// tombstones included, expired entries skipped. The store may be mutated
+// freely while iterating the result.
+func (s *LRUStore) LiveEntries() []EntryPair {
+	now := s.clock.Now()
+	var out []EntryPair
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for idx := sh.head; idx != noLink; idx = sh.nodes[idx].lruNext {
+			e := sh.nodes[idx].entry
+			if e.Expired(now) {
+				continue
+			}
+			out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone()})
+		}
+		sh.mu.Unlock()
+	}
+	return out
+}
+
+// ForEach visits a point-in-time snapshot, so the visitor may safely call
+// back into the store.
+func (s *LRUStore) ForEach(fn func(key string, e Entry)) {
+	for _, p := range s.LiveEntries() {
+		fn(p.Key, p.Entry)
+	}
+}
+
+// expiryTicks maps an absolute expiry to wheel ticks: at least 1 ahead, so
+// sub-second TTLs fire on the very next evictExpired.
+func expiryTicks(expiresAt, at time.Time) uint64 {
+	rem := expiresAt.Sub(at)
+	if rem <= 0 {
+		return 1
+	}
+	ticks := uint64((rem + time.Second - time.Nanosecond) / time.Second)
+	if ticks < 1 {
+		return 1
+	}
+	return ticks
+}
+
+func (s *LRUStore) nodeIfResident(sh *shard, idx int) (*node, bool) {
+	if idx < 0 || idx >= len(sh.nodes) {
+		return nil, false
+	}
+	n := &sh.nodes[idx]
+	cur, ok := sh.index[n.key]
+	if !ok || cur != idx {
+		return nil, false
+	}
+	return n, true
+}
+
+func (s *LRUStore) allocNode(sh *shard) int {
+	if len(sh.free) > 0 {
+		idx := sh.free[len(sh.free)-1]
+		sh.free = sh.free[:len(sh.free)-1]
+		sh.nodes[idx] = node{}
+		return idx
+	}
+	idx := len(sh.nodes)
+	sh.nodes = append(sh.nodes, node{})
+	return idx
+}
+
+func (s *LRUStore) linkHead(sh *shard, idx int) {
+	n := &sh.nodes[idx]
+	n.lruPrev = noLink
+	n.lruNext = sh.head
+	if sh.head != noLink {
+		sh.nodes[sh.head].lruPrev = idx
+	}
+	sh.head = idx
+	if sh.tail == noLink {
+		sh.tail = idx
+	}
+}
+
+func (s *LRUStore) unlink(sh *shard, idx int) {
+	n := &sh.nodes[idx]
+	if n.lruPrev != noLink {
+		sh.nodes[n.lruPrev].lruNext = n.lruNext
+	} else {
+		sh.head = n.lruNext
+	}
+	if n.lruNext != noLink {
+		sh.nodes[n.lruNext].lruPrev = n.lruPrev
+	} else {
+		sh.tail = n.lruPrev
+	}
+	n.lruPrev, n.lruNext = noLink, noLink
+}
+
+func (s *LRUStore) touch(sh *shard, idx int) {
+	if sh.head == idx {
+		return
+	}
+	s.unlink(sh, idx)
+	s.linkHead(sh, idx)
+}
+
+func (s *LRUStore) updateWheel(sh *shard, idx int, at time.Time) {
+	n := &sh.nodes[idx]
+	if n.entry.HasTTL {
+		sh.wheel.Insert(idx, expiryTicks(n.entry.ExpiresAt, at))
+	} else {
+		// Wheel removal is idempotent, so no scheduled flag is needed.
+		sh.wheel.Remove(idx)
+	}
+}
+
+// eraseNode drops index/list/wheel for a node. Caller holds sh.mu.
+func (s *LRUStore) eraseNode(sh *shard, idx int) {
+	s.removeNode(sh, idx)
+}
+
+// removeNode unlinks one node and updates all accounting, returning the
+// bytes freed. Caller holds sh.mu.
+func (s *LRUStore) removeNode(sh *shard, idx int) uint64 {
+	n := &sh.nodes[idx]
+	s.emit(n.key, n.entry.VersionAndTTL(), n.entry.WriterNodeHash, true)
+	freed := entrySize(n.key, n.entry)
+	s.onEvictExpired(sh, idx)
+	sh.wheel.Remove(idx)
+	delete(sh.index, n.key)
+	s.unlink(sh, idx)
+	sh.free = append(sh.free, idx)
+	sh.current -= freed
+	subAtomic(&s.totalSize, freed)
+	s.totalNum.Add(^uint64(0)) // -1
+	return freed
+}
+
+// onEvictExpired is the LRU policy hook (no-op; LFU overrides it later).
+func (s *LRUStore) onEvictExpired(_ *shard, _ int) {}
+
+// evictOne removes the LRU live entry, skipping tombstones wherever they
+// sit: evicting a live delete marker would resurrect the key on the next
+// anti-entropy round. Returns bytes freed, or 0 when only tombstones
+// remain (their GC deadline reaps them instead).
+func (s *LRUStore) evictOne(sh *shard) uint64 {
+	victim := noLink
+	for idx := sh.tail; idx != noLink; idx = sh.nodes[idx].lruPrev {
+		if !sh.nodes[idx].entry.Tombstone {
+			victim = idx
+			break
+		}
+	}
+	if victim == noLink {
+		return 0
+	}
+	return s.removeNode(sh, victim)
+}
+
+func (s *LRUStore) evictIfNeeded(sh *shard) {
+	cap := s.shardCap()
+	for sh.current > cap && sh.head != noLink {
+		if s.evictOne(sh) == 0 {
+			break
+		}
+	}
+}
+
+// subAtomic subtracts n from an atomic counter.
+func subAtomic(u *atomic.Uint64, n uint64) {
+	u.Add(^uint64(n - 1))
+}

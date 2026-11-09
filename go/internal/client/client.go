@@ -1,0 +1,186 @@
+// Package client is the Cinder v6 TCP client (Go port).
+//
+// M3: single-connection client with per-RPC deadlines. Requests on one
+// connection are strictly sequential (the server answers in order), so Do
+// serializes under a mutex. Redirect following, pooling, and quorum fan-out
+// arrive with multi-node support in M4; NotReady surfaces to the caller.
+package client
+
+import (
+	"crypto/tls"
+	"encoding/binary"
+	"fmt"
+	"io"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/kraytos17/cinder/go/internal/net/protocol"
+)
+
+// Client is a single v6 connection. It is safe for concurrent use; a
+// transport error closes the connection and all subsequent calls fail
+// until the caller redials (M4 adds transparent reconnect).
+type Client struct {
+	mu      sync.Mutex
+	conn    net.Conn
+	timeout time.Duration
+}
+
+// Dial opens addr with a dial timeout; timeout also bounds every RPC.
+func Dial(addr string, timeout time.Duration) (*Client, error) {
+	c, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{conn: c, timeout: timeout}, nil
+}
+
+// DialTLS opens addr over TLS with a dial timeout; timeout also bounds
+// every RPC. cfg must come from tlscfg.Client (chain-only verification
+// like the C++ client) or be nil for an unverified connection.
+func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, error) {
+	if cfg == nil {
+		cfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only path
+	}
+	c, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{conn: c, timeout: timeout}, nil
+}
+
+// Close closes the connection.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	err := c.conn.Close()
+	c.conn = nil
+	return err
+}
+
+func (c *Client) fail(err error) error {
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+	return err
+}
+
+// Do sends one request and returns the response frame.
+func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return protocol.Response{}, fmt.Errorf("client: connection closed")
+	}
+	frame, err := protocol.EncodeRequest(req, nil)
+	if err != nil {
+		return protocol.Response{}, err
+	}
+	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		return protocol.Response{}, c.fail(err)
+	}
+	for len(frame) > 0 {
+		n, err := c.conn.Write(frame)
+		if err != nil {
+			return protocol.Response{}, c.fail(err)
+		}
+		frame = frame[n:]
+	}
+	header := make([]byte, protocol.FrameHeaderSize)
+	if _, err := io.ReadFull(c.conn, header); err != nil {
+		return protocol.Response{}, c.fail(err)
+	}
+	if header[0] != protocol.Magic || header[1] != protocol.Version {
+		return protocol.Response{}, c.fail(fmt.Errorf("client: bad response header"))
+	}
+	if header[2] != 0 {
+		return protocol.Response{}, c.fail(fmt.Errorf("client: response opcode %d", header[2]))
+	}
+	n := binary.BigEndian.Uint32(header[3:7])
+	if n > protocol.MaxPayloadSize {
+		return protocol.Response{}, c.fail(fmt.Errorf("client: response too large: %d", n))
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(c.conn, payload); err != nil {
+		return protocol.Response{}, c.fail(err)
+	}
+	res, err := protocol.DecodeResponse(append(header, payload...))
+	if err != nil {
+		return protocol.Response{}, c.fail(err)
+	}
+	return res, nil
+}
+
+// Raw sends pre-encoded bytes and returns the raw response frame. It
+// exists for negative tests (unknown opcodes, bad lengths) that the typed
+// API cannot express.
+func (c *Client) Raw(frame []byte) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil, fmt.Errorf("client: connection closed")
+	}
+	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		return nil, c.fail(err)
+	}
+	for len(frame) > 0 {
+		n, err := c.conn.Write(frame)
+		if err != nil {
+			return nil, c.fail(err)
+		}
+		frame = frame[n:]
+	}
+	header := make([]byte, protocol.FrameHeaderSize)
+	if _, err := io.ReadFull(c.conn, header); err != nil {
+		return nil, c.fail(err)
+	}
+	n := binary.BigEndian.Uint32(header[3:7])
+	if n > protocol.MaxPayloadSize {
+		return nil, c.fail(fmt.Errorf("client: response too large: %d", n))
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(c.conn, payload); err != nil {
+		return nil, c.fail(err)
+	}
+	return append(header, payload...), nil
+}
+
+// Ping checks liveness.
+func (c *Client) Ping() (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpPing})
+}
+
+// Set stores value under key.
+func (c *Client) Set(key string, value []byte) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value})
+}
+
+// SetWithTTL stores value with a relative TTL.
+func (c *Client) SetWithTTL(key string, value []byte, ttl time.Duration) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, HasTTL: true, TTL: ttl})
+}
+
+// Get fetches a live value.
+func (c *Client) Get(key string) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
+}
+
+// Del deletes key via a versioned tombstone (always OK, like C++).
+func (c *Client) Del(key string) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpDel, Key: []byte(key)})
+}
+
+// GetVersioned fetches the entry with LWW metadata.
+func (c *Client) GetVersioned(key string) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)})
+}
+
+// Admin sends an admin opcode (11-16) with an empty key.
+func (c *Client) Admin(op protocol.Opcode) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: op})
+}
