@@ -6,9 +6,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/rs/zerolog"
 )
 
 // Manager coordinates writes to the primary plus replicas. The store is
@@ -24,7 +26,10 @@ type Manager struct {
 	replaying atomic.Bool
 	flights   flightRegistry
 	met       atomic.Pointer[metrics.Collector]
+	logger    atomic.Pointer[zerolog.Logger]
 }
+
+var nopLogger = log.Nop()
 
 // HintJournal persists hints across restarts. AppendAdd records a queued
 // hint; AppendDel records a successful replay so recovery drops it.
@@ -47,7 +52,25 @@ func (m *Manager) SetMetrics(c *metrics.Collector) {
 	m.met.Store(c)
 }
 
+// SetLogger installs the operational logger (nil selects Nop).
+func (m *Manager) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	m.logger.Store(l)
+}
+
 func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
+
+// log returns the installed logger (Nop when unset, so direct
+// constructions stay silent without a SetLogger call).
+func (m *Manager) log() *zerolog.Logger {
+	if l := m.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
+}
 
 // NewManager returns a replication manager. Transport may be nil only when
 // every call passes an empty replica list.
@@ -118,6 +141,11 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool
 			mt.QuorumWritesOK.Add(1)
 		}
 	}
+	if err != nil {
+		if e := m.log().Warn(); e != nil {
+			log.Fields(e, req.TraceID, req.SpanID).Str("key", key).Msg("quorum write failed")
+		}
+	}
 	return err
 }
 
@@ -154,6 +182,11 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 			mt.QuorumDeletesOK.Add(1)
 		}
 	}
+	if err != nil {
+		if e := m.log().Warn(); e != nil {
+			log.Fields(e, req.TraceID, req.SpanID).Str("key", key).Msg("quorum delete failed")
+		}
+	}
 	return err
 }
 
@@ -167,6 +200,12 @@ type fanResult struct {
 // immediately; failures enqueue hints in the background. Mirrors the C++
 // async path, where on_done runs inline after the local commit.
 func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []string) {
+	if e := m.log().Debug(); e != nil {
+		log.Fields(e, req.TraceID, req.SpanID).
+			Str("key", key).
+			Strs("replicas", replicas).
+			Msg("replicating")
+	}
 	out := m.launch(req, replicas)
 	go func() {
 		for r := range out {

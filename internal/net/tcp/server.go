@@ -25,6 +25,7 @@ import (
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/persist"
@@ -32,6 +33,7 @@ import (
 	"github.com/kraytos17/cinder/internal/shard"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -49,6 +51,10 @@ const (
 	// WAL passed its byte budget, so this only bounds check latency.
 	compactTickInterval = time.Second
 )
+
+// nopLogger is the shared disabled logger for servers constructed
+// without SetLogger. Disabled level: every event is nil, nothing emits.
+var nopLogger = log.Nop()
 
 // Server is a v6 TCP server. Without ConfigureCluster it owns every key
 // (standalone). With a cluster view, writes route by ring ownership and
@@ -70,6 +76,10 @@ type Server struct {
 	// Wired into the store, replication, AE, gossip, FD, and
 	// rebalance managers where configured.
 	met *metrics.Collector
+	// logger is the operational logger (default Nop; cinderd installs
+	// the --log-level logger via SetLogger). Request lines carry the
+	// wire trace/span IDs for cross-node correlation.
+	logger atomic.Pointer[zerolog.Logger]
 
 	listener net.Listener
 	mu       sync.Mutex
@@ -144,6 +154,7 @@ func (s *Server) ConfigureReplication(rf int, mode repl.Mode, m *repl.Manager) {
 	s.replMu.Unlock()
 	if m != nil {
 		m.SetMetrics(s.met)
+		m.SetLogger(s.log())
 	}
 }
 
@@ -215,6 +226,7 @@ func (s *Server) ConfigurePersistence(dir string) error {
 	s.store.SetPersistence(func(key string, e store.Entry, hardDelete bool) {
 		m.OnWrite(key, e, hardDelete)
 	})
+	m.SetLogger(s.log())
 	s.persistMu.Lock()
 	s.persist = m
 	s.persistMu.Unlock()
@@ -339,6 +351,8 @@ func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *
 		aeInterval:     30 * time.Second,
 	}
 	st.SetMetrics(srv.met)
+	nop := log.Nop()
+	srv.logger.Store(&nop)
 	return srv
 }
 
@@ -355,6 +369,7 @@ func (s *Server) ConfigureRebalance(rf int, quarantine time.Duration) {
 	m := shard.NewManager(s.store, ring, pool, table, s.nodeID, rf, quarantine, nil)
 	m.SetOnMigrationFailed(func() { s.scheduleMigrationRetry() })
 	m.SetMetrics(s.met)
+	m.SetLogger(s.log())
 	s.shardMu.Lock()
 	s.shard = m
 	s.quarantineInterval = quarantine
@@ -727,6 +742,9 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	table.SetMetrics(s.met)
 	gossip.SetMetrics(s.met)
 	fd.SetMetrics(s.met)
+	table.SetLogger(s.log())
+	gossip.SetLogger(s.log())
+	fd.SetLogger(s.log())
 	s.ringMu.Lock()
 	s.table = table
 	s.gossip = gossip
@@ -760,6 +778,7 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 	m := ae.NewManager(s.store, ring, s.nodeID, pool, numBuckets, fetchBytes)
 	m.SetCounterStore(s.counters)
 	m.SetMetrics(s.met)
+	m.SetLogger(s.log())
 	s.aeMu.Lock()
 	s.ae = m
 	s.aeMu.Unlock()
@@ -796,6 +815,63 @@ func (s *Server) Store() *store.LRUStore {
 // CounterStore exposes the CRDT counter store for introspection and tests.
 func (s *Server) CounterStore() *counter.Store {
 	return s.counters
+}
+
+// SetLogger installs the operational logger (nil selects Nop) and fans
+// it out to every configured manager, so call order with Configure*
+// does not matter. Like SetMetrics: every site goes through log(), so
+// unconfigured servers pay nothing.
+func (s *Server) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	s.logger.Store(l)
+	s.aeMu.RLock()
+	aeMgr := s.ae
+	s.aeMu.RUnlock()
+	if aeMgr != nil {
+		aeMgr.SetLogger(l)
+	}
+	s.replMu.RLock()
+	replMgr := s.repl
+	s.replMu.RUnlock()
+	if replMgr != nil {
+		replMgr.SetLogger(l)
+	}
+	s.ringMu.RLock()
+	table, gossip, fd := s.table, s.gossip, s.fd
+	s.ringMu.RUnlock()
+	if table != nil {
+		table.SetLogger(l)
+	}
+	if gossip != nil {
+		gossip.SetLogger(l)
+	}
+	if fd != nil {
+		fd.SetLogger(l)
+	}
+	s.shardMu.Lock()
+	shardMgr := s.shard
+	s.shardMu.Unlock()
+	if shardMgr != nil {
+		shardMgr.SetLogger(l)
+	}
+	s.persistMu.RLock()
+	pm := s.persist
+	s.persistMu.RUnlock()
+	if pm != nil {
+		pm.SetLogger(l)
+	}
+}
+
+// log returns the installed logger (Nop when unset, so direct
+// constructions stay silent without a SetLogger call).
+func (s *Server) log() *zerolog.Logger {
+	if l := s.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
 }
 
 // Metrics exposes the observability collector.
@@ -1138,6 +1214,9 @@ func (s *Server) handle(c net.Conn) {
 		if err != nil {
 			// Decode failures answer InvalidArgument without trace echo.
 			s.met.DecodeFailures.Add(1)
+			if e := s.log().Debug(); e != nil {
+				e.Int("bytes", len(frame)).Msg("decode failure")
+			}
 			res = protocol.Response{Status: protocol.StatusInvalidArgument}
 		} else {
 			dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
@@ -1174,6 +1253,14 @@ func writeAll(c net.Conn, b []byte) error {
 // too: "one increment per request").
 func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Response {
 	start := s.clock.Now()
+	// Request-scoped logger: the wire IDs ride every line, and fan-out
+	// forwards the IDs, so replica-side lines correlate by trace_id.
+	if e := s.log().Debug(); e != nil {
+		log.Fields(e, req.TraceID, req.SpanID).
+			Str("opcode", metrics.OpName(req.Opcode)).
+			Str("key", string(req.Key)).
+			Msg("request")
+	}
 	res := s.dispatchInner(req, authToken)
 	s.met.Record(req.Opcode, uint64(s.clock.Now().Sub(start).Nanoseconds()))
 	return res
@@ -1183,6 +1270,12 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 	if !s.checkAuth(req.Opcode, authToken) {
 		// Denials carry no value (so a Get can never surface fake data)
 		// and echo the trace for correlation, like C++ denyRequest.
+		// Warn, opcode only: keys are user data, debug-only.
+		if e := s.log().Warn(); e != nil {
+			log.Fields(e, req.TraceID, req.SpanID).
+				Str("opcode", metrics.OpName(req.Opcode)).
+				Msg("permission denied")
+		}
 		return protocol.Response{Status: protocol.StatusPermissionDenied}
 	}
 	switch req.Opcode {

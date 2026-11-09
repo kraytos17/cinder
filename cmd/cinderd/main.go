@@ -15,6 +15,7 @@ import (
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/grpcgw"
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/repl"
@@ -56,6 +57,7 @@ func main() {
 		maxHintBytes  = flag.Uint64("max-hint-bytes", 0, "hinted-handoff byte budget (0 = default 64MiB)")
 		tombstoneMs   = flag.Int("tombstone-gc-ms", 0, "delete-marker GC grace in milliseconds (0 = default 5min)")
 		evictPolicy   = flag.String("eviction-policy", "lru", "eviction policy: lru only (lfu is not ported)")
+		logLevel      = flag.String("log-level", "info", "log level: trace|debug|info|warn|error")
 		showVers      = flag.Bool("version", false, "print version and exit")
 	)
 
@@ -64,6 +66,13 @@ func main() {
 		fmt.Printf("cinderd (go) %s\n", version)
 		return
 	}
+
+	lvl, err := log.ParseLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cinderd:", err)
+		os.Exit(2)
+	}
+	logger := log.New(os.Stderr, lvl)
 
 	peerList, err := tcp.ParsePeers(*peers)
 	if err != nil {
@@ -84,8 +93,10 @@ func main() {
 		st.SetTombstoneGCInterval(time.Duration(*tombstoneMs) * time.Millisecond)
 	}
 	srv := tcp.NewServer(*nodeID, *port, st, nil)
+	srv.SetLogger(&logger)
+	logger.Info().Str("node", *nodeID).Int("port", *port).Msg("starting")
 	if err := srv.ConfigureCluster(peerList); err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
+		logger.Error().Err(err).Msg("cluster")
 		os.Exit(2)
 	}
 
@@ -97,11 +108,11 @@ func main() {
 	srv.ConfigureRebalance(*replFact, time.Duration(*quarantineMs)*time.Millisecond)
 	if *tls {
 		if *tlsCert == "" || *tlsKey == "" {
-			fmt.Fprintln(os.Stderr, "cinderd: --tls requires --tls-cert and --tls-key")
+			logger.Error().Msg("--tls requires --tls-cert and --tls-key")
 			os.Exit(2)
 		}
 		if err := srv.ConfigureTLS(*tlsCert, *tlsKey, *tlsCA); err != nil {
-			fmt.Fprintln(os.Stderr, "cinderd: tls:", err)
+			logger.Error().Err(err).Msg("tls")
 			os.Exit(2)
 		}
 	}
@@ -117,17 +128,17 @@ func main() {
 	}
 	if shared != "" || clientSec != "" {
 		if err := srv.ConfigureSecrets(shared, clientSec); err != nil {
-			fmt.Fprintln(os.Stderr, "cinderd:", err)
+			logger.Error().Err(err).Msg("secrets")
 			os.Exit(2)
 		}
 	}
 	if *enablePersist {
 		if *dataDir == "" {
-			fmt.Fprintln(os.Stderr, "cinderd: --data-dir is required with --enable-persistence")
+			logger.Error().Msg("--data-dir is required with --enable-persistence")
 			os.Exit(2)
 		}
 		if err := srv.ConfigurePersistence(*dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "cinderd:", err)
+			logger.Error().Err(err).Msg("persistence")
 			os.Exit(2)
 		}
 
@@ -143,7 +154,7 @@ func main() {
 		case "quorum":
 			mode = repl.Quorum
 		default:
-			fmt.Fprintln(os.Stderr, "cinderd: --consistency must be async|quorum")
+			logger.Error().Msg("--consistency must be async|quorum")
 			os.Exit(2)
 		}
 
@@ -156,7 +167,7 @@ func main() {
 		if *tls {
 			ccfg, err := tlscfg.Client(*tlsCert, *tlsKey, *tlsCA)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "cinderd: tls:", err)
+				logger.Error().Err(err).Msg("pool tls")
 				os.Exit(2)
 			}
 			pool.SetTLS(ccfg)
@@ -173,7 +184,7 @@ func main() {
 		if *enablePersist {
 			j, _, err := ae.OpenJournal(filepath.Join(*dataDir, "hints.log"), mgr.HintQueue())
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "cinderd: hint journal:", err)
+				logger.Error().Err(err).Msg("hint journal")
 				os.Exit(2)
 			}
 			mgr.SetHintJournal(j)
@@ -182,7 +193,7 @@ func main() {
 
 	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *port))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd: listen:", err)
+		logger.Error().Err(err).Msg("listen")
 		os.Exit(1)
 	}
 
@@ -193,7 +204,7 @@ func main() {
 	if *metricsPort > 0 {
 		ml, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *metricsPort))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "cinderd: metrics listen:", err)
+			logger.Error().Err(err).Msg("metrics listen")
 			os.Exit(1)
 		}
 		mux := http.NewServeMux()
@@ -202,14 +213,14 @@ func main() {
 		defer msrv.Close()
 		go func() {
 			if err := msrv.Serve(ml); err != nil && err != http.ErrServerClosed {
-				fmt.Fprintln(os.Stderr, "cinderd: metrics:", err)
+				logger.Error().Err(err).Msg("metrics")
 			}
 		}()
 	}
 	if *grpcPort > 0 {
 		gl, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", *grpcPort))
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "cinderd: grpc listen:", err)
+			logger.Error().Err(err).Msg("grpc listen")
 			os.Exit(1)
 		}
 
@@ -221,7 +232,7 @@ func main() {
 			// plaintext. (ConfigureSecrets above already failed closed
 			// when --tls itself is off, so certs are present here.)
 			if err := gw.SetTLS(*tlsCert, *tlsKey); err != nil {
-				fmt.Fprintln(os.Stderr, "cinderd: grpc tls:", err)
+				logger.Error().Err(err).Msg("grpc tls")
 				os.Exit(2)
 			}
 		}
@@ -229,7 +240,7 @@ func main() {
 		defer gw.Stop()
 		go func() {
 			if err := gw.Serve(gl); err != nil {
-				fmt.Fprintln(os.Stderr, "cinderd: grpc:", err)
+				logger.Error().Err(err).Msg("grpc")
 			}
 		}()
 	}

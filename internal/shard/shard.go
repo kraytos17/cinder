@@ -26,15 +26,21 @@ import (
 
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/rs/zerolog"
 )
 
 // Transport sends one request; *client.Pool satisfies it.
 type Transport interface {
 	Send(node string, req protocol.Request) (protocol.Response, error)
 }
+
+// nopLogger is the shared disabled logger for managers constructed
+// without SetLogger.
+var nopLogger = log.Nop()
 
 // Manager reconciles the local store against the ring. Not safe for
 // concurrent Rebalance calls; the server serializes them through its
@@ -51,6 +57,7 @@ type Manager struct {
 
 	onMigrationFailed func()
 	met               atomic.Pointer[metrics.Collector]
+	logger            atomic.Pointer[zerolog.Logger]
 }
 
 // NewManager returns a Manager. rf < 1 selects 1 (no replication).
@@ -90,6 +97,23 @@ func (m *Manager) SetMetrics(c *metrics.Collector) {
 }
 
 func (m *Manager) metrics() *metrics.Collector { return m.met.Load() }
+
+// SetLogger installs the operational logger (nil selects Nop).
+func (m *Manager) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	m.logger.Store(l)
+}
+
+// log returns the installed logger (Nop when unset).
+func (m *Manager) log() *zerolog.Logger {
+	if l := m.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
+}
 
 // Rebalance pushes keys this node no longer owns to their new ring owners.
 // It returns true when at least one key was deferred because an owner is
@@ -210,9 +234,15 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 			}
 		}(peer)
 	}
+	if e := m.log().Debug(); e != nil {
+		e.Str("key", key).Str("primary", primary).Strs("peers", peers).Msg("migrating")
+	}
 	_, err := m.transport.Send(primary, makeReplicateRequest(key, e))
 	wg.Wait()
 	if err != nil {
+		if ev := m.log().Warn(); ev != nil {
+			ev.Str("key", key).Str("primary", primary).Msg("migration failed")
+		}
 		if mt := m.metrics(); mt != nil {
 			mt.RebalanceMigFailures.Add(1)
 		}

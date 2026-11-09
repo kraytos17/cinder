@@ -560,6 +560,7 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
 | `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
 | `--eviction-policy` | `lru` | Eviction policy: `lru` only (`lfu` is rejected, not ported) |
+| `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
 
 Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2
 uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2 accepted on

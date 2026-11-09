@@ -98,10 +98,14 @@ store directly).
   tails; `Compact` snapshots and truncates to a fresh WAL — on demand
   (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s),
   or once the active WAL passes `--max-wal-bytes` (default 64 MiB).
-- **Observability** — metrics only, no tracing: `internal/metrics`
+- **Observability** — metrics + logs, no tracing: `internal/metrics`
   records per-opcode counters with log2-bucketed latency histograms plus
   store/replication/AE/cluster/rebalance/connection counters, exposed as
   Prometheus text at `GET /metrics` on `--metrics-port` (`0` = disabled).
+  Operational logs are zerolog JSON on stderr (`--log-level`, default
+  `info`); every request line carries the wire `trace_id`/`span_id`
+  (forwarded on fan-out, so replica-side lines correlate), and external
+  aggregation reconstructs cross-node paths — no log shipping is built.
   Metric names match the retired C++ exposition (plus the four counter
   opcodes, which postdate it). Admin JSON (`info`/`cluster`/`ring`, same
   payloads over TCP and gRPC) stays the introspection surface; benchmarks

@@ -61,6 +61,9 @@ func (m *Manager) exchangeCounterState(partner string) {
 	if mt := m.metrics(); mt != nil {
 		mt.CounterAERepaired.Add(uint64(len(remote)))
 	}
+	if e := m.log().Debug(); e != nil {
+		e.Str("partner", partner).Int("entries", len(remote)).Msg("counter anti-entropy repaired")
+	}
 }
 
 // EncodeCounterBatch encodes a bounded sorted-key batch starting after

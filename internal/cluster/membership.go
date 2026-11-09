@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/rs/zerolog"
 )
 
 // NodeState mirrors the C++ NodeState.
@@ -44,22 +46,41 @@ type NodeInfo struct {
 	JoinedAt    time.Time
 }
 
+var nopLogger = log.Nop()
+
 // MembershipTable is the local view of cluster membership. Rumor
 // application is incarnation-guarded; a node hearing a non-alive rumor
 // about itself refutes it by bumping its incarnation and forcing Alive.
 type MembershipTable struct {
-	mu    sync.Mutex
-	self  string
-	nodes map[string]*NodeInfo
-	cbs   []func()
-	clock func() time.Time
-	met   atomic.Pointer[metrics.Collector]
+	mu     sync.Mutex
+	self   string
+	nodes  map[string]*NodeInfo
+	cbs    []func()
+	clock  func() time.Time
+	met    atomic.Pointer[metrics.Collector]
+	logger atomic.Pointer[zerolog.Logger]
 }
 
 // SetMetrics wires the observability collector (nil disables). Marks and
 // refutations bump only on actual state changes, mirroring C++.
 func (t *MembershipTable) SetMetrics(m *metrics.Collector) {
 	t.met.Store(m)
+}
+
+// SetLogger installs the operational logger (nil selects Nop).
+func (t *MembershipTable) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	t.logger.Store(l)
+}
+
+func (t *MembershipTable) log() *zerolog.Logger {
+	if l := t.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
 }
 
 // NewMembershipTable returns a table containing only self (alive, inc 0).
@@ -170,6 +191,9 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 		if m := t.met.Load(); m != nil {
 			m.RefutedRumors.Add(1)
 		}
+		if e := t.log().Debug(); e != nil {
+			e.Str("rumor_state", rumor.State.String()).Uint64("incarnation", rumor.Incarnation).Msg("refuted self rumor")
+		}
 	}
 	return changed
 }
@@ -203,6 +227,8 @@ func (t *MembershipTable) MarkDead(id string) {
 	if m := t.met.Load(); m != nil {
 		m.DeadMarked.Add(1)
 	}
+	// A node death is ops-relevant at info; id only, no user data.
+	t.log().Info().Str("node", id).Msg("marked dead")
 	t.fire()
 }
 

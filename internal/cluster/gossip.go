@@ -9,8 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/rs/zerolog"
 )
 
 // Sender delivers one request; *client.Pool satisfies it.
@@ -28,9 +30,10 @@ type GossipManager struct {
 	self      string
 	interval  time.Duration
 
-	mu    sync.Mutex
-	peers []string
-	met   atomic.Pointer[metrics.Collector]
+	mu     sync.Mutex
+	peers  []string
+	met    atomic.Pointer[metrics.Collector]
+	logger atomic.Pointer[zerolog.Logger]
 }
 
 // NewGossipManager builds a gossip manager; Start loads peers and wires
@@ -59,6 +62,22 @@ func (g *GossipManager) SetMetrics(m *metrics.Collector) {
 	g.met.Store(m)
 }
 
+// SetLogger installs the operational logger (nil selects Nop).
+func (g *GossipManager) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	g.logger.Store(l)
+}
+
+func (g *GossipManager) log() *zerolog.Logger {
+	if l := g.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
+}
+
 // Tick sends this node's view to a random peer.
 func (g *GossipManager) Tick() {
 	g.mu.Lock()
@@ -70,6 +89,9 @@ func (g *GossipManager) Tick() {
 	g.mu.Unlock()
 	if m := g.met.Load(); m != nil {
 		m.GossipRounds.Add(1)
+	}
+	if e := g.log().Debug(); e != nil {
+		e.Str("target", target).Msg("gossip")
 	}
 	req := protocol.Request{Opcode: protocol.OpGossip, Key: nil, Value: []byte(EncodeView(g.table.Snapshot()))}
 	g.transport.Send(target, req)
@@ -89,6 +111,7 @@ func (g *GossipManager) Leave() {
 	g.mu.Lock()
 	targets := append([]string(nil), g.peers...)
 	g.mu.Unlock()
+	g.log().Info().Msg("leaving cluster")
 	req := protocol.Request{Opcode: protocol.OpGossip, Value: []byte(EncodeView(g.table.Snapshot()))}
 	for _, peer := range targets {
 		g.transport.Send(peer, req)

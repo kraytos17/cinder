@@ -6,8 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/rs/zerolog"
 )
 
 // FailureDetector probes peers round-robin with Ping: consecutive failed
@@ -22,11 +24,12 @@ type FailureDetector struct {
 	self      string
 	timeout   atomic.Int64 // nanoseconds; SetSuspectTimeout is race-safe
 
-	mu    sync.Mutex
-	peers []string
-	next  int
-	state map[string]*peerState
-	met   atomic.Pointer[metrics.Collector]
+	mu     sync.Mutex
+	peers  []string
+	next   int
+	state  map[string]*peerState
+	met    atomic.Pointer[metrics.Collector]
+	logger atomic.Pointer[zerolog.Logger]
 }
 
 type peerState struct {
@@ -68,6 +71,22 @@ func (f *FailureDetector) SetSuspectTimeout(d time.Duration) { f.timeout.Store(i
 // SetMetrics wires the observability collector (nil disables).
 func (f *FailureDetector) SetMetrics(m *metrics.Collector) {
 	f.met.Store(m)
+}
+
+// SetLogger installs the operational logger (nil selects Nop).
+func (f *FailureDetector) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	f.logger.Store(l)
+}
+
+func (f *FailureDetector) log() *zerolog.Logger {
+	if l := f.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
 }
 
 func (f *FailureDetector) suspectTimeout() time.Duration {
@@ -124,6 +143,9 @@ func (f *FailureDetector) Tick() {
 	}
 	if m := f.met.Load(); m != nil {
 		m.ProbeSent.Add(1)
+	}
+	if e := f.log().Debug(); e != nil {
+		e.Str("target", target).Msg("probing")
 	}
 	res, err := f.transport.Send(target, protocol.Request{Opcode: protocol.OpPing})
 	f.onProbeResult(target, err == nil && res.Status == protocol.StatusOK)

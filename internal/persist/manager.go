@@ -10,9 +10,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/rs/zerolog"
 )
 
 const (
@@ -25,6 +28,8 @@ const (
 	snapshotsToKeep = 2
 )
 
+var nopLogger = log.Nop()
+
 // Manager owns one store's durability: WAL appends, snapshot + WAL replay
 // on startup, and compaction. It mirrors PersistenceManager's file layout
 // (wal.log, wal_<seq>.log, snapshot_<nanos>.dat, CURRENT) so files are
@@ -34,9 +39,10 @@ type Manager struct {
 	store *store.LRUStore
 	clock func() time.Time
 
-	mu  sync.Mutex
-	wal *Writer
-	seq uint64 // next sealed-segment sequence
+	mu     sync.Mutex
+	logger atomic.Pointer[zerolog.Logger]
+	wal    *Writer
+	seq    uint64 // next sealed-segment sequence
 
 	snapshotInterval time.Duration
 	maxWALBytes      uint64
@@ -94,6 +100,23 @@ func (m *Manager) SetMaxWALEntries(n uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.maxWALEntries = n
+}
+
+// SetLogger installs the operational logger (nil selects Nop).
+func (m *Manager) SetLogger(l *zerolog.Logger) {
+	if l == nil {
+		nop := log.Nop()
+		l = &nop
+	}
+	m.logger.Store(l)
+}
+
+// log returns the installed logger (Nop when unset).
+func (m *Manager) log() *zerolog.Logger {
+	if l := m.logger.Load(); l != nil {
+		return l
+	}
+	return &nopLogger
 }
 
 // MaybeCompact compacts once when a trigger fires — the snapshot interval
@@ -341,6 +364,7 @@ func (m *Manager) Compact() error {
 	m.deleteSealed()
 	m.pruneSnapshots(name)
 	m.lastCompact = m.clock()
+	m.log().Info().Int("entries", len(snaps)).Str("snapshot", name).Msg("compacted")
 	return nil
 }
 
