@@ -33,10 +33,10 @@ vet:
 verify: vet
     go test -race ./...
 
-# Short fuzz of the protocol codec fixed-point properties.
+# Short fuzz of the codec fixed-point properties and stateful models.
 [positional-arguments]
 fuzz *args:
-    go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@"
+    go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzGossipView -fuzztime=20s ./internal/cluster/ "$@" && go test -run=NONE -fuzz=FuzzWALReader -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzSnapshot -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzAECodecs -fuzztime=20s ./internal/ae/ "$@" && go test -run=NONE -fuzz=FuzzStoreSequence -fuzztime=20s ./internal/store/ "$@" && go test -run=NONE -fuzz=FuzzCounterCodec -fuzztime=20s ./internal/counter/ "$@"
 
 # Benchmarks (quick smoke by default; pass -benchtime for publishable
 # numbers, e.g. `just bench -benchtime=1s`). -benchmem always on:

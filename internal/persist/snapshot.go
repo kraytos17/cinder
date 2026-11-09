@@ -127,6 +127,12 @@ func (r *SnapReader) ReadStream(fn func(SnapEntry) bool) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return decodeSnapshot(raw, fn)
+}
+
+// decodeSnapshot is the byte-level ReadStream core (file I/O split out so
+// fuzz can feed arbitrary images without temp files per input).
+func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	if len(raw) < 20 {
 		return 0, fmt.Errorf("persist: truncated snapshot header")
 	}
