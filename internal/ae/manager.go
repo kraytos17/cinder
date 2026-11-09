@@ -1,6 +1,7 @@
 package ae
 
 import (
+	"cmp"
 	"slices"
 	"sort"
 	"sync"
@@ -480,7 +481,7 @@ func (m *Manager) CollectRows(buckets []uint32) [][]MetaRow {
 		})
 	})
 	for _, vec := range perBucket {
-		sort.Slice(vec, func(i, j int) bool { return vec[i].KeyHash < vec[j].KeyHash })
+		slices.SortFunc(vec, func(a, b MetaRow) int { return cmp.Compare(a.KeyHash, b.KeyHash) })
 	}
 	return perBucket
 }
@@ -592,7 +593,7 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 		}
 	}
 	slices.Sort(diff.Need)
-	sort.Slice(diff.Have, func(i, j int) bool { return diff.Have[i].Hash < diff.Have[j].Hash })
+	slices.SortFunc(diff.Have, func(a, b HavePair) int { return cmp.Compare(a.Hash, b.Hash) })
 	return diff
 }
 
@@ -645,7 +646,7 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 			requested[bh.Bucket] = true
 		}
 	}
-	sort.Slice(resp.BucketHashes, func(i, j int) bool { return resp.BucketHashes[i].Bucket < resp.BucketHashes[j].Bucket })
+	slices.SortFunc(resp.BucketHashes, func(a, b BucketHash) int { return cmp.Compare(a.Bucket, b.Bucket) })
 	var requestedList []uint32
 	for b := range requested {
 		requestedList = append(requestedList, b)
@@ -737,7 +738,7 @@ func (m *Manager) collectEntriesForHashes(hashes []uint64) []SyncItem {
 	for h, k := range resolved {
 		ps = append(ps, hashKeyPair{h, k})
 	}
-	sort.Slice(ps, func(i, j int) bool { return ps[i].h < ps[j].h })
+	slices.SortFunc(ps, func(a, b hashKeyPair) int { return cmp.Compare(a.h, b.h) })
 	var keys []string
 	for _, p := range ps {
 		keys = append(keys, p.key)
@@ -752,7 +753,7 @@ func (m *Manager) CollectEntriesForKeys(keys []string, maxBytes int) []SyncItem 
 	for _, k := range keys {
 		ps = append(ps, hashKeyPair{KeyHash(k), k})
 	}
-	sort.Slice(ps, func(i, j int) bool { return ps[i].h < ps[j].h })
+	slices.SortFunc(ps, func(a, b hashKeyPair) int { return cmp.Compare(a.h, b.h) })
 	var items []SyncItem
 	bytes := 0
 	for _, p := range ps {

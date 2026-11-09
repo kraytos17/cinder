@@ -1,9 +1,11 @@
 package persist
 
 import (
+	"cmp"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -376,7 +378,7 @@ func (m *Manager) walFiles() []string {
 			}
 		}
 	}
-	sort.Slice(segs, func(i, j int) bool { return segs[i].seq < segs[j].seq })
+	slices.SortFunc(segs, func(a, b seg) int { return cmp.Compare(a.seq, b.seq) })
 	var out []string
 	for _, s := range segs {
 		out = append(out, s.path)

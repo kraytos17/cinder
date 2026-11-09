@@ -13,6 +13,7 @@
 package hashring
 
 import (
+	"cmp"
 	"errors"
 	"math"
 	"slices"
@@ -233,7 +234,7 @@ func sortRing(snap *snapshot) {
 	for i := range order {
 		order[i] = i
 	}
-	sort.Slice(order, func(a, b int) bool { return snap.hashes[order[a]] < snap.hashes[order[b]] })
+	slices.SortFunc(order, func(a, b int) int { return cmp.Compare(snap.hashes[a], snap.hashes[b]) })
 	hashes := make([]uint64, len(order))
 	ix := make([]uint16, len(order))
 	for i, o := range order {

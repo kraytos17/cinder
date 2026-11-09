@@ -20,10 +20,11 @@
 package counter
 
 import (
+	"cmp"
 	"errors"
 	"hash/fnv"
 	"math"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -302,6 +303,6 @@ func (s *Store) LiveCounters() []BundleEntry {
 // SortedLiveCounters returns live counters sorted by key (AE batches).
 func (s *Store) SortedLiveCounters() []BundleEntry {
 	out := s.LiveCounters()
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	slices.SortFunc(out, func(a, b BundleEntry) int { return cmp.Compare(a.Key, b.Key) })
 	return out
 }
