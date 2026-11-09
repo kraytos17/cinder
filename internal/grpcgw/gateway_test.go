@@ -34,7 +34,7 @@ var (
 	NotReady = gen.StatusCode_STATUS_CODE_NOT_READY
 )
 
-func startGateway(t *testing.T, id string) (gen.CinderCacheServiceClient, func()) {
+func startGateway(t testing.TB, id string) (gen.CinderCacheServiceClient, func()) {
 	t.Helper()
 	tl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -63,7 +63,7 @@ func startGateway(t *testing.T, id string) (gen.CinderCacheServiceClient, func()
 
 // startAuthedGateway is startGateway with a client secret configured;
 // callers attach credentials via bearerCtx (or nothing, to test denial).
-func startAuthedGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
+func startAuthedGateway(t testing.TB, secret string) gen.CinderCacheServiceClient {
 	t.Helper()
 	fx := fixturesDir(t)
 	tl, err := net.Listen("tcp", "127.0.0.1:0")
@@ -386,7 +386,7 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 // cppGrpcBinary locates a gRPC-enabled C++ build, skipping when absent.
 // Prefers tls-grpc (verified working); falls back to debug-grpc, which may
 // be stale (undefined abseil symbols) until rebuilt.
-func cppGrpcBinary(t *testing.T) string {
+func cppGrpcBinary(t testing.TB) string {
 	t.Helper()
 	if p := os.Getenv("CINDER_TEST_CINDERD_GRPC_PATH"); p != "" {
 		return p
@@ -472,7 +472,7 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 
 // fixturesDir locates the repo's tests/fixtures (shared with the C++ TLS
 // suite).
-func fixturesDir(t *testing.T) string {
+func fixturesDir(t testing.TB) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
@@ -487,7 +487,7 @@ func fixturesDir(t *testing.T) string {
 
 // tlsClientConfig builds client credentials chaining to the fixture CA,
 // mirroring tlscfg.Client's chain-only verification.
-func tlsClientConfig(t *testing.T, caPath string) credentials.TransportCredentials {
+func tlsClientConfig(t testing.TB, caPath string) credentials.TransportCredentials {
 	t.Helper()
 	pem, err := os.ReadFile(caPath)
 	if err != nil {
@@ -716,5 +716,61 @@ func TestGatewayCounterAuthDenied(t *testing.T) {
 	}
 	if got, err := c.CounterGet(bearerCtx("s3cr3t"), &gen.CounterGetRequest{Key: "c"}); err != nil || got.Status != OK || got.GetValue() != 1 {
 		t.Fatalf("authed get: %+v %v", got, err)
+	}
+}
+
+// TestGatewayWithServerSecretsEnforced mirrors real cinderd wiring: the
+// server itself enforces the client secret (ConfigureSecrets) and the
+// gateway carries the same secret. Gateway RPCs must still succeed — the
+// gateway forwards its verified bearer so server-side policy (ownership,
+// replication, quorum) applies instead of denying every call.
+func TestGatewayWithServerSecretsEnforced(t *testing.T) {
+	fx := fixturesDir(t)
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	if err := srv.ConfigureTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem"), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureSecrets("", "s3cr3t"); err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(tl)
+	defer srv.Shutdown()
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := grpcgw.New(srv)
+	gw.SetClientSecret("s3cr3t")
+	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
+	go gw.Serve(gl)
+	defer gw.Stop()
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(tlsClientConfig(t, filepath.Join(fx, "ca.pem"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	c := gen.NewCinderCacheServiceClient(conn)
+	ctx := bearerCtx("s3cr3t")
+	if set, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v"}); err != nil || set.Status != OK {
+		t.Fatalf("authed set with server secrets: %+v %v", set, err)
+	}
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "k"}); err != nil || got.Status != OK || got.GetValue() != "v" {
+		t.Fatalf("authed get with server secrets: %+v %v", got, err)
+	}
+	if adj, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "c", Delta: 4}); err != nil || adj.Status != OK {
+		t.Fatalf("authed counter adjust with server secrets: %+v %v", adj, err)
+	}
+	if got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"}); err != nil || got.Status != OK || got.GetValue() != 4 {
+		t.Fatalf("authed counter get with server secrets: %+v %v", got, err)
+	}
+	if info, err := c.Info(ctx, &gen.InfoRequest{}); err != nil || info.GetJson() == "" {
+		t.Fatalf("authed info with server secrets: %+v %v", info, err)
 	}
 }

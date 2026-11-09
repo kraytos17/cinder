@@ -1027,6 +1027,17 @@ func (s *Server) Dispatch(req protocol.Request) protocol.Response {
 	return s.dispatch(req, nil)
 }
 
+// DispatchWithAuth routes like Dispatch but enforces the given credential
+// instead of an absent one. The gRPC gateway authenticates the bearer
+// itself (mapping failures to UNAUTHENTICATED), then forwards the decoded
+// token so server-side policy — auth, ownership, replication fan-out,
+// quorum — applies to gateway calls exactly as it does to TCP clients.
+// Without this, any server-side client secret would deny every gateway
+// call that routes through Dispatch.
+func (s *Server) DispatchWithAuth(req protocol.Request, token []byte) protocol.Response {
+	return s.dispatch(req, token)
+}
+
 // opcodeClass mirrors TcpConnection::classifyOpcode: client opcodes are
 // ring-routed, replication and admin opcodes address this node directly.
 type opcodeClass int

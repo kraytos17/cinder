@@ -81,40 +81,66 @@ type service struct {
 
 	node         *tcp.Server
 	clientSecret atomic.Value // string; set via SetClientSecret before Serve
+	// bearer is the precomputed bearer credential, refreshed with the
+	// secret. The header comparison and the raw token forwarded to
+	// DispatchWithAuth both come from here, so the per-RPC HMAC + hex
+	// encoding happens once per secret, not once per request.
+	bearer atomic.Pointer[bearerAuth]
+}
+
+// bearerAuth is one verified credential in both of its forms: the full
+// "Bearer <hex>" header value compared (constant-time) against inbound
+// metadata, and the decoded raw token forwarded to DispatchWithAuth so
+// server-side policy applies uniformly to gateway calls.
+type bearerAuth struct {
+	header string
+	raw    []byte
 }
 
 func (s *service) setClientSecret(secret string) {
 	s.clientSecret.Store(secret)
+	if secret == "" {
+		s.bearer.Store(nil)
+		return
+	}
+	raw := auth.ClientToken(secret)
+	s.bearer.Store(&bearerAuth{header: "Bearer " + hex.EncodeToString(raw), raw: raw})
 }
 
 // checkAuth mirrors the C++ gateway's checkAuth: with a client secret
 // configured, every RPC must present "authorization: Bearer <hex>" where
 // hex is the hex-encoded static client token; anything else is
-// UNAUTHENTICATED. Open when unconfigured.
-func (s *service) checkAuth(ctx context.Context) error {
-	want, _ := s.clientSecret.Load().(string)
-	if want == "" {
-		return nil
+// UNAUTHENTICATED. Open when unconfigured. On success it returns the
+// decoded raw token for DispatchWithAuth (nil when open); the server then
+// enforces its own policy exactly as for a TCP client carrying that
+// credential.
+func (s *service) checkAuth(ctx context.Context) ([]byte, error) {
+	b := s.bearer.Load()
+	if b == nil {
+		return nil, nil
 	}
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return status.Error(codes.Unauthenticated, "missing credentials")
+		return nil, status.Error(codes.Unauthenticated, "missing credentials")
 	}
 	vals := md.Get("authorization")
-	if len(vals) != 1 || !strings.HasPrefix(vals[0], "Bearer ") {
-		return status.Error(codes.Unauthenticated, "invalid credentials")
+	// Length gate first: the constant-time compare below only ever runs
+	// on equal-length inputs.
+	if len(vals) != 1 || len(vals[0]) != len(b.header) || !strings.HasPrefix(vals[0], "Bearer ") {
+		return nil, status.Error(codes.Unauthenticated, "invalid credentials")
 	}
-	if subtle.ConstantTimeCompare([]byte(vals[0][len("Bearer "):]), []byte(hex.EncodeToString(auth.ClientToken(want)))) != 1 {
-		return status.Error(codes.Unauthenticated, "invalid credentials")
+	if subtle.ConstantTimeCompare([]byte(vals[0]), []byte(b.header)) != 1 {
+		return nil, status.Error(codes.Unauthenticated, "invalid credentials")
 	}
-	return nil
+	return b.raw, nil
 }
 
 func (s *service) Get(ctx context.Context, req *gen.GetRequest) (*gen.GetResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.GetResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpGet, Key: []byte(req.GetKey())})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpGet, Key: []byte(req.GetKey())}, tok)
 	out := &gen.GetResponse{Status: toProtoStatus(res.Status)}
 	if res.HasValue {
 		out.Value = new(string(res.Value))
@@ -123,7 +149,8 @@ func (s *service) Get(ctx context.Context, req *gen.GetRequest) (*gen.GetRespons
 }
 
 func (s *service) Set(ctx context.Context, req *gen.SetRequest) (*gen.SetResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.SetResponse{}, err
 	}
 	r := protocol.Request{Opcode: protocol.OpSet, Key: []byte(req.GetKey()), Value: []byte(req.GetValue())}
@@ -131,12 +158,13 @@ func (s *service) Set(ctx context.Context, req *gen.SetRequest) (*gen.SetRespons
 		r.HasTTL = true
 		r.TTL = time.Duration(req.GetTtlMs()) * time.Millisecond
 	}
-	res := s.node.Dispatch(r)
+	res := s.node.DispatchWithAuth(r, tok)
 	return &gen.SetResponse{Status: toProtoStatus(res.Status)}, nil
 }
 
 func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.DeleteResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	_, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.DeleteResponse{}, err
 	}
 	res := s.node.DeleteNoRedirect(req.GetKey())
@@ -144,7 +172,8 @@ func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.Dele
 }
 
 func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest) (*gen.GetVersionedResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	_, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.GetVersionedResponse{}, err
 	}
 	out := &gen.GetVersionedResponse{}
@@ -164,29 +193,32 @@ func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest
 }
 
 func (s *service) Ping(ctx context.Context, _ *gen.PingRequest) (*gen.PingResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.PingResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpPing})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpPing}, tok)
 	return &gen.PingResponse{Status: toProtoStatus(res.Status)}, nil
 }
 
 func (s *service) CounterAdjust(ctx context.Context, req *gen.CounterAdjustRequest) (*gen.CounterAdjustResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.CounterAdjustResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{
+	res := s.node.DispatchWithAuth(protocol.Request{
 		Opcode: protocol.OpCounterAdjust, Key: []byte(req.GetKey()),
 		CounterDelta: req.GetDelta(), CounterDecrement: req.GetDecrement(),
-	})
+	}, tok)
 	return &gen.CounterAdjustResponse{Status: toProtoStatus(res.Status)}, nil
 }
 
 func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*gen.CounterGetResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.CounterGetResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(req.GetKey())})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(req.GetKey())}, tok)
 	out := &gen.CounterGetResponse{Status: toProtoStatus(res.Status)}
 	if res.Status == protocol.StatusOK && res.HasValue {
 		if c, err := counter.DecodePNCounter(res.Value); err == nil {
@@ -202,7 +234,8 @@ func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*
 }
 
 func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.MultiGetResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	_, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.MultiGetResponse{}, err
 	}
 	out := &gen.MultiGetResponse{}
@@ -220,7 +253,8 @@ func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.
 }
 
 func (s *service) MultiSet(ctx context.Context, req *gen.MultiSetRequest) (*gen.MultiSetResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	_, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.MultiSetResponse{}, err
 	}
 	out := &gen.MultiSetResponse{}
@@ -244,26 +278,29 @@ func (s *service) MultiSet(ctx context.Context, req *gen.MultiSetRequest) (*gen.
 }
 
 func (s *service) Info(ctx context.Context, _ *gen.InfoRequest) (*gen.InfoResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.InfoResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpAdminInfo})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminInfo}, tok)
 	return &gen.InfoResponse{Json: string(res.Value)}, nil
 }
 
 func (s *service) ClusterInfo(ctx context.Context, _ *gen.ClusterInfoRequest) (*gen.ClusterInfoResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.ClusterInfoResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpAdminCluster})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminCluster}, tok)
 	return &gen.ClusterInfoResponse{Json: string(res.Value)}, nil
 }
 
 func (s *service) RingInfo(ctx context.Context, _ *gen.RingInfoRequest) (*gen.RingInfoResponse, error) {
-	if err := s.checkAuth(ctx); err != nil {
+	tok, err := s.checkAuth(ctx)
+	if err != nil {
 		return &gen.RingInfoResponse{}, err
 	}
-	res := s.node.Dispatch(protocol.Request{Opcode: protocol.OpAdminRing})
+	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminRing}, tok)
 	return &gen.RingInfoResponse{Json: string(res.Value)}, nil
 }
 
