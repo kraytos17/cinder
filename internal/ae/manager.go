@@ -68,18 +68,22 @@ func (m *Manager) RunRound(replicaFactor int) int {
 	if !ok {
 		return 0
 	}
+
 	local := m.ComputeDigest()
 	res, err := m.transport.Send(partner, protocol.Request{
 		Opcode: protocol.OpAntiEntropyDigest, Value: EncodeGroupDigest(GroupFold(local)),
 	})
+
 	if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
 		return 0
 	}
+
 	groups := (int(m.numBuckets) + BucketsPerGroup - 1) / BucketsPerGroup
 	remote, ok := DecodeResponse(res.Value, groups)
 	if !ok {
 		return 0
 	}
+
 	localGroups := GroupFold(local)
 	divergent := false
 	for g := range localGroups {
@@ -91,6 +95,7 @@ func (m *Manager) RunRound(replicaFactor int) int {
 	if !divergent {
 		return 0 // converged round ends here
 	}
+
 	var buckets []uint32
 	for g := range groups {
 		if g >= len(remote.GroupHashes) || localGroups[g] != remote.GroupHashes[g] {
@@ -99,16 +104,20 @@ func (m *Manager) RunRound(replicaFactor int) int {
 			}
 		}
 	}
+
 	req := Refinement{}
 	for _, b := range buckets {
 		req.BucketHashes = append(req.BucketHashes, BucketHash{Bucket: b, Hash: local[b]})
 	}
+
 	ref, err := m.transport.Send(partner, protocol.Request{
 		Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: EncodeRefinement(req),
 	})
+
 	if err != nil || ref.Status != protocol.StatusOK || !ref.HasValue {
 		return 0
 	}
+
 	refined, ok := DecodeResponse(ref.Value, groups)
 	if !ok {
 		return 0
@@ -127,12 +136,14 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		coveredSet[b] = true
 		reconstructedCovered = append(reconstructedCovered, b)
 	}
+
 	var failed []uint32
 	for _, sk := range resp.Sketches {
 		if sk.Bucket >= m.numBuckets || !coveredSet[sk.Bucket] {
 			failed = append(failed, sk.Bucket)
 			continue
 		}
+
 		only := []uint32{sk.Bucket}
 		blob, covered := m.CollectMetadata(only, MaxMetaBytes)
 		localRows, ok := DecodeMetaRows(blob)
@@ -145,6 +156,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 			}
 			localSketch = BuildIBLT(items, IBLTCells)
 		}
+
 		diff, ok := IBLTDiff{}, false
 		if remoteSketch != nil && localSketch != nil {
 			diff, ok = DifferenceIBLT(remoteSketch, localSketch)
@@ -153,6 +165,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 			failed = append(failed, sk.Bucket)
 			continue
 		}
+
 		// The remote bucket hash must differ when the diff is empty, or
 		// the sketch told us nothing new (stale or dishonest peer).
 		var remoteHash uint64
@@ -166,6 +179,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 			failed = append(failed, sk.Bucket)
 			continue
 		}
+
 		removed := map[uint64]bool{}
 		for _, r := range diff.LocalOnly {
 			removed[r.KeyHash] = true
@@ -180,6 +194,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		}
 		sketchHasDiff[sk.Bucket] = len(diff.RemoteOnly) > 0 || len(diff.LocalOnly) > 0
 	}
+
 	slices.Sort(failed)
 	failed = uniqU32(failed)
 	if len(failed) > 0 {
@@ -189,29 +204,35 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 				fbReq.BucketHashes = append(fbReq.BucketHashes, BucketHash{Bucket: b, Hash: local[b]})
 			}
 		}
+
 		fb, err := m.transport.Send(partner, protocol.Request{
 			Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: EncodeRefinement(fbReq),
 		})
+
 		if err != nil || fb.Status != protocol.StatusOK || !fb.HasValue {
 			return 0
 		}
+
 		groups := (int(m.numBuckets) + BucketsPerGroup - 1) / BucketsPerGroup
 		fbResp, ok := DecodeResponse(fb.Value, groups)
 		if !ok {
 			return 0
 		}
+
 		// Merge: keep successfully-sketched rows, replace failed buckets
 		// with explicit fallback rows; covered = survivors + fallback.
 		failedSet := map[uint32]bool{}
 		for _, b := range failed {
 			failedSet[b] = true
 		}
+
 		kept := reconstructed[:0]
 		for _, r := range reconstructed {
 			if !failedSet[r.Bucket] {
 				kept = append(kept, r)
 			}
 		}
+
 		reconstructed = append(kept, fbResp.Rows...)
 		coveredSet := map[uint32]bool{}
 		for _, b := range reconstructedCovered {
@@ -222,6 +243,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		for _, b := range fbResp.Covered {
 			coveredSet[b] = true
 		}
+
 		reconstructedCovered = reconstructedCovered[:0]
 		for b := range coveredSet {
 			reconstructedCovered = append(reconstructedCovered, b)
@@ -235,6 +257,7 @@ func uniqU32(in []uint32) []uint32 {
 	if len(in) == 0 {
 		return in
 	}
+
 	out := in[:1]
 	for _, v := range in[1:] {
 		if v != out[len(out)-1] {
@@ -252,9 +275,11 @@ func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse
 		if bh.Bucket >= m.numBuckets || remoteSeen[bh.Bucket] {
 			return 0
 		}
+
 		remoteSeen[bh.Bucket] = true
 		remoteBuckets[bh.Bucket] = bh.Hash
 	}
+
 	sketched := map[uint32]bool{}
 	for _, s := range resp.Sketches {
 		if s.Bucket >= m.numBuckets || sketched[s.Bucket] {

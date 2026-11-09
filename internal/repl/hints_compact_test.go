@@ -46,7 +46,7 @@ func TestEnqueueHintAutoCompacts(t *testing.T) {
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	stub := &stubJournal{}
 	m.SetHintJournal(stub)
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, Async, 0, 0); err != nil {
 			t.Fatal(err)
 		}

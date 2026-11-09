@@ -59,15 +59,13 @@ func (j *Journal) Compact(q *repl.HintQueue) error {
 	if j.f == nil {
 		return nil
 	}
+
 	live := q.Snapshot(time.Now(), snapshotAllHints)
 	tmpPath := j.path + ".tmp"
 	tmp, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
-	// Preserve each hint's own deadline (C++ compacts with the remaining
-	// TTL, never a fresh one, so repeated compacts cannot immortalize a
-	// hint past its outage window).
 	for _, h := range live {
 		exp := h.ExpiresAt
 		if exp.IsZero() {
@@ -257,6 +255,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		if exp <= nowMs {
 			return repl.Hint{}, true, nil // expired: skip, not corrupt
 		}
+
 		req := protocol.Request{Opcode: protocol.OpReplicate, Key: append([]byte(nil), kb...), Value: append([]byte(nil), vb...), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
 		if entryExp != 0 {
 			req.HasExpiresAt = true
@@ -269,18 +268,22 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		tb, ok := c.bytes(int(tlen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		klen, ok := c.u32()
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		kb, ok := c.bytes(int(klen))
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		ver, ok := c.u64()
 		if !ok || c.rem() != 0 {
 			return repl.Hint{}, false, nil
@@ -295,10 +298,12 @@ func encodeJournalAddPayload(target string, req protocol.Request, sysExpiryMs ui
 	if req.HasExpiresAt {
 		entryExp = uint64(req.ExpiresAt.UnixMilli())
 	}
+
 	var tomb uint8
 	if req.Tombstone {
 		tomb = 1
 	}
+
 	payload := make([]byte, 0, 1+8+4+len(target)+4+len(req.Key)+4+len(req.Value)+8+8+8+1)
 	payload = append(payload, journalOpAdd)
 	payload = binary.LittleEndian.AppendUint64(payload, sysExpiryMs)
@@ -345,6 +350,7 @@ func (j *Journal) AppendAdd(h repl.Hint) {
 	if j.f == nil {
 		return
 	}
+
 	sysExp := uint64(time.Now().Add(hintTTL).UnixMilli())
 	rec := encodeJournalAdd(h.Target, h.Req, sysExp)
 	if _, err := j.f.Write(rec); err == nil {
@@ -381,10 +387,12 @@ func (j *Journal) Close() error {
 	if j.f == nil {
 		return nil
 	}
+
 	err := j.f.Sync()
 	if cerr := j.f.Close(); err == nil {
 		err = cerr
 	}
+
 	j.f = nil
 	return err
 }
