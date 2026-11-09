@@ -994,16 +994,29 @@ func waitReady(t *testing.T, addr string) {
 	}
 }
 
-func TestInteropCountersUnsupportedOnGo(t *testing.T) {
+func TestInteropCountersSupportedOnGo(t *testing.T) {
 	goAddr, stop := goServer(t)
 	defer stop()
 	c := dial(t, goAddr)
+	// Miss on the owner: NotFound (counters now live on the Go server).
 	res, err := c.Do(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte("c")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Status != protocol.StatusNotSupported {
-		t.Fatalf("go counter get = %v, want NotSupported (no counter store until M4)", res.Status)
+	if res.Status != protocol.StatusNotFound {
+		t.Fatalf("go counter get miss = %v, want NotFound", res.Status)
+	}
+	// Adjust then read back via the raw wire (exercises the real
+	// CounterDelta/CounterDecrement framing, not just Dispatch).
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte("c"), CounterDelta: 7}); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("adjust = %v %v, want OK", res.Status, err)
+	}
+	res, err = c.Do(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte("c")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Status != protocol.StatusOK || !res.HasValue {
+		t.Fatalf("get = %+v, want OK with value", res)
 	}
 }
 

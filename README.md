@@ -46,6 +46,9 @@ reference and `cinder/v1/cache.proto` remains the gRPC source of truth.
   benchmarks (`*_bench_test.go`, `just bench`) — done.
 - M6: 100% replacement — C++ tree retired, `go/` promoted to repo root,
   CI cut over — done.
+- CRDT counters (`internal/counter`, opcodes 17–20): sharded PN-counter
+  store with byte-exact `CRDC`/`CAE1` codecs, owner-routed adjust/get,
+  best-effort merge fan-out, cursor-batched AE repair — done.
 
 ## Recipes
 

@@ -31,6 +31,28 @@ type Manager struct {
 	partners   []string
 	partnerIdx int
 	journal    *Journal
+
+	counters   CounterStore
+	counterMu  sync.Mutex
+	counterCur string
+}
+
+// CounterStore is the subset of *counter.Store the AE manager needs.
+// *counter.Store satisfies it; tests stub it.
+type CounterStore interface {
+	SortedLiveCounters() []BundleEntry
+	Merge(key string, remote PNCounter) error
+	Size() int
+	CapacityBytes() uint64
+}
+
+// SetCounterStore wires the CRDT counter store. Nil disables counter
+// repair rounds; always set in production (counters live beside the LWW
+// store on every node).
+func (m *Manager) SetCounterStore(s CounterStore) {
+	m.counterMu.Lock()
+	defer m.counterMu.Unlock()
+	m.counters = s
 }
 
 // NewManager returns a manager. numBuckets 0 selects 256; fetchBytes 0
@@ -377,6 +399,27 @@ func (m *Manager) refreshPartnersLocked(replicaFactor int) {
 			}
 		}
 	})
+	// Counter-only keys do not appear in the LWW scan. Include them so a
+	// cluster using only CRDT counters still runs the repair exchange.
+	m.counterMu.Lock()
+	cs := m.counters
+	m.counterMu.Unlock()
+	if cs != nil {
+		for _, e := range cs.SortedLiveCounters() {
+			nodes, err := m.ring.GetNodes(e.Key, replicaFactor)
+			if err != nil {
+				continue
+			}
+			for _, n := range nodes {
+				if n != m.self {
+					seen[n] = true
+				}
+			}
+			if len(seen) > 64 {
+				break
+			}
+		}
+	}
 	m.partners = m.partners[:0]
 	for n := range seen {
 		m.partners = append(m.partners, n)

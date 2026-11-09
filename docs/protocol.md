@@ -115,7 +115,7 @@ the former on writes, replication uses the latter.
 | 14 | `ADMIN_COMPACT` | request: empty; response: `status` = OK on success |
 | 15 | `ADMIN_CONFIG_RELOAD` | request: empty; response: `status` = OK on success |
 | 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK, then server shuts down gracefully |
-| 17 | `COUNTER_ADJUST` | client-only, owner-routed; `key`, `counter_delta`, `counter_decrement`; response carries the updated serialized PN-Counter state |
+| 17 | `COUNTER_ADJUST` | client-only, owner-routed; `key`, `counter_delta`, `counter_decrement`; plain `OK` on success (read back with `COUNTER_GET`) |
 | 18 | `COUNTER_MERGE` | internal-only; `key` + serialized PN-Counter state in `value`; receiver merges, never LWW-replaces |
 | 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
 | 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
@@ -502,8 +502,16 @@ connection never interleave.
 
 ## Go implementation notes
 
-- **Counters** (opcodes 17–20) decode but answer `NotSupported`: there is no
-  counter store. The frames above are still the contract for one.
+- **Counters** (opcodes 17–20) are live: `internal/counter` holds the
+  sharded PN-counter store (byte-exact `CRDC`/`CAE1` codecs), adjust/get
+  are owner-routed client opcodes, merge fans out best-effort with no
+  hints, and a cursor-batched counter AE round rides the AE tick. One
+  deliberate deviation: `COUNTER_MERGE` is classified as replication
+  (node token, no ownership redirect) — C++ leaves it client-classed,
+  which would redirect every merge sent to a non-owner replica and
+  silently break replication; the C++ TLS suite states the intent
+  ("Counter state merge is internal replication traffic"). Counter state
+  stays outside the LWW WAL/snapshot path.
 - **Auth** is enforced per the contract above: `ConfigureSecrets` installs
   the secrets (`cinderd --shared-secret` / `--client-shared-secret`, with
   `CINDER_SHARED_SECRET` / `CINDER_CLIENT_SECRET` env fallbacks), the client

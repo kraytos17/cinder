@@ -23,6 +23,7 @@ import (
 	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/cluster"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/persist"
@@ -59,6 +60,10 @@ type Server struct {
 	nodeID string
 	port   int
 	clock  store.Clock
+	// counters holds CRDT state beside the LWW store, always on like C++
+	// (no flag, no CLI surface). Sized at a quarter of the LWW capacity,
+	// mirroring counterCapacity.
+	counters *counter.Store
 
 	listener net.Listener
 	mu       sync.Mutex
@@ -292,8 +297,13 @@ func NewServer(nodeID string, port int, st *store.LRUStore, clock store.Clock) *
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
+	// Counter budget is a quarter of the LWW capacity, mirroring C++
+	// counterCapacity. Zero LWW capacity still yields a usable minimum:
+	// the counter store clamps to one shard regardless.
+	counterCap := st.Capacity() / 4
 	return &Server{
 		store:          st,
+		counters:       counter.NewStore(counterCap),
 		nodeID:         nodeID,
 		port:           port,
 		clock:          clock,
@@ -500,6 +510,12 @@ func (s *Server) Serve(l net.Listener) error {
 				case <-time.After(s.currentAEInterval()):
 				}
 				mgr.RunRound(s.replicaFactor())
+				// Counter repair rides the same tick, mirroring C++
+				// CacheNodeServer arming runCounterRound alongside
+				// runRound (skipped while the view is degraded, same
+				// gate as below in spirit: partnerless rounds
+				// no-op inside PickPartner).
+				mgr.RunCounterRound(s.replicaFactor())
 			}
 		})
 	}
@@ -711,6 +727,7 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 	pool := s.pool
 	s.ringMu.RUnlock()
 	m := ae.NewManager(s.store, ring, s.nodeID, pool, numBuckets, fetchBytes)
+	m.SetCounterStore(s.counters)
 	s.aeMu.Lock()
 	s.ae = m
 	s.aeMu.Unlock()
@@ -742,6 +759,11 @@ func (s *Server) AntiEntropy() *ae.Manager {
 // Store exposes the underlying store for introspection and tests.
 func (s *Server) Store() *store.LRUStore {
 	return s.store
+}
+
+// CounterStore exposes the CRDT counter store for introspection and tests.
+func (s *Server) CounterStore() *counter.Store {
+	return s.counters
 }
 
 // Pool exposes the node's connection pool (transport for gossip, failure
@@ -891,7 +913,15 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 	switch op {
 	case protocol.OpReplicate, protocol.OpHint, protocol.OpGossip,
 		protocol.OpAntiEntropyDigest, protocol.OpAntiEntropySync,
-		protocol.OpCounterAntiEntropy:
+		protocol.OpCounterAntiEntropy, protocol.OpCounterMerge:
+		// CounterMerge rides here, not with the other counter opcodes:
+		// it is internal replication traffic (full-state fan-out), so it
+		// takes the node token and skips the ownership redirect. C++
+		// classifyOpcode leaves it in Client class, which would redirect
+		// every merge sent to a non-owner replica and silently break
+		// counter replication; the C++ TLS test ("Counter state merge
+		// is internal replication traffic ... requires the node token")
+		// states the intent this follows.
 		return classReplication
 	case protocol.OpAdminInfo, protocol.OpAdminCluster, protocol.OpAdminRing,
 		protocol.OpAdminCompact, protocol.OpAdminConfigReload, protocol.OpAdminShutdown:
@@ -1206,11 +1236,96 @@ func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Respo
 		}
 		st, val := mgr.OnSyncRequest(req.Value)
 		return protocol.Response{Status: st, Value: val, HasValue: val != nil}
-	case protocol.OpCounterAdjust, protocol.OpCounterMerge,
-		protocol.OpCounterGet, protocol.OpCounterAntiEntropy:
-		return protocol.Response{Status: protocol.StatusNotSupported}
+	case protocol.OpCounterAdjust:
+		return s.handleCounterAdjust(req)
+	case protocol.OpCounterMerge:
+		return s.handleCounterMerge(req)
+	case protocol.OpCounterGet:
+		return s.handleCounterGet(req)
+	case protocol.OpCounterAntiEntropy:
+		s.aeMu.RLock()
+		mgr := s.ae
+		s.aeMu.RUnlock()
+		if mgr == nil {
+			return protocol.Response{Status: protocol.StatusNotSupported}
+		}
+		st, val := mgr.OnCounterAntiEntropy(req.Value)
+		return protocol.Response{Status: st, Value: val, HasValue: val != nil}
 	default:
 		return s.admin(req)
+	}
+}
+
+// handleCounterAdjust applies a client increment/decrement as the local
+// node id, then best-effort replicates full state. Ownership-gated like
+// other writes; zero deltas are no-ops that still answer OK.
+func (s *Server) handleCounterAdjust(req protocol.Request) protocol.Response {
+	if owner := s.ownerOf(string(req.Key)); owner != s.nodeID {
+		return s.notReady(owner)
+	}
+	if req.CounterDelta == 0 {
+		return protocol.Response{Status: protocol.StatusOK}
+	}
+	var err error
+	if req.CounterDecrement {
+		err = s.counters.Decrement(string(req.Key), s.nodeID, req.CounterDelta)
+	} else {
+		err = s.counters.Increment(string(req.Key), s.nodeID, req.CounterDelta)
+	}
+	if err != nil {
+		return protocol.Response{Status: counterStatusOf(err)}
+	}
+	st, ok := s.counters.Get(string(req.Key))
+	if !ok {
+		return protocol.Response{Status: protocol.StatusInternalError}
+	}
+	if m, rf, _ := s.replication(); m != nil && rf > 1 {
+		m.ReplicateCounter(string(req.Key), counter.EncodePNCounter(st), s.replicaNodes(string(req.Key)), req.TraceID, req.SpanID)
+	}
+	return protocol.Response{Status: protocol.StatusOK}
+}
+
+// handleCounterMerge folds replicated state in. No ownership check: any
+// replica accepts merges (this is the fan-out target, like OpReplicate).
+func (s *Server) handleCounterMerge(req protocol.Request) protocol.Response {
+	st, err := counter.DecodePNCounter(req.Value)
+	if err != nil {
+		return protocol.Response{Status: protocol.StatusInvalidArgument}
+	}
+	if err := s.counters.Merge(string(req.Key), st); err != nil {
+		return protocol.Response{Status: counterStatusOf(err)}
+	}
+	return protocol.Response{Status: protocol.StatusOK}
+}
+
+// handleCounterGet serves the local copy when present; only a miss
+// consults ownership, redirecting to the ring owner like other reads.
+func (s *Server) handleCounterGet(req protocol.Request) protocol.Response {
+	if st, ok := s.counters.Get(string(req.Key)); ok {
+		enc := counter.EncodePNCounter(st)
+		if len(enc) == 0 {
+			return protocol.Response{Status: protocol.StatusInternalError}
+		}
+		return protocol.Response{Status: protocol.StatusOK, Value: enc, HasValue: true}
+	}
+	if owner := s.ownerOf(string(req.Key)); owner != s.nodeID {
+		return s.notReady(owner)
+	}
+	return protocol.Response{Status: protocol.StatusNotFound}
+}
+
+// counterStatusOf maps counter errors to wire statuses, mirroring the
+// C++ counter paths (overflow surfaces as CapacityExceeded).
+func counterStatusOf(err error) protocol.Status {
+	switch err {
+	case nil:
+		return protocol.StatusOK
+	case counter.ErrCapacityExceeded:
+		return protocol.StatusCapacityExceeded
+	case counter.ErrInvalidActor:
+		return protocol.StatusInvalidArgument
+	default:
+		return protocol.StatusInternalError
 	}
 }
 
@@ -1244,7 +1359,7 @@ func statusOf(err error) protocol.Status {
 	switch err {
 	case nil:
 		return protocol.StatusOK
-	case store.ErrCapacityExceeded:
+	case store.ErrCapacityExceeded, counter.ErrCapacityExceeded:
 		return protocol.StatusCapacityExceeded
 	case repl.ErrQuorum:
 		return protocol.StatusNotReady
