@@ -13,19 +13,25 @@
 // exactly like the C++ handlers on the success path. Client auth is
 // enforced when configured (SetClientSecret): the C++
 // "authorization: Bearer <hex>" contract, UNAUTHENTICATED otherwise.
+// A secret refuses plaintext: pair it with SetTLS (same PEM chain + key
+// as the TCP server), mirroring the C++ gateway.
 package grpcgw
 
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"net"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -231,16 +237,17 @@ func (s *service) RingInfo(ctx context.Context, req *gen.RingInfoRequest) (*gen.
 // server is configured and Serve it on its own listener; Stop halts it
 // (cinderd calls both around the TCP server lifecycle).
 type Gateway struct {
-	srv *grpc.Server
-	svc *service
+	mu        sync.Mutex
+	srv       *grpc.Server
+	svc       *service
+	tlsConfig *tls.Config
+	serving   bool
 }
 
-// New registers the cache service over node.
+// New registers the cache service over node. The grpc.Server is built
+// lazily in Serve so SetTLS/SetClientSecret can configure it first.
 func New(node *tcp.Server) *Gateway {
-	svc := &service{node: node}
-	srv := grpc.NewServer()
-	gen.RegisterCinderCacheServiceServer(srv, svc)
-	return &Gateway{srv: srv, svc: svc}
+	return &Gateway{svc: &service{node: node}}
 }
 
 // SetClientSecret enables bearer auth on every RPC (see checkAuth).
@@ -249,12 +256,63 @@ func (g *Gateway) SetClientSecret(secret string) {
 	g.svc.setClientSecret(secret)
 }
 
-// Serve blocks serving the gateway.
+// SetTLS serves gRPC over TLS with the given PEM chain + key, the same
+// files as the TCP server. Like C++, a configured client secret refuses
+// to serve over plaintext: call this whenever a secret is set. Call
+// before Serve.
+func (g *Gateway) SetTLS(certFile, keyFile string) error {
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.serving {
+		return errors.New("grpcgw: SetTLS after Serve has no effect")
+	}
+	g.tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+	return nil
+}
+
+// Serve blocks serving the gateway. Refuses to serve an authenticated
+// gateway over plaintext, mirroring the C++ startup check.
 func (g *Gateway) Serve(lis net.Listener) error {
-	return g.srv.Serve(lis)
+	g.mu.Lock()
+	if g.serving {
+		g.mu.Unlock()
+		return errors.New("grpcgw: already serving")
+	}
+	g.serving = true
+	tlsCfg := g.tlsConfig
+	g.mu.Unlock()
+
+	secret, _ := g.svc.clientSecret.Load().(string)
+	var srv *grpc.Server
+	if tlsCfg != nil {
+		srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
+	} else {
+		if secret != "" {
+			g.mu.Lock()
+			g.serving = false
+			g.mu.Unlock()
+			return errors.New("grpcgw: client auth requires TLS certificate and key")
+		}
+		srv = grpc.NewServer()
+	}
+	gen.RegisterCinderCacheServiceServer(srv, g.svc)
+	g.mu.Lock()
+	g.srv = srv
+	g.mu.Unlock()
+	return srv.Serve(lis)
 }
 
 // Stop halts the gateway immediately (in-flight RPCs are cancelled).
+// No-op before Serve.
 func (g *Gateway) Stop() {
-	g.srv.Stop()
+	g.mu.Lock()
+	srv := g.srv
+	g.mu.Unlock()
+	if srv != nil {
+		srv.Stop()
+	}
 }

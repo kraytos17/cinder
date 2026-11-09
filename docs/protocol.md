@@ -514,7 +514,7 @@ connection never interleave.
   — that check denied every cross-node replication and was never exercised
   by a C++ test. A client secret requires TLS (rejected at configure time
   otherwise); the gRPC bearer rule is enforced when the gateway's secret
-  is set.
+  is set, and likewise refuses plaintext.
 - **Trace context** is carried and echoed (`trace_id` minted when zero,
   propagated on fan-out) but not consumed: there is no tracing substrate,
   so the context is correlation metadata only. The gRPC gateway ignores

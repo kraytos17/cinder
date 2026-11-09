@@ -163,6 +163,16 @@ func main() {
 		}
 		gw := grpcgw.New(srv)
 		gw.SetClientSecret(clientSec)
+		if clientSec != "" {
+			// Gateway TLS follows the client secret (not --tls alone),
+			// mirroring C++: an authenticated gateway never serves
+			// plaintext. (ConfigureSecrets above already failed closed
+			// when --tls itself is off, so certs are present here.)
+			if err := gw.SetTLS(*tlsCert, *tlsKey); err != nil {
+				fmt.Fprintln(os.Stderr, "cinderd: grpc tls:", err)
+				os.Exit(2)
+			}
+		}
 		defer gw.Stop()
 		go func() {
 			if err := gw.Serve(gl); err != nil {

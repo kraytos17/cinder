@@ -553,6 +553,9 @@ Fixed (not flags): pool RPC timeout 5 s; hint TTL 30 s with 1,024-entry /
 64 MiB budgets; tombstone GC grace 5 min; AE fetch budget 1 MiB per round;
 snapshots v2 uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2
 accepted on read); compaction on demand via `cinder-admin compact` only.
+The gRPC gateway serves TLS exactly when a client secret is configured
+(same certificate as `--tls-cert`/`--tls-key`); otherwise plaintext,
+mirroring C++.
 
 ```bash
 # Three-node cluster in a minute (terminals 1–3):

@@ -104,5 +104,7 @@ store directly).
   `config-reload` is accepted and answers OK. No YAML, no hot-reload.
 - **TLS** — opt-in (`--tls --tls-cert --tls-key [--tls-ca]`, TLS 1.2+);
   peer verification is chain-only like asio `verify_peer`.
-- **gRPC gateway** — opt-in (`--grpc-port`), insecure credentials only,
+- **gRPC gateway** — opt-in (`--grpc-port`); plaintext by default, TLS with
+  the server certificate when a client secret is configured (refuses to
+  serve authenticated plaintext, like C++).
   same handler semantics as TCP (see above).

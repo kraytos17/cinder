@@ -2,6 +2,8 @@ package grpcgw_test
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net"
@@ -14,6 +16,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -62,6 +65,7 @@ func startGateway(t *testing.T, id string) (gen.CinderCacheServiceClient, func()
 // callers attach credentials via bearerCtx (or nothing, to test denial).
 func startAuthedGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
 	t.Helper()
+	fx := fixturesDir(t)
 	tl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -75,8 +79,11 @@ func startAuthedGateway(t *testing.T, secret string) gen.CinderCacheServiceClien
 	}
 	gw := grpcgw.New(srv)
 	gw.SetClientSecret(secret)
+	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
 	go gw.Serve(gl)
-	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(tlsClientConfig(t, filepath.Join(fx, "ca.pem"))))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,5 +464,209 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 	miss, err := c.Get(ctx, &gen.GetRequest{Key: "xcpp"})
 	if err != nil || miss.Status != NotFound {
 		t.Fatalf("get after delete: %+v %v", miss, err)
+	}
+}
+
+// fixturesDir locates the repo's tests/fixtures (shared with the C++ TLS
+// suite).
+func fixturesDir(t *testing.T) string {
+	t.Helper()
+	_, file, _, _ := runtime.Caller(0)
+	dir := filepath.Join(filepath.Dir(file), "..", "..", "tests", "fixtures")
+	if _, err := os.Stat(filepath.Join(dir, "ca.pem")); err != nil {
+		t.Skipf("no fixtures at %s", dir)
+	}
+	return dir
+}
+
+// tlsClientConfig builds client credentials chaining to the fixture CA,
+// mirroring tlscfg.Client's chain-only verification.
+func tlsClientConfig(t *testing.T, caPath string) credentials.TransportCredentials {
+	t.Helper()
+	pem, err := os.ReadFile(caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		t.Fatal("no certs in CA file")
+	}
+	return credentials.NewTLS(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+}
+
+// startTLSGateway serves the gateway over TLS; secret "" means no bearer
+// check (mirroring C++: TLS alone does not imply auth).
+func startTLSGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
+	t.Helper()
+	fx := fixturesDir(t)
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	go srv.Serve(tl)
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := grpcgw.New(srv)
+	if secret != "" {
+		gw.SetClientSecret(secret)
+	}
+	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
+	go gw.Serve(gl)
+	t.Cleanup(func() {
+		gw.Stop()
+		srv.Shutdown()
+	})
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(tlsClientConfig(t, filepath.Join(fx, "ca.pem"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return gen.NewCinderCacheServiceClient(conn)
+}
+
+func TestGatewayTLSRoundTrip(t *testing.T) {
+	c := startTLSGateway(t, "")
+	ctx := context.Background()
+	if set, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v"}); err != nil || set.Status != OK {
+		t.Fatalf("tls set: %+v %v", set, err)
+	}
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "k"}); err != nil || got.Status != OK || got.GetValue() != "v" {
+		t.Fatalf("tls get: %+v %v", got, err)
+	}
+}
+
+func TestGatewayPlaintextRejected(t *testing.T) {
+	c := startTLSGateway(t, "")
+	// Bypass the TLS client: raw insecure channel against a TLS listener
+	// must fail at the handshake.
+	_ = c
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	go srv.Serve(tl)
+	defer srv.Shutdown()
+	fx := fixturesDir(t)
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := grpcgw.New(srv)
+	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
+	go gw.Serve(gl)
+	defer gw.Stop()
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	plain := gen.NewCinderCacheServiceClient(conn)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := plain.Ping(ctx, &gen.PingRequest{}); err == nil {
+		t.Fatal("plaintext RPC on a TLS gateway succeeded")
+	}
+}
+
+func TestGatewayAuthRequiresTLS(t *testing.T) {
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	go srv.Serve(tl)
+	defer srv.Shutdown()
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gl.Close()
+	gw := grpcgw.New(srv)
+	defer gw.Stop()
+	gw.SetClientSecret("s3cr3t")
+	// No SetTLS: Serve must refuse instead of serving auth over plaintext.
+	if err := gw.Serve(gl); err == nil {
+		t.Fatal("authenticated gateway served without TLS")
+	}
+}
+
+func TestGatewayTLSWithBearer(t *testing.T) {
+	c := startTLSGateway(t, "s3cr3t")
+	if _, err := c.Ping(context.Background(), &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("missing bearer over TLS: %v", err)
+	}
+	ctx := bearerCtx("s3cr3t")
+	if pong, err := c.Ping(ctx, &gen.PingRequest{}); err != nil || pong.Status != OK {
+		t.Fatalf("bearer over TLS: %+v %v", pong, err)
+	}
+	if set, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v"}); err != nil || set.Status != OK {
+		t.Fatalf("authed set over TLS: %+v %v", set, err)
+	}
+}
+
+// TestInteropGoClientCppGrpcTLSAuth runs the Go TLS+gRPC client with a
+// bearer against a C++ gateway with the same client secret (skips without
+// a gRPC-enabled C++ build, like the other interop cases).
+func TestInteropGoClientCppGrpcTLSAuth(t *testing.T) {
+	fx := fixturesDir(t)
+	bin := cppGrpcBinary(t)
+	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tcpPort := tcpL.Addr().(*net.TCPAddr).Port
+	tcpL.Close()
+	grpcL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcPort := grpcL.Addr().(*net.TCPAddr).Port
+	grpcL.Close()
+	cmd := exec.Command(bin, "--port", fmt.Sprint(tcpPort), "--node-id", "node1",
+		"--grpc-port", fmt.Sprint(grpcPort),
+		"--tls", "--tls-cert", filepath.Join(fx, "server.pem"),
+		"--tls-key", filepath.Join(fx, "server-key.pem"),
+		"--client-shared-secret", "s3cr3t")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start cinderd: %v", err)
+	}
+	defer cmd.Process.Kill()
+	addr := fmt.Sprintf("127.0.0.1:%d", grpcPort)
+	var conn *grpc.ClientConn
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		var err error
+		conn, err = grpc.NewClient(addr, grpc.WithTransportCredentials(tlsClientConfig(t, filepath.Join(fx, "ca.pem"))))
+		if err == nil {
+			c := gen.NewCinderCacheServiceClient(conn)
+			if pong, err := c.Ping(bearerCtx("s3cr3t"), &gen.PingRequest{}); err == nil && pong.Status == OK {
+				break
+			}
+			conn.Close()
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("C++ TLS+auth gateway did not become ready")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	defer conn.Close()
+	c := gen.NewCinderCacheServiceClient(conn)
+	if set, err := c.Set(bearerCtx("s3cr3t"), &gen.SetRequest{Key: "xcpp", Value: "v"}); err != nil || set.Status != OK {
+		t.Fatalf("set: %+v %v", set, err)
+	}
+	got, err := c.Get(bearerCtx("s3cr3t"), &gen.GetRequest{Key: "xcpp"})
+	if err != nil || got.Status != OK || got.GetValue() != "v" {
+		t.Fatalf("get: %+v %v", got, err)
 	}
 }
