@@ -118,3 +118,45 @@ func TestReplayDelRespectsLWW(t *testing.T) {
 		t.Fatalf("newer write lost to replayed delete: %q %v", got, ok)
 	}
 }
+
+// TestMaybeCompactEntries fires once the WAL record count passes the
+// entry budget, independent of bytes and interval.
+func TestMaybeCompactEntries(t *testing.T) {
+	dir := t.TempDir()
+	st := testStore(t)
+	clk := store.NewManualClock(time.Now())
+	m := NewManager(dir, st, clk.Now)
+	mustRecover(t, m)
+	wire(t, st, m)
+	m.SetSnapshotInterval(0)
+	m.SetMaxWALBytes(0)
+	m.SetMaxWALEntries(3)
+
+	if err := st.Put("a", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Put("b", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if m.MaybeCompact() {
+		t.Fatal("compacted before the entry budget filled")
+	}
+	if err := st.Put("c", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if !m.MaybeCompact() {
+		t.Fatal("entry budget filled without compacting")
+	}
+	// Rotation resets the count: quiet until 3 more records land.
+	if m.MaybeCompact() {
+		t.Fatal("compacted twice without new records")
+	}
+	// Zero disables the count trigger (bytes/interval already off).
+	m.SetMaxWALEntries(0)
+	if err := st.Put("d", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	if m.MaybeCompact() {
+		t.Fatal("compacted with all triggers disabled")
+	}
+}

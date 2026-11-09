@@ -40,16 +40,18 @@ type Manager struct {
 
 	snapshotInterval time.Duration
 	maxWALBytes      uint64
+	maxWALEntries    uint64
 	lastCompact      time.Time
 }
 
-// DefaultSnapshotInterval and DefaultMaxWALBytes are the auto-compact
-// triggers (C++ defaults: 60s snapshots, 64MiB WAL): periodic snapshots
-// bound recovery replay, the byte budget bounds the file. Zero disables
-// that trigger.
+// DefaultSnapshotInterval, DefaultMaxWALBytes, and DefaultMaxWALEntries
+// are the auto-compact triggers (C++ defaults: 60s snapshots, 64MiB WAL,
+// 10,000 WAL entries): periodic snapshots bound recovery replay, the
+// budgets bound the file. Zero disables that trigger.
 const (
 	DefaultSnapshotInterval = 60 * time.Second
 	DefaultMaxWALBytes      = 64 << 20
+	DefaultMaxWALEntries    = 10000
 )
 
 // NewManager returns a manager over dir (created on demand) and store.
@@ -63,6 +65,7 @@ func NewManager(dir string, st *store.LRUStore, clock func() time.Time) *Manager
 		clock:            clock,
 		snapshotInterval: DefaultSnapshotInterval,
 		maxWALBytes:      DefaultMaxWALBytes,
+		maxWALEntries:    DefaultMaxWALEntries,
 	}
 	m.lastCompact = m.clock()
 	return m
@@ -84,22 +87,37 @@ func (m *Manager) SetMaxWALBytes(n uint64) {
 	m.maxWALBytes = n
 }
 
+// SetMaxWALEntries caps the active WAL record count past which
+// MaybeCompact fires (0 disables the count trigger, mirroring C++
+// max_wal_entries).
+func (m *Manager) SetMaxWALEntries(n uint64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.maxWALEntries = n
+}
+
 // MaybeCompact compacts once when a trigger fires — the snapshot interval
-// elapsed since the last compact (or startup), or the active WAL passed
-// the byte budget — and reports whether it did. The server tick calls this
-// every second; tests drive it directly with a fake clock.
+// elapsed since the last compact (or startup), the active WAL passed the
+// byte budget, or the record count passed the entry budget — and reports
+// whether it did. The server tick calls this every second; tests drive it
+// directly with a fake clock.
 func (m *Manager) MaybeCompact() bool {
 	m.mu.Lock()
-	interval, maxBytes, last := m.snapshotInterval, m.maxWALBytes, m.lastCompact
+	interval, maxBytes, maxEntries, last := m.snapshotInterval, m.maxWALBytes, m.maxWALEntries, m.lastCompact
 	var size int64 = -1
+	var entries uint64
 	if m.wal != nil {
 		size = m.wal.Size()
+		entries = m.wal.Entries()
 	}
 	now := m.clock()
 	m.mu.Unlock()
 
 	due := interval > 0 && !now.Before(last.Add(interval))
 	if !due && maxBytes > 0 && size >= 0 && uint64(size) >= maxBytes {
+		due = true
+	}
+	if !due && maxEntries > 0 && entries >= maxEntries {
 		due = true
 	}
 	if !due {

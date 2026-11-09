@@ -256,6 +256,18 @@ func (s *Server) SetMaxWALBytes(n uint64) {
 	m.SetMaxWALBytes(n)
 }
 
+// SetMaxWALEntries caps the active WAL record count past which
+// MaybeCompact fires (0 disables the count trigger).
+func (s *Server) SetMaxWALEntries(n uint64) {
+	s.persistMu.RLock()
+	m := s.persist
+	s.persistMu.RUnlock()
+	if m == nil {
+		return
+	}
+	m.SetMaxWALEntries(n)
+}
+
 // ReplayHints retries queued hints; exposed for tests and the replay tick.
 func (s *Server) ReplayHints() int {
 	s.replMu.RLock()

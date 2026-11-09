@@ -50,6 +50,12 @@ func main() {
 		dataDir       = flag.String("data-dir", "", "persistence directory (required with --enable-persistence)")
 		snapshotSecs  = flag.Int("snapshot-interval-s", 60, "seconds between automatic snapshots (0 = disabled)")
 		maxWALBytes   = flag.Uint64("max-wal-bytes", 64<<20, "active WAL bytes before out-of-cycle compact (0 = disabled)")
+		maxWALEntries = flag.Uint64("max-wal-entries", 10000, "active WAL records before out-of-cycle compact (0 = disabled)")
+		rpcTimeoutMs  = flag.Int("rpc-timeout-ms", 5000, "per-RPC deadline in milliseconds (0 = no timeout)")
+		aeFetchBytes  = flag.Int("anti-entropy-fetch-bytes", 1<<20, "per-round anti-entropy repair fetch budget in bytes")
+		maxHintBytes  = flag.Uint64("max-hint-bytes", 0, "hinted-handoff byte budget (0 = default 64MiB)")
+		tombstoneMs   = flag.Int("tombstone-gc-ms", 0, "delete-marker GC grace in milliseconds (0 = default 5min)")
+		evictPolicy   = flag.String("eviction-policy", "lru", "eviction policy: lru only (lfu is not ported)")
 		showVers      = flag.Bool("version", false, "print version and exit")
 	)
 
@@ -66,6 +72,17 @@ func main() {
 	}
 
 	st := store.NewLRUStore(*capacity, nil)
+	if *evictPolicy != "lru" {
+		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy lfu is not ported (lru only)")
+		os.Exit(2)
+	}
+	if *tombstoneMs < 0 {
+		fmt.Fprintln(os.Stderr, "cinderd: --tombstone-gc-ms must be >= 0")
+		os.Exit(2)
+	}
+	if *tombstoneMs > 0 {
+		st.SetTombstoneGCInterval(time.Duration(*tombstoneMs) * time.Millisecond)
+	}
 	srv := tcp.NewServer(*nodeID, *port, st, nil)
 	if err := srv.ConfigureCluster(peerList); err != nil {
 		fmt.Fprintln(os.Stderr, "cinderd:", err)
@@ -76,7 +93,7 @@ func main() {
 	srv.SetProbeInterval(time.Duration(*probeMs) * time.Millisecond)
 	srv.SetSuspectTimeout(time.Duration(*suspectMs) * time.Millisecond)
 	srv.SetAntiEntropyInterval(time.Duration(*aeInterval) * time.Millisecond)
-	srv.ConfigureAntiEntropy(uint32(*aeBuckets), 0)
+	srv.ConfigureAntiEntropy(uint32(*aeBuckets), *aeFetchBytes)
 	srv.ConfigureRebalance(*replFact, time.Duration(*quarantineMs)*time.Millisecond)
 	if *tls {
 		if *tlsCert == "" || *tlsKey == "" {
@@ -116,6 +133,7 @@ func main() {
 
 		srv.SetSnapshotInterval(time.Duration(*snapshotSecs) * time.Second)
 		srv.SetMaxWALBytes(*maxWALBytes)
+		srv.SetMaxWALEntries(*maxWALEntries)
 	}
 	if *replFact > 1 {
 		var mode repl.Mode
@@ -134,7 +152,7 @@ func main() {
 			addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
 		}
 
-		pool := client.NewPool(addrs, 5*time.Second)
+		pool := client.NewPool(addrs, time.Duration(*rpcTimeoutMs)*time.Millisecond)
 		if *tls {
 			ccfg, err := tlscfg.Client(*tlsCert, *tlsKey, *tlsCA)
 			if err != nil {
@@ -148,6 +166,9 @@ func main() {
 		}
 
 		mgr := repl.NewManager(st, *nodeID, nil, pool)
+		if *maxHintBytes > 0 {
+			mgr.SetMaxHintBytes(*maxHintBytes)
+		}
 		srv.ConfigureReplication(*replFact, mode, mgr)
 		if *enablePersist {
 			j, _, err := ae.OpenJournal(filepath.Join(*dataDir, "hints.log"), mgr.HintQueue())

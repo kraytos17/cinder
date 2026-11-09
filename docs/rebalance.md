@@ -554,11 +554,25 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
 | `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
+| `--max-wal-entries` | `10000` | Active WAL records before out-of-cycle compact (`0` = disabled) |
+| `--rpc-timeout-ms` | `5000` | Per-RPC deadline in milliseconds (`0` = no timeout) |
+| `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget in bytes |
+| `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
+| `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
+| `--eviction-policy` | `lru` | Eviction policy: `lru` only (`lfu` is rejected, not ported) |
 
-Fixed (not flags): pool RPC timeout 5 s; hint TTL 30 s with 1,024-entry /
-64 MiB budgets; tombstone GC grace 5 min; AE fetch budget 1 MiB per round;
-snapshots v2 uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2
-accepted on read); compaction on demand via `cinder-admin compact` only.
+Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2
+uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2 accepted on
+read); compaction on demand via `cinder-admin compact` only.
+
+Deliberately unported C++ flags: `-C,--config` (no YAML by design;
+`config-reload` is accepted and answers OK), `--listen-fd` /
+`--metrics-listen-fd` (test-harness socket passing; Go tests bind their
+own listeners), `--io-threads` (Go runtime schedules), `--log-level` (no
+logging infra), `--snapshot-compression` (v3 rejected by design),
+`--wal-fsync` (writes already land per-append; `Sync` gates durability),
+`--max-wal-segment-bytes` / `--max-sealed-segments` (sealing has no
+size trigger; rotation happens on compact).
 The gRPC gateway serves TLS exactly when a client secret is configured
 (same certificate as `--tls-cert`/`--tls-key`); otherwise plaintext,
 mirroring C++.

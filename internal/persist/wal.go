@@ -94,6 +94,11 @@ type Writer struct {
 	// size tracks appended bytes for the auto-compact budget (initialized
 	// from the file on open-for-append).
 	size int64
+	// entries counts appended records for the entry-count budget.
+	// Resumed logs start at 0: the byte budget (initialized from disk)
+	// still bounds recovery replay, and the count converges after the
+	// next compact rotates to a fresh file.
+	entries uint64
 }
 
 // OpenWriter opens path for records. Truncate starts fresh; Append resumes.
@@ -178,6 +183,9 @@ func (w *Writer) Append(e Entry) error {
 	defer w.mu.Unlock()
 	n, err := w.f.Write(buf)
 	w.size += int64(n)
+	if err == nil {
+		w.entries++
+	}
 	return err
 }
 
@@ -206,6 +214,7 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 		if err != nil {
 			return 0, err
 		}
+		w.entries++
 	}
 	return total, nil
 }
@@ -217,6 +226,14 @@ func (w *Writer) Size() int64 {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.size
+}
+
+// Entries reports appended records since (re)creation, the entry-count
+// budget input.
+func (w *Writer) Entries() uint64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.entries
 }
 
 // Sync flushes kernel buffers to disk (fdatasync equivalent).
