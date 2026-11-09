@@ -1,0 +1,365 @@
+package persist
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/kraytos17/cinder/internal/store"
+)
+
+const (
+	walFileName     = "wal.log"
+	walSegmentPre   = "wal_"
+	walSegmentSuf   = ".log"
+	snapshotPre     = "snapshot_"
+	snapshotSuf     = ".dat"
+	currentFile     = "CURRENT"
+	snapshotsToKeep = 2
+)
+
+// Manager owns one store's durability: WAL appends, snapshot + WAL replay
+// on startup, and compaction. It mirrors PersistenceManager's file layout
+// (wal.log, wal_<seq>.log, snapshot_<nanos>.dat, CURRENT) so files are
+// interchangeable with the C++ tree. Auto-compact thresholds and metrics
+// are intentionally absent: Compact is called explicitly (server tick in
+// M5); walNeedsCompact-style scheduling belongs to that wiring.
+type Manager struct {
+	dir   string
+	store *store.LRUStore
+	clock func() time.Time
+
+	mu  sync.Mutex
+	wal *Writer
+	seq uint64 // next sealed-segment sequence
+}
+
+// NewManager returns a manager over dir (created on demand) and store.
+func NewManager(dir string, st *store.LRUStore, clock func() time.Time) *Manager {
+	if clock == nil {
+		clock = time.Now
+	}
+	return &Manager{dir: dir, store: st, clock: clock}
+}
+
+// OnWrite appends one accepted mutation. It is the store persistence hook:
+// synchronous, leaf-only, never calls back into the store. hardDelete
+// replays as a hard remove (migration cleanup must not resurrect markers).
+func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal == nil {
+		return
+	}
+	rec := Entry{Key: []byte(key)}
+	if hardDelete {
+		rec.Op = OpDel
+		rec.Version = e.Version
+		rec.Writer = e.WriterNodeHash
+	} else {
+		rec.Op = OpSet
+		rec.Value = append([]byte(nil), e.Value...)
+		rec.Version = e.Version
+		rec.Writer = e.WriterNodeHash
+		rec.Tombstone = e.Tombstone
+		if e.HasTTL {
+			rec.HasTTL = true
+			rec.ExpiresMs = uint64(e.ExpiresAt.UnixMilli())
+		}
+	}
+	_ = m.wal.Append(rec)
+}
+
+// Sync flushes kernel buffers to disk.
+func (m *Manager) Sync() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal == nil {
+		return nil
+	}
+	return m.wal.Sync()
+}
+
+// Close syncs and closes the active WAL.
+func (m *Manager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal == nil {
+		return nil
+	}
+	err := m.wal.Sync()
+	if cerr := m.wal.Close(); err == nil {
+		err = cerr
+	}
+	m.wal = nil
+	return err
+}
+
+// entryFrom converts a decoded record, skipping already-expired ones.
+func entryFromWal(e Entry, now time.Time) (store.Entry, bool) {
+	out := store.Entry{
+		Value: append([]byte(nil), e.Value...), Version: e.Version,
+		WriterNodeHash: e.Writer, HasTTL: e.HasTTL, Tombstone: e.Tombstone,
+	}
+	if e.HasTTL {
+		out.ExpiresAt = time.UnixMilli(int64(e.ExpiresMs)).UTC()
+		if !out.Expired(now) {
+			return out, true
+		}
+		return store.Entry{}, false
+	}
+	return out, true
+}
+
+func entryFromSnap(e SnapEntry, now time.Time) (store.Entry, bool) {
+	out := store.Entry{
+		Value: append([]byte(nil), e.Value...), Version: e.Version,
+		WriterNodeHash: e.Writer, HasTTL: e.HasTTL, Tombstone: e.Tombstone,
+	}
+	if e.HasTTL {
+		out.ExpiresAt = time.UnixMilli(int64(e.ExpiresMs)).UTC()
+		if !out.Expired(now) {
+			return out, true
+		}
+		return store.Entry{}, false
+	}
+	return out, true
+}
+
+// Recover loads the latest snapshot then replays sealed segments plus the
+// active log, truncating torn tails. It opens the active WAL in append
+// mode for serving; the caller wires the store hook after Recover returns.
+// Recovering twice closes the previous writer first.
+func (m *Manager) Recover() error {
+	if err := os.MkdirAll(m.dir, 0755); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	if m.wal != nil {
+		_ = m.wal.Sync()
+		_ = m.wal.Close()
+		m.wal = nil
+	}
+	m.mu.Unlock()
+	now := m.clock()
+	if snap := m.latestSnapshot(); snap != "" {
+		r := NewSnapReader(snap)
+		next, err := r.ReadStream(func(e SnapEntry) bool {
+			ve, ok := entryFromSnap(e, now)
+			if !ok {
+				return true // skip expired, don't resurrect
+			}
+			_ = m.store.PutVersioned(string(e.Key), ve)
+			return true
+		})
+		if err != nil {
+			return err
+		}
+		m.store.RestoreVersion(next)
+	}
+	for _, path := range m.walFiles() {
+		st, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		r, err := OpenReader(path)
+		if err != nil {
+			return err
+		}
+		for r.HasMore() {
+			e, ok := r.Next()
+			if !ok {
+				break // torn tail: clean crash artifact
+			}
+			if r.Corrupted() {
+				return fmt.Errorf("persist: corrupt WAL %s", path)
+			}
+			if e.Op == OpDel {
+				m.store.Remove(string(e.Key))
+				continue
+			}
+			if ve, ok := entryFromWal(e, now); ok {
+				_ = m.store.PutVersioned(string(e.Key), ve)
+			}
+		}
+		if valid := r.ValidSize(); valid < uint64(st.Size()) {
+			if err := os.Truncate(path, int64(valid)); err != nil {
+				return err
+			}
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w, err := OpenWriter(filepath.Join(m.dir, walFileName), false)
+	if err != nil {
+		return err
+	}
+	m.wal = w
+	m.seq = m.maxSealedSeq() + 1
+	return nil
+}
+
+// Compact snapshots live entries, publishes CURRENT, and rotates to a
+// fresh WAL: sealed segments deleted, old snapshots pruned to the newest
+// two. Mirrors PersistenceManager::compact (minus metrics).
+func (m *Manager) Compact() error {
+	live := m.store.LiveEntries()
+	var nextVersion uint64
+	snaps := make([]SnapEntry, 0, len(live))
+	for _, p := range live {
+		if p.Entry.Version >= nextVersion {
+			nextVersion = p.Entry.Version + 1
+		}
+		se := SnapEntry{Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
+			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone}
+		if p.Entry.HasTTL {
+			se.HasTTL = true
+			se.ExpiresMs = uint64(p.Entry.ExpiresAt.UnixMilli())
+		}
+		snaps = append(snaps, se)
+	}
+	name := fmt.Sprintf("%s%d%s", snapshotPre, m.clock().UnixNano(), snapshotSuf)
+	path := filepath.Join(m.dir, name)
+	if err := NewSnapWriter(path).Write(nextVersion, snaps); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0644); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal != nil {
+		_ = m.wal.Sync()
+		_ = m.wal.Close()
+		m.wal = nil
+	}
+	w, err := OpenWriter(filepath.Join(m.dir, walFileName), true)
+	if err != nil {
+		return err
+	}
+	m.wal = w
+	m.deleteSealed()
+	m.pruneSnapshots(name)
+	return nil
+}
+
+func (m *Manager) latestSnapshot() string {
+	if raw, err := os.ReadFile(filepath.Join(m.dir, currentFile)); err == nil {
+		name := strings.TrimSpace(string(raw))
+		if p := filepath.Join(m.dir, name); isSnapshotName(name) && fileExists(p) {
+			return p
+		}
+	}
+	var names []string
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if isSnapshotName(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	sort.Strings(names)
+	return filepath.Join(m.dir, names[len(names)-1])
+}
+
+func isSnapshotName(name string) bool {
+	return strings.HasPrefix(name, snapshotPre) && strings.HasSuffix(name, snapshotSuf) && len(name) > len(snapshotPre)+len(snapshotSuf)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func (m *Manager) walFiles() []string {
+	type seg struct {
+		seq  uint64
+		path string
+	}
+	var segs []seg
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return nil
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, walSegmentPre) && strings.HasSuffix(name, walSegmentSuf) {
+			mid := name[len(walSegmentPre) : len(name)-len(walSegmentSuf)]
+			if seq, err := strconv.ParseUint(mid, 10, 64); err == nil {
+				segs = append(segs, seg{seq, filepath.Join(m.dir, name)})
+			}
+		}
+	}
+	sort.Slice(segs, func(i, j int) bool { return segs[i].seq < segs[j].seq })
+	var out []string
+	for _, s := range segs {
+		out = append(out, s.path)
+	}
+	if active := filepath.Join(m.dir, walFileName); fileExists(active) {
+		out = append(out, active)
+	}
+	return out
+}
+
+func (m *Manager) maxSealedSeq() uint64 {
+	var max uint64
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return 0
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, walSegmentPre) && strings.HasSuffix(name, walSegmentSuf) {
+			mid := name[len(walSegmentPre) : len(name)-len(walSegmentSuf)]
+			if seq, err := strconv.ParseUint(mid, 10, 64); err == nil && seq > max {
+				max = seq
+			}
+		}
+	}
+	return max
+}
+
+func (m *Manager) deleteSealed() {
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasPrefix(name, walSegmentPre) && strings.HasSuffix(name, walSegmentSuf) {
+			_ = os.Remove(filepath.Join(m.dir, name))
+		}
+	}
+}
+
+func (m *Manager) pruneSnapshots(keep string) {
+	var names []string
+	entries, err := os.ReadDir(m.dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if isSnapshotName(e.Name()) {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for len(names) > snapshotsToKeep {
+		oldest := names[0]
+		names = names[1:]
+		if oldest == keep {
+			continue
+		}
+		_ = os.Remove(filepath.Join(m.dir, oldest))
+	}
+}

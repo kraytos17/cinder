@@ -1,312 +1,53 @@
 # Cinder
 
-Distributed in-memory cache in C++23 — consistent-hash sharding, quorum
-replication, gossip membership, and persistence, speaking a small binary
-protocol over TCP with an opt-in gRPC gateway.
+Distributed in-memory cache in Go: consistent-hash sharding, quorum
+replication (LWW versions), SWIM gossip membership, two-phase rebalance,
+periodic anti-entropy, checksummed WAL + atomic snapshots, small binary TCP
+protocol (v6) with gRPC gateway and TLS 1.2.
 
-```bash
-just preset=fast build
-just run args="--port 7000"
+Module: `github.com/kraytos17/cinder` (toolchain pinned to go1.27.3 in
+`go.mod`). The C++ tree was retired at M6; `docs/` retains the design
+reference and `cinder/v1/cache.proto` remains the gRPC source of truth.
 
-# another terminal
-build/debug/bin/cinder-cli set mykey myvalue
-build/debug/bin/cinder-cli get mykey
-```
+## Rules
 
-## A three-node cluster in a minute
+- **Wire compatibility is law.** `internal/net/protocol` stays byte-identical
+  with the frozen v6 spec (`docs/protocol.md`); `internal/persist` files
+  (WAL0/snapshot v2) keep their magic + XXH3 checksums byte-identical.
+- **Hot path stays pointer-light.** Flat `[]byte` slabs, integer handles,
+  no pointer graphs in the store — the GC stays out of the way.
+- **Port tests first.** Every behavior mirrors a unit test case-for-case.
 
-```bash
-# Terminals 1–3
-cinderd --port 7000 --node-id node1 --peers "node2@127.0.0.1:7001,node3@127.0.0.1:7002" \
-        --replication-factor 2 --consistency quorum
-cinderd --port 7001 --node-id node2 --peers "node1@127.0.0.1:7000,node3@127.0.0.1:7002" \
-        --replication-factor 2 --consistency quorum
-cinderd --port 7002 --node-id node3 --peers "node1@127.0.0.1:7000,node2@127.0.0.1:7001" \
-        --replication-factor 2 --consistency quorum
+## Status
 
-build/debug/bin/cinder-cli --port 7000 set mykey myvalue   # quorum write
-build/debug/bin/cinder-cli --port 7001 get mykey           # via replica / redirect
+- M0: skeleton, CI, lint — done.
+- M1: protocol v6 codec (`internal/net/protocol`) with byte-exact vectors
+  and fuzz targets — done.
+- M2: in-memory LRU store (`internal/store`: sharded LRU, TTL wheel,
+  LWW versions, tombstones, Lamport clock, mutation sink) — done.
+- M3: TCP server + client (`internal/net/tcp`, `internal/client`) — done.
+- M4a: ring (`internal/hashring`, XXH3-verified), cluster-aware server with
+  redirects, cluster client with redirect-following — done.
+- M4b: quorum replication, hints + replay, read repair with singleflight
+  (`internal/repl`), wired into server + `cinderd --replication-factor /
+  --consistency` — done.
+- M4c: membership, gossip, failure detection (`internal/cluster`),
+  ring-follows-alive wiring, graceful leave vs crash distinction — done.
+- M4d-1: WAL + snapshots + recovery (`internal/persist`), store hooks,
+  server restart/compact tests — done.
+- M4d-2: anti-entropy (`internal/ae`): digests, IBLT peel with
+  tombstone identity and P2 fallback, hint journal, full round driver with
+  server dispatch (opcodes 9/10) and tick loop — done.
+- M4d-3: two-phase rebalance (`internal/shard`): enumerate-then-send,
+  stay-and-push vs migrate-everywhere-and-drop-on-full-ack, quarantine
+  deferral with window retry, 200ms debounce on ring rebuild — done.
+- M5: TLS (`internal/tlscfg`, `--tls*` flags, client-auth), gRPC gateway
+  (`internal/grpcgw`, `--grpc-port`), `cinder-cli` + `cinder-admin`, and
+  benchmarks (`*_bench_test.go`, `just bench`) — done.
+- M6: 100% replacement — C++ tree retired, `go/` promoted to repo root,
+  CI cut over — done.
 
-# Kill node1 then:
-build/debug/bin/cinder-cli --port 7001 get mykey           # still served (failover read)
-```
+## Recipes
 
-Nodes discover each other over gossip, rebalance keys on join, and quarantine
-crash-looping peers before trusting them with data again.
-
-## How it fits together
-
-One `cinderd` process hosts a `CacheNodeServer`: a TCP server in front of an
-eviction store, with a consistent-hash ring deciding ownership, primary-driven
-replication for durability, and SWIM-style membership keeping every node
-informed. `cinder-cli` / `cinder-admin` talk the same binary protocol;
-`CacheClient` embeds it in-process. Details: [`docs/architecture.md`](docs/architecture.md),
-wire format in [`docs/protocol.md`](docs/protocol.md), membership and
-rebalance in [`docs/rebalance.md`](docs/rebalance.md).
-
-## Features
-
-- **Eviction stores** — LRU and LFU with O(1) hits, intrusive TTL wheel, slab allocator
-- **Binary wire protocol (v6)** — length-prefixed TCP frames, 20 opcodes, 64 MiB max
-- **Cluster-aware routing** — hash-ring ownership with `moved to <node>@<host>:<port>` redirects
-- **Replication** — async or quorum (`W = R/2+1`), versioned LWW, failover reads, read repair
-- **Membership** — SWIM failure detection, incarnation-guarded gossip, graceful leave
-- **Rebalance & repair** — two-phase migration with quarantine, periodic anti-entropy
-- **Persistence** — checksummed WAL + atomic snapshots, crash recovery
-- **Observability** — Prometheus `/metrics` + `/config`, structured tracing with wire trace-ids
-- **Security & ops** — opt-in TLS 1.2, opt-in gRPC gateway, `cinder-admin` tooling, live config hot-reload
-- **Correctness tooling** — 571 unit + 52 sim + 34 integration + 11 CLI tests, 13 libFuzzer harnesses, ASan/TSan/UBSan/MSan CI
-
-## Build
-
-Requires **CMake 4.4+** and a **C++23 compiler** (GCC 16+ or Clang 22+).
-
-```bash
-just preset=fast build
-just build
-just test-unit
-just test
-```
-
-Or directly with CMake: `cmake --preset fast && cmake --build --preset fast`.
-
-### Parallel builds and tests
-
-`just build` and CI use `CINDER_BUILD_JOBS=4` by default to
-bound peak compiler memory (especially for unity and sanitizer builds).
-CTest unit/sim/CLI and integration cases all run in parallel by default. CI
-sets both worker counts to four. On machines with enough resources, override
-the counts in `.env`, through exported `CINDER_*` variables, or as Just
-variables:
-
-```bash
-just build_jobs=8 build
-just test_jobs=8 test-unit
-just integration_jobs=8 test-integration
-```
-
-`CINDER_JOBS` remains the general fallback; `CINDER_BUILD_JOBS`,
-`CINDER_TEST_JOBS` and `CINDER_INTEGRATION_JOBS` independently override it;
-integration defaults to the test worker count. Reduce it if the host becomes
-unstable under multi-node integration load.
-
-### Presets
-
-| Preset | Compiler | Config | Use |
-|---|---|---|---|
-| `debug` | GCC | Debug, per-file | Editor indexing + incremental dev |
-| `debug-tls` / `debug-tls-clang` | GCC / Clang | Debug + **TLS** | TLS development and testing |
-| `debug-grpc` | GCC | Debug + **gRPC gateway** | gRPC gateway development |
-| `fast` | GCC | Debug, **unity** | One-time full builds |
-| `release` | GCC | Release + LTO | Production (benchmarks opt-in via `release-bench`) |
-| `release-bench` | GCC | Release + LTO + benchmarks | Benchmark runs |
-| `release-clang` | Clang | Release + LTO | Production (Clang, benchmarks opt-in) |
-| `pgo-generate` | GCC | Release + LTO + PGO instrumentation | PGO training build (writes `build/pgo-data`) |
-| `pgo-use` | GCC | Release + LTO + PGO-optimized | Production build consuming PGO profiles (shares `build/pgo`) |
-| `debug-clang` | Clang | Debug, per-file | Clang dev |
-| `ci` | Clang | RelWithDebInfo + **clang-tidy** | Lint-gated CI |
-| `ci-gcc` | GCC | RelWithDebInfo + ASan/UBSan | Sanitizer CI |
-| `asan` / `asan-clang` | GCC / Clang | Debug + ASan/UBSan | Memory checking |
-| `tsan` / `tsan-clang` | GCC / Clang | Debug + ThreadSanitizer | Race detection |
-| `tls-grpc` / `tls-grpc-clang` | GCC / Clang | Release + **TLS** + **gRPC** | TLS + gRPC gateway CI |
-| `ubsan` | GCC | Debug + UBSan | Undefined behavior |
-| `msan` | Clang | Debug + MemorySanitizer | Uninitialized reads |
-| `release-unity` | GCC | Release + **unity** | Fast perf-iteration rebuilds |
-| `profile` | GCC | RelWithDebInfo + frame pointers | Flamegraphs / profiling |
-| `analyze` | GCC | Debug + `-fanalyzer` | Static analysis |
-| `iwyu` | Clang | Debug + include-what-you-use | Include hygiene |
-| `fuzz` | Clang | Debug + libFuzzer + ASan/UBSan | Fuzz testing |
-| `fuzz-coverage` | Clang | Coverage instrumentation | Corpus minimization |
-
-```bash
-just asan-test        # ASan + leak detection + init-order checks
-just tsan-test        # TSan with deadlock detection
-just ubsan-test       # UBSan with stacktrace on halt
-just asan-clang-test  # Clang ASan + use-after-scope/return
-```
-
-Suppressions live in `suppressions/` (`asan.supp`, `lsan.supp`, `tsan.supp`, `ubsan.supp`, plus `asan_ignorelist.txt` and `cppcheck.supp`).
-
-## Configuration
-
-YAML file with CLI overrides and **live hot-reload** (log level, gossip/suspect
-intervals, capacity apply without restart):
-
-```bash
-cinderd --config cinderd.yaml
-cinderd --config cinderd.yaml --port 7001 --log-level debug
-```
-
-```yaml
-server:
-  port: 7000
-  node_id: node1
-  capacity: 67108864
-  replication_factor: 1
-  consistency: async        # async | quorum
-  metrics_port: 9100        # Prometheus /metrics + /config (0 = disabled)
-  rpc_timeout_ms: 5000      # per-RPC deadline in ms (0 = no timeout)
-cluster:
-  peers: []                 # ["node2@127.0.0.1:7001", ...]
-persistence:
-  enabled: false
-  data_dir: /var/lib/cinder
-  snapshot_interval_s: 60
-  max_wal_entries: 10000
-  max_wal_bytes: 67108864
-  max_wal_segment_bytes: 16777216
-  max_sealed_segments: 32
-tls:
-  enabled: false            # + cert_file / key_file / ca_file
-```
-
-The full reference is `cinderd.yaml`; every flag is documented in `cinderd --help`.
-Key tunables: `--ping-interval`, `--suspect-timeout`, `--gossip-interval`,
-`--quarantine-interval`, `--io-threads` (0 = auto), `--eviction-policy`
-(lru|lfu), `--rpc-timeout`, `--enable-persistence`, `--max-sealed-segments`,
-`--anti-entropy-interval`, `--grpc-port` (0 = disabled, needs a `CINDER_ENABLE_GRPC` build).
-
-## Tests
-
-571 unit + 52 sim + 34 integration + 11 CLI tests (plus the TLS and gRPC
-suites under those builds):
-
-```bash
-just test-unit
-just test-sim
-just test-integration
-just test-cli
-just test-all
-just test
-```
-
-`just verify` is the fast pre-push gate (format, cppcheck, workflow script
-tests, unit, sim, cli — no integration). `just test-scripts` runs the
-stdlib-only unit tests for the developer workflow scripts in `scripts/`.
-
-The simulation harness (`tests/sim/`) drives replication and membership logic
-against a deterministic clock and a fault-injecting message bus (delay, loss,
-reorder, node down), so partition behavior is reproducible without real sockets.
-
-### Fuzz testing
-
-```bash
-just fuzz-test
-just fuzz-long
-```
-
-Thirteen libFuzzer harnesses with ASan + UBSan:
-
-| Target | Entry point | What it fuzzes |
-|---|---|---|
-| `protocol_decode_fuzz` | `net::decode()` / `decodeResponse()` | Malformed wire frames, truncated payloads, integer overflow in `expires_at`; protocol dictionary with opcodes 1–20 |
-| `gossip_parse_fuzz` | `gossip::parseEntry()` + `handleMessage()` (full `decodeView` path) | Gossip text format edge cases, semicolon-delimited multi-entry parsing |
-| `store_put_fuzz` | `LruStore` / `LfuStore` — put, get, remove, putVersioned, evictExpired, plus op-dispatch (Set/Get/Del/Ping) | Arbitrary key/value lengths, versioned writes, capacity edge cases |
-| `snapshot_fuzz` | `SnapshotReader::readAll()` | Crafted snapshot files, oversized `entry_count`, truncated data |
-| `wal_fuzz` | `WalReader::next()` + `PersistenceManager::recover()` | WAL checksummed/legacy formats, truncated entries, replay through persistence |
-| `anti_entropy_fuzz` | `decodeDigest()`, `decodeMetaRows()`, `decodeSync()`, `applyEntries()`, `collectMetadata()`, `diffRows()`, `onSyncRequest()`, `onDigestRequest()` | Anti-entropy binary blobs, malformed digests/metadata/sync payloads, truncated entry streams, collect/apply idempotence, digest equivalence |
-| `http_parse_fuzz` | `parseHttpRequest()` | Malformed HTTP requests, bad methods, truncated headers |
-| `redirect_parse_fuzz` | `parseRedirectTarget()` / `parseRedirect()` | Redirect hint parsing, `@host:port` splitting, port overflow, prefix edge cases |
-| `byte_reader_fuzz` | `net::ByteReader::read<uint8_t/16/32>()` | Big-endian wire reads against a model offset: every successful op must advance by exactly its width, every failed op must leave the offset untouched |
-| `ttl_wheel_fuzz` | `TtlWheel::insert()` / `remove()` / tick expiry | Exact-fire model: slots fire when the cursor reaches them, heap entries at their absolute tick; no early, late, duplicate, or missing fires |
-| `hint_queue_fuzz` | `HintQueue::push()` / `snapshot()` / `remove()` / expiry | Bounded FIFO with coalescing vs a model queue: drop-oldest on overflow, expiry reaping, generation-tagged handle invalidation |
-| `ring_fuzz` | `ConsistentHashRing::{addNode,removeNode,getNode,getNodes}` | Deterministic routing, membership (every returned node is live), distinct replicas, exact `min(n, members)` counts |
-| `config_fuzz` | `parsePeer()` / `parsePeersString()` / `logLevelFromString()` / `diffConfig()` | Peer-string accept/reject paths, count == appended entries, non-empty id/host, self-diff is empty |
-
-Corpus seeds and tracked `.dict` dictionaries are generated by
-`tests/fuzz/generate_corpus.py`. Per-target `-max_len` and `-timeout` are
-configured in `scripts/fuzz_targets.json` (driven by `scripts/fuzz.py`).
-
-## Project structure
-
-```
-cinder/
-├── CMakeLists.txt               # Build system (dual-compiler, clang-tidy hooks)
-├── CMakePresets.json            # 28 presets (27 configurable + `base` helper)
-├── Justfile                     # Build/run/test/bench/format/fuzz/clean runner
-├── scripts/                     # Developer workflow scripts (fuzz/test/preset/PGO/deps helpers + unit tests)
-├── cinderd.yaml                 # Example YAML configuration
-├── include/cinder/              # Headers: common/, store/, hashing/, net/,
-│                                #   client/, node/, cluster/
-├── src/                         # Implementations
-├── tools/                       # cinderd, cinder-cli, cinder-admin entry points
-├── tests/                       # unit/ (571) · integration/ (34+11 CLI) · sim/ (52) ·
-│                                #   fuzz/ (13 harnesses + corpus) · fixtures/ (test certs)
-├── benchmarks/                  # throughput, replication fan-out, allocator, ring, LFU-bucket, tracing, anti-entropy, IBLT, WAL/snapshot
-├── cinder/v1/cache.proto        # gRPC service definition
-├── suppressions/                # Sanitizer + cppcheck suppressions
-└── docs/
-    ├── architecture.md          # Component map and design notes
-    ├── protocol.md              # Wire protocol v6 (opcodes, payload format, hex dump)
-    ├── rebalance.md             # Membership, failure detection, rebalance, quarantine
-    ├── profiling.md             # Benchmarks, samply/perf/PGO workflow, measured numbers
-    └── tracing.md               # Structured events, spans, and subscribers
-```
-
-## Tooling
-
-```bash
-just format
-just check-format
-just preset=ci build
-just proto-lint
-just proto-generate
-just proto-breaking
-just test-scripts
-just info
-just kill-stale
-just --list
-```
-
-- **clang-tidy** runs inline during `ci` builds; `.clang-tidy` excludes noisy checks for the project's coding style.
-- **clangd** reads `build/debug/compile_commands.json` (per-file). Use `just build` for editor indexing; `fast`/unity builds hide per-file commands from clangd.
-- **ccache** auto-detected via CMake (preferred; falls back to sccache).
-- **mold** auto-selected as the linker (falls back to lld, then GNU ld; skipped for GCC+LTO, whose slim bytecode neither handles) — disable with `-DCINDER_USE_FAST_LINKER=OFF`.
-- **split-dwarf** (`-gsplit-dwarf` + `--gdb-index`) enabled in Debug/RelWithDebInfo for faster linking — disable with `-DCINDER_USE_SPLIT_DWARF=OFF`.
-- **workflow scripts** in `scripts/` own the longer Justfile workflows (fuzz registry in `fuzz_targets.json`, test-binary groups in `test_binaries.json`, preset/build-dir resolution, PGO and dep-cache guards) with stdlib-only unit tests (`just test-scripts`, part of `just verify`). See `scripts/README.md` for how to extend them.
-
-## CI
-
-Single workflow (`.github/workflows/ci.yml`): a `build-image` job builds and pushes
-the Arch-based CI image first (GCC 16, Clang 22, lld, cmake, ninja, cppcheck —
-libstdc++ only), then the matrix runs inside it, pinned to the exact built digest
-(no `:latest` race). The image ships SLSA provenance + SBOM attestations. Required
-check: `CI Success`.
-
-| Job | What |
-|---|---|
-| Build CI image | Toolchain image build/push |
-| Fetch Deps | Seed the shared dependency source cache (sole writer) |
-| build-test (×7) | GCC/Clang debug, release, TLS, ASan+UBSan — unit/sim/cli |
-| Feature Flags (×2) | Release + TLS + gRPC, GCC and Clang |
-| Sanitizers (GCC) | ASan+UBSan (`ci-gcc`) — unit/sim/cli |
-| TSan (×2) | ThreadSanitizer, GCC and Clang (non-PIE binaries + relaxed container seccomp) |
-| Lint | Clang + inline clang-tidy, `check-format`, cppcheck |
-| CodeQL (×2) | Release and TLS+gRPC |
-
-- Same-repo PRs run the full matrix against their own image; fork PRs validate the Dockerfile only (no registry push) and skip the matrix.
-- Docs-only changes skip the matrix via `ci-skip.yaml`, which still reports `CI Success`.
-- Caches: one shared dependency source cache (`~/.cache/cinder/deps`, keyed by
-  pinned tag) seeded once by the Fetch Deps job (sole writer — parallel builds
-  used to race saving the same key); consumers restore read-only with a `deps-`
-  prefix fallback, so a new `CinderDepVersions.cmake` hash reuses the previous
-  sources instead of cold-starting.
-  ccache (via `hendrikmuhs/ccache-action`, per-preset keys) is content-hashed so
-  all jobs share hits safely; saves are main-only (PRs read-only) so PR-branch
-  entries can't churn the quota.
-
-## Dependencies
-
-- [Asio](https://think-async.com/Asio/) — networking (standalone, no Boost)
-- [xxHash](https://xxhash.com/) — fast hashing for the consistent hash ring, WAL checksums, and snapshot checksums
-- [spdlog](https://github.com/gabime/spdlog) — structured logging
-- [yaml-cpp](https://github.com/jbeder/yaml-cpp) — YAML configuration file parsing
-- [CLI11](https://github.com/CLIUtils/CLI11) — command-line parsing
-- [mimalloc](https://github.com/microsoft/mimalloc) — allocator baseline
-- [GoogleTest](https://github.com/google/googletest) — unit/integration/CLI tests
-- [GoogleBenchmark](https://github.com/google/benchmark) — microbenchmarks
-- [gRPC](https://github.com/grpc/grpc) — optional, for multi-language gRPC gateway (`CINDER_ENABLE_GRPC`)
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+From the repo root: `just build`, `just test`, `just vet`, `just fuzz`,
+`just bench`. Or `go ...` directly. `just verify` is the pre-push gate.

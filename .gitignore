@@ -1,109 +1,24 @@
 # Prerequisites
 *.d
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# Go build outputs
+bin/
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-!go.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# Retired C++ tree leftovers / caches (untracked scratch dirs)
 build/
-Build/
-build-*/
-
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-install_manifest.txt
-compile_commands.json
-
-# buf generated protobuf/gRPC code
 generated/
+.cache/
 
 # Temporary files
 *.tmp
 *.log
-!go/internal/persist/testdata/*.log
+!internal/persist/testdata/*.log
 *.bak
 *.swp
+*.prof
 
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# planning / review docs (local working notes, not tracked)
+# Local working notes (not tracked)
 plan/
 
-# test output & cache
-Testing/
-.cache/
-# Fuzz corpus seeds are generated (tests/fuzz/generate_corpus.py) and not
-# tracked. The hand-authored dictionaries ARE tracked: the Justfile passes
-# -dict=.../protocol.dict and -dict=.../gossip.dict, and libFuzzer aborts the
-# whole run with "file does not exist or is empty" when one is missing — which
-# is what happened on every fresh clone.
-tests/fuzz/corpus/*/
-tests/fuzz/corpus/*
-!tests/fuzz/corpus/gossip_parse/
-!tests/fuzz/corpus/protocol_decode/
-!tests/fuzz/corpus/wal/
-!tests/fuzz/corpus/snapshot/
-!tests/fuzz/corpus/http_parse/
-!tests/fuzz/corpus/redirect_parse/
-tests/fuzz/corpus/gossip_parse/*
-tests/fuzz/corpus/protocol_decode/*
-tests/fuzz/corpus/wal/*
-tests/fuzz/corpus/snapshot/*
-tests/fuzz/corpus/http_parse/*
-tests/fuzz/corpus/redirect_parse/*
-!tests/fuzz/corpus/gossip_parse/*.dict
-!tests/fuzz/corpus/protocol_decode/*.dict
-!tests/fuzz/corpus/wal/*.dict
-!tests/fuzz/corpus/snapshot/*.dict
-!tests/fuzz/corpus/http_parse/*.dict
-!tests/fuzz/corpus/redirect_parse/*.dict
-.codebase-memory/
-tests/fuzz/coverage
-tests/fuzz/corpus_minimal
-*.profraw
-__pycache__/
-*.py[cod]
-# Local developer overrides loaded by `just` (see .env.example).
+# Local developer overrides
 .env

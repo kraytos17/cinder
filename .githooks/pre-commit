@@ -2,16 +2,13 @@
 # Pre-commit hook: the fast, local half of the CI lint gate.
 #   0. `git diff --check` on staged files except *.md (whitespace errors;
 #      *.md excluded: trailing double-space is a legit Markdown hard break).
-#   1. clang-format --dry-run on STAGED C/C++ blobs (what `check-format` enforces).
+#   1. gofmt check on STAGED Go blobs (what CI enforces).
 #   2. YAML syntax check on staged *.yml/*.yaml (catches workflow typos pre-push).
-#   3. ci.yml / ci-skip.yaml trigger-paths sync (documented invariant: the skip
-#      workflow must fire on exactly the paths the main workflow ignores).
-#   4. Justfile formatting (`just --fmt --check`) plus Python syntax of staged
-#      *.py files (what `just test-scripts` executes).
-# Slow checks (inline clang-tidy build, cppcheck, actionlint, tests) stay in CI
-# and `just verify` — run that before pushing. Install with `just hooks-install`;
-# run manually with `just hooks-run`. This hook is local-only by design: CI runs
-# the real gates, not this script (nothing is staged in a fresh checkout).
+#   3. Justfile formatting (`just --fmt --check`).
+# Slow checks (go vet, race-detector tests) stay in CI and `just verify` —
+# run that before pushing. Install with `just hooks-install`; run manually
+# with `just hooks-run`. This hook is local-only by design: CI runs the real
+# gates, not this script (nothing is staged in a fresh checkout).
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -26,18 +23,13 @@ if ! git diff --cached --check -- . ':!*.md'; then
 fi
 
 # --- collect staged files once, classify by extension ---
-staged_cpp=()
+staged_go=()
 staged_yml=()
-staged_py=()
 staged_justfile=0
-check_sync=0
 while IFS= read -r -d '' f; do
     case "$f" in
-        third_party/*)
-            # Vendored code: never reformatted, never linted by the hook.
-            ;;
-        *.cpp | *.hpp | *.h | *.c)
-            staged_cpp+=("$f")
+        *.go)
+            staged_go+=("$f")
             ;;
         *.yml | *.yaml)
             staged_yml+=("$f")
@@ -45,36 +37,27 @@ while IFS= read -r -d '' f; do
         Justfile)
             staged_justfile=1
             ;;
-        *.py)
-            staged_py+=("$f")
-            ;;
     esac
-    if [[ "$f" == .github/workflows/ci.yml || "$f" == .github/workflows/ci-skip.yaml ]]; then
-        check_sync=1
-    fi
 done < <(git diff --cached --name-only -z --diff-filter=ACMR)
 
-# --- 1. clang-format on the staged blob (not the worktree) ---
-if [ "${#staged_cpp[@]}" -gt 0 ]; then
-    CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
-    if ! command -v "$CLANG_FORMAT" >/dev/null 2>&1; then
-        echo "pre-commit: $CLANG_FORMAT not found — cannot check formatting." >&2
-        echo "  Install clang-format, or bypass with: git commit --no-verify" >&2
+# --- 1. gofmt on the staged blob (not the worktree) ---
+if [ "${#staged_go[@]}" -gt 0 ]; then
+    if ! command -v gofmt >/dev/null 2>&1; then
+        echo "pre-commit: gofmt not found — cannot check formatting." >&2
+        echo "  Install Go, or bypass with: git commit --no-verify" >&2
         exit 1
     fi
-    echo "pre-commit: clang-format $("$CLANG_FORMAT" --version) on ${#staged_cpp[@]} staged file(s)"
     bad=()
-    for f in "${staged_cpp[@]}"; do
-        # --assume-filename lets clang-format find .clang-format and pick the
-        # language while reading the staged blob from stdin.
-        if ! git show ":$f" | "$CLANG_FORMAT" --dry-run --Werror --style=file \
-            --assume-filename="$REPO_ROOT/$f" >/dev/null 2>&1; then
+    for f in "${staged_go[@]}"; do
+        # gofmt -d prints an empty diff for formatted input; anything else
+        # means the staged blob needs formatting.
+        if [ -n "$(git show ":$f" | gofmt -d 2>/dev/null)" ]; then
             bad+=("$f")
         fi
     done
     if [ "${#bad[@]}" -gt 0 ]; then
         fail=1
-        echo "pre-commit: clang-format would reformat ${#bad[@]} staged file(s):" >&2
+        echo "pre-commit: gofmt would reformat ${#bad[@]} staged file(s):" >&2
         for f in "${bad[@]}"; do
             # In-place reformat would also touch unstaged hunks — warn when the
             # worktree differs from the index (partial staging).
@@ -84,9 +67,9 @@ if [ "${#staged_cpp[@]}" -gt 0 ]; then
                 echo "  $f (has unstaged changes — in-place reformat will touch those too)" >&2
             fi
         done
-        echo "  Fix with: clang-format -i <files>  (or: just format)" >&2
+        echo "  Fix with: gofmt -w <files>  (or: just vet)" >&2
         echo "  then re-stage and commit again. CI is the source of truth if" >&2
-        echo "  your local clang-format version disagrees with the toolchain image." >&2
+        echo "  your local Go version disagrees with go.mod's toolchain." >&2
     fi
 fi
 
@@ -111,22 +94,7 @@ if [ "${#staged_yml[@]}" -gt 0 ]; then
     fi
 fi
 
-# --- 3. trigger-paths sync between the two workflows ---
-# Set of `- 'pattern'` list items under the top-level `on:` block. `branches:`
-# entries are inline (not list items) and `jobs:` lives outside `on:`, so the
-# sed range + grep isolates exactly the trigger paths in both files.
-list_trigger_paths() {
-    sed -n '/^on:/,/^[^ ]/p' | grep -oE "^ *- '[^']*'$" | sed -E "s/^ *- '//; s/'$//" | sort -u
-}
-if [ "$check_sync" -ne 0 ]; then
-    if ! diff <(git show ":.github/workflows/ci.yml" | list_trigger_paths) \
-        <(git show ":.github/workflows/ci-skip.yaml" | list_trigger_paths) >/dev/null; then
-        fail=1
-        echo "pre-commit: ci.yml paths-ignore != ci-skip.yaml paths — keep them in sync" >&2
-    fi
-fi
-
-# --- 4. Justfile formatting + staged Python syntax (what `test-scripts` runs) ---
+# --- 3. Justfile formatting ---
 if [ "$staged_justfile" -ne 0 ]; then
     if command -v just >/dev/null 2>&1; then
         if ! just --fmt --check >/dev/null 2>&1; then
@@ -135,19 +103,6 @@ if [ "$staged_justfile" -ne 0 ]; then
         fi
     else
         echo "pre-commit: note: just not found — skipping Justfile format check" >&2
-    fi
-fi
-if [ "${#staged_py[@]}" -gt 0 ]; then
-    if command -v python3 >/dev/null 2>&1; then
-        for f in "${staged_py[@]}"; do
-            if ! git show ":$f" | python3 -c \
-                "import sys; compile(sys.stdin.read(), sys.argv[1], 'exec')" "$f" 2>/dev/null; then
-                fail=1
-                echo "pre-commit: Python syntax error in staged file: $f" >&2
-            fi
-        done
-    else
-        echo "pre-commit: note: python3 not found — skipping Python syntax check" >&2
     fi
 fi
 if [ "$fail" -ne 0 ]; then

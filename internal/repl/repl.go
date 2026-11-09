@@ -1,0 +1,413 @@
+package repl
+
+import (
+	"hash/fnv"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/store"
+)
+
+// Manager coordinates writes to the primary plus replicas. The store is
+// the single version authority; every replica apply is idempotent LWW.
+type Manager struct {
+	local     *store.LRUStore
+	self      string
+	writer    uint64
+	clock     store.Clock
+	transport Transport
+	hints     *HintQueue
+	journal   HintJournal
+	replaying atomic.Bool
+	flights   flightRegistry
+}
+
+// HintJournal persists hints across restarts. AppendAdd records a queued
+// hint; AppendDel records a successful replay so recovery drops it.
+type HintJournal interface {
+	AppendAdd(h Hint)
+	AppendDel(target, key string, version uint64)
+}
+
+// SetHintJournal enables durable hints (nil disables).
+func (m *Manager) SetHintJournal(j HintJournal) {
+	m.journal = j
+}
+
+// NewManager returns a replication manager. Transport may be nil only when
+// every call passes an empty replica list.
+func NewManager(local *store.LRUStore, self string, clock store.Clock, t Transport) *Manager {
+	if clock == nil {
+		clock = store.SystemClock{}
+	}
+	h := fnv.New64a()
+	h.Write([]byte(self))
+	return &Manager{local: local, self: self, writer: h.Sum64(), clock: clock, transport: t, hints: NewHintQueue()}
+}
+
+// HintCount returns the queued hint count.
+func (m *Manager) HintCount() int { return m.hints.Len() }
+
+// HintsDropped returns the lifetime drop count.
+func (m *Manager) HintsDropped() uint64 { return m.hints.Dropped() }
+
+// SetMaxHintBytes caps hint queue estimated bytes.
+func (m *Manager) SetMaxHintBytes(n uint64) { m.hints.SetMaxBytes(n) }
+
+// Local exposes the underlying store for serving and tests.
+func (m *Manager) Local() *store.LRUStore { return m.local }
+
+// HintQueue exposes the hint queue for journal recovery wiring.
+func (m *Manager) HintQueue() *HintQueue { return m.hints }
+
+// WriterHash is the stable per-node LWW tiebreaker (FNV-1a of the node id).
+func (m *Manager) WriterHash() uint64 { return m.writer }
+
+// Write stores value locally, then fans out Replicate to replicas.
+// Async returns after the local commit; quorum requires W acknowledgements
+// including the local write and fails closed with ErrQuorum.
+func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool, replicas []string, mode Mode, traceID, spanID uint64) error {
+	version := m.local.MintVersion()
+	e := store.Entry{Value: append([]byte(nil), value...), Version: version, WriterNodeHash: m.writer}
+	if hasTTL {
+		e.HasTTL = true
+		e.ExpiresAt = m.clock.Now().Add(ttl)
+	}
+	if err := m.local.PutVersioned(key, e); err != nil {
+		return err
+	}
+	req := protocol.Request{
+		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), value...),
+		Version: version, WriterNodeHash: m.writer,
+		TraceID: traceID, SpanID: spanID,
+	}
+	if hasTTL {
+		req.HasExpiresAt = true
+		req.ExpiresAt = e.ExpiresAt
+	}
+	if mode == Async {
+		m.fanOutAsync(key, req, replicas)
+		return nil
+	}
+	return m.fanOutQuorum(key, req, replicas)
+}
+
+// Delete tombstones locally, then fans out. Mirrors deleteAsync: a quorum
+// delete returns success to no one — a quorum holding the tombstone means
+// later reads observe the delete.
+func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, spanID uint64) error {
+	version := m.local.MintVersion()
+	if err := m.local.RemoveVersioned(key, version, m.writer); err != nil {
+		return err
+	}
+	tomb, _ := m.local.GetVersioned(key)
+	req := protocol.Request{
+		Opcode: protocol.OpHint, Key: []byte(key), Tombstone: true,
+		Version: version, WriterNodeHash: m.writer,
+		TraceID: traceID, SpanID: spanID,
+	}
+	if tomb.HasTTL {
+		req.HasExpiresAt = true
+		req.ExpiresAt = tomb.ExpiresAt
+	}
+	if mode == Async {
+		m.fanOutAsync(key, req, replicas)
+		return nil
+	}
+	return m.fanOutQuorum(key, req, replicas)
+}
+
+type fanResult struct {
+	node string
+	res  protocol.Response
+	err  error
+}
+
+// fanOutAsync sends req to every replica concurrently and returns
+// immediately; failures enqueue hints in the background. Mirrors the C++
+// async path, where on_done runs inline after the local commit.
+func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []string) {
+	out := m.launch(req, replicas)
+	go func() {
+		for r := range out {
+			if r.err != nil {
+				m.enqueueHint(r.node, req)
+			}
+		}
+	}()
+}
+
+// fanOutQuorum reduces one fan-out to W = total/2+1 including the local
+// write. Success fires at W without waiting out stragglers, but a
+// background drain continues so late failures still enqueue hints.
+// Impossibility (acks + pending < W) fails fast with ErrQuorum.
+func (m *Manager) fanOutQuorum(key string, req protocol.Request, replicas []string) error {
+	total := len(replicas) + 1
+	w := total/2 + 1
+	if w <= 1 {
+		// No replicas: the local ack alone satisfies W == 1.
+		return nil
+	}
+	out := m.launch(req, replicas)
+	acks := 1 // local write
+	pending := len(replicas)
+	for pending > 0 {
+		r := <-out
+		pending--
+		if r.err != nil {
+			m.enqueueHint(r.node, req)
+		} else {
+			acks++
+		}
+		if acks >= w {
+			go drain(out, pending, func(r fanResult) {
+				if r.err != nil {
+					m.enqueueHint(r.node, req)
+				}
+			})
+			return nil
+		}
+		if acks+pending < w {
+			go drain(out, pending, func(r fanResult) {
+				if r.err != nil {
+					m.enqueueHint(r.node, req)
+				}
+			})
+			return ErrQuorum
+		}
+	}
+	return ErrQuorum
+}
+
+// launch sends req to every replica concurrently; the caller drains exactly
+// len(replicas) results.
+func (m *Manager) launch(req protocol.Request, replicas []string) <-chan fanResult {
+	out := make(chan fanResult, len(replicas))
+	for _, node := range replicas {
+		go func(node string) {
+			res, err := m.transport.Send(node, req)
+			out <- fanResult{node: node, res: res, err: err}
+		}(node)
+	}
+	return out
+}
+
+func drain(out <-chan fanResult, n int, fn func(fanResult)) {
+	for range n {
+		fn(<-out)
+	}
+}
+
+func (m *Manager) enqueueHint(node string, req protocol.Request) {
+	h := Hint{Target: node, Req: req, ExpiresAt: m.clock.Now().Add(HintTTL)}
+	m.hints.Push(h)
+	if m.journal != nil {
+		m.journal.AppendAdd(h)
+	}
+}
+
+// Read performs a quorum read: local getVersioned plus concurrent
+// GetVersioned fan-out, LWW-max reduce over R votes, background repair of
+// stale replicas (and a local heal). Reads coalesce per (key, R): the
+// first caller runs the fan-out, concurrent callers share its result.
+func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
+	if len(replicas) == 0 || r <= 1 {
+		if e, ok := m.local.GetVersioned(key); ok {
+			return e, nil
+		}
+		return store.Entry{}, ErrNotFound
+	}
+	return m.flights.do(key, r, func() (store.Entry, error) {
+		return m.readOnce(key, replicas, r, traceID, spanID)
+	})
+}
+
+func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
+	rd := &reducer{r: r, pending: len(replicas)}
+	if e, ok := m.local.GetVersioned(key); ok {
+		rd.noteLocal(e)
+	}
+	req := protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key), TraceID: traceID, SpanID: spanID}
+	out := m.launch(req, replicas)
+	for rd.pending > 0 && rd.acks < r {
+		res := <-out
+		rd.pending--
+		rd.noteRemote(res.res, res.err)
+	}
+	// Drain stragglers in the background so no send outlives the operation.
+	// Post-decision arrivals are ignored entirely (the reducer already
+	// fired); the loop only drains the channel.
+	go func() {
+		for range rd.pending {
+			<-out
+		}
+	}()
+	best, ok := rd.winner()
+	if !ok {
+		// Served miss, not a failure: the quorum answered, the key is
+		// simply absent everywhere.
+		return store.Entry{}, ErrNotFound
+	}
+	if rd.repair {
+		// Self-heal the local store when a replica was ahead, then write
+		// the winner back everywhere best-effort.
+		_ = m.local.PutVersioned(key, best)
+		m.repair(key, replicas, best, traceID, spanID)
+	}
+	return best, nil
+}
+
+// repair writes the LWW winner back to every replica best-effort (no
+// hints), mirroring sendRepairFanOut.
+func (m *Manager) repair(key string, replicas []string, winner store.Entry, traceID, spanID uint64) {
+	req := protocol.Request{
+		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), winner.Value...),
+		Version: winner.Version, WriterNodeHash: winner.WriterNodeHash, Tombstone: winner.Tombstone,
+		TraceID: traceID, SpanID: spanID,
+	}
+	if winner.HasTTL {
+		req.HasExpiresAt = true
+		req.ExpiresAt = winner.ExpiresAt
+	}
+	out := m.launch(req, replicas)
+	go func() {
+		for range replicas {
+			<-out
+		}
+	}()
+}
+
+// reducer accumulates local + replica votes into one LWW winner. Only
+// OK-with-version votes count as acks; NotFound marks repair; transport
+// failures are ignored. Tombstone votes carry no value: the marker itself
+// is the vote, and mapping it to NotFound is the caller's job.
+type reducer struct {
+	r       int
+	pending int
+	acks    int
+	best    store.Entry
+	hasBest bool
+	repair  bool
+}
+
+func (d *reducer) noteLocal(e store.Entry) {
+	d.acks++
+	d.best = e.Clone()
+	d.hasBest = true
+}
+
+func (d *reducer) noteRemote(res protocol.Response, err error) {
+	if err != nil {
+		return
+	}
+	if res.Status == protocol.StatusOK && res.Version != 0 {
+		d.acks++
+		vote := store.Stamp{Version: res.Version, Writer: res.WriterNodeHash, Tombstone: res.Tombstone}
+		if !d.hasBest {
+			d.best = voteToEntry(res)
+			d.hasBest = true
+			d.repair = true
+			return
+		}
+		cur := store.Stamp{Version: d.best.Version, Writer: d.best.WriterNodeHash, Tombstone: d.best.Tombstone}
+		if store.LWWWinsOver(vote, cur) {
+			d.best = voteToEntry(res)
+			d.repair = true
+		} else if store.CompareLWW(vote, cur) != store.LWWEqual {
+			d.repair = true
+		}
+	} else if res.Status == protocol.StatusNotFound {
+		d.repair = true
+	}
+}
+
+func voteToEntry(res protocol.Response) store.Entry {
+	e := store.Entry{
+		Version: res.Version, WriterNodeHash: res.WriterNodeHash, Tombstone: res.Tombstone,
+		HasTTL: res.HasExpiresAt, ExpiresAt: res.ExpiresAt,
+	}
+	if res.HasValue {
+		e.Value = append([]byte(nil), res.Value...)
+	}
+	return e
+}
+
+func (d *reducer) winner() (store.Entry, bool) {
+	if !d.hasBest {
+		return store.Entry{}, false
+	}
+	return d.best, true
+}
+
+// flightRegistry coalesces concurrent reads per (key, R): the first caller
+// runs the fan-out, the rest block on its result. The entry is erased
+// before waiters wake, so a waiter starting a new read begins a fresh
+// flight instead of deadlocking on itself.
+type flightRegistry struct {
+	mu      sync.Mutex
+	flights map[flightKey]*flight
+}
+
+type flightKey struct {
+	key string
+	r   int
+}
+
+type flight struct {
+	done chan struct{}
+	res  store.Entry
+	err  error
+}
+
+func (f *flightRegistry) do(key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
+	f.mu.Lock()
+	if f.flights == nil {
+		f.flights = make(map[flightKey]*flight)
+	}
+	k := flightKey{key, r}
+	if fl, ok := f.flights[k]; ok {
+		f.mu.Unlock()
+		<-fl.done
+		return fl.res, fl.err
+	}
+	fl := &flight{done: make(chan struct{})}
+	f.flights[k] = fl
+	f.mu.Unlock()
+	res, err := run()
+	fl.res, fl.err = res, err
+	f.mu.Lock()
+	delete(f.flights, k)
+	f.mu.Unlock()
+	close(fl.done)
+	return res, err
+}
+
+// ReplayHints retries queued hints against healthy replicas, at most
+// ReplayBatch FIFO. Concurrent calls collapse to zero; returns the replay
+// count. Expired hints are dropped.
+func (m *Manager) ReplayHints() int {
+	if !m.replaying.CompareAndSwap(false, true) {
+		return 0
+	}
+	defer m.replaying.Store(false)
+	batch := m.hints.Snapshot(m.clock.Now(), ReplayBatch)
+	var wg sync.WaitGroup
+	var replayed atomic.Int64
+	for _, h := range batch {
+		wg.Add(1)
+		go func(h Hint) {
+			defer wg.Done()
+			if _, err := m.transport.Send(h.Target, h.Req); err == nil {
+				m.hints.Remove(h.ID)
+				if m.journal != nil {
+					m.journal.AppendDel(h.Target, string(h.Req.Key), h.Req.Version)
+				}
+				replayed.Add(1)
+			}
+		}(h)
+	}
+	wg.Wait()
+	return int(replayed.Load())
+}
