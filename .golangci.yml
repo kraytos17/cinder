@@ -40,7 +40,6 @@ linters:
     - mnd # magic numbers are wire constants with comments
     - maintidx
     - nestif # deep decode guards are the point
-    - dupl # AE near-duplicates are structural, documented
     - forbidigo
     - gochecknoglobals # package-level test fixtures are idiomatic here
     - gochecknoinits
