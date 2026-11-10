@@ -47,6 +47,28 @@ const (
 	compactTickInterval = time.Second
 )
 
+// noDelayListener sets TCP_NODELAY on accepted connections. It must wrap
+// the raw listener before any TLS wrapper (which hides the TCP socket),
+// and it also covers plain listeners so the accept loop needs no
+// per-connection type switch of its own.
+type noDelayListener struct {
+	net.Listener
+}
+
+// Accept implements net.Listener.
+func (l noDelayListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	// Best-effort like the client side: a socket that refuses the option
+	// still works, just with Nagle enabled.
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetNoDelay(true)
+	}
+	return c, nil
+}
+
 // nopLogger is the shared disabled logger for servers constructed
 // without SetLogger. Disabled level: every event is nil, nothing emits.
 var nopLogger = log.Nop()
@@ -181,6 +203,10 @@ func (s *Server) Serve(l net.Listener) error {
 	s.tlsMu.RLock()
 	tlsCfg := s.tlsCfg
 	s.tlsMu.RUnlock()
+	// NoDelay first: the TLS wrapper below hides the TCP socket, so the
+	// option must be set on the raw connection before wrapping. (See
+	// setNoDelay in the client for why sequential frames want it off.)
+	l = noDelayListener{l}
 	if tlsCfg != nil {
 		l = tls.NewListener(l, tlsCfg)
 	}
@@ -231,12 +257,6 @@ func (s *Server) Serve(l net.Listener) error {
 				return nil
 			}
 			continue
-		}
-		// Disable Nagle before any I/O: see setNoDelay in the client
-		// for why sequential small frames want it off. Non-TCP
-		// listeners (TLS wraps the socket) skip this gracefully.
-		if tc, ok := c.(*net.TCPConn); ok {
-			_ = tc.SetNoDelay(true)
 		}
 		select {
 		case s.sem <- struct{}{}:

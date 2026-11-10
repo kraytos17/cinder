@@ -208,3 +208,23 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchAliveIDSkipsSelfAndNonAlive(t *testing.T) {
+	clk, _ := testClock()
+	tb := NewMembershipTable("n1", clk)
+	tb.Seed([]NodeInfo{{ID: "n2"}, {ID: "n3"}, {ID: "n4"}})
+	tb.MarkSuspect("n3")
+	tb.MarkDead("n4")
+	if !tb.MatchAliveID("n1", func(id string) bool { return id == "n2" }) {
+		t.Fatal("alive non-self member must match")
+	}
+	if tb.MatchAliveID("n1", func(id string) bool { return id == "n1" }) {
+		t.Fatal("self must never match")
+	}
+	if tb.MatchAliveID("n1", func(id string) bool { return id == "n3" || id == "n4" }) {
+		t.Fatal("suspect/dead members must not match")
+	}
+	if tb.MatchAliveID("n1", func(id string) bool { return id == "ghost" }) {
+		t.Fatal("unknown member must not match")
+	}
+}

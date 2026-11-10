@@ -99,7 +99,6 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		}
 		return protocol.Response{Status: protocol.StatusOK}
 	case protocol.OpAdminShutdown:
-		go s.Shutdown()
 		return protocol.Response{Status: protocol.StatusOK}
 	default:
 		return protocol.Response{Status: protocol.StatusInvalidArgument}

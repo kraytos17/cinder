@@ -33,9 +33,10 @@ type Client struct {
 	conn    net.Conn
 	br      *bufio.Reader
 	timeout time.Duration
-	// payloadBuf is the reused response staging buffer (see the server
+	// payloadBuf and encodeBuf are reused staging buffers (see the server
 	// read loop for the retention argument; Do is mutex-serialized).
 	payloadBuf []byte
+	encodeBuf  []byte
 	secrets    Secrets
 }
 
@@ -113,6 +114,17 @@ func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, erro
 	return &Client{conn: c, br: bufio.NewReader(c), timeout: timeout}, nil
 }
 
+// retainEncode keeps a reusable encode buffer, dropping oversized slabs
+// rather than pinning ~1 MiB per connection after one large frame.
+// Encoding never retains the returned slice past the write loop, and
+// decoding copies variable-length fields out, so reuse is safe.
+func retainEncodeBuf(buf []byte) []byte {
+	if cap(buf) > maxReusePayloadBytes {
+		return nil
+	}
+	return buf[:0]
+}
+
 // setNoDelay disables Nagle's algorithm on TCP connections. Request +
 // response are small and strictly sequential, the exact pattern Nagle
 // delays (up to ~200ms on real networks); loopback benches don't show
@@ -153,10 +165,11 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if c.conn == nil {
 		return protocol.Response{}, fmt.Errorf("client: connection closed")
 	}
-	frame, err := protocol.EncodeRequest(req, tokenFor(c.secrets, time.Now()))
+	frame, err := protocol.EncodeRequestInto(req, tokenFor(c.secrets, time.Now()), c.encodeBuf)
 	if err != nil {
 		return protocol.Response{}, err
 	}
+	c.encodeBuf = retainEncodeBuf(frame)
 	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}

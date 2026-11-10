@@ -263,6 +263,25 @@ func (t *MembershipTable) Get(id string) (NodeInfo, bool) {
 	return NodeInfo{}, false
 }
 
+// MatchAliveID reports whether any alive member other than self satisfies
+// match, without building a snapshot. The auth path uses it to verify
+// node tokens with zero allocation; the HMAC loop runs under the table
+// lock like every other accessor, so membership updates wait
+// microseconds, not milliseconds.
+func (t *MembershipTable) MatchAliveID(self string, match func(id string) bool) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for id, n := range t.nodes {
+		if id == self || n.State != Alive {
+			continue
+		}
+		if match(id) {
+			return true
+		}
+	}
+	return false
+}
+
 // Self returns this node's own entry.
 func (t *MembershipTable) Self() (NodeInfo, bool) {
 	return t.Get(t.self)

@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/auth"
-	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -105,7 +104,8 @@ func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 }
 
 // verifyNodeTokenAny accepts a node token minted by self or any alive peer.
-
+// Membership iteration is snapshot-free (see MatchAliveID): no per-request
+// allocation on inter-node traffic.
 func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) bool {
 	if auth.VerifyNodeToken(shared, s.nodeID, token, now) {
 		return true
@@ -116,15 +116,9 @@ func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) 
 	if table == nil {
 		return false
 	}
-	for _, m := range table.Snapshot() {
-		if m.ID == s.nodeID || m.State != cluster.Alive {
-			continue
-		}
-		if auth.VerifyNodeToken(shared, m.ID, token, now) {
-			return true
-		}
-	}
-	return false
+	return table.MatchAliveID(s.nodeID, func(id string) bool {
+		return auth.VerifyNodeToken(shared, id, token, now)
+	})
 }
 
 // StatusOf maps store/replication errors to wire statuses, shared with
@@ -214,6 +208,8 @@ func (s *Server) handle(c net.Conn) {
 	// out, so no decoded value aliases this buffer and reuse is safe.
 	// Oversized slabs are dropped rather than pinned per connection.
 	var payloadBuf []byte
+	// Reused encode buffer, same retention argument as payloadBuf above.
+	var encodeBuf []byte
 	for {
 		c.SetDeadline(time.Now().Add(idleTimeout))
 		if _, err := io.ReadFull(br, header[:]); err != nil {
@@ -256,14 +252,26 @@ func (s *Server) handle(c net.Conn) {
 			res.TraceID = dec.Req.TraceID
 			res.SpanID = dec.Req.SpanID
 		}
-		out, err := protocol.EncodeResponse(res)
+		out, err := protocol.EncodeResponseInto(res, encodeBuf)
 		if err != nil {
 			s.met.WriteFailures.Add(1)
 			return
 		}
+		if cap(out) > maxReusePayload {
+			encodeBuf = nil
+		} else {
+			encodeBuf = out[:0]
+		}
 		if err := writeAll(c, out); err != nil {
 			s.met.WriteFailures.Add(1)
 			return
+		}
+		if dec.Req.Opcode == protocol.OpAdminShutdown {
+			// Shut down only after the OK is on the wire: Shutdown
+			// closes this connection via closeAll, so firing it from
+			// dispatch raced the response and surfaced as EOF.
+			// (Decode failures can never match: opcode zero is invalid.)
+			go s.Shutdown()
 		}
 	}
 }
