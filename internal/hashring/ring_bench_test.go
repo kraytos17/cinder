@@ -46,7 +46,7 @@ func BenchmarkRingGetNodes(b *testing.B) {
 			}
 			b.ResetTimer()
 			for i := range b.N {
-				if _, err := r.GetNodes(keys[i%len(keys)], rf); err != nil {
+				if _, err := r.GetNodes(keys[i%len(keys)], ReplicaCount(rf)); err != nil {
 					b.Fatal(err)
 				}
 			}

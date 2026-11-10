@@ -52,7 +52,7 @@ type Manager struct {
 	table      *cluster.MembershipTable
 	self       string
 	now        func() time.Time
-	rf         int
+	rf         hashring.ReplicaCount
 	quarantine time.Duration
 
 	onMigrationFailed func()
@@ -60,27 +60,32 @@ type Manager struct {
 	logger            atomic.Pointer[zerolog.Logger]
 }
 
-// NewManager returns a Manager. rf < 1 selects 1 (no replication).
-// A nil now selects time.Now.
-func NewManager(
-	st *store.Store,
-	ring *hashring.Ring,
-	t Transport,
-	table *cluster.MembershipTable,
-	self string,
-	rf int,
-	quarantine time.Duration,
-	now func() time.Time,
-) *Manager {
-	if rf < 1 {
-		rf = 1
+// Config defines the store, membership view, replica policy, and timing used
+// by a rebalance manager. ReplicaFactor below 1 selects 1 (no replication);
+// a nil Clock selects time.Now.
+type Config struct {
+	Store         *store.Store
+	Ring          *hashring.Ring
+	Transport     Transport
+	Membership    *cluster.MembershipTable
+	Self          string
+	ReplicaFactor hashring.ReplicaCount
+	Quarantine    time.Duration
+	Clock         func() time.Time
+}
+
+// NewManager returns a rebalance manager configured by cfg.
+func NewManager(cfg Config) *Manager {
+	if cfg.ReplicaFactor < 1 {
+		cfg.ReplicaFactor = 1
 	}
-	if now == nil {
-		now = time.Now
+	if cfg.Clock == nil {
+		cfg.Clock = time.Now
 	}
 	return &Manager{
-		store: st, ring: ring, transport: t, table: table,
-		self: self, now: now, rf: rf, quarantine: quarantine,
+		store: cfg.Store, ring: cfg.Ring, transport: cfg.Transport,
+		table: cfg.Membership, self: cfg.Self, now: cfg.Clock,
+		rf: cfg.ReplicaFactor, quarantine: cfg.Quarantine,
 	}
 }
 

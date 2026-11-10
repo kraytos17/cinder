@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -20,7 +21,7 @@ func testServer(t *testing.T) (addr string, shutdown func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	go srv.Serve(l)
 	t.Cleanup(srv.Shutdown)
 	return l.Addr().String(), srv.Shutdown
@@ -218,7 +219,7 @@ func TestCliTLS(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +253,7 @@ func TestCliClientSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
 		t.Fatal(err)
 	}

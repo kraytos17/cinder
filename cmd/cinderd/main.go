@@ -20,9 +20,11 @@ import (
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/grpcgw"
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
@@ -108,19 +110,30 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cinderd:", err)
 		os.Exit(2)
 	}
+	replicaCount, err := hashring.NewReplicaCount(*replFact)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cinderd: --replication-factor must be between 1 and 32")
+		os.Exit(2)
+	}
 
-	var st *store.Store
-	switch *evictPolicy {
-	case "lru":
-		st = store.NewLRUStore(*capacity, nil)
-	case "lfu":
-		st = store.NewLFUStore(*capacity, nil)
-	default:
+	policy, err := store.ParsePolicy(*evictPolicy)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy must be lru|lfu")
 		os.Exit(2)
 	}
+	var st *store.Store
+	switch policy {
+	case store.LRUPolicy:
+		st = store.NewLRUStore(*capacity, nil)
+	case store.LFUPolicy:
+		st = store.NewLFUStore(*capacity, nil)
+	}
 	if *tombstoneMs < 0 {
 		fmt.Fprintln(os.Stderr, "cinderd: --tombstone-gc-ms must be >= 0")
+		os.Exit(2)
+	}
+	if *port < 0 || *port > 65535 {
+		fmt.Fprintln(os.Stderr, "cinderd: --port must be between 0 and 65535")
 		os.Exit(2)
 	}
 	if *aeBuckets <= 0 {
@@ -130,7 +143,7 @@ func main() {
 	if *tombstoneMs > 0 {
 		st.SetTombstoneGCInterval(time.Duration(*tombstoneMs) * time.Millisecond)
 	}
-	srv := tcp.NewServer(*nodeID, *port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: *nodeID, Port: netport.Port(*port), Store: st})
 	srv.SetLogger(&logger)
 	logger.Info().Str("node", *nodeID).Int("port", *port).Msg("starting")
 	if err := srv.ConfigureCluster(peerList); err != nil {
@@ -143,7 +156,10 @@ func main() {
 	srv.SetSuspectTimeout(time.Duration(*suspectMs) * time.Millisecond)
 	srv.SetAntiEntropyInterval(time.Duration(*aeInterval) * time.Millisecond)
 	srv.ConfigureAntiEntropy(uint32(*aeBuckets), *aeFetchBytes)
-	srv.ConfigureRebalance(*replFact, time.Duration(*quarantineMs)*time.Millisecond)
+	if err := srv.ConfigureRebalance(replicaCount, time.Duration(*quarantineMs)*time.Millisecond); err != nil {
+		logger.Error().Err(err).Msg("rebalance configuration")
+		os.Exit(2)
+	}
 	if *tls {
 		if *tlsCert == "" || *tlsKey == "" {
 			logger.Error().Msg("--tls requires --tls-cert and --tls-key")
@@ -184,14 +200,9 @@ func main() {
 		srv.SetMaxWALBytes(*maxWALBytes)
 		srv.SetMaxWALEntries(*maxWALEntries)
 	}
-	if *replFact > 1 {
-		var mode repl.Mode
-		switch *consist {
-		case "async":
-			mode = repl.Async
-		case "quorum":
-			mode = repl.Quorum
-		default:
+	if replicaCount > 1 {
+		mode, err := repl.ParseMode(*consist)
+		if err != nil {
 			logger.Error().Msg("--consistency must be async|quorum")
 			os.Exit(2)
 		}
@@ -214,11 +225,14 @@ func main() {
 			pool.SetSecrets(client.Secrets{NodeID: *nodeID, Shared: shared})
 		}
 
-		mgr := repl.NewManager(st, *nodeID, nil, pool)
+		mgr := repl.NewManager(repl.Config{Local: st, Self: *nodeID, Clock: nil, Transport: pool})
 		if *maxHintBytes > 0 {
 			mgr.SetMaxHintBytes(*maxHintBytes)
 		}
-		srv.ConfigureReplication(*replFact, mode, mgr)
+		if err := srv.ConfigureReplication(replicaCount, mode, mgr); err != nil {
+			logger.Error().Err(err).Msg("replication configuration")
+			os.Exit(2)
+		}
 		if *enablePersist {
 			j, _, err := ae.OpenJournal(filepath.Join(*dataDir, "hints.log"), mgr.HintQueue())
 			if err != nil {

@@ -9,6 +9,7 @@ import (
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -19,7 +20,7 @@ func BenchmarkRPCSetGet(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<26, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<26, nil)})
 	go srv.Serve(l)
 	defer srv.Shutdown()
 	c, err := client.Dial(l.Addr().String(), 5*time.Second)
@@ -52,7 +53,7 @@ func BenchmarkRPCSetParallel(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<26, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<26, nil)})
 	go srv.Serve(l)
 	defer srv.Shutdown()
 	val := make([]byte, 256)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/kraytos17/cinder/internal/netport"
+
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/store"
@@ -19,7 +21,7 @@ func TestAdminInfoReportsEvictionPolicy(t *testing.T) {
 		{"lfu", store.NewLFUStore(1<<20, nil), "lfu"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := tcp.NewServer("n1", 0, tc.st, nil)
+			srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: tc.st})
 			res := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminInfo})
 			if res.Status != protocol.StatusOK {
 				t.Fatalf("status = %v", res.Status)

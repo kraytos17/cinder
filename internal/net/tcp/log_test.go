@@ -10,6 +10,7 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -18,7 +19,7 @@ import (
 func TestDispatchLogsCarryTraceIDs(t *testing.T) {
 	var buf bytes.Buffer
 	l := log.New(&buf, zerolog.DebugLevel)
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	srv.SetLogger(&l)
 	if err := srv.ConfigureSecrets("s3cret", ""); err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestDispatchLogsCarryTraceIDs(t *testing.T) {
 
 // Default (Nop) logger: dispatch works and stays silent.
 func TestDispatchNopLoggerSilent(t *testing.T) {
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	if res := srv.Dispatch(protocol.Request{Opcode: protocol.OpPing}); res.Status != protocol.StatusOK {
 		t.Fatalf("ping = %v", res.Status)
 	}

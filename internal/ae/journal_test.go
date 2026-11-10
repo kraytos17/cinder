@@ -17,7 +17,7 @@ func TestJournalReplicatesThroughManager(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hints.log")
 	ft := testkit.NewStores("n2")
-	m := repl.NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := repl.NewManager(repl.Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	j, _, err := OpenJournal(path, m.HintQueue())
 	if err != nil {
 		t.Fatal(err)

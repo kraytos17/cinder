@@ -14,9 +14,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kraytos17/cinder/internal/expiry"
-
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // Wire constants for frame encoding and size limits. The opcode and field
@@ -36,22 +35,28 @@ const (
 	MaxExpiresAtMs = int64(^uint64(0)>>1) / 1_000_000
 )
 
+// RequestFlags is the bitmask stored in the first request payload byte.
+type RequestFlags uint8
+
 // Request flag bits (first payload byte).
 const (
-	FlagHasTTL       = 1 << 0
-	FlagHasExpiresAt = 1 << 1
-	FlagHasTrace     = 1 << 2
-	FlagHasAuth      = 1 << 3
-	FlagTombstone    = 1 << 4
+	FlagHasTTL       RequestFlags = 1 << 0
+	FlagHasExpiresAt RequestFlags = 1 << 1
+	FlagHasTrace     RequestFlags = 1 << 2
+	FlagHasAuth      RequestFlags = 1 << 3
+	FlagTombstone    RequestFlags = 1 << 4
 )
+
+// ResponseFlags is the bitmask stored in the response payload.
+type ResponseFlags uint8
 
 // Response flag bits. Bit 0 carries version metadata; bit 1 indicates an
 // expiry, bit 2 trace context, and bit 4 a tombstone.
 const (
-	RespFlagVersionMeta = 1 << 0
-	RespFlagExpiresAt   = 1 << 1
-	RespFlagTrace       = 1 << 2
-	RespFlagTombstone   = 1 << 4
+	RespFlagVersionMeta ResponseFlags = 1 << 0
+	RespFlagExpiresAt   ResponseFlags = 1 << 1
+	RespFlagTrace       ResponseFlags = 1 << 2
+	RespFlagTombstone   ResponseFlags = 1 << 4
 )
 
 // Opcode is a v6 request opcode (1-20). Response frames always carry 0x00.
@@ -324,7 +329,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	w.U8(uint8(req.Opcode))
 	w.U32(uint32(acc.size))
 
-	var flags uint8
+	var flags RequestFlags
 	if req.TTL > 0 {
 		flags |= FlagHasTTL
 	}
@@ -340,7 +345,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if hasAuth {
 		flags |= FlagHasAuth
 	}
-	w.U8(flags)
+	w.U8(uint8(flags))
 	if req.TTL > 0 {
 		w.U32(uint32(req.TTL.Milliseconds()))
 	}
@@ -386,10 +391,11 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	req := &out.Req
 	req.Opcode = rawOpcode
 	r := codec.NewReader(binary.BigEndian, payload)
-	flags, ok := r.U8()
+	rawFlags, ok := r.U8()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
+	flags := RequestFlags(rawFlags)
 	if flags&FlagHasTTL != 0 {
 		ttl, ok := r.U32()
 		if !ok {
@@ -482,7 +488,7 @@ func EncodeResponse(res Response) ([]byte, error) {
 
 // EncodeResponseInto is EncodeResponse reusing buf's capacity across calls.
 func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
-	var flags uint8
+	var flags ResponseFlags
 	hasVersionMeta := res.Version != 0 || res.WriterNodeHash != 0
 	if hasVersionMeta {
 		flags |= RespFlagVersionMeta
@@ -528,7 +534,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	w.U32(uint32(acc.size))
 
 	w.U8(uint8(res.Status))
-	w.U8(flags)
+	w.U8(uint8(flags))
 	if hasVersionMeta {
 		w.U64(res.Version)
 		w.U64(res.WriterNodeHash)
@@ -561,12 +567,14 @@ func DecodeResponse(payload []byte) (Response, error) {
 		return res, errInvalid("truncated frame")
 	}
 	res.Status = Status(status)
-	var flags uint8
+	var flags ResponseFlags
 	if r.Remaining() > 0 {
-		flags, ok = r.U8()
+		rawFlags, readOK := r.U8()
+		ok = readOK
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
+		flags = ResponseFlags(rawFlags)
 	}
 	res.Tombstone = flags&RespFlagTombstone != 0
 	if flags&RespFlagVersionMeta != 0 {

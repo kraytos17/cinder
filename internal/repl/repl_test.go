@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/expiry"
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/testkit"
@@ -24,12 +25,51 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	}
 }
 
+func TestParseMode(t *testing.T) {
+	for input, want := range map[string]Mode{"async": Async, "quorum": Quorum} {
+		got, err := ParseMode(input)
+		if err != nil || got != want {
+			t.Errorf("ParseMode(%q) = %v, %v; want %v", input, got, err, want)
+		}
+	}
+	if _, err := ParseMode("ASYNC"); err == nil {
+		t.Fatal("ParseMode accepted non-canonical name")
+	}
+}
+
+func TestReadRejectsInvalidReplicaCount(t *testing.T) {
+	m := NewManager(Config{Local: store.NewLRUStore(1024, nil), Self: "n1"})
+	for _, count := range []hashring.ReplicaCount{0, hashring.ReplicaCount(hashring.MaxReplicas + 1)} {
+		if _, err := m.Read("key", []string{"n2"}, count, 0, 0); !errors.Is(err, ErrInvalidReplicaCount) {
+			t.Errorf("Read replica count %d error = %v", count, err)
+		}
+	}
+}
+
+func TestWriteAndDeleteRejectInvalidModeBeforeMutation(t *testing.T) {
+	local := store.NewLRUStore(1<<20, nil)
+	m := NewManager(Config{Local: local, Self: "n1"})
+	mode := Mode(99)
+	if err := m.Write("key", []byte("value"), 0, nil, mode, 0, 0); !errors.Is(err, ErrInvalidMode) {
+		t.Fatalf("Write error = %v", err)
+	}
+	if _, ok := local.GetVersioned("key"); ok {
+		t.Fatal("invalid-mode Write mutated the local store")
+	}
+	if err := m.Delete("key", nil, mode, 0, 0); !errors.Is(err, ErrInvalidMode) {
+		t.Fatalf("Delete error = %v", err)
+	}
+	if _, ok := local.GetVersioned("key"); ok {
+		t.Fatal("invalid-mode Delete mutated the local store")
+	}
+}
+
 func TestWriterHashIsFNV1a(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1024, nil), "foobar", nil, testkit.NewStores())
+	m := NewManager(Config{Local: store.NewLRUStore(1024, nil), Self: "foobar", Clock: nil, Transport: testkit.NewStores()})
 	if m.WriterHash() != 0x85944171f73967e8 {
 		t.Fatalf("writer = %#x", m.WriterHash())
 	}
-	empty := NewManager(store.NewLRUStore(1024, nil), "", nil, testkit.NewStores())
+	empty := NewManager(Config{Local: store.NewLRUStore(1024, nil), Self: "", Clock: nil, Transport: testkit.NewStores()})
 	if empty.WriterHash() != 0xcbf29ce484222325 {
 		t.Fatalf("empty writer = %#x", empty.WriterHash())
 	}
@@ -37,7 +77,7 @@ func TestWriterHashIsFNV1a(t *testing.T) {
 
 func TestWriteAsyncFansOut(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +95,7 @@ func TestWriteAsyncFansOut(t *testing.T) {
 func TestWriteAsyncHintOnFailure(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	ft.Fail["n3"] = true
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +104,7 @@ func TestWriteAsyncHintOnFailure(t *testing.T) {
 
 func TestWriteQuorum(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	// RF=3, all up: W=2 (local + 1). Stragglers drain in the background,
 	// Async fan-out returns before replica sends complete, so replica
 	// assertions poll for completion.
@@ -93,7 +133,7 @@ func TestWriteQuorum(t *testing.T) {
 }
 
 func TestQuorumEmptyReplicas(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, testkit.NewStores())
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: testkit.NewStores()})
 	if err := m.Write("k", []byte("v"), 0, nil, Quorum, 0, 0); err != nil {
 		t.Fatalf("W==1 must succeed on local: %v", err)
 	}
@@ -101,7 +141,7 @@ func TestQuorumEmptyReplicas(t *testing.T) {
 
 func TestDeleteQuorum(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +165,7 @@ func TestDeleteQuorum(t *testing.T) {
 }
 
 func TestReadLocalOnly(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, testkit.NewStores())
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: testkit.NewStores()})
 	if err := m.Local().Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +180,7 @@ func TestReadLocalOnly(t *testing.T) {
 
 func TestReadQuorumLWWAndRepair(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	// Divergent versions: n2 ahead, local stale, n3 empty.
 	putVer := func(st *store.Store, v string, ver uint64, w uint64) {
 		t.Helper()
@@ -168,7 +208,7 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 
 func TestReadQuorumMiss(t *testing.T) {
 	ft := testkit.NewStores("n2")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	if _, err := m.Read("ghost", []string{"n2"}, 2, 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
 	}
@@ -177,7 +217,7 @@ func TestReadQuorumMiss(t *testing.T) {
 func TestReadIgnoresTransportFailure(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	ft.Fail["n3"] = true
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	if err := m.Local().Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +246,7 @@ func TestReadSingleflight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		inner := testkit.NewStores("n2")
 		gt := &gateTransport{inner: inner, release: make(chan struct{})}
-		m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, gt)
+		m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: gt})
 		if err := m.Local().Put("k", []byte("v")); err != nil {
 			t.Fatal(err)
 		}
@@ -311,7 +351,7 @@ func TestHintTTLExpiry(t *testing.T) {
 
 func TestReplayRemovesOnSuccess(t *testing.T) {
 	ft := testkit.NewStores("n2")
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	ft.Fail["n2"] = true
 	if err := m.Write("k", []byte("v"), 0, []string{"n2"}, Async, 0, 0); err != nil {
 		t.Fatal(err)

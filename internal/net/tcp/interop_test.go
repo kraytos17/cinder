@@ -35,7 +35,7 @@ func goServer(t *testing.T) (addr string, stop func()) {
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(l)
 	return l.Addr().String(), srv.Shutdown
 }
@@ -558,7 +558,7 @@ func TestInteropGossipWithCpp(t *testing.T) {
 	//   Go  gonode --peers node2     (knows G2 only)
 	startGo := func(id string, l net.Listener, peers []tcp.Peer) (addr string, srv *tcp.Server, stop func()) {
 		port := l.Addr().(*net.TCPAddr).Port
-		srv = tcp.NewServer(id, port, store.NewLRUStore(1<<20, nil), nil)
+		srv = tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(port), Store: store.NewLRUStore(1<<20, nil)})
 		if err := srv.ConfigureCluster(peers); err != nil {
 			t.Fatal(err)
 		}
@@ -696,7 +696,7 @@ func TestInteropAEWithCpp(t *testing.T) {
 	var goMgr *repl.Manager
 	startGo := func(l net.Listener) {
 		st := store.NewLRUStore(1<<20, nil)
-		srv := tcp.NewServer("gonode", l.Addr().(*net.TCPAddr).Port, st, nil)
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: "gonode", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: st})
 		if err := srv.ConfigureCluster([]tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(cPort)}}); err != nil {
 			t.Fatal(err)
 		}
@@ -707,8 +707,10 @@ func TestInteropAEWithCpp(t *testing.T) {
 		// anti-entropy only, never through hint replay.
 		srv.SetReplayInterval(time.Hour)
 		pool := client.NewPool([]client.NodeAddr{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(cPort)}}, 5*time.Second)
-		mgr := repl.NewManager(st, "gonode", nil, pool)
-		srv.ConfigureReplication(2, repl.Async, mgr)
+		mgr := repl.NewManager(repl.Config{Local: st, Self: "gonode", Clock: nil, Transport: pool})
+		if err := srv.ConfigureReplication(2, repl.Async, mgr); err != nil {
+			t.Fatal(err)
+		}
 		srv.ConfigureAntiEntropy(256, 1<<20)
 		srv.SetAntiEntropyInterval(200 * time.Millisecond)
 		go srv.Serve(l)
@@ -896,7 +898,7 @@ func TestInteropRebalanceGoJoinsCpp(t *testing.T) {
 	gPort := gListener.Addr().(*net.TCPAddr).Port
 	gAddr := gListener.Addr().String()
 	gStore := store.NewLRUStore(1<<20, nil)
-	gSrv := tcp.NewServer("gonode", gPort, gStore, nil)
+	gSrv := tcp.NewServer(tcp.ServerConfig{NodeID: "gonode", Port: netport.Port(gPort), Store: gStore})
 	if err := gSrv.ConfigureCluster([]tcp.Peer{
 		{ID: "node1", Host: "127.0.0.1", Port: netport.Port(ports["node1"])},
 		{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
@@ -910,9 +912,13 @@ func TestInteropRebalanceGoJoinsCpp(t *testing.T) {
 		{ID: "node1", Host: "127.0.0.1", Port: netport.Port(ports["node1"])},
 		{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
 	}, 5*time.Second)
-	gMgr := repl.NewManager(gStore, "gonode", nil, gPool)
-	gSrv.ConfigureReplication(2, repl.Async, gMgr)
-	gSrv.ConfigureRebalance(2, 0)
+	gMgr := repl.NewManager(repl.Config{Local: gStore, Self: "gonode", Clock: nil, Transport: gPool})
+	if err := gSrv.ConfigureReplication(2, repl.Async, gMgr); err != nil {
+		t.Fatal(err)
+	}
+	if err := gSrv.ConfigureRebalance(2, 0); err != nil {
+		t.Fatal(err)
+	}
 	go gSrv.Serve(gListener)
 	t.Cleanup(gSrv.Shutdown)
 

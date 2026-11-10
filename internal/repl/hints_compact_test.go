@@ -44,7 +44,7 @@ func (j *stubJournal) Compact(q *HintQueue) error {
 func TestEnqueueHintAutoCompacts(t *testing.T) {
 	ft := testkit.NewStores("n2")
 	ft.Fail["n2"] = true
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
 	stub := &stubJournal{}
 	m.SetHintJournal(stub)
 	for range 10 {

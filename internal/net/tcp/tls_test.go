@@ -20,6 +20,7 @@ import (
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
@@ -105,7 +106,7 @@ func startTLSServer(t *testing.T, certFile, keyFile, caFile string) (string, *tc
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer("node1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureTLS(certFile, keyFile, caFile); err != nil {
 		t.Fatal(err)
 	}

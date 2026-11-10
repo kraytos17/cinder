@@ -4,6 +4,7 @@ package tcp
 // scheduling, and quarantine/migration retry timers.
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -15,13 +16,22 @@ import (
 	"github.com/kraytos17/cinder/internal/shard"
 )
 
-func (s *Server) ConfigureRebalance(rf int, quarantine time.Duration) {
+func (s *Server) ConfigureRebalance(rf hashring.ReplicaCount, quarantine time.Duration) error {
+	if rf < 1 || rf > hashring.MaxReplicas {
+		return hashring.ErrInvalidReplicaCount
+	}
+	if quarantine < 0 {
+		return errors.New("tcp: quarantine interval must not be negative")
+	}
 	s.ringMu.RLock()
 	ring := s.ring
 	pool := s.pool
 	table := s.table
 	s.ringMu.RUnlock()
-	m := shard.NewManager(s.store, ring, pool, table, s.nodeID, rf, quarantine, nil)
+	m := shard.NewManager(shard.Config{
+		Store: s.store, Ring: ring, Transport: pool, Membership: table,
+		Self: s.nodeID, ReplicaFactor: rf, Quarantine: quarantine,
+	})
 	m.SetOnMigrationFailed(func() { s.scheduleMigrationRetry() })
 	m.SetMetrics(s.met)
 	m.SetLogger(s.log())
@@ -29,6 +39,7 @@ func (s *Server) ConfigureRebalance(rf int, quarantine time.Duration) {
 	s.shard = m
 	s.quarantineInterval = quarantine
 	s.shardMu.Unlock()
+	return nil
 }
 
 // SetQuarantineInterval changes the rejoin warming window (tests use short
@@ -206,7 +217,7 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 		seeds = append(seeds, cluster.NodeInfo{ID: p.ID, Host: p.Host, Port: p.Port})
 		addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
 	}
-	table.SetSelfAddress("127.0.0.1", netport.Port(s.port))
+	table.SetSelfAddress("127.0.0.1", s.port)
 	table.Seed(seeds)
 	pool := client.NewPool(addrs, 5*time.Second)
 	gossip := cluster.NewGossipManager(now, pool, table, s.nodeID, s.gossipInterval)

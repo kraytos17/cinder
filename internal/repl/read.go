@@ -6,6 +6,7 @@ package repl
 import (
 	"strconv"
 
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/obs"
@@ -16,7 +17,10 @@ import (
 // and requested quorum. Concurrent quorum reads for the same key and R
 // share one in-flight fan-out.
 
-func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
+func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, traceID, spanID uint64) (store.Entry, error) {
+	if r < 1 || r > hashring.MaxReplicas {
+		return store.Entry{}, ErrInvalidReplicaCount
+	}
 	if len(replicas) == 0 || r <= 1 {
 		if e, ok := m.local.GetVersioned(key); ok {
 			return e, nil
@@ -36,7 +40,7 @@ func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uin
 // that multiple callers used the same in-flight operation and drives the
 // ReadsCoalesced metric.
 
-func (m *Manager) readCoalesced(key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
+func (m *Manager) readCoalesced(key string, r hashring.ReplicaCount, run func() (store.Entry, error)) (store.Entry, error) {
 	v, err, shared := m.flights.Do(flightKey(key, r), func() (any, error) {
 		return run()
 	})
@@ -56,18 +60,18 @@ func (m *Manager) readCoalesced(key string, r int, run func() (store.Entry, erro
 // way that collides: keys are arbitrary bytes-as-string, so the length
 // prefix keeps (key, R) pairs unambiguous.
 
-func flightKey(key string, r int) string {
-	return strconv.Itoa(r) + "\x00" + key
+func flightKey(key string, r hashring.ReplicaCount) string {
+	return strconv.Itoa(int(r)) + "\x00" + key
 }
 
-func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
-	rd := &reducer{r: r, pending: len(replicas)}
+func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCount, traceID, spanID uint64) (store.Entry, error) {
+	rd := &reducer{r: int(r), pending: len(replicas)}
 	if e, ok := m.local.GetVersioned(key); ok {
 		rd.noteLocal(e)
 	}
 	req := protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key), TraceID: traceID, SpanID: spanID}
 	out := m.launch(req, replicas)
-	for rd.pending > 0 && rd.acks < r {
+	for rd.pending > 0 && rd.acks < int(r) {
 		res := <-out
 		rd.pending--
 		rd.noteRemote(res.res, res.err)

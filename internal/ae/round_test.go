@@ -76,7 +76,10 @@ func testRing(t *testing.T, ids ...string) *hashring.Ring {
 }
 
 func testManager(st *store.Store, ring *hashring.Ring, self string, t *directTransport) *ae.Manager {
-	return ae.NewManager(st, ring, self, t, 256, 1<<20)
+	return ae.NewManager(ae.Config{
+		Store: st, Ring: ring, Self: self, Transport: t,
+		Buckets: 256, FetchBytes: 1 << 20,
+	})
 }
 
 func putAE(t *testing.T, st *store.Store, key, val string, ver, writer uint64) {

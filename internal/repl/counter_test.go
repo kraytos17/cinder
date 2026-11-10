@@ -14,7 +14,7 @@ func TestReplicateCounterFansOut(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ft := testkit.NewStores("n1", "n2")
 		local := store.NewLRUStore(1<<20, nil)
-		m := NewManager(local, "n1", nil, ft)
+		m := NewManager(Config{Local: local, Self: "n1", Clock: nil, Transport: ft})
 		m.ReplicateCounter("k", []byte("state"), []string{"n1", "n2"}, 0, 0)
 		// The fan-out is fire-and-forget goroutines; Wait parks until
 		// they all finish instead of sleeping a fixed 200ms.
@@ -39,7 +39,7 @@ func TestReplicateCounterFailureNoHints(t *testing.T) {
 		ft := testkit.NewStores("n1", "n2")
 		ft.Fail["n2"] = true
 		local := store.NewLRUStore(1<<20, nil)
-		m := NewManager(local, "n1", nil, ft)
+		m := NewManager(Config{Local: local, Self: "n1", Clock: nil, Transport: ft})
 		m.ReplicateCounter("k", []byte("state"), []string{"n2"}, 0, 0)
 		synctest.Wait()
 		if got := m.HintCount(); got != 0 {
@@ -56,7 +56,7 @@ func TestReplicateCounterEmptyNoSend(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ft := testkit.NewStores("n1", "n2")
 		local := store.NewLRUStore(1<<20, nil)
-		m := NewManager(local, "n1", nil, ft)
+		m := NewManager(Config{Local: local, Self: "n1", Clock: nil, Transport: ft})
 		m.ReplicateCounter("k", nil, []string{"n2"}, 0, 0)
 		synctest.Wait()
 		if ft.SendCount("n2") != 0 {

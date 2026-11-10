@@ -9,6 +9,18 @@ import (
 // Each entry bills 1-byte key + 63-byte value + 136-byte LFU node = 200.
 const lfuEntryBytes = 200
 
+func TestParsePolicy(t *testing.T) {
+	for input, want := range map[string]Policy{"lru": LRUPolicy, "lfu": LFUPolicy} {
+		got, err := ParsePolicy(input)
+		if err != nil || got != want {
+			t.Errorf("ParsePolicy(%q) = %v, %v; want %v", input, got, err, want)
+		}
+	}
+	if _, err := ParsePolicy("LRU"); err == nil {
+		t.Fatal("ParsePolicy accepted non-canonical name")
+	}
+}
+
 func TestLFUEvictionUsesFrequency(t *testing.T) {
 	s := NewLFUStore(3*lfuEntryBytes, nil) // one shard; three entries fit
 	for _, key := range []string{"a", "b", "c"} {

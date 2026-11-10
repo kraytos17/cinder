@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/kraytos17/cinder/internal/counter"
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
@@ -22,7 +23,7 @@ func (s *Server) ReplayHints() int {
 	return m.ReplayHints()
 }
 
-func (s *Server) replication() (*repl.Manager, int, repl.Mode) {
+func (s *Server) replication() (*repl.Manager, hashring.ReplicaCount, repl.Mode) {
 	s.replMu.RLock()
 	defer s.replMu.RUnlock()
 	return s.repl, s.rf, s.mode
@@ -36,7 +37,11 @@ func (s *Server) replicaNodes(key string) []string {
 	if ring == nil {
 		return nil
 	}
-	nodes, err := ring.GetNodes(key, s.replicaFactor())
+	rf := s.replicaFactor()
+	if rf < 1 || rf > hashring.MaxReplicas {
+		return nil
+	}
+	nodes, err := ring.GetNodes(key, rf)
 	if err != nil || len(nodes) == 0 {
 		return nil
 	}
@@ -49,7 +54,7 @@ func (s *Server) replicaNodes(key string) []string {
 	return out
 }
 
-func (s *Server) replicaFactor() int {
+func (s *Server) replicaFactor() hashring.ReplicaCount {
 	s.replMu.RLock()
 	defer s.replMu.RUnlock()
 	return s.rf

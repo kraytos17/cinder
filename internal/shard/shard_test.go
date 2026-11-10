@@ -11,7 +11,7 @@ import (
 	"github.com/kraytos17/cinder/internal/testkit"
 )
 
-func testSetup(t *testing.T, ids []string, self string, rf int, quarantine time.Duration) (*store.Store, *hashring.Ring, *cluster.MembershipTable, *testkit.Stores) {
+func testSetup(t *testing.T, ids []string, self string, rf hashring.ReplicaCount, quarantine time.Duration) (*store.Store, *hashring.Ring, *cluster.MembershipTable, *testkit.Stores) {
 	t.Helper()
 	st := store.NewLRUStore(1<<20, nil)
 	ring, err := hashring.New(hashring.DefaultVNodes, 0)
@@ -44,7 +44,7 @@ func putVer(t *testing.T, st *store.Store, key, val string, ver, writer uint64) 
 func TestStayingPushesReplicas(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)
 	putVer(t, st, "k", "v", 5, 1)
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	if deferred := m.Rebalance(); deferred {
 		t.Fatal("nothing quarantined")
 	}
@@ -65,7 +65,7 @@ func TestLeavingMigratesAndRemoves(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"b", "c"}, "a", 2, 0)
 	// Ring says {b c} but a still holds the key (pre-leave copy).
 	putVer(t, st, "k", "v", 5, 1)
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	if deferred := m.Rebalance(); deferred {
 		t.Fatal("nothing quarantined")
 	}
@@ -86,7 +86,7 @@ func TestMigrationFailureKeepsLocal(t *testing.T) {
 	putVer(t, st, "k", "v", 5, 1)
 	ft.Fail["b"] = true // primary down (c would ack)
 	failed := 0
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	m.SetOnMigrationFailed(func() { failed++ })
 	if deferred := m.Rebalance(); deferred {
 		t.Fatal("nothing quarantined")
@@ -107,7 +107,7 @@ func TestUnderreplicatedRetainsLocal(t *testing.T) {
 	putVer(t, st, "k", "v", 5, 1)
 	ft.Fail["c"] = true // replica down, primary up
 	failed := 0
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	m.SetOnMigrationFailed(func() { failed++ })
 	m.Rebalance()
 	if _, ok := st.GetVersioned("k"); !ok {
@@ -128,7 +128,7 @@ func TestQuarantineDefers(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 10*time.Second)
 	// b joined just now: inside the window.
 	putVer(t, st, "k", "v", 5, 1)
-	m := NewManager(st, ring, ft, table, "a", 2, 10*time.Second, func() time.Time { return cur })
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 10 * time.Second, Clock: func() time.Time { return cur }})
 	if deferred := m.Rebalance(); !deferred {
 		t.Fatal("expected deferral for quarantined replica")
 	}
@@ -150,7 +150,7 @@ func TestDeadTargetSkipped(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)
 	putVer(t, st, "k", "v", 5, 1)
 	table.MarkDead("b")
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	if deferred := m.Rebalance(); deferred {
 		t.Fatal("dead-target skip is not a deferral")
 	}
@@ -175,7 +175,7 @@ func TestTombstoneAndTTLMigrate(t *testing.T) {
 	if err := st.RemoveVersioned("t", 9, 2); err != nil {
 		t.Fatal(err)
 	}
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	m.Rebalance()
 	tomb, ok := ft.Stores["b"].GetVersioned("t")
 	if !ok || !tomb.Tombstone || tomb.Version != 9 {
@@ -191,7 +191,7 @@ func TestTombstoneAndTTLMigrate(t *testing.T) {
 func TestSingleCopyMigrates(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"b"}, "a", 1, 0)
 	putVer(t, st, "k", "v", 5, 1)
-	m := NewManager(st, ring, ft, table, "a", 1, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 1, Quarantine: 0, Clock: nil})
 	m.Rebalance()
 	if _, ok := st.GetVersioned("k"); ok {
 		t.Fatal("migrated copy not reclaimed")

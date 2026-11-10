@@ -17,6 +17,7 @@ import (
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/shard"
@@ -78,7 +79,7 @@ var nopLogger = log.Nop()
 type Server struct {
 	store  *store.Store
 	nodeID string
-	port   int
+	port   netport.Port
 	clock  store.Clock
 	// counters holds CRDT counter state separately from the LWW cache. Its
 	// initial capacity is one quarter of the LWW store's capacity.
@@ -125,7 +126,7 @@ type Server struct {
 
 	replMu sync.RWMutex
 	repl   *repl.Manager
-	rf     int
+	rf     hashring.ReplicaCount
 	mode   repl.Mode
 
 	tlsMu  sync.RWMutex
@@ -151,23 +152,31 @@ type Server struct {
 	persist   *persist.Manager
 }
 
-// NewServer returns a server backed by st. A nil clock selects the system
-// clock; the counter store is initialized with one quarter of the cache
-// store's capacity.
+// ServerConfig configures a TCP server. A zero Port allows the listener to
+// choose an available port; a nil Clock selects the system clock.
+type ServerConfig struct {
+	NodeID string
+	Port   netport.Port
+	Store  *store.Store
+	Clock  store.Clock
+}
 
-func NewServer(nodeID string, port int, st *store.Store, clock store.Clock) *Server {
+// NewServer returns a server configured with cfg. The counter store is
+// initialized with one quarter of the cache store's capacity.
+func NewServer(cfg ServerConfig) *Server {
+	clock := cfg.Clock
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
 	// The counter store starts with one quarter of the LWW capacity. Its
 	// shard count is clamped to at least one, including for zero capacity.
-	counterCap := st.Capacity() / 4
+	counterCap := cfg.Store.Capacity() / 4
 	srv := &Server{
-		store:          st,
+		store:          cfg.Store,
 		counters:       counter.NewStore(counterCap),
 		met:            metrics.NewCollector(),
-		nodeID:         nodeID,
-		port:           port,
+		nodeID:         cfg.NodeID,
+		port:           cfg.Port,
 		clock:          clock,
 		conns:          make(map[net.Conn]struct{}),
 		sem:            make(chan struct{}, maxConnections),
@@ -178,7 +187,7 @@ func NewServer(nodeID string, port int, st *store.Store, clock store.Clock) *Ser
 		replayInterval: time.Second,
 		aeInterval:     30 * time.Second,
 	}
-	st.SetMetrics(srv.met)
+	cfg.Store.SetMetrics(srv.met)
 	nop := log.Nop()
 	srv.logger.Store(&nop)
 	return srv

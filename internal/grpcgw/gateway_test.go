@@ -42,7 +42,7 @@ func startGateway(t testing.TB, id string) (gen.CinderCacheServiceClient, func()
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer(id, tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(tl)
 	gl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -72,7 +72,7 @@ func startAuthedGateway(t testing.TB, secret string) gen.CinderCacheServiceClien
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(tl)
 	gl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -335,7 +335,7 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 				peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: netport.Port(port)})
 			}
 		}
-		srv := tcp.NewServer(id, ports[id], store.NewLRUStore(1<<20, nil), nil)
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(ports[id]), Store: store.NewLRUStore(1<<20, nil)})
 		if err := srv.ConfigureCluster(peers); err != nil {
 			t.Fatal(err)
 		}
@@ -510,7 +510,7 @@ func startTLSGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(tl)
 	gl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -557,7 +557,7 @@ func TestGatewayPlaintextRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(tl)
 	defer srv.Shutdown()
 	fx := fixturesDir(t)
@@ -590,7 +590,7 @@ func TestGatewayAuthRequiresTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	go srv.Serve(tl)
 	defer srv.Shutdown()
 	gl, err := net.Listen("tcp", "127.0.0.1:0")
@@ -730,7 +730,7 @@ func TestGatewayWithServerSecretsEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer("node1", tl.Addr().(*net.TCPAddr).Port, st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
 	if err := srv.ConfigureTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem"), ""); err != nil {
 		t.Fatal(err)
 	}

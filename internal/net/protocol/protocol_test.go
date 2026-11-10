@@ -345,7 +345,7 @@ func TestDecodeShortTrailerLenient(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frame[FrameHeaderSize] |= FlagHasTrace // claim trace, append nothing
+	frame[FrameHeaderSize] |= byte(FlagHasTrace) // claim trace, append nothing
 	dec, err := DecodeRequest(splitTestFrame(frame))
 	if err != nil {
 		t.Fatalf("short trace should be ignored: %v", err)
@@ -353,7 +353,7 @@ func TestDecodeShortTrailerLenient(t *testing.T) {
 	if dec.Req.TraceID != 0 {
 		t.Fatal("short trace must not populate trace_id")
 	}
-	frame[FrameHeaderSize] |= FlagHasAuth
+	frame[FrameHeaderSize] |= byte(FlagHasAuth)
 	dec, err = DecodeRequest(splitTestFrame(frame))
 	if err != nil {
 		t.Fatalf("short auth should be ignored: %v", err)
@@ -366,7 +366,7 @@ func TestDecodeShortTrailerLenient(t *testing.T) {
 func TestDecodeZeroTraceCanonicalizesSpan(t *testing.T) {
 	// trace_id 0 with nonzero span_id decodes to span 0 (encoder fixed point).
 	payload := []byte{
-		FlagHasTrace,
+		byte(FlagHasTrace),
 		0, 0, 0, 0, 0, 0, 0, 0, // version
 		0, 0, 0, 0, 0, 0, 0, 0, // writer
 		0, 0, 0, 1, 'k', // key

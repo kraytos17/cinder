@@ -10,13 +10,20 @@ import (
 
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
 
-func (s *Server) ConfigureReplication(rf int, mode repl.Mode, m *repl.Manager) {
+func (s *Server) ConfigureReplication(rf hashring.ReplicaCount, mode repl.Mode, m *repl.Manager) error {
+	if rf < 1 || rf > hashring.MaxReplicas {
+		return hashring.ErrInvalidReplicaCount
+	}
+	if !mode.Valid() {
+		return repl.ErrInvalidMode
+	}
 	s.replMu.Lock()
 	s.repl = m
 	s.rf = rf
@@ -26,6 +33,7 @@ func (s *Server) ConfigureReplication(rf int, mode repl.Mode, m *repl.Manager) {
 		m.SetMetrics(s.met)
 		m.SetLogger(s.log())
 	}
+	return nil
 }
 
 // ConfigureTLS enables TLS with a certificate chain and key, optionally
@@ -161,7 +169,10 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 	ring := s.ring
 	pool := s.pool
 	s.ringMu.RUnlock()
-	m := ae.NewManager(s.store, ring, s.nodeID, pool, numBuckets, fetchBytes)
+	m := ae.NewManager(ae.Config{
+		Store: s.store, Ring: ring, Self: s.nodeID, Transport: pool,
+		Buckets: numBuckets, FetchBytes: fetchBytes,
+	})
 	m.SetCounterStore(s.counters)
 	m.SetMetrics(s.met)
 	m.SetLogger(s.log())

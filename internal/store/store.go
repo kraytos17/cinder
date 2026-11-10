@@ -6,6 +6,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"hash/maphash"
 	"sync"
 	"sync/atomic"
@@ -34,6 +35,19 @@ const (
 	// least-recently-incremented order.
 	LFUPolicy
 )
+
+// ParsePolicy parses the canonical lowercase configuration name for an
+// eviction policy.
+func ParsePolicy(s string) (Policy, error) {
+	switch s {
+	case "lru":
+		return LRUPolicy, nil
+	case "lfu":
+		return LFUPolicy, nil
+	default:
+		return 0, fmt.Errorf("store: unknown eviction policy %q", s)
+	}
+}
 
 // String renders the policy name for admin JSON and logs.
 func (p Policy) String() string {

@@ -12,12 +12,13 @@ import (
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
 // Dispatch bumps per-opcode counters and latency through the public path.
 func TestMetricsDispatchCounts(t *testing.T) {
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	m := srv.Metrics()
 	if m == nil {
 		t.Fatal("nil collector")
@@ -66,7 +67,7 @@ func TestMetricsConnectionsAndHandler(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer("n1", l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	go srv.Serve(l)
 	defer srv.Shutdown()
 	m := srv.Metrics()

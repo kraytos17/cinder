@@ -47,7 +47,7 @@ func TestFailureDetectorMarksDeadNode(t *testing.T) {
 	p2 := l2.Addr().(*net.TCPAddr).Port
 
 	mk := func(id string, l net.Listener, port int, peers []tcp.Peer) *tcp.Server {
-		srv := tcp.NewServer(id, port, store.NewLRUStore(1<<20, nil), nil)
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(port), Store: store.NewLRUStore(1<<20, nil)})
 		if err := srv.ConfigureCluster(peers); err != nil {
 			t.Fatal(err)
 		}

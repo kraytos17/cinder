@@ -1,6 +1,7 @@
 package tcp_test
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -16,6 +17,16 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
+func TestConfigureReplicationRejectsInvalidConfig(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.ConfigureReplication(0, repl.Async, nil); !errors.Is(err, hashring.ErrInvalidReplicaCount) {
+		t.Fatalf("zero replica count error = %v", err)
+	}
+	if err := srv.ConfigureReplication(1, repl.Mode(99), nil); err == nil {
+		t.Fatal("invalid consistency mode was accepted")
+	}
+}
+
 // testNode is one live Go node with its replication manager exposed.
 type testNode struct {
 	id   string
@@ -28,11 +39,11 @@ type testNode struct {
 type testCluster struct {
 	t     *testing.T
 	nodes map[string]*testNode
-	rf    int
+	rf    hashring.ReplicaCount
 	mode  repl.Mode
 }
 
-func newTestCluster(t *testing.T, ids []string, rf int, mode repl.Mode) *testCluster {
+func newTestCluster(t *testing.T, ids []string, rf hashring.ReplicaCount, mode repl.Mode) *testCluster {
 	t.Helper()
 	c := &testCluster{t: t, nodes: map[string]*testNode{}, rf: rf, mode: mode}
 	addrs := map[string]string{}
@@ -58,7 +69,7 @@ func newTestCluster(t *testing.T, ids []string, rf int, mode repl.Mode) *testClu
 
 func (c *testCluster) startNode(id string, l net.Listener, ports map[string]int, ids []string) {
 	st := store.NewLRUStore(1<<20, nil)
-	srv := tcp.NewServer(id, ports[id], st, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(ports[id]), Store: st})
 	var peers []tcp.Peer
 	var addrs []client.NodeAddr
 	for _, pid := range ids {
@@ -72,9 +83,13 @@ func (c *testCluster) startNode(id string, l net.Listener, ports map[string]int,
 		c.t.Fatal(err)
 	}
 	pool := client.NewPool(addrs, 5*time.Second)
-	mgr := repl.NewManager(st, id, nil, pool)
-	srv.ConfigureReplication(c.rf, c.mode, mgr)
-	srv.ConfigureRebalance(c.rf, 0)
+	mgr := repl.NewManager(repl.Config{Local: st, Self: id, Clock: nil, Transport: pool})
+	if err := srv.ConfigureReplication(c.rf, c.mode, mgr); err != nil {
+		c.t.Fatal(err)
+	}
+	if err := srv.ConfigureRebalance(c.rf, 0); err != nil {
+		c.t.Fatal(err)
+	}
 	srv.ConfigureAntiEntropy(256, 1<<20)
 	go srv.Serve(l)
 	c.nodes[id] = &testNode{id: id, addr: l.Addr().String(), srv: srv, mgr: mgr}

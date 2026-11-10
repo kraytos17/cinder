@@ -1,6 +1,7 @@
 package tcp_test
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -13,6 +14,19 @@ import (
 	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
+
+func TestConfigureRebalanceRejectsInvalidConfig(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.ConfigureRebalance(0, 0); !errors.Is(err, hashring.ErrInvalidReplicaCount) {
+		t.Fatalf("zero replica count error = %v", err)
+	}
+	if err := srv.ConfigureRebalance(hashring.ReplicaCount(hashring.MaxReplicas+1), 0); !errors.Is(err, hashring.ErrInvalidReplicaCount) {
+		t.Fatalf("oversized replica count error = %v", err)
+	}
+	if err := srv.ConfigureRebalance(1, -time.Second); err == nil {
+		t.Fatal("negative quarantine interval was accepted")
+	}
+}
 
 // goCluster spins two Go nodes that know each other.
 func goCluster(t *testing.T) (addrs map[string]string, stop func()) {
@@ -27,8 +41,8 @@ func goCluster(t *testing.T) (addrs map[string]string, stop func()) {
 		t.Fatal(err)
 	}
 	p1, p2 := l1.Addr().(*net.TCPAddr).Port, l2.Addr().(*net.TCPAddr).Port
-	s1 := tcp.NewServer("node1", p1, store.NewLRUStore(1<<20, nil), nil)
-	s2 := tcp.NewServer("node2", p2, store.NewLRUStore(1<<20, nil), nil)
+	s1 := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(p1), Store: store.NewLRUStore(1<<20, nil)})
+	s2 := tcp.NewServer(tcp.ServerConfig{NodeID: "node2", Port: netport.Port(p2), Store: store.NewLRUStore(1<<20, nil)})
 	if err := s1.ConfigureCluster([]tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: netport.Port(p2)}}); err != nil {
 		t.Fatal(err)
 	}

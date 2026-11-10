@@ -31,7 +31,7 @@ func tlsServer(t *testing.T, id string, shared, clientSecret string) (string, *t
 	t.Helper()
 	fx := fixturesDir(t)
 	l := listenTCP(t)
-	srv := tcp.NewServer(id, l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestAuthNodeSecretGate(t *testing.T) {
 }
 
 func TestAuthClientSecretRequiresTLS(t *testing.T) {
-	srv := tcp.NewServer("node1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureSecrets("", "client-secret"); err == nil {
 		t.Fatal("client secret without TLS must fail closed")
 	}
@@ -182,7 +182,7 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 			addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: netport.Port(port)})
 		}
 		st := store.NewLRUStore(1<<20, nil)
-		srv := tcp.NewServer(id, ports[id], st, nil)
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(ports[id]), Store: st})
 		if err := srv.ConfigureCluster(peers); err != nil {
 			t.Fatal(err)
 		}
@@ -192,8 +192,10 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 		}
 		pool := client.NewPool(addrs, 5*time.Second)
 		pool.SetSecrets(client.Secrets{NodeID: id, Shared: "shared-secret"})
-		mgr := repl.NewManager(st, id, nil, pool)
-		srv.ConfigureReplication(2, repl.Async, mgr)
+		mgr := repl.NewManager(repl.Config{Local: st, Self: id, Clock: nil, Transport: pool})
+		if err := srv.ConfigureReplication(2, repl.Async, mgr); err != nil {
+			t.Fatal(err)
+		}
 		go srv.Serve(listeners[i])
 		t.Cleanup(srv.Shutdown)
 		nodes[id] = &node{id: id, srv: srv, mgr: mgr}

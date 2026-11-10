@@ -7,7 +7,7 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-func testStore(n uint64) *store.Store {
+func testStore(_ uint64) *store.Store {
 	return store.NewLRUStore(1<<20, nil)
 }
 

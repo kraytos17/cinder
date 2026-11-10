@@ -70,15 +70,29 @@ func (m *Manager) log() *zerolog.Logger {
 	return &nopLogger
 }
 
-// NewManager returns a replication manager. Transport may be nil only when
-// every operation is given an empty replica list.
-func NewManager(local *store.Store, self string, clock store.Clock, t Transport) *Manager {
+// Config defines the local store, node identity, clock, and inter-node
+// transport used by a replication manager. Transport may be nil only when
+// every operation is given an empty replica list; a nil Clock selects the
+// system clock.
+type Config struct {
+	Local     *store.Store
+	Self      string
+	Clock     store.Clock
+	Transport Transport
+}
+
+// NewManager returns a replication manager configured by cfg.
+func NewManager(cfg Config) *Manager {
+	clock := cfg.Clock
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
 	h := fnv.New64a()
-	h.Write([]byte(self))
-	return &Manager{local: local, self: self, writer: h.Sum64(), clock: clock, transport: t, hints: NewHintQueue()}
+	h.Write([]byte(cfg.Self))
+	return &Manager{
+		local: cfg.Local, self: cfg.Self, writer: h.Sum64(), clock: clock,
+		transport: cfg.Transport, hints: NewHintQueue(),
+	}
 }
 
 // HintCount returns the queued hint count.

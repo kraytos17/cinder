@@ -6,6 +6,7 @@ package repl
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -27,6 +28,21 @@ const (
 	Quorum
 )
 
+// ParseMode parses a consistency mode from its canonical lowercase name.
+func ParseMode(s string) (Mode, error) {
+	switch s {
+	case "async":
+		return Async, nil
+	case "quorum":
+		return Quorum, nil
+	default:
+		return 0, fmt.Errorf("repl: unknown consistency mode %q", s)
+	}
+}
+
+// Valid reports whether m is a defined consistency mode.
+func (m Mode) Valid() bool { return m == Async || m == Quorum }
+
 // String returns the stable lowercase mode name used in logs.
 func (m Mode) String() string {
 	if m == Quorum {
@@ -38,8 +54,10 @@ func (m Mode) String() string {
 // Sentinel errors. Servers map ErrQuorum to NotReady and ErrNotFound to
 // NotFound, respectively.
 var (
-	ErrNotFound = errors.New("repl: key not found")
-	ErrQuorum   = errors.New("repl: quorum not reached")
+	ErrNotFound            = errors.New("repl: key not found")
+	ErrQuorum              = errors.New("repl: quorum not reached")
+	ErrInvalidReplicaCount = errors.New("repl: invalid replica count")
+	ErrInvalidMode         = errors.New("repl: invalid consistency mode")
 )
 
 // Transport is the shared inter-node send contract (see

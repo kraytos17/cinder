@@ -69,17 +69,30 @@ func (m *Manager) SetCounterStore(s CounterStore) {
 	m.counters = s
 }
 
-// NewManager returns a manager. A zero numBuckets selects 256 buckets; a
-// non-positive fetchBytes selects a 1 MiB per-round transfer budget.
+// Config defines the local store, membership ring, transport, and per-round
+// anti-entropy budgets. Zero Buckets selects 256; non-positive FetchBytes
+// selects a 1 MiB transfer budget.
+type Config struct {
+	Store      *store.Store
+	Ring       *hashring.Ring
+	Self       string
+	Transport  Transport
+	Buckets    uint32
+	FetchBytes int
+}
 
-func NewManager(st *store.Store, ring *hashring.Ring, self string, t Transport, numBuckets uint32, fetchBytes int) *Manager {
-	if numBuckets == 0 {
-		numBuckets = 256
+// NewManager returns an anti-entropy manager configured by cfg.
+func NewManager(cfg Config) *Manager {
+	if cfg.Buckets == 0 {
+		cfg.Buckets = 256
 	}
-	if fetchBytes <= 0 {
-		fetchBytes = 1 << 20
+	if cfg.FetchBytes <= 0 {
+		cfg.FetchBytes = 1 << 20
 	}
-	return &Manager{store: st, ring: ring, self: self, transport: t, numBuckets: numBuckets, fetchBytes: fetchBytes}
+	return &Manager{
+		store: cfg.Store, ring: cfg.Ring, self: cfg.Self,
+		transport: cfg.Transport, numBuckets: cfg.Buckets, fetchBytes: cfg.FetchBytes,
+	}
 }
 
 // SetHintJournal enables durable hint storage; nil disables journaling.
@@ -127,7 +140,7 @@ func (m *Manager) ComputeDigest() []uint64 {
 // the number of entries repaired locally. Missing partners, transport
 // failures, and invalid replies leave state unchanged and return zero.
 
-func (m *Manager) RunRound(replicaFactor int) int {
+func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	partner, ok := m.PickPartner(replicaFactor)
 	if !ok {
 		return 0
@@ -216,7 +229,7 @@ func mustGet(m *Manager, key string) store.Entry {
 // PickPartner round-robins over replica sharers, refreshing the set when
 // empty. Nil when RF<=1 or nobody shares keys with this node.
 
-func (m *Manager) PickPartner(replicaFactor int) (string, bool) {
+func (m *Manager) PickPartner(replicaFactor hashring.ReplicaCount) (string, bool) {
 	if replicaFactor <= 1 {
 		return "", false
 	}
@@ -233,7 +246,7 @@ func (m *Manager) PickPartner(replicaFactor int) (string, bool) {
 	return p, true
 }
 
-func (m *Manager) refreshPartnersLocked(replicaFactor int) {
+func (m *Manager) refreshPartnersLocked(replicaFactor hashring.ReplicaCount) {
 	seen := map[string]bool{}
 	m.store.ForEach(func(key string, _ store.Entry) {
 		nodes, err := m.ring.GetNodes(key, replicaFactor)

@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"github.com/kraytos17/cinder/internal/counter"
+	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/obs"
@@ -20,7 +21,7 @@ type (
 // RunCounterRound exchanges counter state with one replica partner. It
 // skips work when the counter store is absent, empty, or no partner is
 // available.
-func (m *Manager) RunCounterRound(replicaFactor int) {
+func (m *Manager) RunCounterRound(replicaFactor hashring.ReplicaCount) {
 	m.counterMu.Lock()
 	cs := m.counters
 	m.counterMu.Unlock()

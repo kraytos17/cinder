@@ -122,6 +122,20 @@ func TestGetNodesReplicaCount(t *testing.T) {
 	}
 }
 
+func TestNewReplicaCount(t *testing.T) {
+	for _, n := range []int{1, MaxReplicas} {
+		got, err := NewReplicaCount(n)
+		if err != nil || int(got) != n {
+			t.Errorf("NewReplicaCount(%d) = %d, %v", n, got, err)
+		}
+	}
+	for _, n := range []int{0, -1, MaxReplicas + 1} {
+		if _, err := NewReplicaCount(n); !errors.Is(err, ErrInvalidReplicaCount) {
+			t.Errorf("NewReplicaCount(%d) error = %v, want ErrInvalidReplicaCount", n, err)
+		}
+	}
+}
+
 func TestGetNodesNotExceedingAlive(t *testing.T) {
 	r := mustRing(t, 50, 0)
 	r.AddNode("node1")
@@ -206,7 +220,7 @@ func TestEmptyRingLookupsAreSafe(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	for _, n := range []int{0, -1, 33} {
-		if _, err := r.GetNodes("key", n); !errors.Is(err, ErrInvalidReplicaCount) {
+		if _, err := r.GetNodes("key", ReplicaCount(n)); !errors.Is(err, ErrInvalidReplicaCount) {
 			t.Fatalf("n=%d: err = %v", n, err)
 		}
 	}

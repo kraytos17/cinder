@@ -11,7 +11,7 @@ import (
 func TestShardMetricsCopies(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)
 	putVer(t, st, "k", "v", 5, 1)
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
 	if deferred := m.Rebalance(); deferred {
@@ -27,7 +27,7 @@ func TestShardMetricsMigrationOutcomes(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"b", "c"}, "a", 2, 0)
 	putVer(t, st, "k", "v", 5, 1)
 	ft.Fail["b"] = true
-	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
 	m.Rebalance()
@@ -42,7 +42,7 @@ func TestShardMetricsMigrationOutcomes(t *testing.T) {
 	st2, ring2, table2, ft2 := testSetup(t, []string{"b", "c"}, "a", 2, 0)
 	putVer(t, st2, "k", "v", 5, 1)
 	ft2.Fail["c"] = true
-	m2 := NewManager(st2, ring2, ft2, table2, "a", 2, 0, nil)
+	m2 := NewManager(Config{Store: st2, Ring: ring2, Transport: ft2, Membership: table2, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
 	c2 := metrics.NewCollector()
 	m2.SetMetrics(c2)
 	m2.Rebalance()

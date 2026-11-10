@@ -22,6 +22,9 @@ import (
 // acknowledgements, including the local write.
 
 func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []string, mode Mode, traceID, spanID uint64) error {
+	if !mode.Valid() {
+		return ErrInvalidMode
+	}
 	version := m.local.MintVersion()
 	e := store.Entry{Value: append([]byte(nil), value...), Version: version, WriterNodeHash: m.writer}
 	if ttl > 0 {
@@ -67,6 +70,9 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 // mode succeeds only when enough replicas store the tombstone, so later
 // quorum reads observe the deletion.
 func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, spanID uint64) error {
+	if !mode.Valid() {
+		return ErrInvalidMode
+	}
 	version := m.local.MintVersion()
 	if err := m.local.RemoveVersioned(key, version, m.writer); err != nil {
 		return err

@@ -27,7 +27,7 @@ func counterValue(t *testing.T, res protocol.Response) int64 {
 }
 
 func TestCounterAdjustGetRoundTrip(t *testing.T) {
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	adj := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte("k"), CounterDelta: 5})
 	if adj.Status != protocol.StatusOK {
 		t.Fatalf("adjust = %v, want OK", adj.Status)
@@ -54,7 +54,7 @@ func TestCounterAdjustGetRoundTrip(t *testing.T) {
 }
 
 func TestCounterMergeApplies(t *testing.T) {
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	var remote counter.PNCounter
 	_ = remote.Increment("peer", 9)
 	enc := counter.EncodePNCounter(remote)
@@ -110,7 +110,7 @@ func TestCounterOwnership(t *testing.T) {
 func TestCounterAntiEntropyNoManager(t *testing.T) {
 	// A standalone server has no AE manager, so counter anti-entropy is
 	// unsupported.
-	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAntiEntropy, Value: []byte("x")})
 	if res.Status != protocol.StatusNotSupported {
 		t.Fatalf("ae = %v, want NotSupported", res.Status)

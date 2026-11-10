@@ -27,6 +27,18 @@ const (
 	DefaultVNodes = 150
 )
 
+// ReplicaCount is the number of distinct ring owners requested for a key.
+// Valid values are in [1, MaxReplicas].
+type ReplicaCount int
+
+// NewReplicaCount validates and returns a replica count supported by Ring.
+func NewReplicaCount(n int) (ReplicaCount, error) {
+	if n < 1 || n > MaxReplicas {
+		return 0, ErrInvalidReplicaCount
+	}
+	return ReplicaCount(n), nil
+}
+
 // ErrInvalidReplicaCount rejects GetNodes counts outside [1, 32].
 var ErrInvalidReplicaCount = errors.New("hashring: replica count must be between 1 and 32")
 
@@ -254,7 +266,7 @@ func (r *Ring) GetNode(key string) string {
 // GetNodes returns up to n distinct owners walking clockwise from key's
 // position, wrapping at most once. It returns fewer than n when the ring
 // contains fewer nodes.
-func (r *Ring) GetNodes(key string, n int) ([]string, error) {
+func (r *Ring) GetNodes(key string, n ReplicaCount) ([]string, error) {
 	if n <= 0 || n > MaxReplicas {
 		return nil, ErrInvalidReplicaCount
 	}
@@ -270,7 +282,7 @@ func (r *Ring) GetNodes(key string, n int) ([]string, error) {
 	var seen [MaxReplicas]uint16
 	var out []string
 	cur := start
-	for len(out) < n {
+	for len(out) < int(n) {
 		ix := snap.nodeIx[cur]
 		dup := slices.Contains(seen[:len(out)], ix)
 		if !dup {

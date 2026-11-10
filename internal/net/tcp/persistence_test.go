@@ -10,6 +10,7 @@ import (
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -20,7 +21,7 @@ func startPersistedServer(t *testing.T, id string, dir string) (*tcp.Server, str
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := tcp.NewServer(id, l.Addr().(*net.TCPAddr).Port, store.NewLRUStore(1<<20, nil), nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureCluster(nil); err != nil {
 		t.Fatal(err)
 	}

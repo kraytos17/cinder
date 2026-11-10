@@ -66,8 +66,8 @@ func counterTestPair(t *testing.T, fetchBytes int) (*Manager, *Manager, *counter
 	ring.AddNode("n2")
 	ft := &counterTransport{mgrs: map[string]*Manager{}, fail: map[string]bool{}}
 	st1, st2 := store.NewLRUStore(1<<20, nil), store.NewLRUStore(1<<20, nil)
-	m1 := NewManager(st1, ring, "n1", ft, 0, fetchBytes)
-	m2 := NewManager(st2, ring, "n2", ft, 0, fetchBytes)
+	m1 := NewManager(Config{Store: st1, Ring: ring, Self: "n1", Transport: ft, FetchBytes: fetchBytes})
+	m2 := NewManager(Config{Store: st2, Ring: ring, Self: "n2", Transport: ft, FetchBytes: fetchBytes})
 	cs1, cs2 := counter.NewStore(1<<20), counter.NewStore(1<<20)
 	m1.SetCounterStore(cs1)
 	m2.SetCounterStore(cs2)
