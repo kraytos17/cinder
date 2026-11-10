@@ -13,11 +13,15 @@ import (
 func BenchmarkHintPush(b *testing.B) {
 	q := NewHintQueue()
 	exp := expiry.At(time.Now().Add(time.Hour))
+	hintKeys := make([][]byte, b.N)
+	for i := range hintKeys {
+		hintKeys[i] = fmt.Appendf(nil, "hint-key-%d", i)
+	}
 	b.ResetTimer()
 	for i := range b.N {
 		q.Push(Hint{
 			Target:    "n2",
-			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: fmt.Appendf(nil, "hint-key-%d", i), Value: make([]byte, 64)},
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: hintKeys[i], Value: make([]byte, 64)},
 			ExpiresAt: exp,
 		})
 	}
@@ -27,10 +31,14 @@ func BenchmarkHintPush(b *testing.B) {
 func BenchmarkHintSnapshot(b *testing.B) {
 	q := NewHintQueue()
 	exp := expiry.At(time.Now().Add(time.Hour))
-	for i := range 1024 {
+	snapKeys := make([][]byte, 1024)
+	for i := range snapKeys {
+		snapKeys[i] = fmt.Appendf(nil, "hint-key-%d", i)
+	}
+	for i := range snapKeys {
 		q.Push(Hint{
 			Target:    "n2",
-			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: fmt.Appendf(nil, "hint-key-%d", i), Value: make([]byte, 64)},
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: snapKeys[i], Value: make([]byte, 64)},
 			ExpiresAt: exp,
 		})
 	}

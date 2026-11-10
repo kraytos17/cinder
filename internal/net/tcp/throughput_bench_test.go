@@ -29,9 +29,14 @@ func BenchmarkRPCSetGet(b *testing.B) {
 	defer c.Close()
 	val := make([]byte, 256)
 	b.SetBytes(int64(256 * 2))
+	// Prebuilt keys: formatting is harness overhead, not transport cost.
+	benchKeys := make([][]byte, 1024)
+	for i := range benchKeys {
+		benchKeys[i] = fmt.Appendf(nil, "tput-key-%d", i)
+	}
 
 	for i := 0; b.Loop(); i++ {
-		k := fmt.Appendf(nil, "tput-key-%d", i%1024)
+		k := benchKeys[i%len(benchKeys)]
 		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: k, Value: val}); err != nil || res.Status != protocol.StatusOK {
 			b.Fatalf("set: %+v %v", res, err)
 		}
@@ -52,6 +57,10 @@ func BenchmarkRPCSetParallel(b *testing.B) {
 	defer srv.Shutdown()
 	val := make([]byte, 256)
 	b.SetBytes(256)
+	benchPKeys := make([][]byte, 4096)
+	for i := range benchPKeys {
+		benchPKeys[i] = fmt.Appendf(nil, "tput-p-%d", i)
+	}
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		c, err := client.Dial(l.Addr().String(), 5*time.Second)
@@ -62,7 +71,7 @@ func BenchmarkRPCSetParallel(b *testing.B) {
 		i := 0
 		for pb.Next() {
 			i++
-			k := fmt.Appendf(nil, "tput-p-%d", i%4096)
+			k := benchPKeys[i%len(benchPKeys)]
 			if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: k, Value: val}); err != nil || res.Status != protocol.StatusOK {
 				b.Fatalf("set: %+v %v", res, err)
 			}

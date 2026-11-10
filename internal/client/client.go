@@ -68,6 +68,8 @@ func Dial(addr string, timeout time.Duration) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	setNoDelay(c)
 	return &Client{conn: c, br: bufio.NewReader(c), timeout: timeout}, nil
 }
 
@@ -78,11 +80,40 @@ func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, erro
 	if cfg == nil {
 		cfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only path
 	}
-	c, err := tls.DialWithDialer(&net.Dialer{Timeout: timeout}, "tcp", addr, cfg) //nolint:noctx // no caller context to propagate; timeout is the deadline mechanism
+
+	raw, err := net.DialTimeout("tcp", addr, timeout) //nolint:noctx // no caller context to propagate; timeout is the deadline mechanism
 	if err != nil {
 		return nil, err
 	}
+
+	setNoDelay(raw)
+	c := tls.Client(raw, cfg)
+	// Bound the handshake by the RPC timeout: the old DialWithDialer
+	// path left it unbounded, hanging the caller on a blackholed peer.
+	if err := c.SetDeadline(time.Now().Add(timeout)); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	if err := c.Handshake(); err != nil { //nolint:noctx // no caller context to propagate; handshake bounded by the SetDeadline above
+		raw.Close()
+		return nil, err
+	}
+	if err := c.SetDeadline(time.Time{}); err != nil {
+		raw.Close()
+		return nil, err
+	}
 	return &Client{conn: c, br: bufio.NewReader(c), timeout: timeout}, nil
+}
+
+// setNoDelay disables Nagle's algorithm on TCP connections. Request +
+// response are small and strictly sequential, the exact pattern Nagle
+// delays (up to ~200ms on real networks); loopback benches don't show
+// it, but deployments do. Best-effort: a socket that rejects the
+// option still works, just with Nagle enabled.
+func setNoDelay(c net.Conn) {
+	if tc, ok := c.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
 }
 
 // Close closes the connection.

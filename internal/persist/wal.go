@@ -54,15 +54,18 @@ type Entry struct {
 	Tombstone bool
 }
 
-// encodeRecord serializes one v2 record plus its XXH3 checksum. The
-// checksum covers exactly the on-disk record bytes, like the C++
-// encodeWalRecord.
-func encodeRecord(e Entry) ([]byte, error) {
+// recordSize validates one record's bounds and returns its staged size.
+func recordSize(e Entry) (int, error) {
 	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
-		return nil, errTooLarge
+		return 0, errTooLarge
 	}
-	size := 1 + 4 + len(e.Key) + 4 + len(e.Value) + 8 + 8 + 8 + 1 + 1 + 8
-	out := make([]byte, 0, size)
+	return 1 + 4 + len(e.Key) + 4 + len(e.Value) + 8 + 8 + 8 + 1 + 1 + 8, nil
+}
+
+// appendRecord serializes one v2 record plus its XXH3 checksum onto buf.
+// The checksum covers exactly the on-disk record bytes, like the C++
+// encodeWalRecord.
+func appendRecord(out []byte, e Entry) []byte {
 	start := len(out)
 	out = codec.Append(out, binary.LittleEndian, uint8(e.Op))
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
@@ -83,7 +86,16 @@ func encodeRecord(e Entry) ([]byte, error) {
 		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
 	out = codec.Append(out, binary.LittleEndian, xxh3.Hash(out[start:]))
-	return out, nil
+	return out
+}
+
+// encodeRecord serializes one v2 record plus its XXH3 checksum.
+func encodeRecord(e Entry) ([]byte, error) {
+	size, err := recordSize(e)
+	if err != nil {
+		return nil, err
+	}
+	return appendRecord(make([]byte, 0, size), e), nil
 }
 
 var errTooLarge = errors.New("persist: WAL entry too large")
@@ -199,26 +211,28 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 	if len(es) == 0 {
 		return 0, nil
 	}
-	bufs := make([][]byte, len(es))
+	// Validate up front so a late oversized entry cannot leave a partial
+	// batch on disk, then stage into one buffer for a single write.
 	total := 0
-	for i, e := range es {
-		buf, err := encodeRecord(e)
+	for _, e := range es {
+		size, err := recordSize(e)
 		if err != nil {
 			return 0, err
 		}
-		bufs[i] = buf
-		total += len(buf)
+		total += size
+	}
+	out := make([]byte, 0, total)
+	for _, e := range es {
+		out = appendRecord(out, e)
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for _, buf := range bufs {
-		n, err := w.f.Write(buf)
-		w.size += int64(n)
-		if err != nil {
-			return 0, err
-		}
-		w.entries++
+	n, err := w.f.Write(out)
+	w.size += int64(n)
+	if err != nil {
+		return 0, err
 	}
+	w.entries += uint64(len(es))
 	return total, nil
 }
 

@@ -228,6 +228,12 @@ func (s *Server) Serve(l net.Listener) error {
 			}
 			continue
 		}
+		// Disable Nagle before any I/O: see setNoDelay in the client
+		// for why sequential small frames want it off. Non-TCP
+		// listeners (TLS wraps the socket) skip this gracefully.
+		if tc, ok := c.(*net.TCPConn); ok {
+			_ = tc.SetNoDelay(true)
+		}
 		select {
 		case s.sem <- struct{}{}:
 		default:

@@ -14,7 +14,7 @@ func BenchmarkWalAppendSequential(b *testing.B) {
 			dir := b.TempDir()
 			entries := make([]Entry, n)
 			for i := range entries {
-				entries[i] = Entry{Op: OpSet, Key: []byte(fmt.Sprintf("bench-key-%d", i)), Value: make([]byte, 256), Version: uint64(i + 1), Writer: 42}
+				entries[i] = Entry{Op: OpSet, Key: fmt.Appendf(nil, "bench-key-%d", i), Value: make([]byte, 256), Version: uint64(i + 1), Writer: 42}
 			}
 			b.SetBytes(int64(n * 256))
 			b.ResetTimer()
@@ -41,7 +41,7 @@ func BenchmarkWalAppendBatch(b *testing.B) {
 			dir := b.TempDir()
 			entries := make([]Entry, n)
 			for i := range entries {
-				entries[i] = Entry{Op: OpSet, Key: []byte(fmt.Sprintf("bench-key-%d", i)), Value: make([]byte, 256), Version: uint64(i + 1), Writer: 42}
+				entries[i] = Entry{Op: OpSet, Key: fmt.Appendf(nil, "bench-key-%d", i), Value: make([]byte, 256), Version: uint64(i + 1), Writer: 42}
 			}
 			b.SetBytes(int64(n * 256))
 			b.ResetTimer()
