@@ -6,7 +6,7 @@
 // concurrent updates on any replica survive regardless of arrival order or
 // duplication.
 //
-// Deliberate non-goals, mirroring C++ CrdtCounterStore:
+// Counter-store constraints:
 //   - No TTL/expiry: counters are state, not cache entries; expiry would
 //     silently discard increments.
 //   - No eviction: over-budget writes fail with ErrCapacityExceeded
@@ -32,8 +32,8 @@ import (
 	"github.com/kraytos17/cinder/internal/sharding"
 )
 
-// ErrCapacityExceeded rejects over-budget growth, mirroring C++
-// Errc::CapacityExceeded on the counter paths.
+// ErrCapacityExceeded rejects counter updates whose additional state would
+// exceed the store's capacity budget.
 var ErrCapacityExceeded = errors.New("counter: exceeds capacity")
 
 // counterSeed is the counter store's placement seed (see

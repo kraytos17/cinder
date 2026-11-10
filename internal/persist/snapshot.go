@@ -60,7 +60,8 @@ func encodeSnapEntry(e SnapEntry) ([]byte, error) {
 	return out, nil
 }
 
-// SnapWriter writes one atomic snapshot: .tmp file + rename, like C++.
+// SnapWriter writes a snapshot to a temporary file and renames it into
+// place only after the complete snapshot has been written.
 type SnapWriter struct {
 	path string
 }

@@ -1,13 +1,3 @@
-// Package store implements Cinder's in-memory eviction stores (Go port).
-//
-// Behavior mirrors include/cinder/store (LRU policy, TTL wheel, LWW
-// versioned writes, tombstones) case-for-case. The C++ tree is the
-// authority until it is retired.
-//
-// GC discipline: the hot path keeps no pointer graphs. Nodes live in
-// index-addressed slices linked by integer handles; keys are map strings
-// and bulk bytes stay in flat []byte slabs, so the collector has almost
-// nothing to scan.
 package store
 
 import (
@@ -15,8 +5,8 @@ import (
 	"time"
 )
 
-// Clock abstracts time so tests can run deterministically on a manual
-// clock instead of racing real sleeps.
+// Clock supplies wall-clock time to stores. Tests can provide a ManualClock
+// to advance time deterministically.
 type Clock interface {
 	Now() time.Time
 }

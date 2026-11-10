@@ -1,19 +1,16 @@
-// Package metrics implements Cinder's observability collector (Go port of
-// cinder/common/metrics.hpp + src/common/metrics.cpp): per-opcode counters
-// with log2-bucketed latency histograms, store/replication/cluster/
-// connection counters, and Prometheus text exposition with identical
-// metric names.
+// Package metrics provides atomic counters and latency histograms for
+// request handling, storage, replication, membership, rebalance, and
+// connections.
+// AppendPrometheus exposes the collector using the metric names documented
+// by the service. Gauges whose source values are maintained elsewhere are
+// supplied at scrape time rather than duplicated here. Metric names and
+// labels are a monitoring API and must remain stable. Per-replica lag and
+// replay-snapshot byte metrics are not emitted because this collector does
+// not receive those measurements.
 //
-// Deliberate omissions vs C++: hint replay snapshot bytes
-// (replication_hint_replay_snapshot_bytes*) and per-replica lag
-// (replication_lag_ms) — the Go tree tracks neither source signal, so the
-// names are reserved, not emitted. Counter opcodes (17-20) are new names
-// the retired C++ exposition never had.
-//
-// All counters are lock-free atomics, safe to bump on the hot path.
+// Counters use atomic values and can be updated concurrently.
 // Gauges for store bytes/entries/capacity are read live from the store at
-// scrape time (the store already maintains those atomics), so they are
-// passed in rather than mirrored.
+// scrape time and passed in rather than maintained a second time here.
 package metrics
 
 import (
@@ -22,9 +19,8 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// OpName maps an opcode to its Prometheus label, mirroring C++
-// K_OPCODE_NAMES plus the four counter opcodes (which postdate C++
-// metrics; the retired tree never tracked them).
+// OpName returns the stable Prometheus label for an opcode, or "unknown"
+// for an unrecognized value.
 func OpName(op protocol.Opcode) string {
 	switch op {
 	case protocol.OpGet:
@@ -72,7 +68,7 @@ func OpName(op protocol.Opcode) string {
 	}
 }
 
-// maxOpcode bounds the ops/latency arrays; opcodes are 1..20.
+// maxOpcode is the highest assigned wire opcode; index 0 is unused.
 const maxOpcode = 20
 
 func opIndex(op protocol.Opcode) (int, bool) {
@@ -152,9 +148,9 @@ type Collector struct {
 // NewCollector returns an empty collector.
 func NewCollector() *Collector { return &Collector{} }
 
-// Record bumps the opcode counter and its latency histogram. Unknown
-// opcodes still count under "unknown" via the ops fallback is skipped:
-// decode rejects them before dispatch, so they never arrive here.
+// Record increments the opcode counter and latency histogram for a known
+// opcode. Unknown opcodes are ignored; the protocol decoder rejects them
+// before dispatch.
 func (c *Collector) Record(op protocol.Opcode, ns uint64) {
 	if i, ok := opIndex(op); ok {
 		c.ops[i].Add(1)

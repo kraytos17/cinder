@@ -12,8 +12,8 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// BenchmarkRPCSetGet is the Go counterpart of the C++ throughput bench's
-// single-node loop: sequential Set+Get round-trips over loopback TCP.
+// BenchmarkRPCSetGet measures sequential Set+Get round trips to one server
+// over loopback TCP.
 func BenchmarkRPCSetGet(b *testing.B) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

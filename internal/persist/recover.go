@@ -85,7 +85,7 @@ func (m *Manager) Recover() error {
 				return fmt.Errorf("persist: corrupt WAL %s", path)
 			}
 			if e.Op == OpDel {
-				// Hard-erase, mirroring the live Remove: OpDel records
+				// Hard-erase, matching the live Remove operation: OpDel records
 				// only ever come from migration cleanup, which runs
 				// after every new holder acked — so no older live copy
 				// can win by absence that a tombstone would need to
@@ -118,7 +118,3 @@ func (m *Manager) Recover() error {
 	m.lastCompact = m.clock()
 	return nil
 }
-
-// Compact snapshots live entries, publishes CURRENT, and rotates to a
-// fresh WAL: sealed segments deleted, old snapshots pruned to the newest
-// two. Mirrors PersistenceManager::compact (minus metrics).

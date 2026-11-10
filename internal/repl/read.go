@@ -12,8 +12,9 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// Manager coordinates writes to the primary plus replicas. The store is
-// the single version authority; every replica apply is idempotent LWW.
+// Read performs a local read or a quorum read, depending on the replica set
+// and requested quorum. Concurrent quorum reads for the same key and R
+// share one in-flight fan-out.
 
 func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uint64) (store.Entry, error) {
 	if len(replicas) == 0 || r <= 1 {
@@ -31,12 +32,9 @@ func (m *Manager) Read(key string, replicas []string, r int, traceID, spanID uin
 }
 
 // readCoalesced runs one quorum fan-out per (key, R) and shares its
-// result with concurrent readers, via x/sync singleflight (stdlib-adjacent
-// shared implementation replacing the ported flightRegistry). shared=true
-// marks a waiter, which is exactly the ReadsCoalesced signal; singleflight
-// forgets the flight before waking waiters, so a waiter starting a new
-// read begins a fresh flight — the same guarantee the old registry's
-// delete-before-close gave.
+// result with concurrent readers via x/sync/singleflight. shared reports
+// that multiple callers used the same in-flight operation and drives the
+// ReadsCoalesced metric.
 
 func (m *Manager) readCoalesced(key string, r int, run func() (store.Entry, error)) (store.Entry, error) {
 	v, err, shared := m.flights.Do(flightKey(key, r), func() (any, error) {
@@ -100,8 +98,9 @@ func (m *Manager) readOnce(key string, replicas []string, r int, traceID, spanID
 	return best, nil
 }
 
-// repair writes the LWW winner back to every replica best-effort (no
-// hints), mirroring sendRepairFanOut.
+// repair writes the LWW winner back to every replica on a best-effort
+// basis. Failed repairs are not queued as hints; later reads or
+// anti-entropy can repair them.
 
 func (m *Manager) repair(key string, replicas []string, winner store.Entry, traceID, spanID uint64) {
 	req := protocol.Request{

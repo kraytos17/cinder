@@ -4,10 +4,9 @@ import (
 	"net/http"
 )
 
-// Handler serves the Prometheus exposition at GET /metrics, mirroring the
-// C++ metrics HTTP endpoint (metrics_port, 0 = disabled). Gauges reads
-// live store sizes on every scrape via the callback, so no mirror
-// atomics drift.
+// Handler serves the Prometheus exposition at GET /metrics. It reads live
+// store gauges through the callback on each scrape, avoiding duplicated
+// gauge state that could drift from the store.
 type Handler struct {
 	c      *Collector
 	gauges func() StoreGauges

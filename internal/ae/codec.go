@@ -1,13 +1,8 @@
-// Package ae implements Cinder's anti-entropy protocol (Go port).
-//
-// Wire schemas (little-endian, magic-prefixed blobs) are byte-identical
-// with the C++ implementation: AEM3 group digests, AEB5 bucket refinement,
-// AER6 digest responses, AEMS sync messages, AEI4 IBLT sketches. Unknown
-// magics are rejected so mixed-version clusters fail rounds cleanly.
-//
-// The manager runs full-scan digests each round (behaviorally identical to
-// the C++ P1 incremental accumulators, without the divert-while-scanning
-// machinery); see README for the deliberate simplifications.
+// Package ae implements anti-entropy digest exchange and repair. Payloads
+// are little-endian, magic-tagged schemas: AEM3 group digests, AEB5 bucket
+// refinements, AER6 digest responses, AEMS sync messages, and AEI4 IBLT
+// sketches. Decoders reject unrecognized schema magics. Each round
+// recomputes digests by scanning the current store contents.
 package ae
 
 import (
@@ -167,7 +162,7 @@ func DecodeDigest(data []byte, expected int) ([]uint64, bool) {
 
 // GroupFold folds bucket hashes into group hashes: XXH3 over alternating
 // (bucket u32, hash u64) pairs, including each absolute bucket index so
-// the fold is placement-sensitive. Mirrors ae_codec::groupDigests.
+// the fold is placement-sensitive.
 func GroupFold(hashes []uint64) []uint64 {
 	n := (len(hashes) + BucketsPerGroup - 1) / BucketsPerGroup
 	out := make([]uint64, 0, n)
@@ -239,7 +234,7 @@ func EncodeRefinement(r Refinement) []byte {
 }
 
 // DecodeRefinement parses an AEB5 blob. Bucket ids must be < groups (the
-// C++ bound: callers pass num_buckets_; ids beyond it are rejected).
+// bucket bound: callers supply numBuckets; IDs outside that range are rejected.
 func DecodeRefinement(data []byte, maxBucket uint32) (Refinement, bool) {
 	var out Refinement
 	c := codec.NewReader(binary.LittleEndian, data)
@@ -275,7 +270,7 @@ func DecodeRefinement(data []byte, maxBucket uint32) (Refinement, bool) {
 }
 
 // EncodeMetaRows serializes rows: [MAGIC? no magic][count u32][rows].
-// Layout mirrors encodeMetaRows (count first, no envelope magic).
+// Layout begins with a row count and has no envelope magic.
 func EncodeMetaRows(rows []MetaRow) []byte {
 	out := make([]byte, 0, 4+len(rows)*29)
 	out = codec.AppendLen(out, binary.LittleEndian, len(rows))
@@ -366,7 +361,7 @@ func EncodeResponse(r DigestResponse) []byte {
 }
 
 // DecodeResponse parses an AER6 response: bucket ids, row coverage, and
-// sketch uniqueness are all validated like the C++ decoder.
+// sketch uniqueness are validated before returning the decoded response.
 func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	var out DigestResponse
 	c := codec.NewReader(binary.LittleEndian, data)
@@ -442,7 +437,8 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	if !ok {
 		return out, false
 	}
-	// C++ bound: sketch_count <= remaining / 8; decode-time exactness
+	// Bound sketch_count by the minimum encoded bytes per sketch before
+	// allocating; exact lengths are validated while decoding.
 	// below handles the rest.
 	if uint64(sc) > uint64(c.Remaining())/8 {
 		return out, false
@@ -727,8 +723,8 @@ func EncodeIBLT(cells []IBLTCell) []byte {
 	return out
 }
 
-// DecodeIBLT parses a sketch with exact-size validation plus the C++
-// count-bounds sanity check. Returns nil on any invalid input.
+// DecodeIBLT parses a sketch, requiring a supported cell count and an exact
+// payload size. It returns nil for malformed or unsupported input.
 func DecodeIBLT(data []byte) []IBLTCell {
 	c := codec.NewReader(binary.LittleEndian, data)
 	magic, ok := c.U32()
@@ -777,8 +773,8 @@ func DecodeIBLT(data []byte) []IBLTCell {
 }
 
 // DifferenceIBLT subtracts local from remote and peels pure cells,
-// returning the symmetric difference or false when peeling stalls.
-// Mirrors iblt::difference, including the peel budget bound.
+// returning the symmetric difference or false when peeling stalls or
+// the configured peel budget is exhausted.
 func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 	var zero IBLTDiff
 	if len(remote) != len(local) || len(remote) < IBLTCellsMin || len(remote) > IBLTCellsMax {

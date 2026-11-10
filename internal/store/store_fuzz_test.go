@@ -8,13 +8,11 @@ import (
 	"github.com/kraytos17/cinder/internal/expiry"
 )
 
-// FuzzStoreSequence feeds op sequences to both LRU and LFU stores under a
-// manual clock, mirroring the C++ store_put fuzz: small capacity forces eviction
-// pressure, a small key pool forces collisions, and every op carries
-// invariants — no panics, Put results are nil or ErrCapacityExceeded
-// only, and a resident key's version never decreases across a mutating op
-// (sampled around the op so silent capacity eviction between observations
-// cannot false-positive: absent before or after means no constraint).
+// FuzzStoreSequence feeds operation sequences to LRU and LFU stores under
+// a manual clock. Small capacity forces eviction pressure, and a small key
+// pool forces collisions. The sequence checks for panics, unexpected Put
+// errors, and version decreases for keys resident before and after a
+// mutation.
 func FuzzStoreSequence(f *testing.F) {
 	f.Add([]byte{0x03, 'a', 'b', 'c', 0x00, 0x01, 0x05, 0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90})
 	f.Add([]byte{})
@@ -101,9 +99,8 @@ func FuzzStoreSequence(f *testing.F) {
 						}
 					}
 				}
-			case 2: // RemoveVersioned plants a tombstone, unless it loses
-				// LWW to a newer resident (correct no-op, mirroring
-				// putVersioned's stale-reject).
+			case 2: // RemoveVersioned plants a tombstone unless it loses
+				// LWW to a newer resident, in which case it is a no-op.
 				rv := u64(arg) &^ (1 << 63)
 				err := st.RemoveVersioned(key, rv, u64(arg))
 				if err != nil && !errors.Is(err, ErrCapacityExceeded) {

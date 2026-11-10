@@ -104,8 +104,8 @@ func (s *Server) handleDelete(req protocol.Request) protocol.Response {
 	return protocol.Response{Status: protocol.StatusOK}
 }
 
-// handleGossip folds a membership view into the table. No membership
-// configured: accept and ignore, like C++ with a nil gossip manager.
+// handleGossip folds the received membership view into the local table.
+// With no gossip manager configured, it accepts and ignores the message.
 func (s *Server) handleGossip(req protocol.Request) protocol.Response {
 	s.ringMu.RLock()
 	gossip := s.gossip
@@ -116,14 +116,14 @@ func (s *Server) handleGossip(req protocol.Request) protocol.Response {
 	return protocol.Response{Status: protocol.StatusOK}
 }
 
-// handleAntiEntropy routes digest/sync/refinement frames to the AE
-// manager, answering default-OK with no manager (the C++ fallthrough).
+// handleAntiEntropy routes digest, sync, and refinement frames to the AE
+// manager. With no manager configured, it returns OK without processing.
 func (s *Server) handleAntiEntropy(req protocol.Request) protocol.Response {
 	s.aeMu.RLock()
 	mgr := s.ae
 	s.aeMu.RUnlock()
 	if mgr == nil {
-		// No anti-entropy manager: the C++ fallthrough answers default-OK.
+		// Anti-entropy is not configured on this server.
 		return protocol.Response{Status: protocol.StatusOK}
 	}
 	if req.Opcode == protocol.OpAntiEntropyDigest {
@@ -208,5 +208,4 @@ func (s *Server) handleCounterGet(req protocol.Request) protocol.Response {
 	return protocol.Response{Status: protocol.StatusNotFound}
 }
 
-// counterStatusOf maps counter errors to wire statuses, mirroring the
-// C++ counter paths (overflow surfaces as CapacityExceeded).
+// counterStatusOf maps counter-store errors to protocol statuses.

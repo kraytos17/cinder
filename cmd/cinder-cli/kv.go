@@ -1,8 +1,8 @@
 package main
 
-// Single-key verbs: get, set, del, ping, info, cluster, ring,
-// get-versioned. Output formats are byte-identical by design (tests
-// assert them): values print raw, misses print "(not found)".
+// Single-key verbs: get, set, del, ping, info, cluster, ring, and
+// get-versioned. Values print raw; misses print "(not found)". CLI tests
+// cover the output format.
 
 import (
 	"fmt"
@@ -13,9 +13,7 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// statusString mirrors cinder::toString(Errc): lowercase parenthesized
-// words, not the Go Status.String() CamelCase used in logs.
-
+// runSingle executes one single-key command and formats its response.
 func runSingle(
 	dial func() (*client.Client, error),
 	cmd, key, value string, ttlMs int,
@@ -87,4 +85,4 @@ func runSingle(
 }
 
 // runCounterAdjust applies one increment/decrement. The server answers
-// plain OK (no state), so output mirrors set: "OK" or a status word.
+// plain OK (no state), so output follows the single-key command format.

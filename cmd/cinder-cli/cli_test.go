@@ -122,7 +122,7 @@ func TestCliMset(t *testing.T) {
 	if out != "" || !strings.Contains(errOut, "mset requires key/value pairs") || code == 0 {
 		t.Fatalf("mset odd: out=%q err=%q code=%d", out, errOut, code)
 	}
-	// TTL applies to every pair (flag after positionals, like C++).
+	// TTL applies to every pair when the option follows the positional args.
 	out, errOut, code = runCLI(t, addr, "mset", "c", "3", "--ttl", "60000")
 	if !strings.Contains(out, "c: OK\n") || errOut != "" || code != 0 {
 		t.Fatalf("mset ttl: out=%q err=%q code=%d", out, errOut, code)

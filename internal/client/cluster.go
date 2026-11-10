@@ -11,17 +11,15 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// Routing bounds mirror CacheClient: learned-owner overrides are capped,
-// and redirect hops per call are capped, so disagreeing rings end the
-// chain instead of burning the attempt budget on a ping-pong.
+// Routing bounds limit the number of cached owner overrides and redirect
+// hops per call. A redirect loop therefore terminates instead of
+// repeatedly spending the retry budget.
 const (
 	maxLearnedOwners = 4096
 	maxRedirectHops  = 4
 )
 
-// ClusterConfig configures a multi-node client. Mirrors the C++
-// ClusterConfig retry/timeout subset (anti-entropy arrives with that
-// subsystem).
+// ClusterConfig configures a multi-node client.
 type ClusterConfig struct {
 	Nodes         []NodeAddr
 	MaxRetries    int           // attempts beyond the first (0 = no retry)
@@ -31,11 +29,11 @@ type ClusterConfig struct {
 	ClientSecret  string        // client auth credential (empty = open)
 }
 
-// Cluster routes requests to ring owners, following ownership redirects
-// and retrying Timeout/NotReady with backoff. It is safe for concurrent
-// use. Mirrors CacheClient::sendToOwner: redirects reuse the attempt
-// budget (hops + visited set bound the chain), transport failures forget
-// the learned owner and re-resolve via the ring.
+// Cluster routes requests to ring owners, follows ownership redirects,
+// and retries Timeout/NotReady responses with backoff. It is safe for
+// concurrent use. Redirects share the retry budget and are bounded by a
+// hop limit and visited-node set. Transport failures discard the learned
+// owner so the next attempt resolves through the ring.
 type Cluster struct {
 	ring        *hashring.Ring
 	pool        *Pool
@@ -47,9 +45,9 @@ type Cluster struct {
 	learned map[string]string
 }
 
-// NewCluster builds a client over nodes. The ring carries every node id;
-// unknown-id lookups behave like the C++ client (pool send fails and the
-// call retries/resolves).
+// NewCluster builds a client over nodes. The ring contains every supplied
+// node ID; unknown IDs fail at the pool and follow the configured retry
+// behavior.
 func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 	ring, err := hashring.New(hashring.DefaultVNodes, 0)
 	if err != nil {

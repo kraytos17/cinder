@@ -4,12 +4,11 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// ReplicateCounter fans out full PN-Counter state as OpCounterMerge to
-// every replica except self. Best-effort like C++
-// replicateCounterState: duplicate/reordered delivery is safe (merge is
-// idempotent), and failed sends are NOT converted to hints — counter
-// merges are not LWW writes, so the hint path (which replays via
-// applyReplicated LWW) cannot carry them. Anti-entropy repairs drops.
+// ReplicateCounter sends full PN-Counter state as OpCounterMerge to every
+// replica except self. Duplicate or reordered delivery is safe because
+// merge is idempotent. Failed sends are not queued as hints: hints replay
+// through the LWW path and cannot carry counter state. Anti-entropy repairs
+// missed merges.
 func (m *Manager) ReplicateCounter(key string, encodedState []byte, replicas []string, traceID, spanID uint64) {
 	if len(encodedState) == 0 {
 		return
@@ -24,8 +23,8 @@ func (m *Manager) ReplicateCounter(key string, encodedState []byte, replicas []s
 			continue
 		}
 		go func(node string) {
-			// Best-effort: failures are logged by dropping; the next
-			// adjust re-sends full state and AE converges the rest.
+			// Best-effort: the next adjustment resends full state, and
+			// anti-entropy repairs any remaining divergence.
 			_, _ = m.transport.Send(node, req)
 		}(node)
 	}

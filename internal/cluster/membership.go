@@ -1,8 +1,6 @@
-// Package cluster implements SWIM-style membership (Go port).
-//
-// Behavior mirrors include/cinder/cluster (membership table, gossip
-// dissemination, failure detector) case-for-case, including the text wire
-// format, so Go and C++ nodes converge on one view of the cluster.
+// Package cluster implements SWIM-style membership, rumor dissemination,
+// and failure detection. Membership updates are incarnation-guarded and
+// nodes converge by exchanging the encoded membership view.
 package cluster
 
 import (
@@ -18,7 +16,7 @@ import (
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
-// NodeState mirrors the C++ NodeState.
+// NodeState is the liveness state advertised for a cluster member.
 type NodeState int
 
 const (
@@ -28,7 +26,8 @@ const (
 	Dead
 )
 
-// String renders the wire state token.
+// String renders the wire state token; values other than Alive and Suspect
+// render as "dead".
 func (s NodeState) String() string {
 	switch s {
 	case Alive:
@@ -65,8 +64,8 @@ type MembershipTable struct {
 	logger atomic.Pointer[zerolog.Logger]
 }
 
-// SetMetrics wires the observability collector (nil disables). Marks and
-// refutations bump only on actual state changes, mirroring C++.
+// SetMetrics installs the observability collector; nil disables metrics.
+// State counters are incremented only when the state actually changes.
 func (t *MembershipTable) SetMetrics(m *metrics.Collector) {
 	t.met.Store(m)
 }

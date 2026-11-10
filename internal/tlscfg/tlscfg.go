@@ -1,11 +1,6 @@
-// Package tlscfg builds TLS configurations for Cinder peers (Go port).
-//
-// Semantics mirror the C++ Asio wiring: TLS 1.2 minimum, PEM certificate
-// chain + key on the server, optional CA file enabling peer verification
-// on both sides. Verification is chain-only (no hostname check), exactly
-// like asio verify_peer: test certificates carry 127.0.0.1 SANs, but
-// production certificates may not, and the C++ client would still
-// connect — so the Go client must too.
+// Package tlscfg builds TLS configurations for Cinder clients and servers.
+// TLS 1.2 is the minimum version. An optional CA enables certificate-chain
+// verification; the client verifier intentionally does not check hostnames.
 package tlscfg
 
 import (
@@ -16,8 +11,8 @@ import (
 )
 
 // Server returns a server-side config. With a CA file, clients must present
-// a verifiable certificate (mirrors set_verify_mode(verify_peer)); without
-// it any client is accepted (the TLS handshake still encrypts).
+// a certificate chaining to that CA. Without a CA, client certificates are
+// not requested, though the TLS connection is still encrypted.
 func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -38,17 +33,16 @@ func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 	return cfg, nil
 }
 
-// Client returns a client-side config. With a CA file the server chain is
-// verified (chain-only, no hostname check); without it verification is
-// skipped entirely (mirrors verify_none). certFile/keyFile (both required
-// together) present a client certificate for servers that verify peers.
+// Client returns a client-side config. With a CA file, the server chain is
+// verified without hostname checking; without one, server-certificate
+// verification is disabled. certFile and keyFile must be provided together
+// and configure a client certificate for servers that verify peers.
 func Client(certFile, keyFile, caFile string) (*tls.Config, error) {
 	cfg := &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		//nolint:gosec // G402: InsecureSkipVerify only skips the default
-		// verifier; when caFile is set the custom chainOnlyVerifier below
-		// still runs on every handshake. Without a CA this is verify_none,
-		// matching the C++ no-CA behavior.
+		//nolint:gosec // G402: InsecureSkipVerify disables Go's default
+		// hostname verifier. When caFile is set, chainOnlyVerifier below
+		// still validates the certificate chain on every handshake.
 		InsecureSkipVerify: true,
 	}
 	if (certFile == "") != (keyFile == "") {
@@ -66,17 +60,16 @@ func Client(certFile, keyFile, caFile string) (*tls.Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		//nolint:gosec // G123: resumed sessions skip VerifyPeerCertificate
-		// in both this code and the C++ asio verify_peer it mirrors; the
-		// pool holds long-lived connections, so resumption is rare and the
-		// trade matches upstream behavior byte-for-byte.
+		//nolint:gosec // G123: resumed sessions may skip
+		// VerifyPeerCertificate. The pool uses long-lived connections; this
+		// follows crypto/tls session-resumption behavior.
 		cfg.VerifyPeerCertificate = chainOnlyVerifier(pool)
 	}
 	return cfg, nil
 }
 
 // chainOnlyVerifier verifies the presented chain against roots without
-// any hostname check, mirroring asio verify_peer.
+// checking the peer hostname.
 func chainOnlyVerifier(pool *x509.CertPool) func([][]byte, [][]*x509.Certificate) error {
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		if len(rawCerts) == 0 {
@@ -90,7 +83,7 @@ func chainOnlyVerifier(pool *x509.CertPool) func([][]byte, [][]*x509.Certificate
 			Roots:     pool,
 			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		}
-		// Intermediates ride along like any chain builder.
+		// Add presented intermediates so Verify can build the chain.
 		for _, raw := range rawCerts[1:] {
 			if c, err := x509.ParseCertificate(raw); err == nil {
 				opts.Intermediates.AddCert(c)

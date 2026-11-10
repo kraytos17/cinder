@@ -27,7 +27,7 @@ help:
 build:
     go build ./...
 
-# Run the full test suite (unit + fuzz seed corpus + goleak mains).
+# Run the full test suite, including Go fuzz seed corpora and goleak checks.
 [positional-arguments]
 test *args:
     go test ./... "$@"
@@ -56,7 +56,7 @@ lint-fix:
     go tool golangci-lint run --fix ./... || true
     gofmt -w internal/ cmd/
 
-# Pre-push gate: formatting, vet, lint, and the race-detector suite.
+# Pre-push gate: formatting, vet, lint, and race-enabled tests.
 verify: vet lint
     go test -race ./...
 
@@ -82,7 +82,8 @@ cover:
 cover-html: cover
     go tool cover -html=cover.out
 
-# Short fuzz of the codec fixed-point properties and stateful models.
+# Run all fuzz targets sequentially for local use; CI runs them concurrently
+# via fuzz-one so each target keeps the same time budget with less wall time.
 [positional-arguments]
 fuzz *args:
     go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzGossipView -fuzztime=20s ./internal/cluster/ "$@" && go test -run=NONE -fuzz=FuzzWALReader -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzSnapshot -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzAECodecs -fuzztime=20s ./internal/ae/ "$@" && go test -run=NONE -fuzz=FuzzStoreSequence -fuzztime=20s ./internal/store/ "$@" && go test -run=NONE -fuzz=FuzzCounterCodec -fuzztime=20s ./internal/counter/ "$@"

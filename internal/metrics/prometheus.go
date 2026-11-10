@@ -18,7 +18,7 @@ type StoreGauges struct {
 	HintBytes   uint64
 }
 
-// quantileLabels mirrors C++ K_LATENCY_QUANTILE_LABELS.
+// quantileLabels are the quantiles exposed for each opcode latency summary.
 var quantileLabels = []struct {
 	label string
 	q     float64
@@ -29,9 +29,8 @@ var quantileLabels = []struct {
 	{"0.999", 0.999},
 }
 
-// AppendPrometheus appends the exposition to b and returns it. Metric
-// names are byte-identical with the retired C++ formatPrometheus (plus
-// the four counter opcodes, which postdate it).
+// AppendPrometheus appends the Prometheus text exposition to b and returns
+// the resulting slice. Metric names and labels are a stable monitoring API.
 func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	var sb strings.Builder
 	counter := func(name string, v uint64) {

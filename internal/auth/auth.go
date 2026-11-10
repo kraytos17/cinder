@@ -1,13 +1,7 @@
-// Package auth implements Cinder's credential scheme (Go port of
-// cinder/common/hmac.hpp, byte-compatible by construction).
-//
-// Two credentials, two scopes. Node tokens authenticate cluster-internal
-// traffic: HMAC-SHA256(secret, nodeID + ":" + unixSeconds/10), i.e. bound
-// to the sender and to a 10-second window for clock-skew tolerance.
-// Verification accepts the windows covering the last 30 seconds.
-// Client tokens authenticate front-door traffic: HMAC-SHA256(secret,
-// "cinder-client-v1"), static and therefore replayable by design —
-// only usable over TLS (the server refuses to enable it otherwise).
+// Package auth issues and verifies the bearer tokens used by cluster nodes
+// and external clients. Node tokens are sender-bound and time-windowed;
+// client tokens are static, domain-separated credentials and must be sent
+// over TLS by the server and gateway configuration.
 package auth
 
 import (
@@ -18,8 +12,7 @@ import (
 	"time"
 )
 
-// WindowSeconds bounds node-token acceptance: windows covering this span
-// plus one for rounding, mirroring verifyAuthToken's default.
+// WindowSeconds is the node-token acceptance look-back, in seconds.
 const WindowSeconds = 30
 
 // windowSeconds is the token time quantum.
@@ -28,9 +21,8 @@ const windowSeconds = 10
 // clientDomain separates the static client token from node tokens.
 const clientDomain = "cinder-client-v1"
 
-// NodeToken issues the credential for nodeID at time at: raw 32-byte
-// HMAC-SHA256, empty when the secret is empty. Like the C++ build without
-// CINDER_ENABLE_CRYPTO, an empty secret fails closed (no token issued).
+// NodeToken returns the raw 32-byte HMAC-SHA256 token for nodeID at time at.
+// An empty secret disables token issuance and returns nil.
 func NodeToken(secret, nodeID string, at time.Time) []byte {
 	if secret == "" {
 		return nil
@@ -40,10 +32,10 @@ func NodeToken(secret, nodeID string, at time.Time) []byte {
 	return mac.Sum(nil)
 }
 
-// VerifyNodeToken reports whether token is a NodeToken for nodeID valid
-// around at: the current 10-second window plus the WindowSeconds span
-// behind it (plus one window for rounding), mirroring verifyAuthToken.
-// Rejects empty secrets, empty tokens, and non-32-byte tokens.
+// VerifyNodeToken reports whether token is valid for nodeID near at. It
+// checks the current 10-second time bucket and prior buckets covering
+// WindowSeconds plus one bucket for boundary rounding. Empty secrets and
+// tokens with the wrong length are rejected.
 func VerifyNodeToken(secret, nodeID string, token []byte, at time.Time) bool {
 	if secret == "" || len(token) != sha256.Size {
 		return false

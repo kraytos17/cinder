@@ -1,15 +1,12 @@
 // Package protocol implements the Cinder wire protocol v6 framing and the
 // request/response codecs.
 //
-// This is a byte-identical port of include/cinder/net/protocol.hpp and
-// src/net/protocol.cpp. docs/protocol.md is the specification; when this
-// package and the C++ implementation disagree, the C++ side wins until the
-// C++ tree is retired, and docs/protocol.md is updated to match.
-//
-// Wire summary: every message starts with a 7-byte header (magic 0xC1,
-// version 0x06, opcode, big-endian payload length), followed by the payload.
-// All multi-byte integers on the wire are big-endian. The total message is
-// bounded by MaxMessageSize (64 MiB).
+// Every frame starts with a 7-byte header (magic 0xC1, version 0x06, opcode,
+// big-endian payload length), followed by a payload whose multi-byte integers
+// are also big-endian. The total frame is bounded by MaxMessageSize (64 MiB).
+// The normative layout and compatibility requirements are in
+// docs/protocol.md is the normative layout; golden-vector, interoperability,
+// and fuzz tests cover this implementation.
 package protocol
 
 import (
@@ -22,7 +19,8 @@ import (
 	"github.com/kraytos17/cinder/internal/codec"
 )
 
-// Wire constants. Must stay in sync with the C++ K_* constants.
+// Wire constants for frame encoding and size limits. The opcode and field
+// layout is exercised by protocol_test.go and the codec fuzz tests.
 const (
 	Magic           = 0xC1
 	Version         = 0x06
@@ -47,8 +45,8 @@ const (
 	FlagTombstone    = 1 << 4
 )
 
-// Response flag bits. Bit 0 carries version metadata; the rest mirror the
-// request flags.
+// Response flag bits. Bit 0 carries version metadata; bit 1 indicates an
+// expiry, bit 2 trace context, and bit 4 a tombstone.
 const (
 	RespFlagVersionMeta = 1 << 0
 	RespFlagExpiresAt   = 1 << 1
@@ -59,8 +57,8 @@ const (
 // Opcode is a v6 request opcode (1-20). Response frames always carry 0x00.
 type Opcode uint8
 
-// Request opcodes for the v6 binary protocol (1-20). Members are
-// self-describing numeric codes; semantics live in docs/protocol.md.
+// Request opcodes for the v6 protocol. The wire numbers are stable; opcode
+// handling is implemented by the TCP server and client packages.
 const (
 	OpGet                Opcode = 1
 	OpSet                Opcode = 2
@@ -84,7 +82,7 @@ const (
 	OpCounterAntiEntropy Opcode = 20
 )
 
-// String mirrors the C++ opcode names for logs and test failures.
+// String returns the stable uppercase name used in logs and diagnostics.
 func (o Opcode) String() string {
 	switch o {
 	case OpGet:
@@ -151,7 +149,7 @@ const (
 	StatusCorruptData      Status = 10
 )
 
-// String mirrors cinder::Error::toString for logs and test failures.
+// String returns the stable status name used in logs and test failures.
 func (s Status) String() string {
 	switch s {
 	case StatusOK:
@@ -181,9 +179,8 @@ func (s Status) String() string {
 	}
 }
 
-// Error is a codec failure. Like the C++ side, every codec error carries
-// StatusInvalidArgument; the message matches the C++ error text so
-// cross-language debugging stays greppable.
+// Error is a codec failure. Codec errors carry StatusInvalidArgument; Msg
+// identifies the validation failure for logs and diagnostics.
 type Error struct {
 	Code Status
 	Msg  string
@@ -193,11 +190,11 @@ func (e *Error) Error() string { return "protocol: " + e.Msg }
 
 func errInvalid(msg string) error { return &Error{Code: StatusInvalidArgument, Msg: msg} }
 
-// Request is a decoded v6 request. TTL (relative, client form) and
-// ExpiresAt (absolute, replication form) are mutually exclusive in
-// practice but the codec accepts both, exactly like the C++ encoder.
-// A zero TTL means none (the old HasTTL bool was redundant: the wire
-// bit derives from TTL > 0).
+// Request is a decoded v6 request. TTL is a relative client-side duration;
+// ExpiresAt is an absolute deadline used when forwarding replicated data.
+// They are normally used separately, but the decoder accepts both fields.
+// A zero TTL means no relative expiry. The wire flags are derived from the
+// values, so callers cannot desynchronize a presence bit from its payload.
 type Request struct {
 	Opcode         Opcode
 	Key            []byte
@@ -235,8 +232,8 @@ type Response struct {
 	SpanID         uint64
 }
 
-// payloadAcc accumulates the payload size with overflow-safe saturation,
-// mirroring C++ addPayloadSize: both encoders share one budget invariant.
+// payloadAcc accumulates payload size with overflow-safe saturation so
+// both encoders enforce the same frame-size limit.
 type payloadAcc struct {
 	size uint64
 	ok   bool
@@ -374,11 +371,9 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	return w.Out(), nil
 }
 
-// DecodeRequest parses one complete v6 frame. It mirrors the C++ decoder's
-// lenient tail: trace/auth bytes gated by their flag bits but shorter than
-// the full field are silently ignored rather than rejected.
-// DecodeRequest parses one v6 request from its header and payload
-// without requiring the joined frame (see splitFrame).
+// DecodeRequest parses a v6 request from separate header and payload
+// buffers. Optional trace and authentication tails shorter than their full
+// fields are ignored.
 func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	var out DecodedRequest
 	rawOpcode, payload, err := splitFrame(header, payload)
@@ -467,8 +462,8 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		tid, _ := r.U64()
 		sid, _ := r.U64()
 		req.TraceID = tid
-		// Mirror the encoder (which gates span on trace_id != 0): a zero
-		// trace carries no span, so decode->encode->decode is a fixed point.
+		// The encoder gates span_id on trace_id != 0, keeping round trips
+		// stable when a frame contains a zero trace identifier.
 		if tid != 0 {
 			req.SpanID = sid
 		}
@@ -554,13 +549,10 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	return w.Out(), nil
 }
 
-// DecodeResponse parses one complete v6 response frame. Like the C++ side,
-// the flags byte is optional (absent on pre-v3 frames); the value consumes
-// all remaining bytes minus the trailing trace field, so has_val=1 with an
-// empty body decodes as present-but-empty rather than absent.
 // DecodeResponse parses one v6 response payload. The frame header carries
-// no response fields (opcode is always zero); callers validate it from
-// the staging buffer and decode only the payload, skipping the join.
+// no response fields (opcode is reserved as zero); callers validate it from
+// the staging buffer. The flags byte is optional for older frames. A
+// present-but-empty value remains distinguishable from an absent value.
 func DecodeResponse(payload []byte) (Response, error) {
 	var res Response
 	r := codec.NewReader(binary.BigEndian, payload)

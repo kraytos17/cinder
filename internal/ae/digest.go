@@ -19,7 +19,7 @@ func KeyHash(key string) uint64 {
 
 // EntryHash is the per-entry digest atom: XXH3 over the key, mixed with
 // the packed (version, flags) word and writer, then splitmix64-finalized.
-// Arithmetic wraps mod 2^64 exactly like the C++ unsigned arithmetic.
+// Arithmetic wraps modulo 2^64, as required by the digest format.
 func EntryHash(key string, versionAndTTL, writer uint64) uint64 {
 	h := xxh3.HashString(key)
 	h += 0x9E3779B97F4A7C15 + (versionAndTTL << 1) + versionAndTTL

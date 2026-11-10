@@ -1,10 +1,7 @@
-// Package repl implements quorum replication with hinted handoff (Go port).
-//
-// It mirrors ReplicationManager: async best-effort fan-out vs quorum
-// W = R/2+1 acknowledgement (local write counts), LWW-max quorum reads with
-// background repair, bounded hint queue with TTL, and singleflight read
-// coalescing. The C++ async callbacks become goroutine fan-out; completion
-// semantics are identical: async commits inline, quorum fails closed.
+// Package repl implements asynchronous and quorum replication, hinted
+// handoff, and quorum reads with LWW reduction and background repair.
+// Writes and reads fan out through a transport.Sender; concurrent reads
+// for the same key and quorum share one in-flight operation.
 package repl
 
 import (
@@ -19,8 +16,8 @@ import (
 	"github.com/kraytos17/cinder/internal/transport"
 )
 
-// Mode mirrors ConsistencyMode: async fans out best-effort, quorum waits
-// for W acknowledgements. See Async/Quorum for the contract.
+// Mode selects whether a write returns after local commit and best-effort
+// fan-out, or waits for quorum acknowledgements.
 type Mode int
 
 const (
@@ -30,8 +27,7 @@ const (
 	Quorum
 )
 
-// String renders the mode for logs and errors, mirroring the C++
-// ConsistencyMode names.
+// String returns the stable lowercase mode name used in logs.
 func (m Mode) String() string {
 	if m == Quorum {
 		return "quorum"
@@ -40,7 +36,7 @@ func (m Mode) String() string {
 }
 
 // Sentinel errors. Servers map ErrQuorum to NotReady and ErrNotFound to
-// NotFound, mirroring the C++ status contract.
+// NotFound, respectively.
 var (
 	ErrNotFound = errors.New("repl: key not found")
 	ErrQuorum   = errors.New("repl: quorum not reached")
@@ -50,17 +46,16 @@ var (
 // internal/transport); *client.Pool satisfies it.
 type Transport = transport.Sender
 
-// HintTTL bounds how long an undelivered write waits for its replica,
-// mirroring K_HINT_TTL (30s).
+// HintTTL bounds how long an undelivered write remains eligible for replay.
 const HintTTL = 30 * time.Second
 
-// ReplayBatch caps hints replayed per call (FIFO), mirroring K_REPLAY_BATCH.
+// ReplayBatch caps the number of FIFO hints considered by one replay call.
 const ReplayBatch = 256
 
 // HintQueue is a bounded FIFO of undelivered writes: 1024 slots and a
 // 64 MiB estimated-byte budget, drop-oldest past either bound. A newer
 // LWW stamp for the same (target, key) replaces the queued hint; an older
-// one is dropped. Expired hints are reaped on snapshot. Mirrors HintQueue.
+// one is dropped. Expired hints are reaped while taking a queue snapshot.
 type HintQueue struct {
 	mu      sync.Mutex
 	items   []Hint
@@ -90,8 +85,8 @@ func NewHintQueue() *HintQueue {
 	return &HintQueue{maxByte: defaultMaxByte}
 }
 
-// SetMaxBytes caps estimated bytes (drop-oldest past it). Restart-only in
-// C++; here it applies immediately to subsequent pushes.
+// SetMaxBytes caps estimated queued bytes, dropping the oldest entries as
+// needed. The new limit applies immediately to subsequent pushes.
 func (q *HintQueue) SetMaxBytes(n uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -170,8 +165,7 @@ func (q *HintQueue) Remove(id uint64) {
 	}
 }
 
-// RemoveMatch drops the first hint for (target, key, version), mirroring
-// the C++ DEL replay path.
+// RemoveMatch drops the first hint matching target, key, and version.
 func (q *HintQueue) RemoveMatch(target, key string, version uint64) {
 	q.mu.Lock()
 	defer q.mu.Unlock()

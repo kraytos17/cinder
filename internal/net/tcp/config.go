@@ -28,11 +28,9 @@ func (s *Server) ConfigureReplication(rf int, mode repl.Mode, m *repl.Manager) {
 	}
 }
 
-// ConfigureTLS enables TLS with a cert chain + key, optionally verifying
-// client certificates against a CA file. Mirrors the C++ --tls/--tls-cert/
-// --tls-key/--tls-ca wiring (TLS 1.2+, chain-only peer verification).
-// Call before Serve; it also flips the inter-node pool to TLS so gossip,
-// probes, replication, AE, and rebalance all speak TLS.
+// ConfigureTLS enables TLS with a certificate chain and key, optionally
+// requiring client certificates from the configured CA. Call before Serve;
+// it also enables TLS for inter-node pool connections.
 
 func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 	cfg, err := tlscfg.Server(certFile, keyFile, caFile)
@@ -46,8 +44,7 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 	pool := s.pool
 	s.ringMu.RUnlock()
 	if pool != nil {
-		// Inter-node connections present this node's own certificate,
-		// exactly like the C++ client context built from the same files.
+		// Inter-node connections present this node's own certificate.
 		ccfg, err := tlscfg.Client(certFile, keyFile, caFile)
 		if err != nil {
 			return err
@@ -60,9 +57,9 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 // ConfigureSecrets enables authentication: sharedSecret guards internal
 // replication opcodes with time-windowed node tokens, clientSharedSecret
 // guards client/admin opcodes (and the gRPC bearer) with the static client
-// token. Empty means open. Like C++, a client secret requires TLS (its
-// bearer is replayable), so call ConfigureTLS first when setting one;
-// the node secret needs no TLS.
+// token. Empty secrets leave their corresponding traffic class
+// unauthenticated. A static client bearer requires TLS; configure TLS
+// before setting clientSecret. Node tokens can be used without TLS.
 
 func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 	if clientSecret != "" {

@@ -1,18 +1,16 @@
-// Command cinder-cli is the Cinder command-line client (Go port).
+// Command cinder-cli sends cache and counter operations to a Cinder server.
 //
 // Usage: cinder-cli [--host H] [-p PORT] <command> [key] [value] [extra...]
 //
-//	[--ttl MS] [--client-secret S]
+// Flags include --ttl MS (set/mset), --client-secret, --verbose, and TLS
+// certificate options. CINDER_CLIENT_SECRET supplies the client secret when
+// the flag is omitted. Authenticated requests require TLS.
 //
-// Commands mirror tools/cinder_cli.cpp: get|set|del|ping|info|cluster|ring|
-// mget|mset|get-versioned, plus counter-incr|counter-decr|counter-get
-// (new surface: the retired C++ CLI never had counter commands; these
-// follow the existing output contract). Output formats are byte-identical
-// by design (tests assert them): values print raw, misses print
-// "(not found)", get-versioned appends LWW metadata, mget/mset print
-// "key: value" lines, counter-get prints the int64 value.
-// TLS flags are parsed for compatibility but rejected until the TLS
-// milestone lands.
+// Commands are get, set, del, ping, info, cluster, ring, mget, mset,
+// get-versioned, counter-incr, counter-decr, and counter-get. Values print
+// raw; misses print "(not found)"; versioned reads include LWW metadata;
+// multi-key commands print "key: value" lines. Output formats are covered
+// by CLI tests.
 package main
 
 import (
@@ -33,8 +31,8 @@ import (
 
 var version = "dev"
 
-// statusString mirrors cinder::toString(Errc): lowercase parenthesized
-// words, not the Go Status.String() CamelCase used in logs.
+// statusString formats protocol outcomes using the CLI's lowercase,
+// parenthesized status text.
 
 func statusString(s protocol.Status) string {
 	switch s {
@@ -92,9 +90,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&clientSecret, "client-secret", "", "Shared secret for client authentication (or CINDER_CLIENT_SECRET)")
 	fs.IntVar(&ttlMs, "ttl", 0, "TTL in ms (set/mset only)")
 	showVersion := fs.Bool("version", false, "print version and exit")
-	// Go's flag package stops parsing at the first positional, but
-	// `mset c 3 --ttl 60000` places the flag last (like the C++ CLI
-	// tests). Pre-extract --ttl/--ttl= so positionals can follow it.
+	// The flag package stops parsing at the first positional. Extract --ttl
+	// first so it can appear after mset positional arguments.
 	args, ttlStr, ttlErr := extractTTL(args)
 	if ttlErr != nil {
 		fmt.Fprintln(stderr, "error:", ttlErr)

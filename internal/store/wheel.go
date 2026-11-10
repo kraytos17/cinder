@@ -4,10 +4,10 @@ import (
 	"container/heap"
 )
 
-// Wheel is a TTL timer wheel: 256 short-term slots plus a min-heap for
-// long deadlines. Mirrors TtlWheel in include/cinder/store/ttl_wheel.hpp,
-// including drain-before-fire (a callback may re-insert into the same
-// wheel) and eager removal (the heap never retains dead ids).
+// Wheel schedules expirations with 256 short-term slots and a min-heap
+// for longer deadlines. Tick drains due slot IDs before invoking callbacks,
+// so callbacks may safely schedule work for a later tick. Remove eagerly
+// deletes heap entries, so the heap does not retain canceled IDs.
 //
 // Scheduling is by opaque integer id (the store's node index). All linkage
 // is index-addressed: no pointers, nothing for the GC to scan.

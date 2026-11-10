@@ -1,10 +1,15 @@
-// Command cinder-admin is the Cinder admin CLI (Go port).
+// Command cinder-admin sends administrative operations to a Cinder server.
 //
-// Usage: cinder-admin [--host H] [-p PORT] <command>
-// Commands mirror tools/cinder_admin.cpp:
-// info|cluster|ring|compact|config-reload|shutdown. A valued response
-// prints raw; a valueless OK prints "OK"; other statuses print the
-// lowercase C++ status word.
+// Usage: cinder-admin [--host H] [-p PORT] [--tls] [TLS options]
+// [--client-secret S] <command>
+//
+// Connection flags include --host, --port/-p, --tls and certificate paths,
+// and --client-secret. CINDER_CLIENT_SECRET supplies the client secret when
+// the flag is omitted.
+// Commands are info, cluster, ring, compact, config-reload, and shutdown.
+// Valued responses print their body followed by a newline; valueless success
+// prints "OK". Operation statuses use lowercase parenthesized text. Transport
+// and authentication failures are reported on stderr with a nonzero exit.
 package main
 
 import (
@@ -24,6 +29,7 @@ import (
 
 var version = "dev"
 
+// statusString formats protocol statuses for command-line output.
 func statusString(s protocol.Status) string {
 	switch s {
 	case protocol.StatusOK:

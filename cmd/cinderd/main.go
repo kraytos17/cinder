@@ -1,4 +1,4 @@
-// Command cinderd is the Cinder distributed cache server (Go port).
+// Command cinderd runs a Cinder cache node and its configured cluster services.
 package main
 
 import (
@@ -28,14 +28,13 @@ import (
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
 
-// version is the release tag, stamped by the build. Plain `go build`
-// leaves it "dev"; use -ldflags "-X main.version=X" for releases, or
-// rely on the build-info fallback below (module version + VCS revision
-// when built from a clean tree).
+// version is the release tag, optionally set with -ldflags
+// "-X main.version=X". When it remains "dev", buildVersion reports the
+// module version or VCS revision embedded by the Go toolchain when available.
 var version = "dev"
 
-// buildVersion reports the stamped version, falling back to the module
-// build info (and finally "dev") when no tag was stamped.
+// buildVersion reports the stamped version, then the module version, then
+// a short VCS revision, and finally "dev" when build metadata is unavailable.
 func buildVersion() string {
 	if version != "dev" {
 		return version
@@ -248,9 +247,8 @@ func main() {
 	// failures os.Exit, which would skip deferred calls).
 	var msrv *http.Server
 	var gw *grpcgw.Gateway
-	// Prometheus endpoint, mirroring C++ metrics_port (0 = disabled).
-	// Plain HTTP like the gRPC gateway pre-TLS: scrape behind the same
-	// firewall rules as the admin surface.
+	// Prometheus endpoint (0 = disabled). It is plain HTTP on the
+	// loopback listener; expose it only behind appropriate network controls.
 	if *metricsPort > 0 {
 		ml, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*metricsPort)))
 		if err != nil {
@@ -284,10 +282,7 @@ func main() {
 		gw = grpcgw.New(srv)
 		gw.SetClientSecret(clientSec)
 		if clientSec != "" {
-			// Gateway TLS follows the client secret (not --tls alone),
-			// mirroring C++: an authenticated gateway never serves
-			// plaintext. (ConfigureSecrets above already failed closed
-			// when --tls itself is off, so certs are present here.)
+			// An authenticated gateway never serves plaintext.
 			if err := gw.SetTLS(*tlsCert, *tlsKey); err != nil {
 				logger.Error().Err(err).Msg("grpc tls")
 				os.Exit(2)

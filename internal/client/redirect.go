@@ -9,9 +9,8 @@ import (
 	"github.com/kraytos17/cinder/internal/netport"
 )
 
-// RedirectTarget is a parsed ownership redirect: the owner id plus, when
-// the server knew it, a reachable address for nodes outside the client's
-// configured set. Mirrors parseRedirectTarget in cache_client.hpp.
+// RedirectTarget is a parsed ownership redirect: the owner ID and, when
+// available, a reachable address for the destination node.
 type RedirectTarget struct {
 	ID   string
 	Host string
@@ -23,8 +22,8 @@ func (t RedirectTarget) HasAddress() bool {
 	return t.Port != 0 && t.Host != ""
 }
 
-// ParseRedirect extracts the owner id from "moved to <id>[@host:port]",
-// or "" when value is not a redirect. Mirrors parseRedirect.
+// ParseRedirect extracts the owner ID from "moved to <id>[@host:port]".
+// It returns an empty string when value is not a redirect.
 func ParseRedirect(value string) string {
 	const prefix = "moved to "
 	if !strings.HasPrefix(value, prefix) {
@@ -37,8 +36,8 @@ func ParseRedirect(value string) string {
 	return rest
 }
 
-// ParseRedirectTarget parses the full redirect form, degrading id-only
-// when the address part is unparsable. Mirrors parseRedirectTarget.
+// ParseRedirectTarget parses the redirect form. If its optional address
+// is invalid, it returns the owner ID without an address.
 func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 	id := ParseRedirect(value)
 	if id == "" {

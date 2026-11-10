@@ -108,8 +108,8 @@ func TestCounterOwnership(t *testing.T) {
 }
 
 func TestCounterAntiEntropyNoManager(t *testing.T) {
-	// Standalone server has no AE manager: NotSupported, mirroring C++
-	// with a nil anti_entropy_.
+	// A standalone server has no AE manager, so counter anti-entropy is
+	// unsupported.
 	srv := tcp.NewServer("n1", 0, store.NewLRUStore(1<<20, nil), nil)
 	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAntiEntropy, Value: []byte("x")})
 	if res.Status != protocol.StatusNotSupported {

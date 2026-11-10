@@ -1,4 +1,4 @@
-// LFU eviction: per-shard frequency buckets, mirroring C++ LfuStore.
+// LFU eviction uses per-shard frequency buckets.
 //
 // Each shard maps frequency -> node indices in least-recently-incremented
 // order. A node's freqIdx tracks its position for O(1) swap-remove.
@@ -19,9 +19,9 @@ import (
 	"github.com/kraytos17/cinder/internal/sharding"
 )
 
-// freqInit plants a fresh node at frequency 1. Mirrors C++ insertNew's
-// freq setup (freq 1, appended to bucket 1). Caller holds sh.mu; the
-// caller must have already assigned sh.index[key] = idx.
+// freqInit places a new node at frequency 1, appending it to that
+// frequency's bucket. Caller holds sh.mu and has already assigned
+// sh.index[key] = idx.
 func (s *Store) freqInit(sh *shard, idx int) {
 	n := &sh.nodes[idx]
 	n.freq = 1
@@ -31,7 +31,7 @@ func (s *Store) freqInit(sh *shard, idx int) {
 
 // incrementFreq moves idx from its current frequency bucket to freq+1,
 // appending at the end (least-recently-incremented order within a
-// bucket). Mirrors C++ incrementFreq. Caller holds sh.mu.
+// bucket). Caller holds sh.mu.
 func (s *Store) incrementFreq(sh *shard, idx int) {
 	n := &sh.nodes[idx]
 	old := n.freq
@@ -43,7 +43,7 @@ func (s *Store) incrementFreq(sh *shard, idx int) {
 
 // removeFromFreqBucket unlinks idx from the given bucket via swap-remove,
 // fixing the swapped node's index. No-op when the bucket is gone.
-// Mirrors C++ removeFromFreqBucket. Caller holds sh.mu.
+// Caller holds sh.mu.
 func (s *Store) removeFromFreqBucket(sh *shard, idx int, freq uint64) {
 	vec, ok := sh.freqBuckets[freq]
 	if !ok {
@@ -65,8 +65,8 @@ func (s *Store) removeFromFreqBucket(sh *shard, idx int, freq uint64) {
 // lfuEvictOne removes the lowest-frequency live entry, scanning buckets
 // ascending and taking the first non-tombstone in
 // least-recently-incremented order. Returns bytes freed, or 0 when only
-// tombstones remain (their GC deadline reaps them instead). Mirrors C++
-// LfuStore::evictOne. Caller holds sh.mu.
+// tombstones remain (their GC deadline reaps them instead). Caller holds
+// sh.mu.
 func (s *Store) lfuEvictOne(sh *shard) uint64 {
 	var minFreq uint64
 	victim := -1
@@ -90,9 +90,9 @@ func (s *Store) lfuEvictOne(sh *shard) uint64 {
 	return 0
 }
 
-// RestoreFreq raises a resident's frequency to freq (snapshot recovery).
-// Never demotes: absent keys and newer residents keep their count, and it
-// is a no-op under LRUPolicy. Mirrors C++ restoreFreq.
+// RestoreFreq raises a resident's frequency during snapshot recovery.
+// It never demotes a node, ignores absent keys, and is a no-op under
+// LRUPolicy.
 func (s *Store) RestoreFreq(key string, freq uint64) {
 	if s.policy != LFUPolicy || freq <= 1 {
 		return

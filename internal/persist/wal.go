@@ -1,10 +1,6 @@
-// Package persist implements Cinder's on-disk formats (Go port): the WAL
-// ("WAL0", little-endian checksummed records) and snapshots ("CSNP").
-//
-// Files are byte-identical with the C++ writers, so a Go node can replay a
-// C++ WAL/snapshot and vice versa. docs: include/cinder/store/wal.hpp,
-// snapshot.hpp; AGENTS.md rule: the WAL buffer layout and checksums must
-// stay byte-identical (fuzz: wal, snapshot, store_put).
+// Package persist implements the WAL and snapshot formats used to recover
+// the in-memory store. Records use little-endian fields and XXH3 checksums;
+// format versions and layouts are covered by golden and fuzz tests.
 package persist
 
 import (
@@ -30,7 +26,7 @@ const (
 	maxU32 = uint64(1<<32 - 1)
 )
 
-// Op mirrors WalEntry::Op: the WAL record kind.
+// Op identifies the operation recorded in a WAL entry.
 type Op uint8
 
 const (
@@ -63,8 +59,7 @@ func recordSize(e Entry) (int, error) {
 }
 
 // appendRecord serializes one v2 record plus its XXH3 checksum onto buf.
-// The checksum covers exactly the on-disk record bytes, like the C++
-// encodeWalRecord.
+// The checksum covers exactly the encoded record bytes preceding it.
 func appendRecord(out []byte, e Entry) []byte {
 	start := len(out)
 	out = codec.Append(out, binary.LittleEndian, uint8(e.Op))
@@ -135,7 +130,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Probe the existing header like the C++ Append path.
+	// Validate the existing header before resuming append mode.
 	fi, err := f.Stat()
 	if err != nil {
 		f.Close()
@@ -186,9 +181,8 @@ func writeHeader(f *os.File) error {
 	return err
 }
 
-// Append encodes one record and lands it with a single write. Like C++
-// (O_APPEND, no userspace buffering), the bytes are in the kernel on
-// return; only OS-crash durability needs Sync.
+// Append encodes one record and writes it to the append-only WAL. Call
+// Sync when the caller requires the data to be flushed for crash durability.
 func (w *Writer) Append(e Entry) error {
 	buf, err := encodeRecord(e)
 	if err != nil {

@@ -5,9 +5,10 @@ replication (LWW versions), SWIM gossip membership, two-phase rebalance,
 periodic anti-entropy, checksummed WAL + atomic snapshots, small binary TCP
 protocol (v6) with gRPC gateway and TLS 1.2.
 
-Module: `github.com/kraytos17/cinder` (toolchain pinned to go1.27.3 in
-`go.mod`). The C++ tree was retired at M6; `docs/` retains the design
-reference and `cinder/v1/cache.proto` remains the gRPC source of truth.
+Module: `github.com/kraytos17/cinder` (Go 1.27; toolchain pinned to
+go1.27.3 in `go.mod`). The implementation is Go. `docs/` describes the
+architecture and wire/storage contracts; `cinder/v1/cache.proto` is the
+source for the gRPC API.
 
 ## Rules
 
@@ -16,41 +17,31 @@ reference and `cinder/v1/cache.proto` remains the gRPC source of truth.
   (WAL0/snapshot v2) keep their magic + XXH3 checksums byte-identical.
 - **Hot path stays pointer-light.** Flat `[]byte` slabs, integer handles,
   no pointer graphs in the store — the GC stays out of the way.
-- **Port tests first.** Every behavior mirrors a unit test case-for-case.
+- **Test behavior at its boundary.** Protocol, persistence, state-machine,
+  and CLI contracts have focused unit, integration, golden-vector, and fuzz
+  tests. Preserve documented wire and file-format invariants when changing
+  implementation details.
 
 ## Status
 
-- M0: skeleton, CI, lint — done.
-- M1: protocol v6 codec (`internal/net/protocol`) with byte-exact vectors
-  and fuzz targets — done.
-- M2: in-memory LRU store (`internal/store`: sharded LRU, TTL wheel,
-  LWW versions, tombstones, Lamport clock, mutation sink) — done.
-- M3: TCP server + client (`internal/net/tcp`, `internal/client`) — done.
-- M4a: ring (`internal/hashring`, XXH3-verified), cluster-aware server with
-  redirects, cluster client with redirect-following — done.
-- M4b: quorum replication, hints + replay, read repair with singleflight
-  (`internal/repl`), wired into server + `cinderd --replication-factor /
-  --consistency` — done.
-- M4c: membership, gossip, failure detection (`internal/cluster`),
-  ring-follows-alive wiring, graceful leave vs crash distinction — done.
-- M4d-1: WAL + snapshots + recovery (`internal/persist`), store hooks,
-  server restart/compact tests — done.
-- M4d-2: anti-entropy (`internal/ae`): digests, IBLT peel with
-  tombstone identity and P2 fallback, hint journal, full round driver with
-  server dispatch (opcodes 9/10) and tick loop — done.
-- M4d-3: two-phase rebalance (`internal/shard`): enumerate-then-send,
-  stay-and-push vs migrate-everywhere-and-drop-on-full-ack, quarantine
-  deferral with window retry, 200ms debounce on ring rebuild — done.
-- M5: TLS (`internal/tlscfg`, `--tls*` flags, client-auth), gRPC gateway
-  (`internal/grpcgw`, `--grpc-port`), `cinder-cli` + `cinder-admin`, and
-  benchmarks (`*_bench_test.go`, `just bench`) — done.
-- M6: 100% replacement — C++ tree retired, `go/` promoted to repo root,
-  CI cut over — done.
-- CRDT counters (`internal/counter`, opcodes 17–20): sharded PN-counter
-  store with byte-exact `CRDC`/`CAE1` codecs, owner-routed adjust/get,
-  best-effort merge fan-out, cursor-batched AE repair — done.
+- **Wire protocol:** v6 TCP framing, status/opcode mapping, auth tokens,
+  optional trace fields, and CRDT counter operations (17–20). See
+  [`docs/protocol.md`](docs/protocol.md).
+- **Storage:** sharded LRU/LFU cache, expiry wheel, LWW versions and
+  tombstones, plus WAL/snapshot recovery. See
+  [`docs/architecture.md`](docs/architecture.md) and
+  [`docs/rebalance.md`](docs/rebalance.md).
+- **Cluster:** consistent hashing, quorum replication, gossip membership,
+  failure detection, anti-entropy repair, hinted handoff, and ownership
+  rebalance.
+- **Interfaces:** `cinderd`, `cinder-cli`, `cinder-admin`, and the gRPC
+  gateway. The proto source is `cinder/v1/cache.proto`.
 
 ## Recipes
 
-From the repo root: `just build`, `just test`, `just vet`, `just fuzz`,
-`just bench`. Or `go ...` directly. `just verify` is the pre-push gate.
+From the repo root: `just build`, `just test`, `just test-race`, `just vet`,
+`just lint`, `just vuln`, `just fuzz`, `just proto-check`, and `just bench`.
+`just verify` is the local pre-push gate (format, vet, lint, race tests).
+GitHub Actions additionally checks vulnerability findings, module exactness,
+generated proto freshness, and runs the eight 20-second fuzz targets
+concurrently. The Go build/module caches are managed by `actions/setup-go`.

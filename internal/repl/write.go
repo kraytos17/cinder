@@ -17,8 +17,9 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// Manager coordinates writes to the primary plus replicas. The store is
-// the single version authority; every replica apply is idempotent LWW.
+// Write commits the value locally before sending it to replicas. Async
+// mode returns after the local commit; Quorum mode waits for the required
+// acknowledgements, including the local write.
 
 func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []string, mode Mode, traceID, spanID uint64) error {
 	version := m.local.MintVersion()
@@ -62,9 +63,9 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 	return err
 }
 
-// Delete tombstones locally, then fans out. Mirrors deleteAsync: a quorum
-// delete returns success to no one — a quorum holding the tombstone means
-// later reads observe the delete.
+// Delete commits a local tombstone before sending it to replicas. Quorum
+// mode succeeds only when enough replicas store the tombstone, so later
+// quorum reads observe the deletion.
 func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, spanID uint64) error {
 	version := m.local.MintVersion()
 	if err := m.local.RemoveVersioned(key, version, m.writer); err != nil {
@@ -109,8 +110,7 @@ type fanResult struct {
 }
 
 // fanOutAsync sends req to every replica concurrently and returns
-// immediately; failures enqueue hints in the background. Mirrors the C++
-// async path, where on_done runs inline after the local commit.
+// immediately. Failed sends enqueue hints for later replay.
 
 func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []string) {
 	if e := m.log().Debug(); e != nil {
@@ -212,9 +212,9 @@ func (m *Manager) enqueueHint(node string, req protocol.Request) {
 	})
 	if m.journal != nil {
 		m.journal.AppendAdd(h)
-		// Bound the file like C++ appendAdd does: past the record budget
-		// rewrite from the live snapshot. Synchronous (brief lock hold),
-		// so a long outage cannot grow hints.log without bound.
+		// Bound the journal: past the record budget, rewrite it from the
+		// live snapshot. Compaction is synchronous, so hints.log remains
+		// bounded during a prolonged outage.
 		if m.journal.NeedsCompaction() {
 			// Best-effort: failure leaves the old journal intact and
 			// the next enqueue retries.

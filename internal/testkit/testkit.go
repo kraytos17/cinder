@@ -1,11 +1,7 @@
-// Package testkit holds the fake transports shared by subsystem tests:
-// a scripted result replayer, a store-backed fake cluster, and a function
-// adapter. One canonical implementation replaces the four near-identical
-// fakes (repl, shard, ae journal, cluster script), which differed only in
-// counting-field names and tombstone edge handling; behavior here is the
-// repl fake's full semantics (Replicate/Hint with the tombstone fallback
-// path, GetVersioned, NotSupported otherwise), a superset the other
-// suites' tests also satisfy.
+// Package testkit provides transport doubles shared by subsystem tests: a
+// scripted result source, a store-backed fake cluster, and a function
+// adapter. Stores supports Replicate and Hint updates, GetVersioned reads,
+// and returns NotSupported for other opcodes.
 package testkit
 
 import (
@@ -90,7 +86,8 @@ func NewStores(nodes ...string) *Stores {
 	return ft
 }
 
-// Send routes one request to the node's store.
+// Send routes Replicate, Hint, and GetVersioned requests to the named
+// node's store. Other opcodes return StatusNotSupported.
 func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

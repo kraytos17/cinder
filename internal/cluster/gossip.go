@@ -160,8 +160,8 @@ func EncodeView(view []NodeInfo) string {
 	return b.String()
 }
 
-// ParseEntry parses one view entry; malformed input fails. The split
-// points mirror C++ parseEntry exactly: first '@', then sequential ':'.
+// ParseEntry parses one membership entry of the form
+// id@host:port:state:incarnation. Malformed fields return false.
 func ParseEntry(entry string, out *NodeInfo) bool {
 	idx := strings.Index(entry, "@")
 	if idx < 0 {
@@ -185,11 +185,8 @@ func ParseEntry(entry string, out *NodeInfo) bool {
 	out.ID = entry[:idx]
 	out.Host = entry[idx+1 : c1]
 	port, err := strconv.Atoi(entry[c1+1 : c2])
-	// Bounds mirror C++ parseEntry, including 0: a zero port is a
-	// legitimate "address unknown yet" rumor (Seed inserts peers with
-	// no address), so it must round-trip, not fail the entry. Strict
-	// validation lives in netport.ParsePort, used by the paths that
-	// actually dial (pool, redirects, --peers).
+	// Membership entries permit port 0 to represent a peer whose address
+	// is not yet known. Dial and redirect inputs use strict netport parsing.
 	if err != nil || port < 0 || port > 65535 {
 		return false
 	}

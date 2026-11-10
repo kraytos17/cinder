@@ -1,12 +1,9 @@
-// Package shard migrates keys when cluster membership changes (Go port).
-//
-// It mirrors ShardManager: after the ring is rebuilt every node enumerates
-// its local store and reconciles each key against its current replica set
-// (primary + RF-1 successors). A node still in the set keeps the key and
-// pushes copies to the other members; a node outside the set migrates the
-// key to the whole new set and drops its local copy only once every new
-// holder has acked. Retention is always safe; destruction on a stale ack
-// is not (Dynamo/Cassandra rule).
+// Package shard migrates keys when cluster membership changes. After a
+// ring rebuild, the manager snapshots local entries and reconciles each
+// key with its current replica set (primary plus RF-1 successors). Nodes
+// that remain in the set keep their copy and push updates to other members;
+// nodes removed from the set delete local data only after every new holder
+// acknowledges the migration.
 //
 // Two-phase design: enumerate first (LiveEntries is already a snapshot),
 // send after — the enumeration never sends, so no re-entrant deadlock.
@@ -15,7 +12,8 @@
 // keep the local copy and fire the migration-failed callback so the owner
 // can schedule a delayed re-rebalance; push failures are best-effort.
 //
-// Deliberate simplifications vs C++: no tracing spans.
+// The migration manager logs operational events and exposes metrics; it
+// does not add a tracing subsystem.
 package shard
 
 import (
@@ -187,9 +185,8 @@ func (m *Manager) Rebalance() bool {
 	return deferred > 0
 }
 
-// makeReplicateRequest builds the Replicate (opcode 6) request, carrying
-// the LWW identity plus the absolute expiry so TTLs converge across
-// replicas. Mirrors makeReplicateRequest.
+// makeReplicateRequest builds a Replicate request containing the entry's
+// LWW identity and absolute expiry so replicas use the same deadline.
 func makeReplicateRequest(key string, e store.Entry) protocol.Request {
 	req := protocol.Request{
 		Opcode:         protocol.OpReplicate,

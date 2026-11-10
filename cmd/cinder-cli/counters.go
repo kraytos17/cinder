@@ -1,8 +1,6 @@
 package main
 
-// Counter verbs: counter-incr, counter-decr, counter-get. New
-// surface (the retired C++ CLI never had counter commands); output
-// follows the existing contract, counter-get prints the int64 value.
+// Counter verbs: counter-incr, counter-decr, and counter-get.
 
 import (
 	"fmt"
@@ -13,9 +11,8 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// statusString mirrors cinder::toString(Errc): lowercase parenthesized
-// words, not the Go Status.String() CamelCase used in logs.
-
+// runCounterAdjust applies one increment or decrement and prints the
+// operation status.
 func runCounterAdjust(
 	dial func() (*client.Client, error),
 	key string, delta uint64, decrement bool,
@@ -40,8 +37,8 @@ func runCounterAdjust(
 	return 0
 }
 
-// runCounterGet decodes the PN-counter state and prints the int64 value;
-// a miss prints "(not found)" like get.
+// runCounterGet decodes and prints the counter value, or prints the status
+// when the key is absent or the operation fails.
 func runCounterGet(
 	dial func() (*client.Client, error),
 	key string,

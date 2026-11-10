@@ -9,17 +9,17 @@ import (
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
-// Aliases so Manager's CounterStore interface reads without a prefix.
-// BundleEntry is one CAE1 record: key plus its full counter state.
-// PNCounter is the merge-based increment/decrement counter.
+// Aliases expose counter package types used by the AE manager interface.
+// BundleEntry represents one serialized record; PNCounter stores positive
+// and negative per-actor components.
 type (
 	BundleEntry = counter.BundleEntry
 	PNCounter   = counter.PNCounter
 )
 
-// RunCounterRound runs one CRDT repair round against a replica partner.
-// Skipped when counter state is absent or partnerless, mirroring C++
-// runCounterRound (including the empty-store skip).
+// RunCounterRound exchanges counter state with one replica partner. It
+// skips work when the counter store is absent, empty, or no partner is
+// available.
 func (m *Manager) RunCounterRound(replicaFactor int) {
 	m.counterMu.Lock()
 	cs := m.counters
@@ -34,9 +34,8 @@ func (m *Manager) RunCounterRound(replicaFactor int) {
 	m.exchangeCounterState(partner)
 }
 
-// exchangeCounterState pushes a bounded batch to partner and merges the
-// reply, mirroring C++ exchangeCounterState. Transport and decode
-// failures are best-effort no-ops.
+// exchangeCounterState sends a bounded batch to partner and merges a valid
+// reply. Transport and decode failures leave local state unchanged.
 func (m *Manager) exchangeCounterState(partner string) {
 	m.counterMu.Lock()
 	cs := m.counters
@@ -72,11 +71,11 @@ func (m *Manager) exchangeCounterState(partner string) {
 	}
 }
 
-// EncodeCounterBatch encodes a bounded sorted-key batch starting after
-// the persistent cursor, advancing it. Empty selection still encodes the
-// header (count 0); over-budget-first-record or missing store yields nil,
-// mirroring C++ encodeCounterBatch (including the first-record-overflow
-// exception and the wrap-around scan).
+// EncodeCounterBatch encodes a sorted-key batch beginning after the saved
+// cursor, then advances the cursor. It returns a header-only empty bundle
+// when no records are selected; it returns nil if the store is absent, the
+// byte budget is too small, or the first record cannot fit. A later call
+// wraps the scan to keys before the cursor.
 func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 	m.counterMu.Lock()
 	defer m.counterMu.Unlock()
@@ -115,12 +114,11 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 	return counter.EncodeCounterBundle(selected)
 }
 
-// OnCounterAntiEntropy folds a bounded remote batch into the local store
-// and replies with the merged local batch, mirroring C++
-// onCounterAntiEntropy: oversize bundles are rejected, malformed ones
-// fail, capacity is preflighted against a staged copy before anything is
-// applied (all-or-nothing per batch), and the reply carries the merged
-// local state (itself bounded; the peer continues in later rounds).
+// OnCounterAntiEntropy merges a bounded remote batch and returns a bounded
+// local batch. It rejects oversized or malformed bundles and preflights
+// capacity using a staged store before applying any entries, so a batch is
+// accepted atomically. Peers continue exchanging remaining keys in later
+// rounds.
 func (m *Manager) OnCounterAntiEntropy(bundle []byte) (protocol.Status, []byte) {
 	m.counterMu.Lock()
 	cs := m.counters

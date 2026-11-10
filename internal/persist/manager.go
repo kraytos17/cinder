@@ -23,10 +23,10 @@ const (
 
 var nopLogger = log.Nop()
 
-// Manager owns one store's durability: WAL appends, snapshot + WAL replay
-// on startup, and compaction. It mirrors PersistenceManager's file layout
-// (wal.log, wal_<seq>.log, snapshot_<nanos>.dat, CURRENT) so files are
-// interchangeable with the C++ tree.
+// Manager owns persistence for one store: it appends mutations to the WAL,
+// replays snapshots and WAL records during recovery, and compacts the log.
+// Its directory contains wal.log, sealed wal_<seq>.log segments,
+// snapshot_<nanos>.dat files, and a CURRENT snapshot pointer.
 
 type Manager struct {
 	dir   string
@@ -45,9 +45,8 @@ type Manager struct {
 }
 
 // DefaultSnapshotInterval, DefaultMaxWALBytes, and DefaultMaxWALEntries
-// are the auto-compact triggers (C++ defaults: 60s snapshots, 64MiB WAL,
-// 10,000 WAL entries): periodic snapshots bound recovery replay, the
-// budgets bound the file. Zero disables that trigger.
+// control automatic compaction. Periodic snapshots bound recovery replay;
+// byte and record limits bound the active WAL. Zero disables a trigger.
 
 const (
 	DefaultSnapshotInterval = 60 * time.Second
@@ -92,8 +91,7 @@ func (m *Manager) SetMaxWALBytes(n uint64) {
 }
 
 // SetMaxWALEntries caps the active WAL record count past which
-// MaybeCompact fires (0 disables the count trigger, mirroring C++
-// max_wal_entries).
+// MaybeCompact fires (0 disables the count trigger).
 
 func (m *Manager) SetMaxWALEntries(n uint64) {
 	m.mu.Lock()

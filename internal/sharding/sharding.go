@@ -4,8 +4,8 @@
 // the seeds stay per-store (each store keeps its own placement), only
 // the rule and the hash application are shared.
 //
-// Shard placement is internal only — never on the wire — unlike the
-// ring positions and checksums where xxh3 stays byte-identical by law.
+// Shard placement is internal and never serialized. Ring positions and
+// persisted checksums use separate, format-defined hashing functions.
 package sharding
 
 import (

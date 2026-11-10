@@ -6,11 +6,9 @@ import (
 	"github.com/kraytos17/cinder/internal/expiry"
 )
 
-// Entry is a versioned cache record. Mirrors VersionedEntry in
-// include/cinder/common/types.hpp, with the bit-packing unpacked into
-// explicit fields. VersionAndTTL computes the packed identity
-// (version<<2 | has_ttl | tombstone<<1) the C++ side stores, so digests
-// and IBLT sketches stay compatible.
+// Entry is a cache value with LWW version metadata, an optional expiry,
+// and an optional tombstone. VersionAndTTL packs the version and flags
+// into the identity used by digests and IBLT sketches.
 type Entry struct {
 	Value          []byte
 	Version        uint64
@@ -22,9 +20,8 @@ type Entry struct {
 	Tombstone bool
 }
 
-// VersionAndTTL packs (version, flags) exactly like the C++
-// version_and_ttl field: bit 0 = has_ttl, bit 1 = tombstone,
-// bits 2-63 = version.
+// VersionAndTTL packs the entry identity: bit 0 indicates expiry, bit 1
+// indicates tombstone, and bits 2-63 contain the version.
 func (e Entry) VersionAndTTL() uint64 {
 	v := e.Version << 2
 	if !e.Expiry.IsNone() {

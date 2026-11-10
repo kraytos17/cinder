@@ -23,10 +23,9 @@ var fuzzViewSeeds = []string{
 	"a:b@c:d:e:f:g",
 }
 
-// FuzzGossipView feeds arbitrary strings to the view decoder. It must
-// never panic; every decoded view must re-encode to an identical view
-// (decode->encode->decode fixed point, mirroring the C++ parse model:
-// EncodeView is canonical on its accepted domain).
+// FuzzGossipView feeds arbitrary strings to the decoder. Decoding must not
+// panic, and every accepted entry must remain stable through
+// decode-encode-decode because EncodeView emits a canonical representation.
 func FuzzGossipView(f *testing.F) {
 	for _, seed := range fuzzViewSeeds {
 		f.Add(seed)

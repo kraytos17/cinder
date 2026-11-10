@@ -1,6 +1,6 @@
 // Package log builds the process logger: structured, leveled, JSON on
-// stderr. Levels mirror the C++ --log-level flag
-// (trace|debug|info|warn|error, default info), all native to zerolog.
+// stderr. Levels are trace, debug, info, warn, and error; info is the
+// default and all levels map directly to zerolog.
 //
 // Distributed correlation comes from trace_id/span_id fields: dispatch
 // attaches the request's wire IDs to a child logger, so every line in a

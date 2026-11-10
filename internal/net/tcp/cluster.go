@@ -155,8 +155,8 @@ type Peer struct {
 	Port netport.Port
 }
 
-// ParsePeers parses comma-separated "id@host:port" entries, mirroring the
-// C++ --peers flag (parsePeer). Empty input yields no peers.
+// ParsePeers parses comma-separated "id@host:port" entries. Empty input
+// yields no peers.
 
 func ParsePeers(s string) ([]Peer, error) {
 	if strings.TrimSpace(s) == "" {
@@ -270,8 +270,9 @@ func (s *Server) currentProbeInterval() time.Duration {
 	return s.probeInterval
 }
 
-// rebuildRingFromTable publishes the alive set as the ring. C++ rebuilds
-// from its membership snapshot the same way on every change.
+// rebuildRingFromTable publishes the current alive membership as a new ring
+// snapshot. It also refreshes peer addresses and schedules rebalance work
+// when the ring's membership changes.
 
 func (s *Server) rebuildRingFromTable() {
 	s.ringMu.RLock()
@@ -286,9 +287,8 @@ func (s *Server) rebuildRingFromTable() {
 	selfSeen := false
 	for _, m := range table.Snapshot() {
 		if m.ID != s.nodeID && m.Host != "" && pool != nil {
-			// Reachable addresses follow membership like C++ addAddr:
-			// replication fan-out, AE, and rebalance can all dial a
-			// joiner as soon as gossip delivers it.
+			// Learn addresses for newly joined peers so replication, AE, and
+			// rebalance can dial them as soon as gossip delivers their address.
 			pool.AddAddr(m.ID, m.Host, m.Port)
 		}
 		if m.State != cluster.Alive {

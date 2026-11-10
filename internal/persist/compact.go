@@ -48,6 +48,8 @@ func (m *Manager) MaybeCompact() bool {
 // synchronous, leaf-only, never calls back into the store. hardDelete
 // replays as a hard remove (migration cleanup must not resurrect markers).
 
+// Compact writes a snapshot, publishes its name in CURRENT, starts a fresh
+// active WAL, deletes sealed segments, and keeps the newest two snapshots.
 func (m *Manager) Compact() error {
 	live := m.store.LiveEntries()
 	var nextVersion uint64

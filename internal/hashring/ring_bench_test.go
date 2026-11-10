@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// BenchmarkRingGetNode mirrors bmRingGetNode: 4 nodes, 1024-key rotation,
-// vnode counts 50/150/300.
+// BenchmarkRingGetNode measures steady-state lookup across four nodes and
+// 1024 rotating keys at vnode counts 50, 150, and 300.
 func BenchmarkRingGetNode(b *testing.B) {
 	keys := make([]string, 1024)
 	for i := range keys {

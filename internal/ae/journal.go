@@ -21,7 +21,7 @@ import (
 // on open). Record framing: len u32 + XXH3 u64 + payload. ADD payload: op
 // u8=1, sys_expiry u64, target, key, value (+lengths), version, writer,
 // entry_expiry u64, tombstone u8. DEL payload: op u8=2, target, key,
-// version. Recovered ADDs always replay as Replicate (matching C++).
+// version. Recovered ADD records replay as Replicate requests.
 type Journal struct {
 	mu      sync.Mutex
 	f       *os.File
@@ -32,12 +32,12 @@ type Journal struct {
 const (
 	journalOpAdd = 1
 	journalOpDel = 2
-	// hintTTL mirrors repl.HintTTL for recovered hints.
+	// hintTTL is the lifetime assigned to recovered hints.
 	hintTTL = 30 * time.Second
 )
 
-// JournalCompactRecords bounds the journal: past it, the journal is
-// rewritten from the live queue (mirrors the C++ 4,096-record rule), so a
+// JournalCompactRecords bounds the journal: after this many records it is
+// rewritten from the live queue, so a
 // long outage with persistence on cannot grow the file without bound.
 const JournalCompactRecords = 4096
 

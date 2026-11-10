@@ -26,9 +26,8 @@ type Transport = transport.Sender
 var nopLogger = log.Nop()
 
 // Manager runs anti-entropy rounds: digest exchange, bucket refinement,
-// targeted sync. It mirrors AntiEntropyManager's protocol exactly; the
-// rehash is a plain full scan every round (no divert-while-scanning),
-// which is behaviorally identical.
+// and targeted synchronization. Each round rebuilds its digest by scanning
+// the current live store contents.
 
 type Manager struct {
 	store      *store.Store
@@ -70,8 +69,8 @@ func (m *Manager) SetCounterStore(s CounterStore) {
 	m.counters = s
 }
 
-// NewManager returns a manager. numBuckets 0 selects 256; fetchBytes 0
-// selects 1 MiB.
+// NewManager returns a manager. A zero numBuckets selects 256 buckets; a
+// non-positive fetchBytes selects a 1 MiB per-round transfer budget.
 
 func NewManager(st *store.Store, ring *hashring.Ring, self string, t Transport, numBuckets uint32, fetchBytes int) *Manager {
 	if numBuckets == 0 {
@@ -83,7 +82,7 @@ func NewManager(st *store.Store, ring *hashring.Ring, self string, t Transport, 
 	return &Manager{store: st, ring: ring, self: self, transport: t, numBuckets: numBuckets, fetchBytes: fetchBytes}
 }
 
-// SetHintJournal wires durable hint storage; implemented with journal.go.
+// SetHintJournal enables durable hint storage; nil disables journaling.
 
 func (m *Manager) SetHintJournal(j *Journal) {
 	m.journal = j
@@ -124,10 +123,9 @@ func (m *Manager) ComputeDigest() []uint64 {
 	return digest
 }
 
-// RunRound runs one initiator round against a replica partner and
-// returns the number of entries repaired locally. Transport and decode
-// failures are best-effort no-ops (0), mirroring the C++ fire-and-log
-// behavior.
+// RunRound runs one initiator round against a replica partner and returns
+// the number of entries repaired locally. Missing partners, transport
+// failures, and invalid replies leave state unchanged and return zero.
 
 func (m *Manager) RunRound(replicaFactor int) int {
 	partner, ok := m.PickPartner(replicaFactor)

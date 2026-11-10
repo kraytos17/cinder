@@ -49,11 +49,8 @@ func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector) {
 	}
 }
 
-// runAELoop runs anti-entropy plus counter repair every interval.
-// Counter repair rides the same tick, mirroring C++ CacheNodeServer
-// arming runCounterRound alongside runRound (skipped while the view is
-// degraded, same gate as below in spirit: partnerless rounds no-op
-// inside PickPartner).
+// runAELoop runs anti-entropy and counter repair on the same interval.
+// Managers with no eligible partner treat a round as a no-op.
 func (s *Server) runAELoop(mgr *ae.Manager) {
 	t := time.NewTimer(s.currentAEInterval())
 	defer t.Stop()
@@ -69,9 +66,8 @@ func (s *Server) runAELoop(mgr *ae.Manager) {
 	}
 }
 
-// runReplayLoop drains queued hints every interval. Best-effort like
-// C++ scheduleReplay: ticks that fire while the target is still down
-// fail silently and the next tick retries.
+// runReplayLoop retries queued hints every interval. Failed sends leave
+// hints queued for a later tick.
 func (s *Server) runReplayLoop(replMgr *repl.Manager) {
 	t := time.NewTimer(s.currentReplayInterval())
 	defer t.Stop()

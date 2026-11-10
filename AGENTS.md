@@ -45,10 +45,11 @@ protocol (v6) with gRPC gateway and TLS 1.2.
   GC-tuning signal); pass `-benchtime` for publishable numbers.
   Profiles: `just bench-cpu` / `just bench-mem` (`-alloc_space` +
   `-inuse_space` tops) / `just bench-trace` (see docs/profiling.md).
-* Fuzz: `just fuzz` (protocol codec fixed points, 20s each).
+* Fuzz: `just fuzz` runs all eight targets sequentially for local debugging;
+  CI runs the same targets concurrently at 20s each.
 * gRPC stubs: `just proto-generate` (buf via `go tool`, pinned plugins; see
-  `buf.gen.yaml`). `buf lint` gates the proto; CI also checks the stubs
-  are current.
+  `buf.gen.yaml`). `just proto-check` runs `buf lint`/generation and checks
+  the committed stubs are current.
 
 ## Tests (`go test ./...` is source of truth)
 
@@ -67,10 +68,10 @@ protocol (v6) with gRPC gateway and TLS 1.2.
 
 ## Lint gate (this is what CI enforces)
 
-* `gofmt -l .` empty, `go vet ./...` clean, `go tool golangci-lint run ./...`
-  clean (see `.golangci.yml`; exclusions carry their reasons), `go build ./...`,
-  `go test -race ./...` (goleak mains fail on leaked goroutines), plus
-  `go tool govulncheck ./...` and the eight 20s protocol fuzz targets.
+* CI (`.github/workflows/go.yml`) runs formatting, vet, lint, vulnerability
+  scan, proto/stub freshness, module exactness, build, race tests, and all
+  eight 20-second fuzz targets. Fuzz runs share the cached checks job and
+  execute concurrently. See that workflow for the exact ordering/setup.
 * Pre-commit hook (catches the cheap half before push):
   `just hooks-install` sets repo-local `core.hooksPath=.githooks`
   (`just hooks-run` runs the same checks manually). The hook checks staged

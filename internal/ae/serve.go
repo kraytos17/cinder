@@ -23,8 +23,8 @@ func (m *Manager) OnDigestRequest(value []byte) (protocol.Status, []byte) {
 	return protocol.StatusOK, EncodeResponse(resp)
 }
 
-// OnBucketRefinement answers bucket hashes plus metadata rows (small
-// buckets) or IBLT sketches (buckets with >= 32 rows).
+// OnBucketRefinement returns hashes and either explicit metadata rows or
+// an IBLT sketch for each requested bucket, depending on bucket size.
 
 func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 	req, ok := DecodeRefinement(value, m.numBuckets)

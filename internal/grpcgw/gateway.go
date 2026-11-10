@@ -1,22 +1,9 @@
-// Package grpcgw exposes the cache over gRPC (Go port of the C++ gateway).
-//
-// It mirrors CinderCacheServiceImpl RPC-for-RPC: OK maps to
-// STATUS_CODE_UNSPECIFIED (the proto uses 0 for success), Get/Set/Delete go
-// through the same TCP dispatch (ownership, replication), as do counter
-// adjust (owner-routed) and counter get (local-hit, redirect on miss).
-// GetVersioned reads the local store directly (tombstones and misses both
-// report NOT_FOUND, expiry always 0), MultiSet owner-checks then puts
-// locally without replication fan-out, and the admin RPCs return the same
-// JSON as the admin opcodes.
-//
-// Deliberate simplification: no trace-metadata propagation (no Go tracing
-// infra); every RPC returns gRPC OK with the outcome in the status field,
-// exactly like the C++ handlers on the success path. CounterMerge has no
-// RPC: it is inter-node replication traffic, like Replicate/Hint. Client auth is
-// enforced when configured (SetClientSecret): the C++
-// "authorization: Bearer <hex>" contract, UNAUTHENTICATED otherwise.
-// A secret refuses plaintext: pair it with SetTLS (same PEM chain + key
-// as the TCP server), mirroring the C++ gateway.
+// Package grpcgw exposes cache operations through the generated gRPC
+// service. Cache and counter operations use the TCP server's dispatch path
+// where applicable; admin RPCs return the JSON documents produced by the
+// admin protocol operations. Operation outcomes are carried in response
+// status fields. Client bearer authentication is optional; configuring a
+// client secret requires TLS.
 package grpcgw
 
 import (
@@ -37,8 +24,8 @@ import (
 	"github.com/kraytos17/cinder/internal/net/tcp"
 )
 
-// toProtoStatus mirrors the C++ toProtoStatus: protocol OK is the
-// UNSPECIFIED zero value; every other status maps 1:1 by meaning.
+// toProtoStatus maps an internal protocol status to its public protobuf
+// status code. Success maps to the proto's UNSPECIFIED zero value.
 func toProtoStatus(s protocol.Status) gen.StatusCode {
 	switch s {
 	case protocol.StatusOK:
@@ -133,7 +120,8 @@ func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest
 	out.Value = new(string(e.Value))
 	out.Version = e.Version
 	out.WriterNodeHash = e.WriterNodeHash
-	// Expiry intentionally always 0, mirroring the C++ handler.
+	// The protobuf response has no expiry field, so this RPC returns only
+	// the value and LWW version metadata.
 	return out, nil
 }
 
@@ -272,10 +260,9 @@ func (g *Gateway) SetClientSecret(secret string) {
 	g.svc.setClientSecret(secret)
 }
 
-// SetTLS serves gRPC over TLS with the given PEM chain + key, the same
-// files as the TCP server. Like C++, a configured client secret refuses
-// to serve over plaintext: call this whenever a secret is set. Call
-// before Serve.
+// SetTLS serves gRPC over TLS using the given certificate chain and key.
+// A configured client secret requires TLS because the bearer token is
+// reusable. Call before Serve.
 func (g *Gateway) SetTLS(certFile, keyFile string) error {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
@@ -290,8 +277,8 @@ func (g *Gateway) SetTLS(certFile, keyFile string) error {
 	return nil
 }
 
-// Serve blocks serving the gateway. Refuses to serve an authenticated
-// gateway over plaintext, mirroring the C++ startup check.
+// Serve blocks while serving the gateway. It refuses to serve over
+// plaintext when client authentication is configured.
 func (g *Gateway) Serve(lis net.Listener) error {
 	g.mu.Lock()
 	if g.serving {

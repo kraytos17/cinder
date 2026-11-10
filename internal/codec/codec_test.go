@@ -86,9 +86,9 @@ func TestBlobRoundTrip(t *testing.T) {
 	}
 }
 
-// TestWriterReaderParity checks the cursor against the manual pattern
-// (u32 length + raw bytes) the packages used before.
-func TestWriterReaderParity(t *testing.T) {
+// TestWriterReaderEncoding checks the cursor against the specified pattern
+// (u32 length + raw bytes).
+func TestWriterReaderEncoding(t *testing.T) {
 	order := binary.LittleEndian
 	var manual []byte
 	manual = order.AppendUint32(manual, uint32(len("target")))

@@ -13,8 +13,8 @@ import (
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
-// ErrCapacityExceeded rejects a lone entry bigger than its shard slice,
-// exactly like the C++ store (even when it would fit global capacity).
+// ErrCapacityExceeded rejects an entry larger than its destination
+// shard's capacity, even when it would fit the aggregate store capacity.
 
 func expiryTicks(expiresAt, at time.Time) uint64 {
 	rem := expiresAt.Sub(at)
@@ -88,10 +88,10 @@ func (s *Store) touch(sh *shard, idx int) {
 	s.linkHead(sh, idx)
 }
 
-// onAccess records a live read (Get) or an accepted overwrite for
-// victim ordering: MRU re-link under LRU, frequency increment under LFU.
-// GetVersioned intentionally never calls it in either policy, mirroring
-// the C++ read paths. Caller holds sh.mu.
+// onAccess records a live read (Get) or accepted overwrite for victim
+// ordering: MRU re-link under LRU, frequency increment under LFU.
+// GetVersioned deliberately does not affect eviction order. Caller holds
+// sh.mu.
 
 func (s *Store) onAccess(sh *shard, idx int) {
 	if s.policy == LFUPolicy {
@@ -138,8 +138,8 @@ func (s *Store) removeNode(sh *shard, idx int) uint64 {
 }
 
 // onEvictExpired runs on every node removal (expiry, eviction, hard
-// remove): a no-op under LRU, and the freq-bucket unlink under LFU.
-// Mirrors C++ onEvictExpired. Caller holds sh.mu.
+// remove): it is a no-op under LRU and unlinks the frequency bucket under
+// LFU. Caller holds sh.mu.
 
 func (s *Store) onEvictExpired(sh *shard, idx int) {
 	if s.policy == LFUPolicy {

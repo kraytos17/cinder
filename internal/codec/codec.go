@@ -12,9 +12,8 @@
 // per-width helpers into one function each, with the width taken from
 // the value's type.
 //
-// All output is byte-identical to the hand-rolled predecessors by
-// construction (same binary.Append/Uint calls in the same order); the
-// per-package golden and fuzz tests gate every migration.
+// Encodings use the specified byte order and append fields in wire order;
+// package golden-vector and fuzz tests verify the resulting formats.
 package codec
 
 import (

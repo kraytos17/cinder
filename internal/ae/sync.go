@@ -119,8 +119,8 @@ const metaRowBytes = 4 + 8 + 8 + 8 + 1
 
 // CollectMetadata encodes rows for buckets, filling bucket-atomically up
 // to maxBytes. Empty buckets still count as covered. Returns the blob and
-// the covered set, mirroring the C++ byte-budget rules including the
-// first-bucket-overflow exception.
+// the covered set. The first bucket may exceed maxBytes so that a bucket
+// larger than the budget can still make progress.
 
 func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []uint32) {
 	perBucket := m.CollectRows(bucketIDs)

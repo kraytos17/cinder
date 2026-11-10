@@ -1,8 +1,6 @@
-// Package tcp implements the Cinder v6 TCP server: framing, dispatch, and
-// connection lifecycle. It mirrors src/net/tcp (connection + server):
-// sequential request/response per connection, 30s idle timeout, 10k
-// connection cap, oversized frames closed, decode failures answered with
-// InvalidArgument, and trace IDs minted at the connection entry point.
+// Package tcp implements the Cinder v6 TCP server, including frame
+// handling, request dispatch, connection lifecycle, and cluster wiring.
+// Each connection processes one request-response exchange at a time.
 package tcp
 
 import (
@@ -28,9 +26,8 @@ import (
 )
 
 const (
-	// connBufferSize bounds one connection's staged frame, like C++
-	// TcpConnection::K_BUFFER_SIZE. Larger payloads close the connection;
-	// bulk transfer is the client's job, not the server's.
+	// connBufferSize bounds the header-plus-payload staging allowed for one
+	// connection. Larger frames are rejected; bulk transfer is not supported.
 	connBufferSize = 1 << 20
 	// maxConnections caps concurrent clients; beyond it new sockets are
 	// rejected instead of buffering unbounded descriptors.
@@ -73,25 +70,21 @@ func (l noDelayListener) Accept() (net.Conn, error) {
 // without SetLogger. Disabled level: every event is nil, nothing emits.
 var nopLogger = log.Nop()
 
-// Server is a v6 TCP server. Without ConfigureCluster it owns every key
-// (standalone). With a cluster view, writes route by ring ownership and
-// non-owners answer NotReady with a "moved to" redirect, mirroring
-// TcpConnection::checkWriteOwnership; local hits still serve reads.
-// Auth is open: with no secrets configured every opcode class is allowed,
-// mirroring the C++ no-secret behavior.
+// Server accepts v6 TCP requests and dispatches them to the local store or
+// configured cluster managers. Without ConfigureCluster it is standalone;
+// with membership configured, writes are ownership-routed and non-owners
+// return NotReady redirects. Authentication is disabled when no secrets
+// are configured.
 type Server struct {
 	store  *store.Store
 	nodeID string
 	port   int
 	clock  store.Clock
-	// counters holds CRDT state beside the LWW store, always on like C++
-	// (no flag, no CLI surface). Sized at a quarter of the LWW capacity,
-	// mirroring counterCapacity.
+	// counters holds CRDT counter state separately from the LWW cache. Its
+	// initial capacity is one quarter of the LWW store's capacity.
 	counters *counter.Store
-	// met is the observability collector, always on like C++ (no
-	// flag; the /metrics endpoint gates exposure, not recording).
-	// Wired into the store, replication, AE, gossip, FD, and
-	// rebalance managers where configured.
+	// met records observability data regardless of whether the /metrics
+	// endpoint is enabled. It is wired into configured subsystem managers.
 	met *metrics.Collector
 	// logger is the operational logger (default Nop; cinderd installs
 	// the --log-level logger via SetLogger). Request lines carry the
@@ -126,9 +119,8 @@ type Server struct {
 	gossipInterval time.Duration
 	probeInterval  time.Duration
 	suspectTimeout time.Duration
-	// replayInterval is the hint-replay tick period. Like C++ scheduleReplay
-	// (~1s): hints queue on failed fan-out and drain on this cadence once
-	// their target is reachable again.
+	// replayInterval controls how often queued hints are retried after
+	// failed replica sends.
 	replayInterval time.Duration
 
 	replMu sync.RWMutex
@@ -145,8 +137,7 @@ type Server struct {
 
 	// Rebalance on membership change. Every ring rebuild schedules one
 	// debounced scan; quarantine deferrals and migration failures
-	// reschedule through the same gate, mirroring CacheNodeServer's
-	// scheduleRebalanceDebounced/scheduleRebalance/scheduleMigrationRetry.
+	// reschedule through the same debounce gate.
 	shardMu            sync.Mutex
 	shard              *shard.Manager
 	quarantineInterval time.Duration
@@ -160,17 +151,16 @@ type Server struct {
 	persist   *persist.Manager
 }
 
-// ConfigureReplication attaches the replication manager used when the
-// replica factor exceeds 1. With RF=1 (or nil manager) every op stays
-// local, mirroring CacheOperations' replica_factor_ checks.
+// NewServer returns a server backed by st. A nil clock selects the system
+// clock; the counter store is initialized with one quarter of the cache
+// store's capacity.
 
 func NewServer(nodeID string, port int, st *store.Store, clock store.Clock) *Server {
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
-	// Counter budget is a quarter of the LWW capacity, mirroring C++
-	// counterCapacity. Zero LWW capacity still yields a usable minimum:
-	// the counter store clamps to one shard regardless.
+	// The counter store starts with one quarter of the LWW capacity. Its
+	// shard count is clamped to at least one, including for zero capacity.
 	counterCap := st.Capacity() / 4
 	srv := &Server{
 		store:          st,
@@ -194,10 +184,10 @@ func NewServer(nodeID string, port int, st *store.Store, clock store.Clock) *Ser
 	return srv
 }
 
-// ConfigureRebalance creates the shard manager over the live ring, pool,
-// and membership table. Call after ConfigureCluster (and
-// ConfigureReplication for the replica factor). A zero quarantine
-// disables the warming deferral, mirroring --quarantine-interval 0.
+// ConfigureRebalance creates the shard manager using the configured ring,
+// pool, and membership table. ConfigureCluster and ConfigureReplication
+// must be called first. A zero quarantine interval disables warming
+// deferrals.
 
 func (s *Server) Serve(l net.Listener) error {
 	s.tlsMu.RLock()

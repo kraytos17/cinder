@@ -1,7 +1,7 @@
-// Wire codecs for the state-based CRDT counters: byte-exact ports of
-// cinder/store/crdt_counter.hpp (CRDC bodies) and the CAE1 bundle in
-// src/node/anti_entropy/core.cpp. Network byte order is big-endian on
-// both sides, matching internal/net/protocol.
+// Binary encodings for the state-based counters. CRDC stores GCounter and
+// PNCounter state; CAE1 bundles counter states for anti-entropy transfer.
+// All integers use big-endian byte order, matching the counter payloads in
+// internal/net/protocol.
 //
 // Layouts:
 //
@@ -25,7 +25,8 @@ import (
 	"github.com/kraytos17/cinder/internal/codec"
 )
 
-// Magic and kind bytes, mirroring K_CRDT_COUNTER_MAGIC and friends.
+// Magic and kind values identify the CRDC counter encoding and CAE1
+// anti-entropy bundle.
 const (
 	MagicCRDC     uint32 = 0x43524443 // "CRDC"
 	MagicCAE1     uint32 = 0x43414531 // "CAE1"

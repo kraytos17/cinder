@@ -1,9 +1,9 @@
-// Package counter implements state-based CRDT counters (Go port of
-// cinder/store/crdt_counter.hpp): GCounter and PNCounter with merge-based
-// convergence. All types are pure in-memory math (no I/O, no clocks, no
-// locks); storage, replication, and anti-entropy apply merge() explicitly
-// so concurrent updates survive regardless of delivery order — LWW would
-// drop concurrent increments.
+// Package counter implements grow-only and increment/decrement counters
+// using state-based CRDTs. Counter values are computed from per-actor
+// components; merging takes component-wise maxima so independently made
+// updates converge regardless of delivery order. This package contains
+// counter math; storage, replication, and anti-entropy are provided by
+// their respective packages.
 //
 // Actor identity is the caller's responsibility: pass a stable per-node ID.
 // A restart that mints a fresh identity orphans its old components, growing
@@ -21,7 +21,7 @@ import (
 var ErrInvalidActor = errors.New("counter: empty actor")
 
 // ErrOverflow reports a component increment that would wrap uint64. The
-// store maps it to.ErrCapacityExceeded, mirroring C++.
+// counter store maps this to ErrCapacityExceeded when enforcing its budget.
 var ErrOverflow = errors.New("counter: component overflow")
 
 // GCounter is a grow-only counter: one monotonic component per actor, value
@@ -108,10 +108,9 @@ func (g GCounter) Equal(other GCounter) bool {
 	return true
 }
 
-// Clone deep-copies the component map. Struct copies share maps, so
-// every store insert/read path clones (mirroring C++ std::map copy
-// semantics); without this, Merge would mutate the resident before the
-// capacity check and growth would always compute as zero.
+// Clone deep-copies the component map because ordinary struct copies share
+// maps. Store operations use this to evaluate a merge before committing it
+// and updating capacity accounting.
 func (g GCounter) Clone() GCounter {
 	if len(g.components) == 0 {
 		return GCounter{}

@@ -25,9 +25,8 @@ func listenTCP(t *testing.T) net.Listener {
 	return l
 }
 
-// tlsServer starts a node with the fixture certificate (no client-cert
-// verification) and the given secrets. TLS is required to configure a
-// client secret, mirroring the C++ startup gate.
+// tlsServer starts a node with the fixture certificate, optional secrets,
+// and no client-certificate verification.
 func tlsServer(t *testing.T, id string, shared, clientSecret string) (string, *tcp.Server) {
 	t.Helper()
 	fx := fixturesDir(t)

@@ -97,7 +97,8 @@ func startAuthedGateway(t testing.TB, secret string) gen.CinderCacheServiceClien
 	return c
 }
 
-// bearerCtx attaches "Bearer <hex(client-token)>" like a C++ client would.
+// bearerCtx attaches the client token using the gateway authorization
+// metadata format.
 func bearerCtx(secret string) context.Context {
 	return metadata.NewOutgoingContext(context.Background(),
 		metadata.Pairs("authorization", "Bearer "+hex.EncodeToString(auth.ClientToken(secret))))
@@ -267,7 +268,7 @@ func TestGatewaySetWithTTL(t *testing.T) {
 	}
 	ver, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "ttl-key"})
 	if err != nil || ver.Status != OK || ver.GetExpiresAtMs() != 0 {
-		t.Fatalf("versioned ttl key must hide expiry (C++ parity): %+v %v", ver, err)
+		t.Fatalf("versioned response should omit expiry: %+v %v", ver, err)
 	}
 }
 
@@ -300,9 +301,9 @@ func contains(s, sub string) bool {
 }
 
 func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
-	// Two peered nodes RF=1: a gateway Set/MultiSet for a foreign key
-	// reports NOT_READY, mirroring the C++ ownership gate (and TCP
-	// redirects). Rings are complete from static seeding, no gossip wait.
+	// Two peered nodes with RF=1: a gateway Set/MultiSet for a key owned
+	// by the other node reports NOT_READY. Static seeding constructs the
+	// complete rings before requests begin, so no gossip wait is needed.
 	type node struct {
 		srv  *tcp.Server
 		gw   *grpcgw.Gateway
@@ -384,7 +385,7 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 	}
 }
 
-// cppGrpcBinary locates a gRPC-enabled C++ build, skipping when absent.
+// cppGrpcBinary locates an optional gRPC interoperability server binary.
 // Prefers tls-grpc (verified working); falls back to debug-grpc, which may
 // be stale (undefined abseil symbols) until rebuilt.
 func cppGrpcBinary(t testing.TB) string {
@@ -403,12 +404,12 @@ func cppGrpcBinary(t testing.TB) string {
 			return p
 		}
 	}
-	t.Skip("no gRPC C++ cinderd under build/{tls-grpc,debug-grpc}")
+	t.Skip("no optional gRPC interoperability server under build/{tls-grpc,debug-grpc}")
 	return ""
 }
 
-// TestInteropGoClientCppGrpcServer runs the Go gRPC client against a real
-// C++ gRPC gateway: the status mapping and framing must agree both ways.
+// TestInteropGoClientCppGrpcServer checks status mapping and RPC behavior
+// between the Go client and an optional interoperability server binary.
 func TestInteropGoClientCppGrpcServer(t *testing.T) {
 	bin := cppGrpcBinary(t)
 	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
@@ -443,7 +444,7 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 			conn.Close()
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("C++ gRPC gateway did not become ready")
+			t.Fatal("gRPC interoperability server did not become ready")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -471,8 +472,7 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 	}
 }
 
-// fixturesDir locates the repo's tests/fixtures (shared with the C++ TLS
-// suite).
+// fixturesDir locates the committed certificate fixtures used by TLS tests.
 func fixturesDir(t testing.TB) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
@@ -486,8 +486,7 @@ func fixturesDir(t testing.TB) string {
 	return dir
 }
 
-// tlsClientConfig builds client credentials chaining to the fixture CA,
-// mirroring tlscfg.Client's chain-only verification.
+// tlsClientConfig builds client credentials trusting the fixture CA.
 func tlsClientConfig(t testing.TB, caPath string) credentials.TransportCredentials {
 	t.Helper()
 	pem, err := os.ReadFile(caPath)
@@ -501,8 +500,8 @@ func tlsClientConfig(t testing.TB, caPath string) credentials.TransportCredentia
 	return credentials.NewTLS(&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
 }
 
-// startTLSGateway serves the gateway over TLS; secret "" means no bearer
-// check (mirroring C++: TLS alone does not imply auth).
+// startTLSGateway serves the gateway over TLS. An empty secret leaves
+// bearer authentication disabled; TLS alone does not enable it.
 func startTLSGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
 	t.Helper()
 	fx := fixturesDir(t)
@@ -622,9 +621,8 @@ func TestGatewayTLSWithBearer(t *testing.T) {
 	}
 }
 
-// TestInteropGoClientCppGrpcTLSAuth runs the Go TLS+gRPC client with a
-// bearer against a C++ gateway with the same client secret (skips without
-// a gRPC-enabled C++ build, like the other interop cases).
+// TestInteropGoClientCppGrpcTLSAuth checks TLS and bearer authentication
+// between the Go client and an optional interoperability server binary.
 func TestInteropGoClientCppGrpcTLSAuth(t *testing.T) {
 	fx := fixturesDir(t)
 	bin := cppGrpcBinary(t)
@@ -663,7 +661,7 @@ func TestInteropGoClientCppGrpcTLSAuth(t *testing.T) {
 			conn.Close()
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("C++ TLS+auth gateway did not become ready")
+			t.Fatal("TLS+auth interoperability gateway did not become ready")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -720,7 +718,7 @@ func TestGatewayCounterAuthDenied(t *testing.T) {
 	}
 }
 
-// TestGatewayWithServerSecretsEnforced mirrors real cinderd wiring: the
+// TestGatewayWithServerSecretsEnforced exercises production server wiring: the
 // server itself enforces the client secret (ConfigureSecrets) and the
 // gateway carries the same secret. Gateway RPCs must still succeed — the
 // gateway forwards its verified bearer so server-side policy (ownership,

@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// BenchmarkWalAppendSequential mirrors bmWalAppendSequential: fresh writer
-// per iteration, N records each (256 B values like the C++ bench).
+// BenchmarkWalAppendSequential measures writing N 256-byte records to a
+// fresh WAL writer on each benchmark iteration.
 func BenchmarkWalAppendSequential(b *testing.B) {
 	for _, n := range []int{8, 64, 512} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {
@@ -34,7 +34,8 @@ func BenchmarkWalAppendSequential(b *testing.B) {
 	}
 }
 
-// BenchmarkWalAppendBatch mirrors bmWalAppendBatch (group commit).
+// BenchmarkWalAppendBatch measures encoding and appending a batch of WAL
+// records with one batch operation.
 func BenchmarkWalAppendBatch(b *testing.B) {
 	for _, n := range []int{8, 64, 512} {
 		b.Run(fmt.Sprintf("n=%d", n), func(b *testing.B) {

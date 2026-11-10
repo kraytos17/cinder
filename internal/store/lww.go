@@ -1,11 +1,8 @@
 package store
 
-// LWWOrder orders two stamps: less, equal, or greater. It is shared by
-// every convergence path (store apply, quorum reads, anti-entropy,
-// hints, read repair), mirroring compareLww in
-// include/cinder/common/types.hpp: version, then writer hash, then a
-// contradictory tombstone bit resolving tombstone-wins so replicas
-// converge instead of disagreeing by arrival order.
+// LWWOrder is the ordering result for two versioned stamps. Comparison uses
+// version first, writer hash second, and makes a tombstone win an otherwise
+// identical tie so replicas converge regardless of arrival order.
 type LWWOrder int
 
 const (
@@ -29,7 +26,8 @@ func (o LWWOrder) String() string {
 	}
 }
 
-// Stamp is the (version, writer, tombstone) identity of an entry.
+// Stamp is the (version, writer, tombstone) identity used to compare
+// versioned entries across reads, replication, hints, and anti-entropy.
 type Stamp struct {
 	Version   uint64
 	Writer    uint64

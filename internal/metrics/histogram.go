@@ -5,11 +5,10 @@ import (
 	"sync/atomic"
 )
 
-// Histogram is a lock-free log2-bucketed latency histogram, mirroring C++
-// LatencyHistogram: bucket i counts samples with duration in
-// [2^i, 2^(i+1)) ns; the last bucket also absorbs everything above it.
-// Percentiles are estimated from cumulative bucket counts (bucket upper
-// bounds, matching C++ exactly).
+// Histogram is a lock-free log2-bucketed latency histogram. Bucket i counts
+// samples in [2^i, 2^(i+1)) nanoseconds; the last bucket also absorbs larger
+// values. Percentiles are estimates from cumulative bucket counts and report
+// the selected bucket's upper bound.
 type Histogram struct {
 	buckets [numBuckets]atomic.Uint64
 	count   atomic.Uint64
@@ -38,9 +37,9 @@ func (h *Histogram) Count() uint64 { return h.count.Load() }
 // SumNs returns the total nanoseconds recorded.
 func (h *Histogram) SumNs() uint64 { return h.totalNs.Load() }
 
-// Percentile estimates the q latency in ns (bucket upper bound), or 0 when
-// empty. Mirrors C++ percentile: target = q*count + 1, first bucket whose
-// cumulative count reaches it; the top bucket reports ~0 (infinity).
+// Percentile estimates the q latency in nanoseconds (the selected bucket's
+// upper bound), or 0 when empty. It selects the first bucket whose cumulative
+// count reaches uint64(q*count)+1; the top bucket reports MaxUint64.
 func (h *Histogram) Percentile(q float64) uint64 {
 	c := h.count.Load()
 	if c == 0 {

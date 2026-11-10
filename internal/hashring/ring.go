@@ -1,15 +1,8 @@
-// Package hashring is a consistent-hash ring with virtual nodes (Go port).
-//
-// Behavior mirrors include/cinder/hashing/consistent_hash_ring.hpp
-// case-for-case, including the XXH3 vnode/key hashes, so Go and C++ nodes
-// assign every key to the same owner. Vendor-neutral reimplementation of
-// the hash (github.com/zeebo/xxh3, verified byte-identical against the
-// C++ XXH3 oracle) keeps this dependency-light and portable.
-//
-// Reads are lock-free over copy-on-write immutable snapshots; mutators
-// CAS-publish, so concurrent readers and writers merge instead of losing
-// updates. Load cells are shared across snapshots, so in-flight counts
-// survive membership changes.
+// Package hashring implements a consistent-hash ring with virtual nodes.
+// XXH3 hashes keys and vnode identities. Ring reads use immutable snapshots;
+// mutations serialize and publish new snapshots atomically. Per-node load
+// counters are shared between snapshots so in-flight counts survive
+// membership changes.
 package hashring
 
 import (
@@ -29,7 +22,8 @@ const (
 	MaxPhysicalNodes = 65_536
 	// MaxReplicas bounds GetNodes fan-out.
 	MaxReplicas = 32
-	// DefaultVNodes matches the C++ default and the admin ring JSON.
+	// DefaultVNodes is the default virtual-node count and is reported by the
+	// admin ring response.
 	DefaultVNodes = 150
 )
 
@@ -258,8 +252,8 @@ func (r *Ring) GetNode(key string) string {
 }
 
 // GetNodes returns up to n distinct owners walking clockwise from key's
-// position, wrapping at most once. Fewer than n come back when fewer
-// nodes are alive; the ring truly never fabricates members.
+// position, wrapping at most once. It returns fewer than n when the ring
+// contains fewer nodes.
 func (r *Ring) GetNodes(key string, n int) ([]string, error) {
 	if n <= 0 || n > MaxReplicas {
 		return nil, ErrInvalidReplicaCount
@@ -335,8 +329,8 @@ func (r *Ring) GetNodeBounded(key string) string {
 	}
 }
 
-// IncrementLoad records one in-flight request against node; unknown nodes
-// are ignored, matching the C++ miss semantics.
+// IncrementLoad records one in-flight request against node. Unknown nodes
+// are ignored.
 func (r *Ring) IncrementLoad(node string) {
 	snap := r.snap.Load()
 	if idx := indexOf(snap.nodes, node); idx >= 0 {

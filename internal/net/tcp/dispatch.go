@@ -33,8 +33,8 @@ func (s *Server) DispatchWithAuth(req protocol.Request, token []byte) protocol.R
 	return s.dispatch(req, token)
 }
 
-// opcodeClass mirrors TcpConnection::classifyOpcode: client opcodes are
-// ring-routed, replication and admin opcodes address this node directly.
+// opcodeClass categorizes requests so authentication and ownership routing
+// can depend on whether traffic is client, replication, or admin traffic.
 
 type opcodeClass int
 
@@ -49,14 +49,9 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 	case protocol.OpReplicate, protocol.OpHint, protocol.OpGossip,
 		protocol.OpAntiEntropyDigest, protocol.OpAntiEntropySync,
 		protocol.OpCounterAntiEntropy, protocol.OpCounterMerge:
-		// CounterMerge rides here, not with the other counter opcodes:
-		// it is internal replication traffic (full-state fan-out), so it
-		// takes the node token and skips the ownership redirect. C++
-		// classifyOpcode leaves it in Client class, which would redirect
-		// every merge sent to a non-owner replica and silently break
-		// counter replication; the C++ TLS test ("Counter state merge
-		// is internal replication traffic ... requires the node token")
-		// states the intent this follows.
+		// CounterMerge is full-state replication traffic: it requires the
+		// node token and bypasses ownership redirects, so each replica can
+		// accept the merge.
 		return classReplication
 	case protocol.OpAdminInfo, protocol.OpAdminCluster, protocol.OpAdminRing,
 		protocol.OpAdminCompact, protocol.OpAdminConfigReload, protocol.OpAdminShutdown:
@@ -66,12 +61,12 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 	}
 }
 
-// checkAuth mirrors TcpConnection::checkAuth: node tokens guard internal
-// replication opcodes when a shared secret is set; the static client token
-// guards client opcodes and (preferentially) admin opcodes when a client
-// secret is set. Anything unconfigured is open. A node token is accepted
-// for the local id or any alive peer id: senders mint with their own id,
-// and verifying only self would deny every cross-node send.
+// checkAuth validates credentials according to opcode class. Internal
+// replication requires a node token when node auth is configured; client
+// operations require a client token when client auth is configured. Admin
+// operations prefer client auth, then node auth. Unconfigured auth is open.
+// Node tokens are accepted for this server or any alive member because a
+// sender mints its token using its own node ID.
 
 func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 	s.authMu.RLock()
@@ -148,8 +143,8 @@ func (s *Server) ownerOf(key string) string {
 	return s.nodeID
 }
 
-// redirectTo builds the "moved to" value, appending @host:port when a
-// reachable address is known, mirroring redirectValue.
+// redirectTo builds a "moved to" response value and appends @host:port
+// when membership has a reachable address for the owner.
 
 func (s *Server) redirectTo(owner string) string {
 	var value strings.Builder
@@ -174,8 +169,8 @@ func (s *Server) notReady(owner string) protocol.Response {
 	return protocol.Response{Status: protocol.StatusNotReady, HasValue: true, Value: []byte(s.redirectTo(owner))}
 }
 
-// mintTrace assigns entry-point trace context, mirroring the C++
-// connection: one atomic add mints both IDs, trace takes the first slot.
+// mintTrace preserves supplied trace IDs and fills missing IDs from a
+// unique pair allocated with one atomic increment.
 
 func (s *Server) mintTrace(traceID, spanID uint64) (uint64, uint64) {
 	if traceID == 0 || spanID == 0 {
@@ -216,11 +211,11 @@ func (s *Server) handle(c net.Conn) {
 			return
 		}
 		if header[0] != protocol.Magic || header[1] != protocol.Version {
-			return // bad protocol header: close, like C++
+			return // bad protocol header: close the connection
 		}
 		payloadLen := binary.BigEndian.Uint32(header[3:7])
 		if payloadLen > protocol.MaxPayloadSize || uint64(payloadLen)+protocol.FrameHeaderSize > connBufferSize {
-			return // oversized payload: close, like C++
+			return // oversized payload: close the connection
 		}
 		if cap(payloadBuf) > maxReusePayload {
 			payloadBuf = nil
@@ -289,8 +284,8 @@ func writeAll(c net.Conn, b []byte) error {
 
 // dispatch routes one decoded request: auth gate first, then ownership,
 // replication, admin by opcode. Every decoded request bumps its opcode
-// counter and latency, mirroring C++ recordOpcodeMetric (denials count
-// too: "one increment per request").
+// counter and latency once per decoded request, including requests denied
+// by the authentication gate.
 
 func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Response {
 	start := s.clock.Now()
@@ -309,8 +304,8 @@ func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Respo
 
 func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.Response {
 	if !s.checkAuth(req.Opcode, authToken) {
-		// Denials carry no value (so a Get can never surface fake data)
-		// and echo the trace for correlation, like C++ denyRequest.
+		// Denials carry no value (so a Get cannot surface data) and retain
+		// trace IDs for correlation.
 		// Warn, opcode only: keys are user data, debug-only.
 		if e := s.log().Warn(); e != nil {
 			log.Fields(e, req.TraceID, req.SpanID).

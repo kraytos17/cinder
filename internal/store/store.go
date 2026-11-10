@@ -1,3 +1,7 @@
+// Package store implements a sharded in-memory cache with LRU/LFU eviction,
+// expiry scheduling, LWW versioned writes, and tombstones. Nodes and links
+// live in slices and use integer indices; values use byte slices to keep the
+// object graph small on hot paths.
 package store
 
 import (
@@ -14,8 +18,8 @@ import (
 	"github.com/kraytos17/cinder/internal/sharding"
 )
 
-// ErrCapacityExceeded rejects a lone entry bigger than its shard slice,
-// exactly like the C++ store (even when it would fit global capacity).
+// ErrCapacityExceeded rejects an entry larger than its destination
+// shard's capacity, even if it would fit the aggregate store capacity.
 var ErrCapacityExceeded = errors.New("store: value exceeds capacity")
 
 // Policy selects the capacity-eviction discipline. It is fixed at
@@ -24,10 +28,10 @@ var ErrCapacityExceeded = errors.New("store: value exceeds capacity")
 type Policy int
 
 const (
-	// LRUPolicy evicts the least-recently-used live entry (C++ LruStore).
+	// LRUPolicy evicts the least-recently-used live entry.
 	LRUPolicy Policy = iota
-	// LFUPolicy evicts the lowest-frequency live entry, ties broken by
-	// least-recently-incremented (C++ LfuStore).
+	// LFUPolicy evicts the lowest-frequency live entry, breaking ties by
+	// least-recently-incremented order.
 	LFUPolicy
 )
 
@@ -39,13 +43,12 @@ func (p Policy) String() string {
 	return "lru"
 }
 
-// NodeOverhead is the per-entry accounting constant for the LRU policy.
-// It matches C++ sizeof(LruNode) (120) byte-for-byte so capacity behavior,
-// eviction thresholds, and tests stay identical across the two trees.
-// LFU nodes carry freq/freqIdx (C++ sizeof(LfuNode) = 136); see nodeOverhead.
+// NodeOverhead is the per-entry capacity-accounting estimate for LRU
+// entries. LFU uses a larger estimate for its frequency metadata.
 const NodeOverhead = 120
 
-// lfuNodeOverhead matches C++ sizeof(LfuNode) (136).
+// lfuNodeOverhead is the LFU per-entry capacity-accounting estimate,
+// including frequency and bucket-index metadata.
 const lfuNodeOverhead = 136
 
 const noLink = -1
@@ -62,9 +65,9 @@ type node struct {
 	// Maintained only under LRUPolicy; LFU orders victims by frequency.
 	lruPrev int
 	lruNext int
-	// LFU bookkeeping, mirroring C++ LfuNode. freq counts accepted
-	// writes + live reads; freqIdx is the node's position in its
-	// shard.freqBuckets[freq] vector for O(1) swap-remove. Unused (zero)
+	// LFU bookkeeping. freq counts accepted writes and live reads;
+	// freqIdx is the node's position in its shard.freqBuckets[freq] vector
+	// for O(1) swap-remove. It is unused (zero)
 	// under LRUPolicy.
 	freq    uint64
 	freqIdx int
@@ -85,10 +88,10 @@ type shard struct {
 	freqBuckets map[uint64][]int
 }
 
-// Store is a sharded eviction store with TTL-wheel expiry, LWW
-// versioned writes, and tombstones. It mirrors LruStore /
-// EvictionStoreBase: per-shard capacity slices, tombstone exemption from
-// capacity eviction, lazy expiry on read, and a global Lamport clock.
+// Store is a sharded eviction store with scheduled expiry, versioned LWW
+// writes, and tombstones. Capacity is enforced per shard; tombstones are
+// exempt from capacity eviction, expired entries are removed on read or by
+// the expiry wheel, and versions use a store-wide Lamport clock.
 type Store struct {
 	clock     Clock
 	policy    Policy
@@ -100,8 +103,8 @@ type Store struct {
 	totalSize atomic.Uint64
 	totalNum  atomic.Uint64
 	met       atomic.Pointer[metrics.Collector]
-	// nodeOverhead is the per-entry accounting constant: 120 under LRU
-	// (C++ sizeof(LruNode)), 136 under LFU (C++ sizeof(LfuNode)).
+	// nodeOverhead is the per-entry capacity-accounting estimate selected
+	// for the policy: 120 bytes under LRU, 136 under LFU.
 	nodeOverhead uint64
 
 	persistMu   sync.RWMutex
@@ -112,9 +115,9 @@ type mutationSink struct {
 	fn MutationSink
 }
 
-// newStore builds a store with the given eviction policy. Sharding
-// follows the C++ rule: one shard per 64 KiB, clamped to [1, 16], so tiny
-// stores stay single-shard and behave exactly like a single-mutex store.
+// newStore builds a store with the given eviction policy. Shard count is
+// one per 64 KiB of capacity, clamped to [1, 16], so small stores use a
+// single shard.
 func newStore(capacityBytes uint64, clock Clock, policy Policy) *Store {
 	if clock == nil {
 		clock = SystemClock{}
@@ -150,7 +153,7 @@ func NewLRUStore(capacityBytes uint64, clock Clock) *Store {
 
 // NewLFUStore returns a store with capacityBytes total capacity and
 // least-frequently-used eviction (ties broken by
-// least-recently-incremented), mirroring C++ LfuStore.
+// least-recently-incremented order).
 func NewLFUStore(capacityBytes uint64, clock Clock) *Store {
 	return newStore(capacityBytes, clock, LFUPolicy)
 }
@@ -176,9 +179,9 @@ func (s *Store) SetMutationSink(fn MutationSink) {
 	s.sink.Store(&mutationSink{fn: fn})
 }
 
-// SetMetrics wires the observability collector (nil disables). Like C++
-// setMetrics: every bump is nil-checked, so unconfigured stores pay only
-// a pointer load.
+// SetMetrics installs the observability collector; nil disables metrics.
+// Each bump performs one atomic pointer load to check whether metrics
+// are configured.
 func (s *Store) SetMetrics(m *metrics.Collector) {
 	s.met.Store(m)
 }
@@ -195,9 +198,8 @@ func (s *Store) bumpExpiredOnRead() {
 	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.ExpiresOnRead.Add(1) })
 }
 
-// bumpWrite records an accepted write: tombstones count as deletes,
-// live values as writes, and overwriting a resident also retires it
-// (mirroring C++ noteRemoved/noteAdded + the tombstone/write tail).
+// bumpWrite records an accepted write: tombstones count as deletes, live
+// values as writes, and replacing a resident also counts its removal.
 func (s *Store) bumpWrite(tombstone, overwrote bool) {
 	obs.IfPresent(&s.met, func(m *metrics.Collector) {
 		if overwrote {
@@ -293,15 +295,15 @@ func (s *Store) Put(key string, value []byte) error {
 	return s.PutVersioned(key, e)
 }
 
-// PutWithTTL stores value under key with a fresh minted version and a
-// relative TTL. A zero TTL expires on the next read, like the C++ store.
+// PutWithTTL stores value under key with a fresh version and a relative
+// TTL. A zero TTL creates an immediately expired entry, removed on its
+// next read or expiry-wheel pass.
 func (s *Store) PutWithTTL(key string, value []byte, ttl time.Duration) error {
 	now := s.clock.Now()
 	e := Entry{
 		Value:   append([]byte(nil), value...),
 		Version: s.MintVersion(),
-		// At, not After: zero TTL means expired-on-next-read (C++
-		// parity), while After(<=0) would mean none.
+		// At (not After): zero TTL is an immediately elapsed deadline.
 		Expiry: expiry.At(now.Add(ttl)),
 	}
 	return s.putVersionedAt(key, e, now)

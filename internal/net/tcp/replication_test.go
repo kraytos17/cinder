@@ -143,7 +143,7 @@ func (c *testCluster) shutdown() {
 	}
 }
 
-// ownerOf mirrors the cluster ring: node1..node3 with default vnodes.
+// ownerOf computes the expected owner for the default three-node test ring.
 func clusterOwner(key string) string {
 	return testRing3.GetNode(key)
 }
@@ -169,7 +169,7 @@ func TestReplQuorumSurvivesOneFailure(t *testing.T) {
 	c.kill("node3")
 	// Quorum (W=2) holds with two survivors, but only for keys whose full
 	// replica set survived: a key replicating to the dead node fails
-	// closed, exactly like C++.
+	// closed when a required replica is unavailable.
 	repOf := func(key string) []string {
 		nodes, _ := testRing3.GetNodes(key, 2)
 		return nodes

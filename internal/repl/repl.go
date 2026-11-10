@@ -12,8 +12,9 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-// Manager coordinates writes to the primary plus replicas. The store is
-// the single version authority; every replica apply is idempotent LWW.
+// Manager coordinates writes and reads across a node's replica set. The
+// local store supplies write versions; replicas apply versioned updates
+// idempotently.
 type Manager struct {
 	local     *store.Store
 	self      string
@@ -32,8 +33,8 @@ var nopLogger = log.Nop()
 
 // HintJournal persists hints across restarts. AppendAdd records a queued
 // hint; AppendDel records a successful replay so recovery drops it.
-// NeedsCompaction/Compact bound the file: past the record budget the
-// journal is rewritten from the live queue (mirrors the C++ 4,096 rule).
+// NeedsCompaction/Compact bound journal size by rewriting it from the
+// current live queue after its record threshold is reached.
 type HintJournal interface {
 	AppendAdd(h Hint)
 	AppendDel(target, key string, version uint64)
@@ -70,7 +71,7 @@ func (m *Manager) log() *zerolog.Logger {
 }
 
 // NewManager returns a replication manager. Transport may be nil only when
-// every call passes an empty replica list.
+// every operation is given an empty replica list.
 func NewManager(local *store.Store, self string, clock store.Clock, t Transport) *Manager {
 	if clock == nil {
 		clock = store.SystemClock{}
@@ -98,7 +99,8 @@ func (m *Manager) Local() *store.Store { return m.local }
 // HintQueue exposes the hint queue for journal recovery wiring.
 func (m *Manager) HintQueue() *HintQueue { return m.hints }
 
-// WriterHash is the stable per-node LWW tiebreaker (FNV-1a of the node id).
+// WriterHash is the stable per-node LWW tiebreaker, computed as FNV-1a of
+// the node ID.
 func (m *Manager) WriterHash() uint64 { return m.writer }
 
 // Write stores value locally, then fans out Replicate to replicas.

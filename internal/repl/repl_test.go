@@ -66,7 +66,8 @@ func TestWriteQuorum(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	// RF=3, all up: W=2 (local + 1). Stragglers drain in the background,
-	// like the C++ async tail, so replica assertions poll.
+	// Async fan-out returns before replica sends complete, so replica
+	// assertions poll for completion.
 	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatal(err)
 	}

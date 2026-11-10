@@ -1,9 +1,7 @@
-// Package client is the Cinder v6 TCP client (Go port).
-//
-// M3: single-connection client with per-RPC deadlines. Requests on one
-// connection are strictly sequential (the server answers in order), so Do
-// serializes under a mutex. Redirect following, pooling, and quorum fan-out
-// arrive with multi-node support in M4; NotReady surfaces to the caller.
+// Package client provides single-node and cluster-aware clients for the
+// Cinder v6 TCP protocol. Client serializes requests on each persistent
+// connection and applies a per-RPC deadline; Cluster adds owner routing,
+// redirect following, retries, and connection pooling.
 package client
 
 import (
@@ -49,9 +47,9 @@ type Secrets struct {
 	Client string
 }
 
-// tokenFor mirrors the C++ pool precedence: the client token wins when a
-// client secret is set, otherwise the node token when a shared secret and
-// node id are set, otherwise nothing.
+// tokenFor selects credentials in priority order: client token when a
+// client secret is configured, otherwise a node token when both node ID
+// and shared secret are set, otherwise no token.
 func tokenFor(s Secrets, now time.Time) []byte {
 	if s.Client != "" {
 		return auth.ClientToken(s.Client)
@@ -83,8 +81,8 @@ func Dial(addr string, timeout time.Duration) (*Client, error) {
 }
 
 // DialTLS opens addr over TLS with a dial timeout; timeout also bounds
-// every RPC. cfg must come from tlscfg.Client (chain-only verification
-// like the C++ client) or be nil for an unverified connection.
+// every RPC. cfg should come from tlscfg.Client. A nil config skips
+// certificate verification and is intended only for tests.
 func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, error) {
 	if cfg == nil {
 		cfg = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // test-only path
@@ -278,7 +276,8 @@ func (c *Client) Get(key string) (protocol.Response, error) {
 	return c.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
 }
 
-// Del deletes key via a versioned tombstone (always OK, like C++).
+// Del deletes key by writing a versioned tombstone. Deleting a missing
+// key also succeeds.
 func (c *Client) Del(key string) (protocol.Response, error) {
 	return c.Do(protocol.Request{Opcode: protocol.OpDel, Key: []byte(key)})
 }

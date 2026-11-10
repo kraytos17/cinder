@@ -33,9 +33,9 @@ func mustEncodeSeedResp(res Response) []byte {
 	return f
 }
 
-// FuzzDecodeRequest feeds arbitrary bytes to the request decoder. It must
-// never panic; every accepted frame must re-encode to an identical frame
-// (decode->encode->decode fixed point, mirroring the C++ invariant).
+// FuzzDecodeRequest feeds arbitrary frame bytes to the request decoder. It
+// must never panic, and every accepted frame must remain stable through
+// decode-encode-decode round trips.
 func FuzzDecodeRequest(f *testing.F) {
 	for _, seed := range fuzzSeeds {
 		f.Add(seed)

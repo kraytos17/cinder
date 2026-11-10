@@ -1,7 +1,7 @@
 package tcp
 
-// Replication helpers: replica-set computation, quorum result
-// mapping, and the inbound replicate/hint apply path.
+// Replication helpers: replica-set lookup, status conversion, and applying
+// inbound replicated entries.
 
 import (
 	"errors"
@@ -28,9 +28,7 @@ func (s *Server) replication() (*repl.Manager, int, repl.Mode) {
 	return s.repl, s.rf, s.mode
 }
 
-// replicaNodes mirrors CacheOperations::replicaNodesFor: ring owners minus
-// self.
-
+// replicaNodes returns the ring-selected replica set excluding this node.
 func (s *Server) replicaNodes(key string) []string {
 	s.ringMu.RLock()
 	ring := s.ring
@@ -57,18 +55,12 @@ func (s *Server) replicaFactor() int {
 	return s.rf
 }
 
-// NewServer returns a server over an existing store.
-
+// StatusOf maps an error to the protocol status returned by dispatch.
 func StatusOf(err error) protocol.Status {
 	return statusOf(err)
 }
 
-// DeleteNoRedirect deletes without the ownership redirect, mirroring the
-// C++ gateway Delete, which bypasses checkWriteOwnership at the
-// connection layer and deletes through the operations path directly. Like
-// Dispatch it performs no auth check: callers (the gateway) enforce their
-// credential first.
-
+// counterStatusOf maps counter-store failures to protocol statuses.
 func counterStatusOf(err error) protocol.Status {
 	switch {
 	case err == nil:
@@ -82,10 +74,9 @@ func counterStatusOf(err error) protocol.Status {
 	}
 }
 
-// applyReplicated ports TcpConnection::handleReplicate: absolute wall-clock
-// expiry rides the request; a tombstone without a sender deadline falls
-// back to the local GC deadline via the versioned remove path.
-
+// applyReplicated applies a replicated entry. A tombstone without an
+// absolute expiry receives the local tombstone-GC deadline through the
+// versioned-remove path.
 func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 	if req.Tombstone && req.ExpiresAt.IsNone() {
 		if err := s.store.RemoveVersioned(string(req.Key), req.Version, req.WriterNodeHash); err != nil {
@@ -108,6 +99,7 @@ func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 	return protocol.Response{Status: protocol.StatusOK}
 }
 
+// statusOf maps store and replication failures to protocol statuses.
 func statusOf(err error) protocol.Status {
 	switch {
 	case err == nil:
@@ -123,8 +115,9 @@ func statusOf(err error) protocol.Status {
 	}
 }
 
+// writeResult wraps an operation error in a status-only response.
 func writeResult(err error) protocol.Response {
 	return protocol.Response{Status: statusOf(err)}
 }
 
-// adminJSON shapes mirror formatNodeInfoJson/formatClusterJson/formatRingJson.
+// adminJSON types define the JSON documents returned by admin operations.

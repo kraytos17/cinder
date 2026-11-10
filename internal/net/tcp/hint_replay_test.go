@@ -7,9 +7,8 @@ import (
 )
 
 // Background hint replay: hints queued while a peer is down drain
-// automatically on the replay tick once it returns — no manual
-// ReplayHints call. (The C++ tree replays on a ~1s timer; the Go tick
-// defaults to the same and is shortened here.)
+// automatically on the replay tick once it returns, without a manual
+// ReplayHints call. The test shortens the interval for faster execution.
 func TestHintReplayTickHealsRestartedPeer(t *testing.T) {
 	c := newTestCluster(t, []string{"node1", "node2"}, 2, 0)
 	defer c.shutdown()

@@ -65,8 +65,8 @@ func TestStoreRemoveLocalOnly(t *testing.T) {
 	if _, ok := s.Value("k"); ok {
 		t.Fatal("removed key still present")
 	}
-	// A merge from a peer that still holds the key resurrects it: no
-	// tombstones, mirroring C++.
+	// A merge from a peer that still holds the key resurrects it; counter
+	// state has no replicated tombstone.
 	var remote PNCounter
 	_ = remote.Increment("n1", 5)
 	if err := s.Merge("k", remote); err != nil {

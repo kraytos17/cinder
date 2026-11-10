@@ -1,7 +1,7 @@
 package main
 
 // Multi-key verbs: mget prints "key: value" lines, mset applies
-// batches. Output formats are byte-identical by design.
+// batches. Output formatting is covered by the CLI tests.
 
 import (
 	"fmt"
@@ -12,9 +12,7 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
-// statusString mirrors cinder::toString(Errc): lowercase parenthesized
-// words, not the Go Status.String() CamelCase used in logs.
-
+// runMultiGet fetches each requested key and prints one result per key.
 func runMultiGet(dial func() (*client.Client, error),
 	keys []string,
 	stdout, stderr io.Writer,
@@ -46,6 +44,8 @@ func runMultiGet(dial func() (*client.Client, error),
 	return 0
 }
 
+// runMultiSet writes each key/value pair, optionally with a shared TTL,
+// and prints one result per key.
 func runMultiSet(
 	dial func() (*client.Client, error),
 	keys, values []string, ttlMs int,

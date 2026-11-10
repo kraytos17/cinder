@@ -12,7 +12,7 @@ import (
 	"github.com/kraytos17/cinder/internal/netport"
 )
 
-// NodeAddr is a reachable cluster member.
+// NodeAddr identifies a cluster member and gives the address used to dial it.
 type NodeAddr struct {
 	ID   string
 	Host string
@@ -20,8 +20,7 @@ type NodeAddr struct {
 }
 
 func (a NodeAddr) dialAddr() string {
-	// JoinHostPort brackets IPv6 literals; the old Sprintf("%s:%d")
-	// produced undiallable "fe80::1:8080" forms for v6 peers.
+	// JoinHostPort formats IPv4, DNS, and IPv6 addresses for dialing.
 	return net.JoinHostPort(a.Host, a.Port.String())
 }
 
@@ -59,12 +58,9 @@ func newPoolTLS(addrs []NodeAddr, timeout time.Duration, tlsCfg *tls.Config) *Po
 	return p
 }
 
-// AddAddr registers (or replaces) a node's reachable address, then drops
-// any existing connection so the next send redials the new address.
-// Mirrors ConnectionPool::addAddr: redirect-learned members outside the
-// client config become reachable. IP literals are normalized via
-// netip.ParseAddr (collapses "::ffff:1.2.3.4", zones, case); hostnames
-// pass through untouched.
+// AddAddr registers or replaces a node's address and closes any existing
+// connection so the next send dials the updated address. IP literals are
+// normalized with netip.ParseAddr; hostnames pass through unchanged.
 func (p *Pool) AddAddr(id, host string, port netport.Port) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		host = ip.String()
@@ -78,9 +74,9 @@ func (p *Pool) AddAddr(id, host string, port netport.Port) {
 	}
 }
 
-// SetTLS enables TLS for subsequently dialed connections and drops
-// existing plaintext ones, mirroring a cluster-wide move to --tls. The
-// config must come from tlscfg.Client; it is shared read-only.
+// SetTLS enables TLS for subsequently dialed connections and closes
+// existing connections so they are reopened with the new transport
+// settings. The config must come from tlscfg.Client and is shared read-only.
 func (p *Pool) SetTLS(cfg *tls.Config) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
