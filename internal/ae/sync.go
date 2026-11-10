@@ -1,0 +1,254 @@
+package ae
+
+// Metadata sync: row collection, diffing, applying winner rows,
+// and the fetch-budgeted entry collection for repairs.
+
+import (
+	"cmp"
+	"slices"
+
+	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/obs"
+	"github.com/kraytos17/cinder/internal/store"
+)
+
+func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse, rows []MetaRow, covered []uint32, sketchHasDiff map[uint32]bool) int {
+	remoteBuckets := map[uint32]uint64{}
+	remoteSeen := map[uint32]bool{}
+	for _, bh := range resp.BucketHashes {
+		if bh.Bucket >= m.numBuckets || remoteSeen[bh.Bucket] {
+			return 0
+		}
+
+		remoteSeen[bh.Bucket] = true
+		remoteBuckets[bh.Bucket] = bh.Hash
+	}
+
+	sketched := map[uint32]bool{}
+	for _, s := range resp.Sketches {
+		if s.Bucket >= m.numBuckets || sketched[s.Bucket] {
+			return 0
+		}
+		sketched[s.Bucket] = true
+	}
+	slices.Sort(covered)
+	coveredSet := map[uint32]bool{}
+	for _, b := range covered {
+		coveredSet[b] = true
+	}
+	for _, r := range rows {
+		if r.Bucket >= m.numBuckets || !coveredSet[r.Bucket] {
+			return 0
+		}
+	}
+	var divergent []uint32
+	for b := range m.numBuckets {
+		if h, ok := remoteBuckets[b]; ok && h != local[b] {
+			divergent = append(divergent, b)
+		} else if sketched[b] && coveredSet[b] && sketchHasDiff[b] {
+			divergent = append(divergent, b)
+		}
+	}
+	if len(divergent) == 0 {
+		return 0
+	}
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
+		mt.AEBucketMismatch.Add(uint64(len(divergent)))
+	})
+	for _, b := range divergent {
+		if !coveredSet[b] {
+			return 0
+		}
+	}
+	for _, r := range rows {
+		found := slices.Contains(divergent, r.Bucket)
+		if !found {
+			return 0
+		}
+	}
+	diff := m.DiffRows(rows, divergent, covered)
+	syncReq := SyncMessage{Needs: diff.Need}
+	for _, h := range diff.Have {
+		syncReq.Entries = append(syncReq.Entries, SyncItem{Key: h.Key, Entry: mustGet(m, h.Key)})
+	}
+	_ = syncReq
+	encoded, err := EncodeSync(SyncMessage{Entries: syncReq.Entries, Needs: syncReq.Needs})
+	if err != nil {
+		return 0
+	}
+	sr, err := m.transport.Send(partner, protocol.Request{Opcode: protocol.OpAntiEntropySync, Value: encoded})
+	if err != nil || sr.Status != protocol.StatusOK || !sr.HasValue {
+		return 0
+	}
+	resp2, ok := DecodeSync(sr.Value)
+	if !ok || len(resp2.Needs) != 0 {
+		return 0
+	}
+	return m.ApplySync(resp2)
+}
+
+// CollectRows gathers per-bucket metadata rows sorted by key hash.
+func (m *Manager) CollectRows(buckets []uint32) [][]MetaRow {
+	wanted := make([]bool, m.numBuckets)
+	for _, id := range buckets {
+		if id < m.numBuckets {
+			wanted[id] = true
+		}
+	}
+	perBucket := make([][]MetaRow, m.numBuckets)
+	m.store.ForEach(func(key string, e store.Entry) {
+		b := BucketFor(key, m.numBuckets)
+		if b >= m.numBuckets || !wanted[b] {
+			return
+		}
+		perBucket[b] = append(perBucket[b], MetaRow{
+			Bucket: b, Tombstone: e.Tombstone, KeyHash: KeyHash(key),
+			Version: e.Version, Writer: e.WriterNodeHash,
+		})
+	})
+	for _, vec := range perBucket {
+		slices.SortFunc(vec, func(a, b MetaRow) int { return cmp.Compare(a.KeyHash, b.KeyHash) })
+	}
+	return perBucket
+}
+
+// metaRowBytes is the on-disk metadata row width.
+
+const metaRowBytes = 4 + 8 + 8 + 8 + 1
+
+// CollectMetadata encodes rows for buckets, filling bucket-atomically up
+// to maxBytes. Empty buckets still count as covered. Returns the blob and
+// the covered set, mirroring the C++ byte-budget rules including the
+// first-bucket-overflow exception.
+
+func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []uint32) {
+	perBucket := m.CollectRows(bucketIDs)
+	wanted := make([]bool, m.numBuckets)
+	for _, id := range bucketIDs {
+		if id < m.numBuckets {
+			wanted[id] = true
+		}
+	}
+	var rows []MetaRow
+	var covered []uint32
+	bytes := 8 // outer row-count + covered-count u32s
+	for b := range m.numBuckets {
+		if !wanted[b] {
+			continue
+		}
+		vec := perBucket[b]
+		if bytes+4 > maxBytes && len(covered) > 0 {
+			break
+		}
+		bytes += 4
+		covered = append(covered, b)
+		need := len(vec) * metaRowBytes
+		if bytes+need > maxBytes && len(covered) > 1 {
+			covered = covered[:len(covered)-1]
+			break
+		}
+		bytes += need
+		rows = append(rows, vec...)
+		if bytes > maxBytes {
+			break
+		}
+	}
+	return EncodeMetaRows(rows), covered
+}
+
+// HavePair sorts keys by identity hash for deterministic output.
+
+type HavePair struct {
+	Hash uint64
+	Key  string
+}
+
+// Diff holds reconcile sets: hashes to fetch (remote wins) and local
+// pairs to push (local wins by absence or LWW).
+
+type Diff struct {
+	Need []uint64
+	Have []HavePair
+}
+
+// DiffRows compares remote metadata against the local store scoped to
+// divergent buckets. See ae.Diff for the win/loss rules.
+
+func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
+	var diff Diff
+	if len(divergent) == 0 {
+		return diff
+	}
+	wanted := make([]bool, m.numBuckets)
+	for _, id := range divergent {
+		if id < m.numBuckets {
+			wanted[id] = true
+		}
+	}
+	byHash := make(map[uint64]*MetaRow, len(rows))
+	for i := range rows {
+		byHash[rows[i].KeyHash] = &rows[i] // duplicate hashes keep the last
+	}
+	coverAll := len(covered) == 0
+	coveredSet := make(map[uint32]bool, len(covered))
+	for _, b := range covered {
+		if b < m.numBuckets {
+			coveredSet[b] = true
+		}
+	}
+	m.store.ForEach(func(key string, e store.Entry) {
+		b := BucketFor(key, m.numBuckets)
+		if b >= m.numBuckets || !wanted[b] {
+			return
+		}
+		h := KeyHash(key)
+		row, ok := byHash[h]
+		if !ok {
+			if coverAll || coveredSet[b] {
+				diff.Have = append(diff.Have, HavePair{Hash: h, Key: key})
+			}
+			return
+		}
+		remote := store.Stamp{Version: row.Version, Writer: row.Writer, Tombstone: row.Tombstone}
+		local := store.Stamp{Version: e.Version, Writer: e.WriterNodeHash, Tombstone: e.Tombstone}
+		if store.LWWWinsOver(remote, local) {
+			diff.Need = append(diff.Need, h)
+		} else if store.LWWWinsOver(local, remote) {
+			diff.Have = append(diff.Have, HavePair{Hash: h, Key: key})
+		}
+		delete(byHash, h)
+	})
+	for h, row := range byHash {
+		if row.Bucket < m.numBuckets && (coverAll || coveredSet[row.Bucket]) {
+			diff.Need = append(diff.Need, h)
+		}
+	}
+	slices.Sort(diff.Need)
+	slices.SortFunc(diff.Have, func(a, b HavePair) int { return cmp.Compare(a.Hash, b.Hash) })
+	return diff
+}
+
+// ApplySync applies entries via putVersioned, counting actually-newer ones.
+
+func (m *Manager) ApplySync(msg SyncMessage) int {
+	applied := 0
+	for _, item := range msg.Entries {
+		e, ok := m.store.GetVersioned(item.Key)
+		if !ok || store.LWWWinsOver(
+			store.Stamp{Version: item.Entry.Version, Writer: item.Entry.WriterNodeHash, Tombstone: item.Entry.Tombstone},
+			store.Stamp{Version: e.Version, Writer: e.WriterNodeHash, Tombstone: e.Tombstone}) {
+			applied++
+		}
+		_ = m.store.PutVersioned(item.Key, item.Entry)
+	}
+	// Single funnel for repair accounting (initiator + responder +
+	// direct callers): every applied entry converged here.
+	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
+		mt.AEKeysRepaired.Add(uint64(applied))
+		mt.AEFetched.Add(uint64(len(msg.Entries)))
+	})
+	return applied
+}
+
+// OnDigestRequest answers a group digest with our own group hashes.

@@ -9,78 +9,8 @@ import (
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/testkit"
 )
-
-// fakeTransport serves requests against per-node stores, with per-node
-// failure injection.
-type fakeTransport struct {
-	mu     sync.Mutex
-	stores map[string]*store.Store
-	fail   map[string]bool
-	sends  map[string]int
-}
-
-func newFake(nodes ...string) *fakeTransport {
-	ft := &fakeTransport{stores: map[string]*store.Store{}, fail: map[string]bool{}, sends: map[string]int{}}
-	for _, n := range nodes {
-		ft.stores[n] = store.NewLRUStore(1<<20, nil)
-	}
-	return ft
-}
-
-func (f *fakeTransport) Send(node string, req protocol.Request) (protocol.Response, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.sends[node]++
-	if f.fail[node] {
-		return protocol.Response{}, errors.New("unreachable: " + node)
-	}
-	st, ok := f.stores[node]
-	if !ok {
-		return protocol.Response{}, errors.New("unknown node: " + node)
-	}
-	switch req.Opcode {
-	case protocol.OpReplicate, protocol.OpHint:
-		e := store.Entry{Value: append([]byte(nil), req.Value...), Version: req.Version, WriterNodeHash: req.WriterNodeHash, Tombstone: req.Tombstone}
-		if req.HasExpiresAt {
-			e.HasTTL = true
-			e.ExpiresAt = req.ExpiresAt
-		}
-		if err := st.PutVersioned(string(req.Key), e); err != nil {
-			return protocol.Response{Status: protocol.StatusCapacityExceeded}, nil
-		}
-		if req.Tombstone && !req.HasExpiresAt {
-			// Fallback path: versioned remove with sender identity.
-			if err := st.RemoveVersioned(string(req.Key), req.Version, req.WriterNodeHash); err != nil {
-				return protocol.Response{Status: protocol.StatusInternalError}, nil
-			}
-		}
-		return protocol.Response{Status: protocol.StatusOK}, nil
-	case protocol.OpGetVersioned:
-		e, ok := st.GetVersioned(string(req.Key))
-		if !ok {
-			return protocol.Response{Status: protocol.StatusNotFound}, nil
-		}
-		res := protocol.Response{Status: protocol.StatusOK, Version: e.Version, WriterNodeHash: e.WriterNodeHash, Tombstone: e.Tombstone}
-		if !e.Tombstone {
-			res.Value = append([]byte(nil), e.Value...)
-			res.HasValue = true
-		}
-		if e.HasTTL {
-			res.HasExpiresAt = true
-			res.ExpiresAt = e.ExpiresAt
-		}
-		return res, nil
-	default:
-		return protocol.Response{Status: protocol.StatusNotSupported}, nil
-	}
-}
-
-func (f *fakeTransport) sendCount(node string) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.sends[node]
-}
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
@@ -94,18 +24,18 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func TestWriterHashIsFNV1a(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1024, nil), "foobar", nil, newFake())
+	m := NewManager(store.NewLRUStore(1024, nil), "foobar", nil, testkit.NewStores())
 	if m.WriterHash() != 0x85944171f73967e8 {
 		t.Fatalf("writer = %#x", m.WriterHash())
 	}
-	empty := NewManager(store.NewLRUStore(1024, nil), "", nil, newFake())
+	empty := NewManager(store.NewLRUStore(1024, nil), "", nil, testkit.NewStores())
 	if empty.WriterHash() != 0xcbf29ce484222325 {
 		t.Fatalf("empty writer = %#x", empty.WriterHash())
 	}
 }
 
 func TestWriteAsyncFansOut(t *testing.T) {
-	ft := newFake("n2", "n3")
+	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
@@ -113,17 +43,17 @@ func TestWriteAsyncFansOut(t *testing.T) {
 	if _, ok := m.Local().GetVersioned("k"); !ok {
 		t.Fatal("local commit missing")
 	}
-	waitFor(t, "fan-out", func() bool { return ft.sendCount("n2") == 1 && ft.sendCount("n3") == 1 })
+	waitFor(t, "fan-out", func() bool { return ft.SendCount("n2") == 1 && ft.SendCount("n3") == 1 })
 	for _, n := range []string{"n2", "n3"} {
-		if e, ok := ft.stores[n].GetVersioned("k"); !ok || string(e.Value) != "v" {
+		if e, ok := ft.Stores[n].GetVersioned("k"); !ok || string(e.Value) != "v" {
 			t.Fatalf("%s missing replica: %+v", n, e)
 		}
 	}
 }
 
 func TestWriteAsyncHintOnFailure(t *testing.T) {
-	ft := newFake("n2", "n3")
-	ft.fail["n3"] = true
+	ft := testkit.NewStores("n2", "n3")
+	ft.Fail["n3"] = true
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
@@ -132,7 +62,7 @@ func TestWriteAsyncHintOnFailure(t *testing.T) {
 }
 
 func TestWriteQuorum(t *testing.T) {
-	ft := newFake("n2", "n3")
+	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	// RF=3, all up: W=2 (local + 1). Stragglers drain in the background,
 	// like the C++ async tail, so replica assertions poll.
@@ -141,34 +71,34 @@ func TestWriteQuorum(t *testing.T) {
 	}
 	waitFor(t, "replicas", func() bool {
 		for _, n := range []string{"n2", "n3"} {
-			if e, ok := ft.stores[n].GetVersioned("k"); !ok || string(e.Value) != "v" {
+			if e, ok := ft.Stores[n].GetVersioned("k"); !ok || string(e.Value) != "v" {
 				return false
 			}
 		}
 		return true
 	})
 	// One replica down: local + survivor = W. Succeeds, hint queued.
-	ft.fail["n3"] = true
+	ft.Fail["n3"] = true
 	if err := m.Write("k2", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatalf("quorum with one failure: %v", err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
 	// Two down: local alone cannot reach W=2.
-	ft.fail["n2"] = true
+	ft.Fail["n2"] = true
 	if err := m.Write("k3", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("expected ErrQuorum, got %v", err)
 	}
 }
 
 func TestQuorumEmptyReplicas(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, newFake())
+	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, testkit.NewStores())
 	if err := m.Write("k", []byte("v"), 0, false, nil, Quorum, 0, 0); err != nil {
 		t.Fatalf("W==1 must succeed on local: %v", err)
 	}
 }
 
 func TestDeleteQuorum(t *testing.T) {
-	ft := newFake("n2", "n3")
+	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatal(err)
@@ -179,7 +109,7 @@ func TestDeleteQuorum(t *testing.T) {
 	// The quorum decision fires at W; straggler replicas drain in the
 	// background, so convergence assertions poll.
 	waitFor(t, "tombstone everywhere", func() bool {
-		for _, st := range []*store.Store{m.Local(), ft.stores["n2"], ft.stores["n3"]} {
+		for _, st := range []*store.Store{m.Local(), ft.Stores["n2"], ft.Stores["n3"]} {
 			e, ok := st.GetVersioned("k")
 			if !ok || !e.Tombstone {
 				return false
@@ -193,7 +123,7 @@ func TestDeleteQuorum(t *testing.T) {
 }
 
 func TestReadLocalOnly(t *testing.T) {
-	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, newFake())
+	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, testkit.NewStores())
 	if err := m.Local().Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +137,7 @@ func TestReadLocalOnly(t *testing.T) {
 }
 
 func TestReadQuorumLWWAndRepair(t *testing.T) {
-	ft := newFake("n2", "n3")
+	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	// Divergent versions: n2 ahead, local stale, n3 empty.
 	putVer := func(st *store.Store, v string, ver uint64, w uint64) {
@@ -217,7 +147,7 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 		}
 	}
 	putVer(m.Local(), "old", 1, 1)
-	putVer(ft.stores["n2"], "new", 5, 2)
+	putVer(ft.Stores["n2"], "new", 5, 2)
 	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
 	if err != nil || string(e.Value) != "new" || e.Version != 5 {
 		t.Fatalf("got %+v, %v", e, err)
@@ -229,13 +159,13 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 	})
 	// Empty replica repaired with the winner.
 	waitFor(t, "replica repair", func() bool {
-		re, ok := ft.stores["n3"].GetVersioned("k")
+		re, ok := ft.Stores["n3"].GetVersioned("k")
 		return ok && re.Version == 5 && string(re.Value) == "new"
 	})
 }
 
 func TestReadQuorumMiss(t *testing.T) {
-	ft := newFake("n2")
+	ft := testkit.NewStores("n2")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	if _, err := m.Read("ghost", []string{"n2"}, 2, 0, 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("got %v", err)
@@ -243,13 +173,13 @@ func TestReadQuorumMiss(t *testing.T) {
 }
 
 func TestReadIgnoresTransportFailure(t *testing.T) {
-	ft := newFake("n2", "n3")
-	ft.fail["n3"] = true
+	ft := testkit.NewStores("n2", "n3")
+	ft.Fail["n3"] = true
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	if err := m.Local().Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	if err := ft.stores["n2"].Put("k", []byte("v")); err != nil {
+	if err := ft.Stores["n2"].Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
 	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
@@ -261,7 +191,7 @@ func TestReadIgnoresTransportFailure(t *testing.T) {
 // gateTransport blocks every send until released, forcing concurrent reads
 // to overlap in one flight.
 type gateTransport struct {
-	inner   *fakeTransport
+	inner   *testkit.Stores
 	release chan struct{}
 }
 
@@ -272,7 +202,7 @@ func (g *gateTransport) Send(node string, req protocol.Request) (protocol.Respon
 
 func TestReadSingleflight(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		inner := newFake("n2")
+		inner := testkit.NewStores("n2")
 		gt := &gateTransport{inner: inner, release: make(chan struct{})}
 		m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, gt)
 		if err := m.Local().Put("k", []byte("v")); err != nil {
@@ -281,7 +211,7 @@ func TestReadSingleflight(t *testing.T) {
 		// Identical stamp on the replica: no divergence, so no repair
 		// fan-out pollutes the send count.
 		le, _ := m.Local().GetVersioned("k")
-		if err := inner.stores["n2"].PutVersioned("k", le); err != nil {
+		if err := inner.Stores["n2"].PutVersioned("k", le); err != nil {
 			t.Fatal(err)
 		}
 		const readers = 16
@@ -305,7 +235,7 @@ func TestReadSingleflight(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		if n := inner.sendCount("n2"); n != 1 {
+		if n := inner.SendCount("n2"); n != 1 {
 			t.Fatalf("singleflight: %d fan-outs for %d readers", n, readers)
 		}
 	})
@@ -378,21 +308,21 @@ func TestHintTTLExpiry(t *testing.T) {
 }
 
 func TestReplayRemovesOnSuccess(t *testing.T) {
-	ft := newFake("n2")
+	ft := testkit.NewStores("n2")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
-	ft.fail["n2"] = true
+	ft.Fail["n2"] = true
 	if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
-	ft.fail["n2"] = false
+	ft.Fail["n2"] = false
 	if n := m.ReplayHints(); n != 1 {
 		t.Fatalf("replayed = %d", n)
 	}
 	if m.HintCount() != 0 {
 		t.Fatal("replayed hint must be removed")
 	}
-	if e, ok := ft.stores["n2"].GetVersioned("k"); !ok || string(e.Value) != "v" {
+	if e, ok := ft.Stores["n2"].GetVersioned("k"); !ok || string(e.Value) != "v" {
 		t.Fatalf("replica missing: %+v", e)
 	}
 	// Empty replay returns zero.

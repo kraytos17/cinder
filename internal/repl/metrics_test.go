@@ -6,13 +6,14 @@ import (
 
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/testkit"
 )
 
 // Replication paths bump the wired collector: async/quorum outcomes,
 // hints enqueued, replayed, and the drop sync.
 func TestReplMetrics(t *testing.T) {
-	ft := newFake("n2", "n3")
-	ft.fail["n3"] = true
+	ft := testkit.NewStores("n2", "n3")
+	ft.Fail["n3"] = true
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
@@ -34,9 +35,9 @@ func TestReplMetrics(t *testing.T) {
 	}
 	// Heal the replica and replay: HintsReplayed bumps.
 	waitFor(t, "initial async sends", func() bool {
-		return ft.sendCount("n2") == 1 && ft.sendCount("n3") == 1
+		return ft.SendCount("n2") == 1 && ft.SendCount("n3") == 1
 	})
-	ft.fail["n3"] = false
+	ft.Fail["n3"] = false
 	if n := m.ReplayHints(); n != 1 {
 		t.Fatalf("replayed = %d, want 1", n)
 	}
@@ -44,7 +45,7 @@ func TestReplMetrics(t *testing.T) {
 		t.Fatalf("replay counter = %d, want 1", got)
 	}
 	// Quorum write against a down replica fails closed and counts it.
-	ft.fail["n2"], ft.fail["n3"] = true, true
+	ft.Fail["n2"], ft.Fail["n3"] = true, true
 	if err := m.Write("q", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("err = %v, want ErrQuorum", err)
 	}

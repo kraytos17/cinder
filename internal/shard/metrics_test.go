@@ -26,7 +26,7 @@ func TestShardMetricsMigrationOutcomes(t *testing.T) {
 	// Primary down: failure, no migration.
 	st, ring, table, ft := testSetup(t, []string{"b", "c"}, "a", 2, 0)
 	putVer(t, st, "k", "v", 5, 1)
-	ft.fail["b"] = true
+	ft.Fail["b"] = true
 	m := NewManager(st, ring, ft, table, "a", 2, 0, nil)
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
@@ -41,7 +41,7 @@ func TestShardMetricsMigrationOutcomes(t *testing.T) {
 	// Primary up, replica down: retained underreplicated.
 	st2, ring2, table2, ft2 := testSetup(t, []string{"b", "c"}, "a", 2, 0)
 	putVer(t, st2, "k", "v", 5, 1)
-	ft2.fail["c"] = true
+	ft2.Fail["c"] = true
 	m2 := NewManager(st2, ring2, ft2, table2, "a", 2, 0, nil)
 	c2 := metrics.NewCollector()
 	m2.SetMetrics(c2)

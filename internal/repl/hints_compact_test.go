@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/testkit"
 )
 
 // stubJournal implements HintJournal with a tiny compaction threshold so
@@ -41,8 +42,8 @@ func (j *stubJournal) Compact(q *HintQueue) error {
 }
 
 func TestEnqueueHintAutoCompacts(t *testing.T) {
-	ft := newFake("n2")
-	ft.fail["n2"] = true
+	ft := testkit.NewStores("n2")
+	ft.Fail["n2"] = true
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	stub := &stubJournal{}
 	m.SetHintJournal(stub)

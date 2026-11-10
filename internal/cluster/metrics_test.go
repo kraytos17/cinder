@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/testkit"
 )
 
 // Marks, probes, gossip rounds, and refutations bump the wired collector.
@@ -17,7 +18,7 @@ func TestClusterMetrics(t *testing.T) {
 	tb.Seed([]NodeInfo{{ID: "n2"}})
 	c := metrics.NewCollector()
 	tb.SetMetrics(c)
-	tr := newScript()
+	tr := testkit.NewScript()
 	fd := NewFailureDetector(clk, tr, tb, "n1", 100*time.Millisecond)
 	fd.SetMetrics(c)
 	fd.Start()
@@ -25,7 +26,7 @@ func TestClusterMetrics(t *testing.T) {
 	g.SetMetrics(c)
 	g.Start()
 
-	tr.fail("n2", errors.New("x"), errors.New("x"))
+	tr.Fail("n2", errors.New("x"), errors.New("x"))
 	fd.Tick()
 	fd.Tick()
 	if n, _ := tb.Get("n2"); n.State != Suspect {

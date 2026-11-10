@@ -1,91 +1,28 @@
 package ae
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/testkit"
 )
-
-// fakeTransport fails named nodes; successes apply Replicate to per-node stores.
-type fakeTransport struct {
-	mu     sync.Mutex
-	fail   map[string]bool
-	stores map[string]*store.Store
-}
-
-func newFakeTransport(nodes ...string) *fakeTransport {
-	ft := &fakeTransport{fail: map[string]bool{}, stores: map[string]*store.Store{}}
-	for _, n := range nodes {
-		ft.stores[n] = store.NewLRUStore(1<<20, nil)
-	}
-	return ft
-}
-
-func (f *fakeTransport) Send(node string, req protocol.Request) (protocol.Response, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.fail[node] {
-		return protocol.Response{}, errors.New("unreachable: " + node)
-	}
-	st, ok := f.stores[node]
-	if !ok {
-		return protocol.Response{}, errors.New("unknown node: " + node)
-	}
-	switch req.Opcode {
-	case protocol.OpReplicate, protocol.OpHint:
-		e := store.Entry{Value: append([]byte(nil), req.Value...), Version: req.Version, WriterNodeHash: req.WriterNodeHash, Tombstone: req.Tombstone}
-		if req.HasExpiresAt {
-			e.HasTTL = true
-			e.ExpiresAt = req.ExpiresAt
-		}
-		if req.Tombstone && !req.HasExpiresAt {
-			if err := st.RemoveVersioned(string(req.Key), req.Version, req.WriterNodeHash); err != nil {
-				return protocol.Response{Status: protocol.StatusInternalError}, nil
-			}
-			return protocol.Response{Status: protocol.StatusOK}, nil
-		}
-		if err := st.PutVersioned(string(req.Key), e); err != nil {
-			return protocol.Response{Status: protocol.StatusCapacityExceeded}, nil
-		}
-		return protocol.Response{Status: protocol.StatusOK}, nil
-	case protocol.OpGetVersioned:
-		e, ok := st.GetVersioned(string(req.Key))
-		if !ok {
-			return protocol.Response{Status: protocol.StatusNotFound}, nil
-		}
-		res := protocol.Response{Status: protocol.StatusOK, Version: e.Version, WriterNodeHash: e.WriterNodeHash, Tombstone: e.Tombstone}
-		if !e.Tombstone {
-			res.Value = append([]byte(nil), e.Value...)
-			res.HasValue = true
-		}
-		if e.HasTTL {
-			res.HasExpiresAt = true
-			res.ExpiresAt = e.ExpiresAt
-		}
-		return res, nil
-	default:
-		return protocol.Response{Status: protocol.StatusNotSupported}, nil
-	}
-}
 
 func TestJournalReplicatesThroughManager(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hints.log")
-	ft := newFakeTransport("n2")
+	ft := testkit.NewStores("n2")
 	m := repl.NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	j, _, err := OpenJournal(path, m.HintQueue())
 	if err != nil {
 		t.Fatal(err)
 	}
 	m.SetHintJournal(j)
-	ft.fail["n2"] = true
+	ft.Fail["n2"] = true
 	if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, repl.Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
