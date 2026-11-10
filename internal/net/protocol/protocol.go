@@ -251,24 +251,27 @@ func (a *payloadAcc) add(n uint64) {
 	a.ok = true
 }
 
-func parseFrame(frame []byte) (Opcode, []byte, error) {
-	if len(frame) < FrameHeaderSize {
+// splitFrame validates a header/payload pair without requiring the joined
+// frame. Callers that already hold the two staging buffers (server,
+// client) skip the join alloc plus two copies per RPC.
+func splitFrame(header, payload []byte) (Opcode, []byte, error) {
+	if len(header) < FrameHeaderSize {
 		return 0, nil, errInvalid("frame too small")
 	}
-	if frame[0] != Magic {
+	if header[0] != Magic {
 		return 0, nil, errInvalid("bad magic")
 	}
-	if frame[1] != Version {
+	if header[1] != Version {
 		return 0, nil, errInvalid("bad version")
 	}
-	payloadLen := binary.BigEndian.Uint32(frame[3:7])
+	payloadLen := binary.BigEndian.Uint32(header[3:7])
 	if payloadLen > MaxPayloadSize {
 		return 0, nil, errInvalid("payload too large")
 	}
-	if uint64(len(frame)-FrameHeaderSize) < uint64(payloadLen) {
+	if uint64(len(payload)) < uint64(payloadLen) {
 		return 0, nil, errInvalid("truncated frame")
 	}
-	return Opcode(frame[2]), frame[FrameHeaderSize : FrameHeaderSize+payloadLen], nil
+	return Opcode(header[2]), payload[:payloadLen], nil
 }
 
 func EncodeRequest(req Request, authToken []byte) ([]byte, error) {
@@ -374,9 +377,11 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 // DecodeRequest parses one complete v6 frame. It mirrors the C++ decoder's
 // lenient tail: trace/auth bytes gated by their flag bits but shorter than
 // the full field are silently ignored rather than rejected.
-func DecodeRequest(frame []byte) (DecodedRequest, error) {
+// DecodeRequest parses one v6 request from its header and payload
+// without requiring the joined frame (see splitFrame).
+func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	var out DecodedRequest
-	rawOpcode, payload, err := parseFrame(frame)
+	rawOpcode, payload, err := splitFrame(header, payload)
 	if err != nil {
 		return out, err
 	}
@@ -553,12 +558,11 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 // the flags byte is optional (absent on pre-v3 frames); the value consumes
 // all remaining bytes minus the trailing trace field, so has_val=1 with an
 // empty body decodes as present-but-empty rather than absent.
-func DecodeResponse(frame []byte) (Response, error) {
+// DecodeResponse parses one v6 response payload. The frame header carries
+// no response fields (opcode is always zero); callers validate it from
+// the staging buffer and decode only the payload, skipping the join.
+func DecodeResponse(payload []byte) (Response, error) {
 	var res Response
-	_, payload, err := parseFrame(frame)
-	if err != nil {
-		return res, err
-	}
 	r := codec.NewReader(binary.BigEndian, payload)
 	status, ok := r.U8()
 	if !ok {

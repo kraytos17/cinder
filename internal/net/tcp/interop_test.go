@@ -1037,7 +1037,7 @@ func TestInteropNegativeFraming(t *testing.T) {
 		if err != nil {
 			t.Fatalf("[%s] %v", name, err)
 		}
-		res, err := protocol.DecodeResponse(raw)
+		res, err := protocol.DecodeResponse(raw[protocol.FrameHeaderSize:])
 		if err != nil {
 			t.Fatalf("[%s] %v", name, err)
 		}

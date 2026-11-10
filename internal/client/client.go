@@ -20,6 +20,11 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
+// maxReusePayloadBytes bounds the retained per-connection staging buffer:
+// payloads above it still work, but allocate fresh each time instead of
+// pinning a ~1 MiB slab per connection after one large value.
+const maxReusePayloadBytes = 64 << 10
+
 // Client is a single v6 connection. It is safe for concurrent use; a
 // transport error closes the connection and all subsequent calls fail
 // until the caller redials (M4 adds transparent reconnect).
@@ -28,7 +33,10 @@ type Client struct {
 	conn    net.Conn
 	br      *bufio.Reader
 	timeout time.Duration
-	secrets Secrets
+	// payloadBuf is the reused response staging buffer (see the server
+	// read loop for the retention argument; Do is mutex-serialized).
+	payloadBuf []byte
+	secrets    Secrets
 }
 
 // Secrets carries the credentials a client presents: the static client
@@ -159,8 +167,10 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 		}
 		frame = frame[n:]
 	}
-	header := make([]byte, protocol.FrameHeaderSize)
-	if _, err := io.ReadFull(c.br, header); err != nil {
+	// Fixed-size header on the stack: no per-RPC alloc (see the server
+	// read loop for the same pattern).
+	var header [protocol.FrameHeaderSize]byte
+	if _, err := io.ReadFull(c.br, header[:]); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
 	if header[0] != protocol.Magic || header[1] != protocol.Version {
@@ -173,14 +183,25 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if n > protocol.MaxPayloadSize {
 		return protocol.Response{}, c.fail(fmt.Errorf("client: response too large: %d", n))
 	}
-	payload := make([]byte, n)
+	// Reused staging buffer: decoders copy every variable-length field
+	// out, so nothing retains this memory and reuse is safe. Oversized
+	// slabs are dropped rather than pinned per connection.
+	if cap(c.payloadBuf) > maxReusePayloadBytes {
+		c.payloadBuf = nil
+	}
+	payload := c.payloadBuf
+	if uint64(cap(payload)) < uint64(n) {
+		payload = make([]byte, n)
+		if n <= maxReusePayloadBytes {
+			c.payloadBuf = payload
+		}
+	} else {
+		payload = payload[:n]
+	}
 	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
-	frame = make([]byte, protocol.FrameHeaderSize+len(payload))
-	copy(frame, header)
-	copy(frame[protocol.FrameHeaderSize:], payload)
-	res, err := protocol.DecodeResponse(frame)
+	res, err := protocol.DecodeResponse(payload)
 	if err != nil {
 		return protocol.Response{}, c.fail(err)
 	}

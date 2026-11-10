@@ -37,6 +37,10 @@ const (
 	maxConnections = 10_000
 	// idleTimeout closes connections with no completed request/response.
 	idleTimeout = 30 * time.Second
+	// maxReusePayload bounds the retained per-connection staging buffer:
+	// payloads above it still work, but allocate fresh each time instead
+	// of pinning a ~1 MiB slab per connection after one large value.
+	maxReusePayload = 64 << 10
 	// compactTickInterval is the auto-compact poll cadence. The persist
 	// manager itself decides whether the snapshot interval elapsed or the
 	// WAL passed its byte budget, so this only bounds check latency.

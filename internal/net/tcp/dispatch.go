@@ -208,10 +208,15 @@ func (s *Server) handle(c net.Conn) {
 	// Default 4 KiB buffer: it batches the header plus small payloads
 	// without pinning 1 MiB per connection (the cap allows 10k conns).
 	br := bufio.NewReader(c)
-	header := make([]byte, protocol.FrameHeaderSize)
+	// Fixed-size header on the stack: no per-request alloc.
+	var header [protocol.FrameHeaderSize]byte
+	// Reused payload staging. Decoders copy every variable-length field
+	// out, so no decoded value aliases this buffer and reuse is safe.
+	// Oversized slabs are dropped rather than pinned per connection.
+	var payloadBuf []byte
 	for {
 		c.SetDeadline(time.Now().Add(idleTimeout))
-		if _, err := io.ReadFull(br, header); err != nil {
+		if _, err := io.ReadFull(br, header[:]); err != nil {
 			return
 		}
 		if header[0] != protocol.Magic || header[1] != protocol.Version {
@@ -221,20 +226,28 @@ func (s *Server) handle(c net.Conn) {
 		if payloadLen > protocol.MaxPayloadSize || uint64(payloadLen)+protocol.FrameHeaderSize > connBufferSize {
 			return // oversized payload: close, like C++
 		}
-		payload := make([]byte, payloadLen)
+		if cap(payloadBuf) > maxReusePayload {
+			payloadBuf = nil
+		}
+		payload := payloadBuf
+		if uint64(cap(payload)) < uint64(payloadLen) {
+			payload = make([]byte, payloadLen)
+			if payloadLen <= maxReusePayload {
+				payloadBuf = payload
+			}
+		} else {
+			payload = payload[:payloadLen]
+		}
 		if _, err := io.ReadFull(br, payload); err != nil {
 			return
 		}
-		frame := make([]byte, protocol.FrameHeaderSize+len(payload))
-		copy(frame, header)
-		copy(frame[protocol.FrameHeaderSize:], payload)
-		dec, err := protocol.DecodeRequest(frame)
+		dec, err := protocol.DecodeRequest(header[:], payload)
 		var res protocol.Response
 		if err != nil {
 			// Decode failures answer InvalidArgument without trace echo.
 			s.met.DecodeFailures.Add(1)
 			if e := s.log().Debug(); e != nil {
-				e.Int("bytes", len(frame)).Msg("decode failure")
+				e.Int("bytes", protocol.FrameHeaderSize+len(payload)).Msg("decode failure")
 			}
 			res = protocol.Response{Status: protocol.StatusInvalidArgument}
 		} else {

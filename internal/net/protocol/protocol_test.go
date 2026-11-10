@@ -13,6 +13,27 @@ import (
 // 0x05); the payload bytes are unchanged, so the vectors below reuse them
 // with the v6 header (0xC1 0x06).
 
+// splitTestFrame separates a complete test frame into header and payload
+// for the split-form decoders (production callers hold the two staging
+// buffers separately, never a joined frame). Short inputs pass through
+// as a short header so truncation cases keep failing the same way.
+func splitTestFrame(frame []byte) (header, payload []byte) {
+	if len(frame) < FrameHeaderSize {
+		return frame, nil
+	}
+	return frame[:FrameHeaderSize], frame[FrameHeaderSize:]
+}
+
+// testPayload strips the header of a complete test frame for the
+// payload-only response decoder; short inputs pass through so
+// truncation cases keep failing the same way.
+func testPayload(frame []byte) []byte {
+	if len(frame) < FrameHeaderSize {
+		return frame
+	}
+	return frame[FrameHeaderSize:]
+}
+
 func TestEncodeSetWorkedExample(t *testing.T) {
 	req := Request{
 		Opcode:         OpSet,
@@ -132,7 +153,7 @@ func TestRoundTripRequests(t *testing.T) {
 			}
 			// Frames must be self-delimiting: trailing garbage is ignored.
 			padded := append(append([]byte(nil), frame...), 0xDE, 0xAD)
-			dec, err := DecodeRequest(padded)
+			dec, err := DecodeRequest(splitTestFrame(padded))
 			if err != nil {
 				t.Fatalf("%v auth=%v: decode: %v", tc.Opcode, withAuth, err)
 			}
@@ -184,7 +205,7 @@ func TestRoundTripResponses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%v: encode: %v", tc.Status, err)
 		}
-		dec, err := DecodeResponse(frame)
+		dec, err := DecodeResponse(testPayload(frame))
 		if err != nil {
 			t.Fatalf("%v: decode: %v", tc.Status, err)
 		}
@@ -231,7 +252,7 @@ func TestDecodeErrors(t *testing.T) {
 		{"truncated key", valid[:20]},
 	}
 	for _, tc := range cases {
-		if _, err := DecodeRequest(tc.frame); err == nil {
+		if _, err := DecodeRequest(splitTestFrame(tc.frame)); err == nil {
 			t.Errorf("%s: expected error, got nil", tc.name)
 		}
 	}
@@ -243,7 +264,7 @@ func TestDecodeErrors(t *testing.T) {
 			t.Fatal(err)
 		}
 		resFrame[2] = op
-		if _, err := DecodeResponse(resFrame); err != nil {
+		if _, err := DecodeResponse(testPayload(resFrame)); err != nil {
 			t.Errorf("opcode byte %#02x: response decode should ignore opcode, got %v", op, err)
 		}
 	}
@@ -258,7 +279,7 @@ func TestDecodeExpiresAtOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Max representable value decodes fine.
-	if _, err := DecodeRequest(frame); err != nil {
+	if _, err := DecodeRequest(splitTestFrame(frame)); err != nil {
 		t.Fatalf("max expires_at should decode: %v", err)
 	}
 	// Bump the u64 past the guard by editing the frame: flags(1) then 8 bytes.
@@ -266,7 +287,7 @@ func TestDecodeExpiresAtOverflow(t *testing.T) {
 	for i := range 8 {
 		frame[off+i] = 0xFF
 	}
-	if _, err := DecodeRequest(frame); err == nil {
+	if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 		t.Fatal("expected expires_at overflow error")
 	}
 }
@@ -279,7 +300,7 @@ func TestDecodeCounterValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame[len(frame)-1] = 2
-	if _, err := DecodeRequest(frame); err == nil {
+	if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 		t.Fatal("expected invalid counter adjust error")
 	}
 	// Counter opcodes reject LWW metadata.
@@ -288,7 +309,7 @@ func TestDecodeCounterValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DecodeRequest(frame); err == nil {
+	if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 		t.Fatal("expected counter LWW metadata error")
 	}
 	for _, op := range []Opcode{OpCounterAdjust, OpCounterMerge, OpCounterGet} {
@@ -300,7 +321,7 @@ func TestDecodeCounterValidation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := DecodeRequest(frame); err == nil {
+		if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 			t.Fatalf("%v with TTL: expected error", op)
 		}
 	}
@@ -325,7 +346,7 @@ func TestDecodeShortTrailerLenient(t *testing.T) {
 		t.Fatal(err)
 	}
 	frame[FrameHeaderSize] |= FlagHasTrace // claim trace, append nothing
-	dec, err := DecodeRequest(frame)
+	dec, err := DecodeRequest(splitTestFrame(frame))
 	if err != nil {
 		t.Fatalf("short trace should be ignored: %v", err)
 	}
@@ -333,7 +354,7 @@ func TestDecodeShortTrailerLenient(t *testing.T) {
 		t.Fatal("short trace must not populate trace_id")
 	}
 	frame[FrameHeaderSize] |= FlagHasAuth
-	dec, err = DecodeRequest(frame)
+	dec, err = DecodeRequest(splitTestFrame(frame))
 	if err != nil {
 		t.Fatalf("short auth should be ignored: %v", err)
 	}
@@ -354,7 +375,7 @@ func TestDecodeZeroTraceCanonicalizesSpan(t *testing.T) {
 		0, 0, 0, 0, 0, 0, 0, 9, // span_id 9
 	}
 	frame := append([]byte{Magic, Version, uint8(OpGet), 0, 0, 0, uint8(len(payload))}, payload...)
-	dec, err := DecodeRequest(frame)
+	dec, err := DecodeRequest(splitTestFrame(frame))
 	if err != nil {
 		t.Fatal(err)
 	}

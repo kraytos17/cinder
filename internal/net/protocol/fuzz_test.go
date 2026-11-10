@@ -41,7 +41,7 @@ func FuzzDecodeRequest(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, frame []byte) {
-		dec, err := DecodeRequest(frame)
+		dec, err := DecodeRequest(splitTestFrame(frame))
 		if err != nil {
 			return
 		}
@@ -51,7 +51,7 @@ func FuzzDecodeRequest(f *testing.F) {
 		}
 		// The re-encoded frame must decode to the same request: the codec
 		// is canonical on its accepted domain.
-		dec2, err := DecodeRequest(again)
+		dec2, err := DecodeRequest(splitTestFrame(again))
 		if err != nil {
 			t.Fatalf("re-decode of re-encoded frame failed: %v", err)
 		}
@@ -67,7 +67,7 @@ func FuzzDecodeResponse(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, frame []byte) {
-		dec, err := DecodeResponse(frame)
+		dec, err := DecodeResponse(testPayload(frame))
 		if err != nil {
 			return
 		}
@@ -75,7 +75,7 @@ func FuzzDecodeResponse(f *testing.F) {
 		if err != nil {
 			t.Fatalf("re-encode of accepted response failed: %v", err)
 		}
-		dec2, err := DecodeResponse(again)
+		dec2, err := DecodeResponse(testPayload(again))
 		if err != nil {
 			t.Fatalf("re-decode of re-encoded response failed: %v", err)
 		}
