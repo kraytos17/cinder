@@ -5,13 +5,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
 // BenchmarkHintPush measures queueing distinct keys (the outage path).
 func BenchmarkHintPush(b *testing.B) {
 	q := NewHintQueue()
-	exp := time.Now().Add(time.Hour)
+	exp := expiry.At(time.Now().Add(time.Hour))
 	b.ResetTimer()
 	for i := range b.N {
 		q.Push(Hint{
@@ -25,7 +26,7 @@ func BenchmarkHintPush(b *testing.B) {
 // BenchmarkHintSnapshot measures the replay-scan over a full queue.
 func BenchmarkHintSnapshot(b *testing.B) {
 	q := NewHintQueue()
-	exp := time.Now().Add(time.Hour)
+	exp := expiry.At(time.Now().Add(time.Hour))
 	for i := range 1024 {
 		q.Push(Hint{
 			Target:    "n2",

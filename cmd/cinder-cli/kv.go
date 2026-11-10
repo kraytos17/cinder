@@ -30,7 +30,6 @@ func runSingle(
 	case "set":
 		req = protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(value)}
 		if ttlMs > 0 {
-			req.HasTTL = true
 			req.TTL = time.Duration(ttlMs) * time.Millisecond
 		}
 	case "del":
@@ -76,8 +75,8 @@ func runSingle(
 		if cmd == "get-versioned" {
 			fmt.Fprintln(stdout, "version:", res.Version)
 			fmt.Fprintln(stdout, "writer:", res.WriterNodeHash)
-			if res.HasExpiresAt {
-				fmt.Fprintln(stdout, "expires_at:", res.ExpiresAt.Unix())
+			if exp, ok := res.ExpiresAt.Time(); ok {
+				fmt.Fprintln(stdout, "expires_at:", exp.Unix())
 			}
 		}
 		return 0

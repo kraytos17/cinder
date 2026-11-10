@@ -5,6 +5,8 @@ import (
 	"math"
 	"testing"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // The docs/protocol.md worked examples predate v6 (they show version byte
@@ -18,7 +20,6 @@ func TestEncodeSetWorkedExample(t *testing.T) {
 		Value:          []byte("bar"),
 		Version:        2,
 		WriterNodeHash: 66,
-		HasTTL:         true,
 		TTL:            30 * time.Second,
 	}
 	got, err := EncodeRequest(req, nil)
@@ -48,7 +49,6 @@ func TestEncodeSetWithTraceWorkedExample(t *testing.T) {
 		Value:          []byte("bar"),
 		Version:        2,
 		WriterNodeHash: 66,
-		HasTTL:         true,
 		TTL:            30 * time.Second,
 		TraceID:        7,
 		SpanID:         10,
@@ -99,17 +99,16 @@ func TestRoundTripRequests(t *testing.T) {
 		{Opcode: OpPing},
 		{Opcode: OpGet, Key: []byte("k")},
 		{Opcode: OpGet, Key: []byte(""), Value: []byte("")},
-		{Opcode: OpSet, Key: []byte("foo"), Value: []byte("bar"), Version: 2, WriterNodeHash: 66, HasTTL: true, TTL: 30 * time.Second},
+		{Opcode: OpSet, Key: []byte("foo"), Value: []byte("bar"), Version: 2, WriterNodeHash: 66, TTL: 30 * time.Second},
 		{Opcode: OpSet, Key: []byte("foo"), Value: []byte("bar"), TraceID: 7, SpanID: 10},
 		{Opcode: OpDel, Key: []byte("gone"), Version: 9, WriterNodeHash: 1},
 		{Opcode: OpGossip, Value: []byte("node1@127.0.0.1:7000:alive:3")},
 		{
 			Opcode: OpReplicate, Key: []byte("k"), Value: []byte("v"),
-			Version: 3, WriterNodeHash: 5, HasExpiresAt: true,
-			ExpiresAt: time.UnixMilli(1_700_000_000_000).UTC(), Tombstone: false,
+			Version: 3, WriterNodeHash: 5, ExpiresAt: expiry.FromUnixMilli(1_700_000_000_000), Tombstone: false,
 			TraceID: 1, SpanID: 2,
 		},
-		{Opcode: OpReplicate, Key: []byte("k"), Tombstone: true, Version: 4, WriterNodeHash: 6, HasExpiresAt: true, ExpiresAt: time.UnixMilli(1_700_000_000_000).UTC()},
+		{Opcode: OpReplicate, Key: []byte("k"), Tombstone: true, Version: 4, WriterNodeHash: 6, ExpiresAt: expiry.FromUnixMilli(1_700_000_000_000)},
 		{Opcode: OpHint, Key: []byte("k"), Value: []byte("v"), Version: 1, WriterNodeHash: 1},
 		{Opcode: OpGetVersioned, Key: []byte("k")},
 		{Opcode: OpAntiEntropyDigest, Key: []byte("bucket-refinement-v3"), Value: []byte{0x41, 0x45, 0x42, 0x35}},
@@ -160,12 +159,9 @@ func TestRoundTripRequests(t *testing.T) {
 
 func requestsEqual(a, b Request) bool {
 	if a.Opcode != b.Opcode || a.Version != b.Version || a.WriterNodeHash != b.WriterNodeHash ||
-		a.HasTTL != b.HasTTL || a.TTL != b.TTL || a.HasExpiresAt != b.HasExpiresAt ||
+		a.TTL != b.TTL || a.ExpiresAt.UnixMilli() != b.ExpiresAt.UnixMilli() ||
 		a.Tombstone != b.Tombstone || a.CounterDelta != b.CounterDelta ||
 		a.CounterDecrement != b.CounterDecrement || a.TraceID != b.TraceID || a.SpanID != b.SpanID {
-		return false
-	}
-	if a.HasExpiresAt && !a.ExpiresAt.Equal(b.ExpiresAt) {
 		return false
 	}
 	return bytes.Equal(a.Key, b.Key) && bytes.Equal(a.Value, b.Value)
@@ -178,7 +174,7 @@ func TestRoundTripResponses(t *testing.T) {
 		{Status: StatusOK},                                    // no value, no flags
 		{Status: StatusOK, Value: []byte(""), HasValue: true}, // present-but-empty
 		{Status: StatusOK, Value: []byte("v"), HasValue: true, Version: 3, WriterNodeHash: 9, Tombstone: true, TraceID: 7, SpanID: 10},
-		{Status: StatusOK, Value: []byte("v"), HasValue: true, HasExpiresAt: true, ExpiresAt: time.UnixMilli(1_700_000_000_000).UTC()},
+		{Status: StatusOK, Value: []byte("v"), HasValue: true, ExpiresAt: expiry.FromUnixMilli(1_700_000_000_000)},
 		{Status: StatusNotReady, Value: []byte("moved to node-2"), HasValue: true},
 		{Status: StatusPermissionDenied},
 		{Status: StatusCorruptData},
@@ -194,12 +190,10 @@ func TestRoundTripResponses(t *testing.T) {
 		}
 		if dec.Status != tc.Status || dec.HasValue != tc.HasValue ||
 			!bytes.Equal(dec.Value, tc.Value) || dec.Version != tc.Version ||
-			dec.WriterNodeHash != tc.WriterNodeHash || dec.HasExpiresAt != tc.HasExpiresAt ||
+			dec.WriterNodeHash != tc.WriterNodeHash ||
+			dec.ExpiresAt.UnixMilli() != tc.ExpiresAt.UnixMilli() ||
 			dec.Tombstone != tc.Tombstone || dec.TraceID != tc.TraceID || dec.SpanID != tc.SpanID {
 			t.Fatalf("round trip mismatch:\n got %+v\nwant %+v", dec, tc)
-		}
-		if dec.HasExpiresAt && !dec.ExpiresAt.Equal(tc.ExpiresAt) {
-			t.Fatalf("expires_at mismatch: got %v want %v", dec.ExpiresAt, tc.ExpiresAt)
 		}
 		again, err := EncodeResponse(dec)
 		if err != nil {
@@ -257,8 +251,7 @@ func TestDecodeErrors(t *testing.T) {
 
 func TestDecodeExpiresAtOverflow(t *testing.T) {
 	req := Request{
-		Opcode: OpSet, Key: []byte("k"), HasExpiresAt: true,
-		ExpiresAt: time.UnixMilli(math.MaxInt64 / 1_000_000).UTC(),
+		Opcode: OpSet, Key: []byte("k"), ExpiresAt: expiry.FromUnixMilli(math.MaxInt64 / 1_000_000),
 	}
 	frame, err := EncodeRequest(req, nil)
 	if err != nil {
@@ -299,7 +292,7 @@ func TestDecodeCounterValidation(t *testing.T) {
 		t.Fatal("expected counter LWW metadata error")
 	}
 	for _, op := range []Opcode{OpCounterAdjust, OpCounterMerge, OpCounterGet} {
-		withTTL := Request{Opcode: op, Key: []byte("c"), HasTTL: true, TTL: time.Second}
+		withTTL := Request{Opcode: op, Key: []byte("c"), TTL: time.Second}
 		if op == OpCounterAdjust {
 			withTTL.CounterDelta = 1
 		}

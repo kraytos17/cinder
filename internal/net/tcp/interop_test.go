@@ -14,9 +14,11 @@ import (
 
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/cluster"
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -285,7 +287,7 @@ func TestInteropReplicate(t *testing.T) {
 		_, err := c.Do(protocol.Request{
 			Opcode: protocol.OpReplicate, Key: []byte(key), Value: []byte("r"),
 			Version: 42, WriterNodeHash: 7,
-			HasExpiresAt: true, ExpiresAt: time.Now().Add(time.Hour),
+			ExpiresAt: expiry.At(time.Now().Add(time.Hour)),
 		})
 		if err != nil {
 			t.Fatalf("[%s] replicate: %v", name, err)
@@ -298,7 +300,7 @@ func TestInteropReplicate(t *testing.T) {
 		_, err = c.Do(protocol.Request{
 			Opcode: protocol.OpHint, Key: []byte(key),
 			Version: 43, WriterNodeHash: 7, Tombstone: true,
-			HasExpiresAt: true, ExpiresAt: time.Now().Add(time.Hour),
+			ExpiresAt: expiry.At(time.Now().Add(time.Hour)),
 		})
 		if err != nil {
 			t.Fatalf("[%s] hint tombstone: %v", name, err)
@@ -366,8 +368,8 @@ func TestInteropTwoNodeCppCluster(t *testing.T) {
 	addrs, _ := cppCluster(t)
 	cl, err := client.NewCluster(client.ClusterConfig{
 		Nodes: []client.NodeAddr{
-			{ID: "node1", Host: "127.0.0.1", Port: portOf(t, addrs["node1"])},
-			{ID: "node2", Host: "127.0.0.1", Port: portOf(t, addrs["node2"])},
+			{ID: "node1", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node1"]))},
+			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node2"]))},
 		},
 		MaxRetries:    5,
 		BaseBackoffMs: 10,
@@ -501,9 +503,9 @@ func TestInteropCppQuorumSurvivesOneFailure(t *testing.T) {
 	}
 	cl, err := client.NewCluster(client.ClusterConfig{
 		Nodes: []client.NodeAddr{
-			{ID: "node1", Host: "127.0.0.1", Port: ports["node1"]},
-			{ID: "node2", Host: "127.0.0.1", Port: ports["node2"]},
-			{ID: "node3", Host: "127.0.0.1", Port: ports["node3"]},
+			{ID: "node1", Host: "127.0.0.1", Port: netport.Port(ports["node1"])},
+			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
+			{ID: "node3", Host: "127.0.0.1", Port: netport.Port(ports["node3"])},
 		},
 		MaxRetries: 5, BaseBackoffMs: 10, RPCTimeout: 5 * time.Second,
 	})
@@ -578,9 +580,9 @@ func TestInteropGossipWithCpp(t *testing.T) {
 	p3 := l3.Addr().(*net.TCPAddr).Port
 
 	cPort := freePort(t)
-	_, srv2, stop2 := startGo("node2", l2, []tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: cPort}, {ID: "gonode", Host: "127.0.0.1", Port: p3}})
+	_, srv2, stop2 := startGo("node2", l2, []tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(cPort)}, {ID: "gonode", Host: "127.0.0.1", Port: netport.Port(p3)}})
 	defer stop2()
-	_, srv3, stop3 := startGo("gonode", l3, []tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: p2}})
+	_, srv3, stop3 := startGo("gonode", l3, []tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: netport.Port(p2)}})
 	defer stop3()
 
 	cmd := exec.Command(bin, "--port", fmt.Sprint(cPort), "--node-id", "node1",
@@ -695,7 +697,7 @@ func TestInteropAEWithCpp(t *testing.T) {
 	startGo := func(l net.Listener) {
 		st := store.NewLRUStore(1<<20, nil)
 		srv := tcp.NewServer("gonode", l.Addr().(*net.TCPAddr).Port, st, nil)
-		if err := srv.ConfigureCluster([]tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: cPort}}); err != nil {
+		if err := srv.ConfigureCluster([]tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(cPort)}}); err != nil {
 			t.Fatal(err)
 		}
 		srv.SetSuspectTimeout(time.Hour)
@@ -704,7 +706,7 @@ func TestInteropAEWithCpp(t *testing.T) {
 		// Freeze the replay tick: phase A must converge through
 		// anti-entropy only, never through hint replay.
 		srv.SetReplayInterval(time.Hour)
-		pool := client.NewPool([]client.NodeAddr{{ID: "node1", Host: "127.0.0.1", Port: cPort}}, 5*time.Second)
+		pool := client.NewPool([]client.NodeAddr{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(cPort)}}, 5*time.Second)
 		mgr := repl.NewManager(st, "gonode", nil, pool)
 		srv.ConfigureReplication(2, repl.Async, mgr)
 		srv.ConfigureAntiEntropy(256, 1<<20)
@@ -896,8 +898,8 @@ func TestInteropRebalanceGoJoinsCpp(t *testing.T) {
 	gStore := store.NewLRUStore(1<<20, nil)
 	gSrv := tcp.NewServer("gonode", gPort, gStore, nil)
 	if err := gSrv.ConfigureCluster([]tcp.Peer{
-		{ID: "node1", Host: "127.0.0.1", Port: ports["node1"]},
-		{ID: "node2", Host: "127.0.0.1", Port: ports["node2"]},
+		{ID: "node1", Host: "127.0.0.1", Port: netport.Port(ports["node1"])},
+		{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -905,8 +907,8 @@ func TestInteropRebalanceGoJoinsCpp(t *testing.T) {
 	gSrv.SetGossipInterval(200 * time.Millisecond)
 	gSrv.SetProbeInterval(200 * time.Millisecond)
 	gPool := client.NewPool([]client.NodeAddr{
-		{ID: "node1", Host: "127.0.0.1", Port: ports["node1"]},
-		{ID: "node2", Host: "127.0.0.1", Port: ports["node2"]},
+		{ID: "node1", Host: "127.0.0.1", Port: netport.Port(ports["node1"])},
+		{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
 	}, 5*time.Second)
 	gMgr := repl.NewManager(gStore, "gonode", nil, gPool)
 	gSrv.ConfigureReplication(2, repl.Async, gMgr)

@@ -9,6 +9,7 @@ import (
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/tlscfg"
@@ -178,8 +179,8 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 			if pid == id {
 				continue
 			}
-			peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: port})
-			addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: port})
+			peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: netport.Port(port)})
+			addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: netport.Port(port)})
 		}
 		st := store.NewLRUStore(1<<20, nil)
 		srv := tcp.NewServer(id, ports[id], st, nil)

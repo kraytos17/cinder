@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
@@ -23,7 +24,7 @@ func TestJournalReplicatesThroughManager(t *testing.T) {
 	}
 	m.SetHintJournal(j)
 	ft.Fail["n2"] = true
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, repl.Async, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2"}, repl.Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -157,7 +158,7 @@ func TestJournalCompactDropsDels(t *testing.T) {
 	defer j.Close()
 	mkLive := func(key string) repl.Hint {
 		h := testHint("n2", key, "v", 5, 1)
-		h.ExpiresAt = time.Now().Add(time.Hour)
+		h.ExpiresAt = expiry.At(time.Now().Add(time.Hour))
 		return h
 	}
 	for _, k := range []string{"a", "b", "c", "d", "e"} {
@@ -215,7 +216,7 @@ func TestJournalAutoCompactsPastThreshold(t *testing.T) {
 	const total = JournalCompactRecords + 100
 	for i := range total {
 		h := testHint("n2", "k", "v", uint64(i+1), 1)
-		h.ExpiresAt = time.Now().Add(time.Hour)
+		h.ExpiresAt = expiry.At(time.Now().Add(time.Hour))
 		q.Push(h)
 		j.AppendAdd(h)
 		if j.NeedsCompaction() {

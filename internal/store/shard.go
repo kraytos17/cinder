@@ -103,8 +103,8 @@ func (s *Store) onAccess(sh *shard, idx int) {
 
 func (s *Store) updateWheel(sh *shard, idx int, at time.Time) {
 	n := &sh.nodes[idx]
-	if n.entry.HasTTL {
-		sh.wheel.Insert(idx, expiryTicks(n.entry.ExpiresAt, at))
+	if exp, ok := n.entry.Expiry.Time(); ok {
+		sh.wheel.Insert(idx, expiryTicks(exp, at))
 	} else {
 		// Wheel removal is idempotent, so no scheduled flag is needed.
 		sh.wheel.Remove(idx)

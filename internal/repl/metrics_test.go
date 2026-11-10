@@ -17,7 +17,7 @@ func TestReplMetrics(t *testing.T) {
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Async, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
@@ -46,7 +46,7 @@ func TestReplMetrics(t *testing.T) {
 	}
 	// Quorum write against a down replica fails closed and counts it.
 	ft.Fail["n2"], ft.Fail["n3"] = true, true
-	if err := m.Write("q", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
+	if err := m.Write("q", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("err = %v, want ErrQuorum", err)
 	}
 	if got := c.QuorumWritesErr.Load(); got != 1 {
@@ -54,7 +54,7 @@ func TestReplMetrics(t *testing.T) {
 	}
 	// Nil collector: same paths, no panic.
 	m.SetMetrics(nil)
-	if err := m.Write("k2", []byte("v"), 0, false, []string{"n2"}, Async, 0, 0); err != nil {
+	if err := m.Write("k2", []byte("v"), 0, []string{"n2"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -5,35 +5,36 @@ import (
 
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/netport"
 )
 
 type adminInfo struct {
-	NodeID                  string `json:"node_id"`
-	Port                    int    `json:"port"`
-	CapacityBytes           uint64 `json:"capacity_bytes"`
-	CurrentBytes            uint64 `json:"current_bytes"`
-	CurrentEntries          uint64 `json:"current_entries"`
-	EvictionPolicy          string `json:"eviction_policy"`
-	ReplicaFactor           int    `json:"replica_factor"`
-	Consistency             string `json:"consistency"`
-	PersistenceEnabled      bool   `json:"persistence_enabled"`
-	AntiEntropyIntervalMs   int64  `json:"anti_entropy_interval_ms"`
-	AntiEntropyBuckets      int    `json:"anti_entropy_buckets"`
-	AntiEntropyFetchBytes   int64  `json:"anti_entropy_fetch_bytes"`
-	AntiEntropyFullRehashMs int64  `json:"anti_entropy_full_rehash_interval_ms"`
-	TLSEnabled              bool   `json:"tls_enabled"`
-	AuthEnabled             bool   `json:"auth_enabled"`
-	ClientAuthEnabled       bool   `json:"client_auth_enabled"`
-	LogLevel                string `json:"log_level"`
-	Peers                   []any  `json:"peers"`
+	NodeID                  string   `json:"node_id"`
+	Port                    int      `json:"port"`
+	CapacityBytes           uint64   `json:"capacity_bytes"`
+	CurrentBytes            uint64   `json:"current_bytes"`
+	CurrentEntries          uint64   `json:"current_entries"`
+	EvictionPolicy          string   `json:"eviction_policy"`
+	ReplicaFactor           int      `json:"replica_factor"`
+	Consistency             string   `json:"consistency"`
+	PersistenceEnabled      bool     `json:"persistence_enabled"`
+	AntiEntropyIntervalMs   int64    `json:"anti_entropy_interval_ms"`
+	AntiEntropyBuckets      int      `json:"anti_entropy_buckets"`
+	AntiEntropyFetchBytes   int64    `json:"anti_entropy_fetch_bytes"`
+	AntiEntropyFullRehashMs int64    `json:"anti_entropy_full_rehash_interval_ms"`
+	TLSEnabled              bool     `json:"tls_enabled"`
+	AuthEnabled             bool     `json:"auth_enabled"`
+	ClientAuthEnabled       bool     `json:"client_auth_enabled"`
+	LogLevel                string   `json:"log_level"`
+	Peers                   []string `json:"peers"`
 }
 
 type adminClusterNode struct {
-	ID          string `json:"id"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	State       string `json:"state"`
-	Incarnation uint64 `json:"incarnation"`
+	ID          string       `json:"id"`
+	Host        string       `json:"host"`
+	Port        netport.Port `json:"port"`
+	State       string       `json:"state"`
+	Incarnation uint64       `json:"incarnation"`
 }
 
 type adminRing struct {
@@ -58,7 +59,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 			NodeID: s.nodeID, Port: s.port, CapacityBytes: s.store.Capacity(),
 			CurrentBytes: curBytes, CurrentEntries: curEntries,
 			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: 1, Consistency: "async",
-			LogLevel: "info", Peers: []any{},
+			LogLevel: "info", Peers: []string{},
 		})}
 	case protocol.OpAdminCluster:
 		s.ringMu.RLock()
@@ -76,10 +77,10 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 				case cluster.Dead:
 					state = "dead"
 				}
-				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: int(m.Port), State: state, Incarnation: m.Incarnation})
+				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: m.Port, State: state, Incarnation: m.Incarnation})
 			}
 		} else {
-			nodes = []adminClusterNode{{ID: s.nodeID, Host: "127.0.0.1", Port: s.port, State: "alive", Incarnation: 1}}
+			nodes = []adminClusterNode{{ID: s.nodeID, Host: "127.0.0.1", Port: netport.Port(s.port), State: "alive", Incarnation: 1}}
 		}
 		if nodes == nil {
 			nodes = []adminClusterNode{}

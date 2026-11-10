@@ -202,7 +202,7 @@ func (c *Cluster) Set(key string, value []byte) (protocol.Response, error) {
 
 // SetWithTTL stores value with a relative TTL at its ring owner.
 func (c *Cluster) SetWithTTL(key string, value []byte, ttl time.Duration) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, HasTTL: true, TTL: ttl})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, TTL: ttl})
 }
 
 // Get fetches the live value from its ring owner.

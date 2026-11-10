@@ -87,7 +87,7 @@ func counterStatusOf(err error) protocol.Status {
 // back to the local GC deadline via the versioned remove path.
 
 func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
-	if req.Tombstone && !req.HasExpiresAt {
+	if req.Tombstone && req.ExpiresAt.IsNone() {
 		if err := s.store.RemoveVersioned(string(req.Key), req.Version, req.WriterNodeHash); err != nil {
 			return protocol.Response{Status: statusOf(err)}
 		}
@@ -99,9 +99,8 @@ func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 		WriterNodeHash: req.WriterNodeHash,
 		Tombstone:      req.Tombstone,
 	}
-	if req.HasExpiresAt {
-		e.HasTTL = true
-		e.ExpiresAt = req.ExpiresAt
+	if !req.ExpiresAt.IsNone() {
+		e.Expiry = req.ExpiresAt
 	}
 	if err := s.store.PutVersioned(string(req.Key), e); err != nil {
 		return protocol.Response{Status: statusOf(err)}

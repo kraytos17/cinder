@@ -55,8 +55,7 @@ func (s *Server) handleGetVersioned(req protocol.Request) protocol.Response {
 		Version:        e.Version,
 		WriterNodeHash: e.WriterNodeHash,
 		Tombstone:      e.Tombstone,
-		HasExpiresAt:   e.HasTTL,
-		ExpiresAt:      e.ExpiresAt,
+		ExpiresAt:      e.Expiry,
 	}
 	if !e.Tombstone {
 		res.Value = e.Value
@@ -72,16 +71,11 @@ func (s *Server) handleSet(req protocol.Request) protocol.Response {
 		return s.notReady(owner)
 	}
 	if m, rf, mode := s.replication(); m != nil && rf > 1 {
-		var err error
-		if req.HasTTL {
-			err = m.Write(string(req.Key), req.Value, req.TTL, true, s.replicaNodes(string(req.Key)), mode, req.TraceID, req.SpanID)
-		} else {
-			err = m.Write(string(req.Key), req.Value, 0, false, s.replicaNodes(string(req.Key)), mode, req.TraceID, req.SpanID)
-		}
+		err := m.Write(string(req.Key), req.Value, req.TTL, s.replicaNodes(string(req.Key)), mode, req.TraceID, req.SpanID)
 		return writeResult(err)
 	}
 	var err error
-	if req.HasTTL {
+	if req.TTL > 0 {
 		err = s.store.PutWithTTL(string(req.Key), req.Value, req.TTL)
 	} else {
 		err = s.store.Put(string(req.Key), req.Value)

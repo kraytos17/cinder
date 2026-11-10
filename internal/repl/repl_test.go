@@ -7,6 +7,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/testkit"
@@ -37,7 +38,7 @@ func TestWriterHashIsFNV1a(t *testing.T) {
 func TestWriteAsyncFansOut(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Async, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m.Local().GetVersioned("k"); !ok {
@@ -55,7 +56,7 @@ func TestWriteAsyncHintOnFailure(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	ft.Fail["n3"] = true
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Async, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
@@ -66,7 +67,7 @@ func TestWriteQuorum(t *testing.T) {
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	// RF=3, all up: W=2 (local + 1). Stragglers drain in the background,
 	// like the C++ async tail, so replica assertions poll.
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "replicas", func() bool {
@@ -79,20 +80,20 @@ func TestWriteQuorum(t *testing.T) {
 	})
 	// One replica down: local + survivor = W. Succeeds, hint queued.
 	ft.Fail["n3"] = true
-	if err := m.Write("k2", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
+	if err := m.Write("k2", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatalf("quorum with one failure: %v", err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })
 	// Two down: local alone cannot reach W=2.
 	ft.Fail["n2"] = true
-	if err := m.Write("k3", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
+	if err := m.Write("k3", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); !errors.Is(err, ErrQuorum) {
 		t.Fatalf("expected ErrQuorum, got %v", err)
 	}
 }
 
 func TestQuorumEmptyReplicas(t *testing.T) {
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, testkit.NewStores())
-	if err := m.Write("k", []byte("v"), 0, false, nil, Quorum, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, nil, Quorum, 0, 0); err != nil {
 		t.Fatalf("W==1 must succeed on local: %v", err)
 	}
 }
@@ -100,7 +101,7 @@ func TestQuorumEmptyReplicas(t *testing.T) {
 func TestDeleteQuorum(t *testing.T) {
 	ft := testkit.NewStores("n2", "n3")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Delete("k", []string{"n2", "n3"}, Quorum, 0, 0); err != nil {
@@ -246,14 +247,14 @@ func TestHintCoalesce(t *testing.T) {
 	mk := func(v uint64, w uint64) protocol.Request {
 		return protocol.Request{Opcode: protocol.OpReplicate, Key: []byte("k"), Value: []byte("v"), Version: v, WriterNodeHash: w}
 	}
-	if !q.Push(Hint{Target: "n2", Req: mk(1, 1), ExpiresAt: time.Now().Add(time.Minute)}) {
+	if !q.Push(Hint{Target: "n2", Req: mk(1, 1), ExpiresAt: expiry.At(time.Now().Add(time.Minute))}) {
 		t.Fatal("first push")
 	}
 	if q.Len() != 1 {
 		t.Fatal("coalesce must keep one entry")
 	}
 	// Identical stamp counts as newer (lwwCovers): replace, still one entry.
-	if !q.Push(Hint{Target: "n2", Req: mk(1, 1), ExpiresAt: time.Now().Add(time.Minute)}) {
+	if !q.Push(Hint{Target: "n2", Req: mk(1, 1), ExpiresAt: expiry.At(time.Now().Add(time.Minute))}) {
 		t.Fatal("identical stamp must replace")
 	}
 	if q.Len() != 1 {
@@ -262,7 +263,7 @@ func TestHintCoalesce(t *testing.T) {
 	// Older stamp is dropped.
 	old := mk(1, 1)
 	old.Version = 0
-	if q.Push(Hint{Target: "n2", Req: old, ExpiresAt: time.Now().Add(time.Minute)}) {
+	if q.Push(Hint{Target: "n2", Req: old, ExpiresAt: expiry.At(time.Now().Add(time.Minute))}) {
 		t.Fatal("stale hint accepted")
 	}
 }
@@ -271,7 +272,7 @@ func TestHintQueueBounds(t *testing.T) {
 	q := NewHintQueue()
 	q.SetMaxBytes(500)
 	mk := func(k string, n int) Hint {
-		return Hint{Target: "n2", Req: protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(k), Value: make([]byte, n)}, ExpiresAt: time.Now().Add(time.Minute)}
+		return Hint{Target: "n2", Req: protocol.Request{Opcode: protocol.OpReplicate, Key: []byte(k), Value: make([]byte, n)}, ExpiresAt: expiry.At(time.Now().Add(time.Minute))}
 	}
 	// Oversized single hint can never fit: dropped.
 	if q.Push(mk("big", 1000)) {
@@ -295,7 +296,7 @@ func TestHintQueueBounds(t *testing.T) {
 func TestHintTTLExpiry(t *testing.T) {
 	q := NewHintQueue()
 	now := time.Now()
-	q.Push(Hint{Target: "n2", Req: protocol.Request{Opcode: protocol.OpReplicate, Key: []byte("k")}, ExpiresAt: now.Add(time.Second)})
+	q.Push(Hint{Target: "n2", Req: protocol.Request{Opcode: protocol.OpReplicate, Key: []byte("k")}, ExpiresAt: expiry.At(now.Add(time.Second))})
 	if len(q.Snapshot(now, 256)) != 1 {
 		t.Fatal("live hint missing")
 	}
@@ -311,7 +312,7 @@ func TestReplayRemovesOnSuccess(t *testing.T) {
 	ft := testkit.NewStores("n2")
 	m := NewManager(store.NewLRUStore(1<<20, nil), "n1", nil, ft)
 	ft.Fail["n2"] = true
-	if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, Async, 0, 0); err != nil {
+	if err := m.Write("k", []byte("v"), 0, []string{"n2"}, Async, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	waitFor(t, "hint", func() bool { return m.HintCount() == 1 })

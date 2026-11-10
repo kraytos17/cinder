@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/transport"
@@ -28,6 +29,15 @@ const (
 	// Quorum requires W = R/2+1 acknowledgements including the local write.
 	Quorum
 )
+
+// String renders the mode for logs and errors, mirroring the C++
+// ConsistencyMode names.
+func (m Mode) String() string {
+	if m == Quorum {
+		return "quorum"
+	}
+	return "async"
+}
 
 // Sentinel errors. Servers map ErrQuorum to NotReady and ErrNotFound to
 // NotFound, mirroring the C++ status contract.
@@ -64,7 +74,7 @@ type Hint struct {
 	ID        uint64 // stable handle for replay removal
 	Target    string
 	Req       protocol.Request
-	ExpiresAt time.Time
+	ExpiresAt expiry.Expiry
 }
 
 const (
@@ -133,7 +143,7 @@ func (q *HintQueue) Snapshot(now time.Time, limit int) []Hint {
 	var out []Hint
 	kept := q.items[:0]
 	for _, h := range q.items {
-		if !h.ExpiresAt.After(now) {
+		if h.ExpiresAt.Expired(now) {
 			q.bytes -= hintBytes(h)
 			continue
 		}
@@ -196,7 +206,11 @@ func (q *HintQueue) Bytes() uint64 {
 }
 
 func lwwCoversReq(a, b protocol.Request) bool {
-	as := store.Stamp{Version: a.Version, Writer: a.WriterNodeHash, Tombstone: a.Tombstone}
-	bs := store.Stamp{Version: b.Version, Writer: b.WriterNodeHash, Tombstone: b.Tombstone}
-	return store.LWWCovers(as, bs)
+	return store.LWWCovers(stampOfRequest(a), stampOfRequest(b))
+}
+
+// stampOfRequest is the single canonical conversion from wire request to
+// LWW comparison currency (see Entry.Stamp for why it exists).
+func stampOfRequest(r protocol.Request) store.Stamp {
+	return store.Stamp{Version: r.Version, Writer: r.WriterNodeHash, Tombstone: r.Tombstone}
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // FuzzSnapshot feeds arbitrary bytes to the snapshot decoder. It must
@@ -102,7 +103,7 @@ func buildSnapSeeds() [][]byte {
 		return append(hdr, body...)
 	}
 	out = append(out, mk(7, []SnapEntry{{Key: []byte("k"), Value: []byte("v"), Version: 1, Writer: 2, Freq: 3}}))
-	out = append(out, mk(9, []SnapEntry{{Key: []byte("t"), Version: 4, Writer: 5, HasTTL: true, ExpiresMs: 100, Tombstone: true}}))
+	out = append(out, mk(9, []SnapEntry{{Key: []byte("t"), Version: 4, Writer: 5, Expiry: expiry.FromUnixMilli(100), Tombstone: true}}))
 	full := mk(1, []SnapEntry{{Key: []byte("a"), Value: []byte("1")}, {Key: []byte("b"), Value: []byte("2")}})
 	out = append(out, full)
 	out = append(out, full[:len(full)-5]) // torn tail
@@ -116,6 +117,6 @@ func buildSnapSeeds() [][]byte {
 func snapEqual(a, b SnapEntry) bool {
 	return bytes.Equal(a.Key, b.Key) && bytes.Equal(a.Value, b.Value) &&
 		a.Version == b.Version && a.Writer == b.Writer &&
-		a.ExpiresMs == b.ExpiresMs && a.HasTTL == b.HasTTL &&
+		a.Expiry.UnixMilli() == b.Expiry.UnixMilli() &&
 		a.Tombstone == b.Tombstone && a.Freq == b.Freq
 }

@@ -81,7 +81,8 @@ func FuzzDecodeResponse(f *testing.F) {
 		}
 		if dec.Status != dec2.Status || dec.HasValue != dec2.HasValue ||
 			!bytes.Equal(dec.Value, dec2.Value) || dec.Version != dec2.Version ||
-			dec.WriterNodeHash != dec2.WriterNodeHash || dec.HasExpiresAt != dec2.HasExpiresAt ||
+			dec.WriterNodeHash != dec2.WriterNodeHash ||
+			dec.ExpiresAt.UnixMilli() != dec2.ExpiresAt.UnixMilli() ||
 			dec.Tombstone != dec2.Tombstone || dec.TraceID != dec2.TraceID || dec.SpanID != dec2.SpanID {
 			t.Fatalf("not a fixed point:\n%+v\n%+v", dec, dec2)
 		}

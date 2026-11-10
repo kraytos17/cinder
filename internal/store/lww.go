@@ -17,6 +17,18 @@ const (
 	LWWGreater
 )
 
+// String renders the order for logs and test failures.
+func (o LWWOrder) String() string {
+	switch o {
+	case LWWLess:
+		return "less"
+	case LWWEqual:
+		return "equal"
+	default:
+		return "greater"
+	}
+}
+
 // Stamp is the (version, writer, tombstone) identity of an entry.
 type Stamp struct {
 	Version   uint64
@@ -24,7 +36,11 @@ type Stamp struct {
 	Tombstone bool
 }
 
-func stampOf(e Entry) Stamp {
+// Stamp returns the LWW identity of the entry: the single canonical
+// conversion from stored entry to comparison currency, so callers never
+// hand-map Version/WriterNodeHash/Tombstone (a transposition would
+// silently corrupt ordering, and every field is uint64/bool).
+func (e Entry) Stamp() Stamp {
 	return Stamp{Version: e.Version, Writer: e.WriterNodeHash, Tombstone: e.Tombstone}
 }
 

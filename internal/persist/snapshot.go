@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // SnapEntry is one decoded snapshot row: key, value, LWW identity,
@@ -15,12 +17,13 @@ import (
 // writer u64, expires_ms u64, has_ttl u8, freq u64, tombstone u8); V1
 // omits the tombstone byte and V3 compressed blocks are rejected.
 type SnapEntry struct {
-	Key       []byte
-	Value     []byte
-	Version   uint64
-	Writer    uint64
-	ExpiresMs uint64
-	HasTTL    bool
+	Key     []byte
+	Value   []byte
+	Version uint64
+	Writer  uint64
+	// Expiry is the TTL deadline; zero means none. On disk this is
+	// still (u64 ms, u8 flag), converted by the codec below.
+	Expiry    expiry.Expiry
 	Tombstone bool
 	Freq      uint64 // LFU frequency; 0 for LRU
 }
@@ -42,11 +45,11 @@ func encodeSnapEntry(e SnapEntry) ([]byte, error) {
 	out = append(out, e.Value...)
 	out = codec.Append(out, binary.LittleEndian, e.Version)
 	out = codec.Append(out, binary.LittleEndian, e.Writer)
-	out = codec.Append(out, binary.LittleEndian, e.ExpiresMs)
-	if e.HasTTL {
-		out = codec.Append(out, binary.LittleEndian, uint8(1))
-	} else {
+	out = codec.Append(out, binary.LittleEndian, uint64(e.Expiry.UnixMilli()))
+	if e.Expiry.IsNone() {
 		out = codec.Append(out, binary.LittleEndian, uint8(0))
+	} else {
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	}
 	out = codec.Append(out, binary.LittleEndian, e.Freq)
 	if e.Tombstone {
@@ -215,8 +218,12 @@ func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 	}
 	e.Key = append([]byte(nil), key...)
 	e.Value = append([]byte(nil), val...)
-	e.Version, e.Writer, e.ExpiresMs = ver, writer, expires
-	e.HasTTL = hasTTL != 0
+	e.Version, e.Writer = ver, writer
+	if hasTTL != 0 {
+		// At, not FromUnixMilli: a set flag with ms=0 still means an
+		// (already elapsed) deadline, matching the old handling.
+		e.Expiry = expiry.At(time.UnixMilli(int64(expires)).UTC())
+	}
 	e.Freq = freq
 	e.Tombstone = tomb != 0
 	return e, true

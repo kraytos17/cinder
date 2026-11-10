@@ -5,13 +5,13 @@ package tcp
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/shard"
 )
 
@@ -152,7 +152,7 @@ func (s *Server) stopRebalanceTimers() {
 type Peer struct {
 	ID   string
 	Host string
-	Port int
+	Port netport.Port
 }
 
 // ParsePeers parses comma-separated "id@host:port" entries, mirroring the
@@ -170,8 +170,8 @@ func ParsePeers(s string) ([]Peer, error) {
 		if at <= 0 || colon <= at+1 {
 			return nil, fmt.Errorf("tcp: bad peer %q, want id@host:port", part)
 		}
-		port, err := strconv.Atoi(part[colon+1:])
-		if err != nil || port <= 0 || port > 65535 {
+		port, err := netport.ParsePort(part[colon+1:])
+		if err != nil {
 			return nil, fmt.Errorf("tcp: bad peer %q, want id@host:port", part)
 		}
 		host := part[at+1 : colon]
@@ -203,10 +203,10 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	var seeds []cluster.NodeInfo
 	var addrs []client.NodeAddr
 	for _, p := range peers {
-		seeds = append(seeds, cluster.NodeInfo{ID: p.ID, Host: p.Host, Port: uint16(p.Port)})
+		seeds = append(seeds, cluster.NodeInfo{ID: p.ID, Host: p.Host, Port: p.Port})
 		addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
 	}
-	table.SetSelfAddress("127.0.0.1", uint16(s.port))
+	table.SetSelfAddress("127.0.0.1", netport.Port(s.port))
 	table.Seed(seeds)
 	pool := client.NewPool(addrs, 5*time.Second)
 	gossip := cluster.NewGossipManager(now, pool, table, s.nodeID, s.gossipInterval)
@@ -289,7 +289,7 @@ func (s *Server) rebuildRingFromTable() {
 			// Reachable addresses follow membership like C++ addAddr:
 			// replication fan-out, AE, and rebalance can all dial a
 			// joiner as soon as gossip delivers it.
-			pool.AddAddr(m.ID, m.Host, int(m.Port))
+			pool.AddAddr(m.ID, m.Host, m.Port)
 		}
 		if m.State != cluster.Alive {
 			continue

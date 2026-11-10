@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/cluster"
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/store"
 	"github.com/kraytos17/cinder/internal/testkit"
@@ -168,7 +169,7 @@ func TestTombstoneAndTTLMigrate(t *testing.T) {
 	if err := st.PutVersioned("t", store.Entry{Value: []byte("x"), Version: 3, WriterNodeHash: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutVersioned("e", store.Entry{Value: []byte("y"), Version: 4, WriterNodeHash: 1, HasTTL: true, ExpiresAt: exp}); err != nil {
+	if err := st.PutVersioned("e", store.Entry{Value: []byte("y"), Version: 4, WriterNodeHash: 1, Expiry: expiry.At(exp)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.RemoveVersioned("t", 9, 2); err != nil {
@@ -181,7 +182,7 @@ func TestTombstoneAndTTLMigrate(t *testing.T) {
 		t.Fatalf("tombstone lost: %+v %v", tomb, ok)
 	}
 	got, ok := ft.Stores["c"].GetVersioned("e")
-	if !ok || !got.HasTTL || !got.ExpiresAt.Equal(exp) {
+	if !ok || func() bool { t, ok := got.Expiry.Time(); return !ok || !t.Equal(exp) }() {
 		t.Fatalf("TTL lost: %+v %v", got, ok)
 	}
 }

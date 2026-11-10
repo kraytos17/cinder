@@ -143,10 +143,7 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
 		rec.Version = e.Version
 		rec.Writer = e.WriterNodeHash
 		rec.Tombstone = e.Tombstone
-		if e.HasTTL {
-			rec.HasTTL = true
-			rec.ExpiresMs = uint64(e.ExpiresAt.UnixMilli())
-		}
+		rec.Expiry = e.Expiry
 	}
 	_ = m.wal.Append(rec)
 }

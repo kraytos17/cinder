@@ -14,6 +14,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
@@ -43,7 +44,7 @@ func (s NodeState) String() string {
 type NodeInfo struct {
 	ID          string
 	Host        string
-	Port        uint16
+	Port        netport.Port
 	State       NodeState
 	Incarnation uint64
 	JoinedAt    time.Time
@@ -118,7 +119,7 @@ func (t *MembershipTable) Seed(peers []NodeInfo) {
 
 // SetSelfAddress records this node's reachable address so gossip
 // advertises it for peers to adopt and migrate keys to.
-func (t *MembershipTable) SetSelfAddress(host string, port uint16) {
+func (t *MembershipTable) SetSelfAddress(host string, port netport.Port) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if n, ok := t.nodes[t.self]; ok {

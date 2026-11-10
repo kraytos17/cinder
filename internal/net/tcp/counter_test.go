@@ -10,6 +10,7 @@ import (
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -133,7 +134,7 @@ func TestClusterCounterFollowsRedirect(t *testing.T) {
 		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil {
 			t.Fatal(err)
 		}
-		addrs = append(addrs, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: port})
+		addrs = append(addrs, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: netport.Port(port)})
 	}
 	cl, err := client.NewCluster(client.ClusterConfig{Nodes: addrs, MaxRetries: 3, BaseBackoffMs: 1, RPCTimeout: 5 * time.Second})
 	if err != nil {

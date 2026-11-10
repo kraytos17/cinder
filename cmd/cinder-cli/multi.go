@@ -62,7 +62,6 @@ func runMultiSet(
 	for i := range keys {
 		req := protocol.Request{Opcode: protocol.OpSet, Key: []byte(keys[i]), Value: []byte(values[i])}
 		if ttlMs > 0 {
-			req.HasTTL = true
 			req.TTL = time.Duration(ttlMs) * time.Millisecond
 		}
 

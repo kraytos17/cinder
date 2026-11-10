@@ -109,9 +109,8 @@ func (m *Manager) repair(key string, replicas []string, winner store.Entry, trac
 		Version: winner.Version, WriterNodeHash: winner.WriterNodeHash, Tombstone: winner.Tombstone,
 		TraceID: traceID, SpanID: spanID,
 	}
-	if winner.HasTTL {
-		req.HasExpiresAt = true
-		req.ExpiresAt = winner.ExpiresAt
+	if !winner.Expiry.IsNone() {
+		req.ExpiresAt = winner.Expiry
 	}
 	out := m.launch(req, replicas)
 	go func() {
@@ -141,20 +140,26 @@ func (d *reducer) noteLocal(e store.Entry) {
 	d.hasBest = true
 }
 
+// stampOfResponse is the single canonical conversion from wire response
+// to LWW comparison currency (see Entry.Stamp for why it exists).
+func stampOfResponse(res protocol.Response) store.Stamp {
+	return store.Stamp{Version: res.Version, Writer: res.WriterNodeHash, Tombstone: res.Tombstone}
+}
+
 func (d *reducer) noteRemote(res protocol.Response, err error) {
 	if err != nil {
 		return
 	}
 	if res.Status == protocol.StatusOK && res.Version != 0 {
 		d.acks++
-		vote := store.Stamp{Version: res.Version, Writer: res.WriterNodeHash, Tombstone: res.Tombstone}
+		vote := stampOfResponse(res)
 		if !d.hasBest {
 			d.best = voteToEntry(res)
 			d.hasBest = true
 			d.repair = true
 			return
 		}
-		cur := store.Stamp{Version: d.best.Version, Writer: d.best.WriterNodeHash, Tombstone: d.best.Tombstone}
+		cur := d.best.Stamp()
 		if store.LWWWinsOver(vote, cur) {
 			d.best = voteToEntry(res)
 			d.repair = true
@@ -169,7 +174,7 @@ func (d *reducer) noteRemote(res protocol.Response, err error) {
 func voteToEntry(res protocol.Response) store.Entry {
 	e := store.Entry{
 		Version: res.Version, WriterNodeHash: res.WriterNodeHash, Tombstone: res.Tombstone,
-		HasTTL: res.HasExpiresAt, ExpiresAt: res.ExpiresAt,
+		Expiry: res.ExpiresAt,
 	}
 	if res.HasValue {
 		e.Value = append([]byte(nil), res.Value...)

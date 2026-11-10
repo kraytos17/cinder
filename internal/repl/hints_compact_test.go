@@ -48,7 +48,7 @@ func TestEnqueueHintAutoCompacts(t *testing.T) {
 	stub := &stubJournal{}
 	m.SetHintJournal(stub)
 	for range 10 {
-		if err := m.Write("k", []byte("v"), 0, false, []string{"n2"}, Async, 0, 0); err != nil {
+		if err := m.Write("k", []byte("v"), 0, []string{"n2"}, Async, 0, 0); err != nil {
 			t.Fatal(err)
 		}
 	}

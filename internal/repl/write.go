@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -19,12 +20,13 @@ import (
 // Manager coordinates writes to the primary plus replicas. The store is
 // the single version authority; every replica apply is idempotent LWW.
 
-func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool, replicas []string, mode Mode, traceID, spanID uint64) error {
+func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []string, mode Mode, traceID, spanID uint64) error {
 	version := m.local.MintVersion()
 	e := store.Entry{Value: append([]byte(nil), value...), Version: version, WriterNodeHash: m.writer}
-	if hasTTL {
-		e.HasTTL = true
-		e.ExpiresAt = m.clock.Now().Add(ttl)
+	if ttl > 0 {
+		// At, not After: matches store admission (zero is handled by
+		// the caller passing none).
+		e.Expiry = expiry.At(m.clock.Now().Add(ttl))
 	}
 	if err := m.local.PutVersioned(key, e); err != nil {
 		return err
@@ -34,9 +36,8 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, hasTTL bool
 		Version: version, WriterNodeHash: m.writer,
 		TraceID: traceID, SpanID: spanID,
 	}
-	if hasTTL {
-		req.HasExpiresAt = true
-		req.ExpiresAt = e.ExpiresAt
+	if ttl > 0 {
+		req.ExpiresAt = e.Expiry
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
@@ -75,9 +76,8 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 		Version: version, WriterNodeHash: m.writer,
 		TraceID: traceID, SpanID: spanID,
 	}
-	if tomb.HasTTL {
-		req.HasExpiresAt = true
-		req.ExpiresAt = tomb.ExpiresAt
+	if !tomb.Expiry.IsNone() {
+		req.ExpiresAt = tomb.Expiry
 	}
 	if mode == Async {
 		m.fanOutAsync(key, req, replicas)
@@ -195,7 +195,7 @@ func drain(out <-chan fanResult, n int, fn func(fanResult)) {
 }
 
 func (m *Manager) enqueueHint(node string, req protocol.Request) {
-	h := Hint{Target: node, Req: req, ExpiresAt: m.clock.Now().Add(HintTTL)}
+	h := Hint{Target: node, Req: req, ExpiresAt: expiry.At(m.clock.Now().Add(HintTTL))}
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.ReplicaUnreach.Add(1)
 		mt.HintsEnqueued.Add(1)

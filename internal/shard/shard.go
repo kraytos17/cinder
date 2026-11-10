@@ -199,9 +199,8 @@ func makeReplicateRequest(key string, e store.Entry) protocol.Request {
 		WriterNodeHash: e.WriterNodeHash,
 		Tombstone:      e.Tombstone,
 	}
-	if e.HasTTL {
-		req.HasExpiresAt = true
-		req.ExpiresAt = e.ExpiresAt
+	if !e.Expiry.IsNone() {
+		req.ExpiresAt = e.Expiry
 	}
 	return req
 }

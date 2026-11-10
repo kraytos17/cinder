@@ -15,31 +15,23 @@ import (
 func entryFromWal(e Entry, now time.Time) (store.Entry, bool) {
 	out := store.Entry{
 		Value: append([]byte(nil), e.Value...), Version: e.Version,
-		WriterNodeHash: e.Writer, HasTTL: e.HasTTL, Tombstone: e.Tombstone,
+		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
 	}
-	if e.HasTTL {
-		out.ExpiresAt = time.UnixMilli(int64(e.ExpiresMs)).UTC()
-		if !out.Expired(now) {
-			return out, true
-		}
-		return store.Entry{}, false
+	if !out.Expired(now) {
+		return out, true
 	}
-	return out, true
+	return store.Entry{}, false
 }
 
 func entryFromSnap(e SnapEntry, now time.Time) (store.Entry, bool) {
 	out := store.Entry{
 		Value: append([]byte(nil), e.Value...), Version: e.Version,
-		WriterNodeHash: e.Writer, HasTTL: e.HasTTL, Tombstone: e.Tombstone,
+		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
 	}
-	if e.HasTTL {
-		out.ExpiresAt = time.UnixMilli(int64(e.ExpiresMs)).UTC()
-		if !out.Expired(now) {
-			return out, true
-		}
-		return store.Entry{}, false
+	if !out.Expired(now) {
+		return out, true
 	}
-	return out, true
+	return store.Entry{}, false
 }
 
 // Recover loads the latest snapshot then replays sealed segments plus the

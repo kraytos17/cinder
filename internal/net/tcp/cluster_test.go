@@ -10,6 +10,7 @@ import (
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -28,10 +29,10 @@ func goCluster(t *testing.T) (addrs map[string]string, stop func()) {
 	p1, p2 := l1.Addr().(*net.TCPAddr).Port, l2.Addr().(*net.TCPAddr).Port
 	s1 := tcp.NewServer("node1", p1, store.NewLRUStore(1<<20, nil), nil)
 	s2 := tcp.NewServer("node2", p2, store.NewLRUStore(1<<20, nil), nil)
-	if err := s1.ConfigureCluster([]tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: p2}}); err != nil {
+	if err := s1.ConfigureCluster([]tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: netport.Port(p2)}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s2.ConfigureCluster([]tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: p1}}); err != nil {
+	if err := s2.ConfigureCluster([]tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(p1)}}); err != nil {
 		t.Fatal(err)
 	}
 	go s1.Serve(l1)
@@ -45,8 +46,8 @@ func TestClusterSetGetAcrossNodes(t *testing.T) {
 	defer stop()
 	cl, err := client.NewCluster(client.ClusterConfig{
 		Nodes: []client.NodeAddr{
-			{ID: "node1", Host: "127.0.0.1", Port: portOf(t, addrs["node1"])},
-			{ID: "node2", Host: "127.0.0.1", Port: portOf(t, addrs["node2"])},
+			{ID: "node1", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node1"]))},
+			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node2"]))},
 		},
 		MaxRetries:    3,
 		BaseBackoffMs: 5,

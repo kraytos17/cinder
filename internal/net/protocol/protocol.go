@@ -17,6 +17,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/expiry"
+
 	"github.com/kraytos17/cinder/internal/codec"
 )
 
@@ -191,19 +193,19 @@ func (e *Error) Error() string { return "protocol: " + e.Msg }
 
 func errInvalid(msg string) error { return &Error{Code: StatusInvalidArgument, Msg: msg} }
 
-// Request is a decoded v6 request. TTL and ExpiresAt are mutually exclusive
-// in practice (clients send TTL, replication sends ExpiresAt) but the codec
-// accepts both, exactly like the C++ encoder.
+// Request is a decoded v6 request. TTL (relative, client form) and
+// ExpiresAt (absolute, replication form) are mutually exclusive in
+// practice but the codec accepts both, exactly like the C++ encoder.
+// A zero TTL means none (the old HasTTL bool was redundant: the wire
+// bit derives from TTL > 0).
 type Request struct {
 	Opcode         Opcode
 	Key            []byte
 	Value          []byte
 	Version        uint64
 	WriterNodeHash uint64
-	HasTTL         bool
 	TTL            time.Duration
-	HasExpiresAt   bool
-	ExpiresAt      time.Time
+	ExpiresAt      expiry.Expiry
 	Tombstone      bool
 	// CounterAdjust only. A zero delta is a no-op.
 	CounterDelta     uint64
@@ -227,8 +229,7 @@ type Response struct {
 	HasValue       bool
 	Version        uint64
 	WriterNodeHash uint64
-	HasExpiresAt   bool
-	ExpiresAt      time.Time
+	ExpiresAt      expiry.Expiry
 	Tombstone      bool
 	TraceID        uint64
 	SpanID         uint64
@@ -283,11 +284,11 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	acc.add(4)
 	acc.add(uint64(len(req.Value)))
 	acc.add(8 + 8)
-	if req.HasTTL {
+	if req.TTL > 0 {
 		acc.add(4)
 	}
 	acc.add(1)
-	if req.HasExpiresAt {
+	if !req.ExpiresAt.IsNone() {
 		acc.add(8)
 	}
 	if req.Opcode == OpCounterAdjust {
@@ -324,10 +325,10 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	w.U32(uint32(acc.size))
 
 	var flags uint8
-	if req.HasTTL {
+	if req.TTL > 0 {
 		flags |= FlagHasTTL
 	}
-	if req.HasExpiresAt {
+	if !req.ExpiresAt.IsNone() {
 		flags |= FlagHasExpiresAt
 	}
 	if req.Tombstone {
@@ -340,10 +341,10 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 		flags |= FlagHasAuth
 	}
 	w.U8(flags)
-	if req.HasTTL {
+	if req.TTL > 0 {
 		w.U32(uint32(req.TTL.Milliseconds()))
 	}
-	if req.HasExpiresAt {
+	if !req.ExpiresAt.IsNone() {
 		w.U64(uint64(req.ExpiresAt.UnixMilli()))
 	}
 	w.U64(req.Version)
@@ -394,7 +395,6 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
-		req.HasTTL = true
 		req.TTL = time.Duration(ttl) * time.Millisecond
 	}
 	if flags&FlagHasExpiresAt != 0 {
@@ -405,8 +405,7 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		if ms > uint64(MaxExpiresAtMs) {
 			return out, errInvalid("expires_at overflow")
 		}
-		req.HasExpiresAt = true
-		req.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
+		req.ExpiresAt = expiry.FromUnixMilli(int64(ms))
 	}
 	req.Tombstone = flags&FlagTombstone != 0
 	version, ok := r.U64()
@@ -454,7 +453,7 @@ func DecodeRequest(frame []byte) (DecodedRequest, error) {
 		req.CounterDecrement = decr != 0
 	}
 	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterMerge || req.Opcode == OpCounterGet {
-		if req.HasTTL || req.HasExpiresAt || req.Tombstone || req.Version != 0 || req.WriterNodeHash != 0 {
+		if req.TTL > 0 || !req.ExpiresAt.IsNone() || req.Tombstone || req.Version != 0 || req.WriterNodeHash != 0 {
 			return out, errInvalid("counter opcode has LWW metadata")
 		}
 	}
@@ -488,7 +487,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	if hasVersionMeta {
 		flags |= RespFlagVersionMeta
 	}
-	if res.HasExpiresAt {
+	if !res.ExpiresAt.IsNone() {
 		flags |= RespFlagExpiresAt
 	}
 	if res.Tombstone {
@@ -505,7 +504,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	if hasVersionMeta {
 		acc.add(8 + 8)
 	}
-	if res.HasExpiresAt {
+	if !res.ExpiresAt.IsNone() {
 		acc.add(8)
 	}
 	if res.HasValue {
@@ -534,7 +533,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 		w.U64(res.Version)
 		w.U64(res.WriterNodeHash)
 	}
-	if res.HasExpiresAt {
+	if !res.ExpiresAt.IsNone() {
 		w.U64(uint64(res.ExpiresAt.UnixMilli()))
 	}
 	if res.HasValue {
@@ -594,8 +593,7 @@ func DecodeResponse(frame []byte) (Response, error) {
 		if ms > uint64(MaxExpiresAtMs) {
 			return res, errInvalid("expires_at overflow")
 		}
-		res.HasExpiresAt = true
-		res.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
+		res.ExpiresAt = expiry.FromUnixMilli(int64(ms))
 	}
 	hasVal, ok := r.U32()
 	if !ok {

@@ -8,6 +8,7 @@ import (
 	"time"
 	"unique"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/obs"
 	"github.com/kraytos17/cinder/internal/sharding"
@@ -297,10 +298,11 @@ func (s *Store) Put(key string, value []byte) error {
 func (s *Store) PutWithTTL(key string, value []byte, ttl time.Duration) error {
 	now := s.clock.Now()
 	e := Entry{
-		Value:     append([]byte(nil), value...),
-		Version:   s.MintVersion(),
-		HasTTL:    true,
-		ExpiresAt: now.Add(ttl),
+		Value:   append([]byte(nil), value...),
+		Version: s.MintVersion(),
+		// At, not After: zero TTL means expired-on-next-read (C++
+		// parity), while After(<=0) would mean none.
+		Expiry: expiry.At(now.Add(ttl)),
 	}
 	return s.putVersionedAt(key, e, now)
 }
@@ -309,7 +311,7 @@ func (s *Store) PutWithTTL(key string, value []byte, ttl time.Duration) error {
 // rejected as a no-op success; everything else overwrites.
 func (s *Store) PutVersioned(key string, e Entry) error {
 	var at time.Time
-	if e.HasTTL {
+	if !e.Expiry.IsNone() {
 		at = s.clock.Now()
 	}
 	return s.putVersionedAt(key, e, at)
@@ -322,7 +324,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 
 	if idx, ok := sh.index[key]; ok {
 		resident := &sh.nodes[idx]
-		if CompareLWW(stampOf(e), stampOf(resident.entry)) == LWWLess {
+		if CompareLWW(e.Stamp(), resident.entry.Stamp()) == LWWLess {
 			return nil // stale replay: reject, no-op success
 		}
 		oldPacked := resident.entry.VersionAndTTL()
@@ -466,8 +468,7 @@ func (s *Store) RemoveVersioned(key string, version, writer uint64) error {
 		Version:        version,
 		WriterNodeHash: writer,
 		Tombstone:      true,
-		HasTTL:         true,
-		ExpiresAt:      now.Add(time.Duration(s.tombstone.Load())),
+		Expiry:         expiry.At(now.Add(time.Duration(s.tombstone.Load()))),
 	}
 	return s.putVersionedAt(key, tomb, now)
 }
@@ -507,8 +508,8 @@ func (s *Store) EvictExpired() int {
 				if !ok {
 					return
 				}
-				if !n.entry.HasTTL || n.entry.ExpiresAt.After(now) {
-					sh.wheel.Insert(id, expiryTicks(n.entry.ExpiresAt, now))
+				if exp, ok := n.entry.Expiry.Time(); !ok || exp.After(now) {
+					sh.wheel.Insert(id, expiryTicks(exp, now))
 					return
 				}
 				s.eraseNode(sh, id)

@@ -105,14 +105,13 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 	switch req.Opcode {
 	case protocol.OpReplicate, protocol.OpHint:
 		e := store.Entry{Value: append([]byte(nil), req.Value...), Version: req.Version, WriterNodeHash: req.WriterNodeHash, Tombstone: req.Tombstone}
-		if req.HasExpiresAt {
-			e.HasTTL = true
-			e.ExpiresAt = req.ExpiresAt
+		if !req.ExpiresAt.IsNone() {
+			e.Expiry = req.ExpiresAt
 		}
 		if err := st.PutVersioned(string(req.Key), e); err != nil {
 			return protocol.Response{Status: protocol.StatusCapacityExceeded}, nil
 		}
-		if req.Tombstone && !req.HasExpiresAt {
+		if req.Tombstone && req.ExpiresAt.IsNone() {
 			// Fallback path: versioned remove with sender identity.
 			if err := st.RemoveVersioned(string(req.Key), req.Version, req.WriterNodeHash); err != nil {
 				return protocol.Response{Status: protocol.StatusInternalError}, nil
@@ -129,9 +128,8 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 			res.Value = append([]byte(nil), e.Value...)
 			res.HasValue = true
 		}
-		if e.HasTTL {
-			res.HasExpiresAt = true
-			res.ExpiresAt = e.ExpiresAt
+		if !e.Expiry.IsNone() {
+			res.ExpiresAt = e.Expiry
 		}
 		return res, nil
 	default:

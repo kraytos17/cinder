@@ -25,6 +25,7 @@ import (
 	"github.com/kraytos17/cinder/internal/grpcgw"
 	gen "github.com/kraytos17/cinder/internal/grpcgw/gen"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -330,7 +331,7 @@ func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {
 		var peers []tcp.Peer
 		for pid, port := range ports {
 			if pid != id {
-				peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: port})
+				peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: netport.Port(port)})
 			}
 		}
 		srv := tcp.NewServer(id, ports[id], store.NewLRUStore(1<<20, nil), nil)

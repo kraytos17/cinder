@@ -2,6 +2,8 @@ package store
 
 import (
 	"time"
+
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // Entry is a versioned cache record. Mirrors VersionedEntry in
@@ -13,9 +15,11 @@ type Entry struct {
 	Value          []byte
 	Version        uint64
 	WriterNodeHash uint64
-	HasTTL         bool
-	ExpiresAt      time.Time
-	Tombstone      bool
+	// Expiry is the TTL deadline; zero means none. One field replaces
+	// the old HasTTL+ExpiresAt pair, which could desync (an instant
+	// without its flag never expired).
+	Expiry    expiry.Expiry
+	Tombstone bool
 }
 
 // VersionAndTTL packs (version, flags) exactly like the C++
@@ -23,7 +27,7 @@ type Entry struct {
 // bits 2-63 = version.
 func (e Entry) VersionAndTTL() uint64 {
 	v := e.Version << 2
-	if e.HasTTL {
+	if !e.Expiry.IsNone() {
 		v |= 1
 	}
 	if e.Tombstone {
@@ -33,9 +37,9 @@ func (e Entry) VersionAndTTL() uint64 {
 }
 
 // Expired reports whether e is past its deadline at now. Entries without
-// a TTL never expire.
+// an expiry never expire.
 func (e Entry) Expired(now time.Time) bool {
-	return e.HasTTL && !e.ExpiresAt.After(now)
+	return e.Expiry.Expired(now)
 }
 
 // Clone deep-copies the value bytes.

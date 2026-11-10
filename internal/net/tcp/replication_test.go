@@ -11,6 +11,7 @@ import (
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -64,8 +65,8 @@ func (c *testCluster) startNode(id string, l net.Listener, ports map[string]int,
 		if pid == id {
 			continue
 		}
-		peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: ports[pid]})
-		addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: ports[pid]})
+		peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: netport.Port(ports[pid])})
+		addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: netport.Port(ports[pid])})
 	}
 	if err := srv.ConfigureCluster(peers); err != nil {
 		c.t.Fatal(err)
@@ -125,7 +126,7 @@ func (c *testCluster) client() *client.Cluster {
 		}
 		var p int
 		fmt.Sscanf(port, "%d", &p)
-		nodes = append(nodes, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: p})
+		nodes = append(nodes, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: netport.Port(p)})
 	}
 	cl, err := client.NewCluster(client.ClusterConfig{
 		Nodes: nodes, MaxRetries: 5, BaseBackoffMs: 10, RPCTimeout: 5 * time.Second,

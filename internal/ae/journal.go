@@ -12,6 +12,7 @@ import (
 
 	"github.com/zeebo/xxh3"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
 )
@@ -70,8 +71,8 @@ func (j *Journal) Compact(q *repl.HintQueue) error {
 		return err
 	}
 	for _, h := range live {
-		exp := h.ExpiresAt
-		if exp.IsZero() {
+		exp, ok := h.ExpiresAt.Time()
+		if !ok {
 			exp = time.Now().Add(hintTTL)
 		}
 
@@ -260,11 +261,8 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		}
 
 		req := protocol.Request{Opcode: protocol.OpReplicate, Key: append([]byte(nil), kb...), Value: append([]byte(nil), vb...), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
-		if entryExp != 0 {
-			req.HasExpiresAt = true
-			req.ExpiresAt = time.UnixMilli(int64(entryExp)).UTC()
-		}
-		return repl.Hint{Target: string(tb), Req: req, ExpiresAt: time.Now().Add(hintTTL)}, true, nil
+		req.ExpiresAt = expiry.FromUnixMilli(int64(entryExp))
+		return repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.Now().Add(hintTTL))}, true, nil
 	}
 	if op == journalOpDel {
 		tlen, ok := c.U32()
@@ -297,10 +295,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 }
 
 func encodeJournalAddPayload(target string, req protocol.Request, sysExpiryMs uint64) []byte {
-	var entryExp uint64
-	if req.HasExpiresAt {
-		entryExp = uint64(req.ExpiresAt.UnixMilli())
-	}
+	entryExp := uint64(req.ExpiresAt.UnixMilli())
 
 	var tomb uint8
 	if req.Tombstone {

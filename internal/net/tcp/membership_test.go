@@ -7,6 +7,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -56,8 +57,8 @@ func TestFailureDetectorMarksDeadNode(t *testing.T) {
 		go srv.Serve(l)
 		return srv
 	}
-	s1 := mk("node1", l1, p1, []tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: p2}})
-	s2 := mk("node2", l2, p2, []tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: p1}})
+	s1 := mk("node1", l1, p1, []tcp.Peer{{ID: "node2", Host: "127.0.0.1", Port: netport.Port(p2)}})
+	s2 := mk("node2", l2, p2, []tcp.Peer{{ID: "node1", Host: "127.0.0.1", Port: netport.Port(p1)}})
 	defer s1.Shutdown()
 	defer s2.Shutdown()
 

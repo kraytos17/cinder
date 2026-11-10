@@ -14,6 +14,7 @@ import (
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
@@ -150,7 +151,7 @@ func EncodeView(view []NodeInfo) string {
 		b.WriteByte('@')
 		b.WriteString(m.Host)
 		b.WriteByte(':')
-		b.WriteString(strconv.Itoa(int(m.Port)))
+		b.WriteString(m.Port.String())
 		b.WriteByte(':')
 		b.WriteString(m.State.String())
 		b.WriteByte(':')
@@ -184,10 +185,15 @@ func ParseEntry(entry string, out *NodeInfo) bool {
 	out.ID = entry[:idx]
 	out.Host = entry[idx+1 : c1]
 	port, err := strconv.Atoi(entry[c1+1 : c2])
+	// Bounds mirror C++ parseEntry, including 0: a zero port is a
+	// legitimate "address unknown yet" rumor (Seed inserts peers with
+	// no address), so it must round-trip, not fail the entry. Strict
+	// validation lives in netport.ParsePort, used by the paths that
+	// actually dial (pool, redirects, --peers).
 	if err != nil || port < 0 || port > 65535 {
 		return false
 	}
-	out.Port = uint16(port)
+	out.Port = netport.Port(port)
 	switch entry[c2+1 : c3] {
 	case "alive":
 		out.State = Alive

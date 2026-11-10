@@ -61,10 +61,7 @@ func (m *Manager) Compact() error {
 			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone,
 			Freq: p.Freq,
 		}
-		if p.Entry.HasTTL {
-			se.HasTTL = true
-			se.ExpiresMs = uint64(p.Entry.ExpiresAt.UnixMilli())
-		}
+		se.Expiry = p.Entry.Expiry
 		snaps = append(snaps, se)
 	}
 	name := fmt.Sprintf("%s%d%s", snapshotPre, m.clock().UnixNano(), snapshotSuf)

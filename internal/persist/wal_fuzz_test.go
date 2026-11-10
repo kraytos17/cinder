@@ -3,6 +3,8 @@ package persist
 import (
 	"bytes"
 	"testing"
+
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // FuzzWALReader feeds arbitrary bytes to the WAL reader. It must never
@@ -60,7 +62,7 @@ func buildWALSeeds() [][]byte {
 	out = append(out, []byte{})
 	out = append(out, []byte{0x01})
 	out = append(out, mk(Entry{Op: OpSet, Key: []byte("k"), Value: []byte("v"), Version: 1, Writer: 2}))
-	out = append(out, mk(Entry{Op: OpSet, Key: []byte("k"), Value: []byte("v"), Version: 1, Writer: 2, HasTTL: true, ExpiresMs: 999, Tombstone: true}))
+	out = append(out, mk(Entry{Op: OpSet, Key: []byte("k"), Value: []byte("v"), Version: 1, Writer: 2, Expiry: expiry.FromUnixMilli(999), Tombstone: true}))
 	out = append(out, mk(Entry{Op: OpDel, Key: []byte("gone"), Version: 7, Writer: 11}))
 	two := append(append([]byte{}, mk(Entry{Op: OpSet, Key: []byte("a"), Value: []byte("1")})...), mk(Entry{Op: OpSet, Key: []byte("b"), Value: []byte("2")})...)
 	out = append(out, two)
@@ -73,5 +75,5 @@ func buildWALSeeds() [][]byte {
 
 func entriesEqual(a, b Entry) bool {
 	return a.Op == b.Op && a.Version == b.Version && a.Writer == b.Writer &&
-		a.ExpiresMs == b.ExpiresMs && a.HasTTL == b.HasTTL && a.Tombstone == b.Tombstone
+		a.Expiry.UnixMilli() == b.Expiry.UnixMilli() && a.Tombstone == b.Tombstone
 }

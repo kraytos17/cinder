@@ -205,7 +205,7 @@ func (c *Client) Set(key string, value []byte) (protocol.Response, error) {
 
 // SetWithTTL stores value with a relative TTL.
 func (c *Client) SetWithTTL(key string, value []byte, ttl time.Duration) (protocol.Response, error) {
-	return c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, HasTTL: true, TTL: ttl})
+	return c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, TTL: ttl})
 }
 
 // Get fetches a live value.

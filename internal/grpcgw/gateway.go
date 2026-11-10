@@ -101,7 +101,6 @@ func (s *service) Set(ctx context.Context, req *gen.SetRequest) (*gen.SetRespons
 	}
 	r := protocol.Request{Opcode: protocol.OpSet, Key: []byte(req.GetKey()), Value: []byte(req.GetValue())}
 	if req.GetTtlMs() > 0 {
-		r.HasTTL = true
 		r.TTL = time.Duration(req.GetTtlMs()) * time.Millisecond
 	}
 	res := s.node.DispatchWithAuth(r, tok)

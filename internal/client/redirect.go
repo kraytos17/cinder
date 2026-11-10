@@ -3,10 +3,10 @@ package client
 import (
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/netport"
 )
 
 // RedirectTarget is a parsed ownership redirect: the owner id plus, when
@@ -15,7 +15,7 @@ import (
 type RedirectTarget struct {
 	ID   string
 	Host string
-	Port int
+	Port netport.Port
 }
 
 // HasAddress reports whether the server attached a usable address.
@@ -67,8 +67,8 @@ func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 	if host == "" {
 		return target, true
 	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 || port > 65535 {
+	port, err := netport.ParsePort(portStr)
+	if err != nil {
 		return target, true
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {

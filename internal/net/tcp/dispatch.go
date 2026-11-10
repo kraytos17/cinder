@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"time"
 
@@ -170,7 +169,7 @@ func (s *Server) redirectTo(owner string) string {
 			// JoinHostPort brackets v6 literals; the client parses both
 			// bare and bracketed forms.
 			value.WriteString("@")
-			value.WriteString(net.JoinHostPort(info.Host, strconv.Itoa(int(info.Port))))
+			value.WriteString(net.JoinHostPort(info.Host, info.Port.String()))
 		}
 	}
 	return value.String()

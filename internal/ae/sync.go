@@ -210,8 +210,8 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 			}
 			return
 		}
-		remote := store.Stamp{Version: row.Version, Writer: row.Writer, Tombstone: row.Tombstone}
-		local := store.Stamp{Version: e.Version, Writer: e.WriterNodeHash, Tombstone: e.Tombstone}
+		remote := row.Stamp()
+		local := e.Stamp()
 		if store.LWWWinsOver(remote, local) {
 			diff.Need = append(diff.Need, h)
 		} else if store.LWWWinsOver(local, remote) {
@@ -236,8 +236,8 @@ func (m *Manager) ApplySync(msg SyncMessage) int {
 	for _, item := range msg.Entries {
 		e, ok := m.store.GetVersioned(item.Key)
 		if !ok || store.LWWWinsOver(
-			store.Stamp{Version: item.Entry.Version, Writer: item.Entry.WriterNodeHash, Tombstone: item.Entry.Tombstone},
-			store.Stamp{Version: e.Version, Writer: e.WriterNodeHash, Tombstone: e.Tombstone}) {
+			item.Entry.Stamp(),
+			e.Stamp()) {
 			applied++
 		}
 		_ = m.store.PutVersioned(item.Key, item.Entry)

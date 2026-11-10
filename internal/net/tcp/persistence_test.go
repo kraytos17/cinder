@@ -49,7 +49,7 @@ func TestServerRestartRecovers(t *testing.T) {
 	}
 	set("a", "1")
 	set("b", "2")
-	if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte("t"), Value: []byte("x"), HasTTL: true, TTL: time.Hour}); err != nil || res.Status != protocol.StatusOK {
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte("t"), Value: []byte("x"), TTL: time.Hour}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("set ttl: %+v %v", res, err)
 	}
 	if res, err := c.Do(protocol.Request{Opcode: protocol.OpDel, Key: []byte("a")}); err != nil || res.Status != protocol.StatusOK {

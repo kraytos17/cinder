@@ -5,24 +5,24 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/netport"
 )
 
 // NodeAddr is a reachable cluster member.
 type NodeAddr struct {
 	ID   string
 	Host string
-	Port int
+	Port netport.Port
 }
 
 func (a NodeAddr) dialAddr() string {
 	// JoinHostPort brackets IPv6 literals; the old Sprintf("%s:%d")
 	// produced undiallable "fe80::1:8080" forms for v6 peers.
-	return net.JoinHostPort(a.Host, strconv.Itoa(a.Port))
+	return net.JoinHostPort(a.Host, a.Port.String())
 }
 
 // Pool holds one persistent connection per node, dialed lazily. Transport
@@ -65,7 +65,7 @@ func newPoolTLS(addrs []NodeAddr, timeout time.Duration, tlsCfg *tls.Config) *Po
 // client config become reachable. IP literals are normalized via
 // netip.ParseAddr (collapses "::ffff:1.2.3.4", zones, case); hostnames
 // pass through untouched.
-func (p *Pool) AddAddr(id, host string, port int) {
+func (p *Pool) AddAddr(id, host string, port netport.Port) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		host = ip.String()
 	}

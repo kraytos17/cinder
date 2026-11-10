@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 func TestWALRoundTrip(t *testing.T) {
@@ -19,8 +20,8 @@ func TestWALRoundTrip(t *testing.T) {
 	}
 	entries := []Entry{
 		{Op: OpSet, Key: []byte("k1"), Value: []byte("v1"), Version: 2, Writer: 9},
-		{Op: OpSet, Key: []byte("k2"), Value: []byte("v2"), Version: 3, Writer: 9, HasTTL: true, ExpiresMs: 1700000000000},
-		{Op: OpSet, Key: []byte("t"), Tombstone: true, Version: 4, Writer: 9, HasTTL: true, ExpiresMs: 1700000000500},
+		{Op: OpSet, Key: []byte("k2"), Value: []byte("v2"), Version: 3, Writer: 9, Expiry: expiry.FromUnixMilli(1700000000000)},
+		{Op: OpSet, Key: []byte("t"), Tombstone: true, Version: 4, Writer: 9, Expiry: expiry.FromUnixMilli(1700000000500)},
 		{Op: OpDel, Key: []byte("gone"), Version: 5, Writer: 9},
 		{Op: OpSet, Key: []byte(""), Value: []byte("")},
 	}
@@ -59,8 +60,8 @@ func TestWALRoundTrip(t *testing.T) {
 	for i := range entries {
 		a, b := entries[i], got[i]
 		if a.Op != b.Op || string(a.Key) != string(b.Key) || string(a.Value) != string(b.Value) ||
-			a.Version != b.Version || a.Writer != b.Writer || a.ExpiresMs != b.ExpiresMs ||
-			a.HasTTL != b.HasTTL || a.Tombstone != b.Tombstone {
+			a.Version != b.Version || a.Writer != b.Writer ||
+			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
 	}
@@ -84,8 +85,8 @@ func TestWALCppInterop(t *testing.T) {
 	}
 	want := []Entry{
 		{Op: OpSet, Key: []byte("key-1"), Value: []byte("value-1"), Version: 7, Writer: 42},
-		{Op: OpSet, Key: []byte("ttl-key"), Value: []byte("tv"), Version: 8, Writer: 43, HasTTL: true, ExpiresMs: 1700000000000},
-		{Op: OpSet, Key: []byte("tomb"), Version: 9, Writer: 43, HasTTL: true, ExpiresMs: 1700000000500, Tombstone: true},
+		{Op: OpSet, Key: []byte("ttl-key"), Value: []byte("tv"), Version: 8, Writer: 43, Expiry: expiry.FromUnixMilli(1700000000000)},
+		{Op: OpSet, Key: []byte("tomb"), Version: 9, Writer: 43, Expiry: expiry.FromUnixMilli(1700000000500), Tombstone: true},
 		{Op: OpDel, Key: []byte("gone"), Version: 10, Writer: 44},
 	}
 	if len(got) != len(want) {
@@ -94,8 +95,8 @@ func TestWALCppInterop(t *testing.T) {
 	for i := range want {
 		a, b := want[i], got[i]
 		if a.Op != b.Op || string(a.Key) != string(b.Key) || string(a.Value) != string(b.Value) ||
-			a.Version != b.Version || a.Writer != b.Writer || a.ExpiresMs != b.ExpiresMs ||
-			a.HasTTL != b.HasTTL || a.Tombstone != b.Tombstone {
+			a.Version != b.Version || a.Writer != b.Writer ||
+			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
 	}
@@ -254,8 +255,8 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	path := dir + "/snap.csp"
 	entries := []SnapEntry{
 		{Key: []byte("a"), Value: []byte("1"), Version: 2, Writer: 7},
-		{Key: []byte("b"), Value: []byte("22"), Version: 3, Writer: 7, HasTTL: true, ExpiresMs: 2700000000000, Freq: 3},
-		{Key: []byte("t"), Version: 4, Writer: 7, HasTTL: true, ExpiresMs: 2700000000500, Tombstone: true},
+		{Key: []byte("b"), Value: []byte("22"), Version: 3, Writer: 7, Expiry: expiry.FromUnixMilli(2700000000000), Freq: 3},
+		{Key: []byte("t"), Version: 4, Writer: 7, Expiry: expiry.FromUnixMilli(2700000000500), Tombstone: true},
 	}
 	if err := NewSnapWriter(path).Write(9, entries); err != nil {
 		t.Fatal(err)
@@ -270,8 +271,8 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	for i := range entries {
 		a, b := entries[i], data.Entries[i]
 		if string(a.Key) != string(b.Key) || string(a.Value) != string(b.Value) ||
-			a.Version != b.Version || a.Writer != b.Writer || a.ExpiresMs != b.ExpiresMs ||
-			a.HasTTL != b.HasTTL || a.Tombstone != b.Tombstone || a.Freq != b.Freq {
+			a.Version != b.Version || a.Writer != b.Writer ||
+			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone || a.Freq != b.Freq {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
 	}
@@ -287,8 +288,8 @@ func TestSnapshotCppInterop(t *testing.T) {
 	}
 	want := []SnapEntry{
 		{Key: []byte("key-1"), Value: []byte("value-1"), Version: 7, Writer: 42},
-		{Key: []byte("ttl-key"), Value: []byte("tv"), Version: 8, Writer: 43, HasTTL: true, ExpiresMs: 2700000000000, Freq: 3},
-		{Key: []byte("tomb"), Version: 9, Writer: 43, HasTTL: true, ExpiresMs: 2700000000500, Tombstone: true},
+		{Key: []byte("ttl-key"), Value: []byte("tv"), Version: 8, Writer: 43, Expiry: expiry.FromUnixMilli(2700000000000), Freq: 3},
+		{Key: []byte("tomb"), Version: 9, Writer: 43, Expiry: expiry.FromUnixMilli(2700000000500), Tombstone: true},
 	}
 	if len(data.Entries) != len(want) {
 		t.Fatalf("entries = %+v", data.Entries)
@@ -296,8 +297,8 @@ func TestSnapshotCppInterop(t *testing.T) {
 	for i := range want {
 		a, b := want[i], data.Entries[i]
 		if string(a.Key) != string(b.Key) || string(a.Value) != string(b.Value) ||
-			a.Version != b.Version || a.Writer != b.Writer || a.ExpiresMs != b.ExpiresMs ||
-			a.HasTTL != b.HasTTL || a.Tombstone != b.Tombstone || a.Freq != b.Freq {
+			a.Version != b.Version || a.Writer != b.Writer ||
+			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone || a.Freq != b.Freq {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
 	}

@@ -60,7 +60,7 @@ func (m *Manager) CollectEntriesForKeys(keys []string, maxBytes int) []SyncItem 
 			continue
 		}
 		cost := 4 + len(p.key) + 8 + 8 + 1 + 4 + len(e.Value)
-		if e.HasTTL {
+		if !e.Expiry.IsNone() {
 			cost += 8
 		}
 		if bytes+cost > maxBytes && len(items) > 0 {

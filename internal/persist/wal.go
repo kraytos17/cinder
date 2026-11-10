@@ -12,8 +12,10 @@ import (
 	"errors"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/expiry"
 
 	"github.com/zeebo/xxh3"
 )
@@ -41,13 +43,14 @@ const (
 // Entry is one WAL record. Tombstoned Sets replay as versioned deletes;
 // Del replays as a hard remove (never resurrects markers).
 type Entry struct {
-	Op        Op
-	Key       []byte
-	Value     []byte
-	Version   uint64
-	Writer    uint64
-	ExpiresMs uint64 // wall-clock ms since epoch, 0 if no TTL
-	HasTTL    bool
+	Op      Op
+	Key     []byte
+	Value   []byte
+	Version uint64
+	Writer  uint64
+	// Expiry is the TTL deadline; zero means none. On disk this is
+	// still (u64 ms, u8 flag), converted by the codec helpers here.
+	Expiry    expiry.Expiry
 	Tombstone bool
 }
 
@@ -68,11 +71,11 @@ func encodeRecord(e Entry) ([]byte, error) {
 	out = append(out, e.Value...)
 	out = codec.Append(out, binary.LittleEndian, e.Version)
 	out = codec.Append(out, binary.LittleEndian, e.Writer)
-	out = codec.Append(out, binary.LittleEndian, e.ExpiresMs)
-	if e.HasTTL {
-		out = codec.Append(out, binary.LittleEndian, uint8(1))
-	} else {
+	out = codec.Append(out, binary.LittleEndian, uint64(e.Expiry.UnixMilli()))
+	if e.Expiry.IsNone() {
 		out = codec.Append(out, binary.LittleEndian, uint8(0))
+	} else {
+		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	}
 	if e.Tombstone {
 		out = codec.Append(out, binary.LittleEndian, uint8(1))
@@ -385,8 +388,13 @@ func (r *Reader) Next() (Entry, bool) {
 	}
 	e := Entry{
 		Op: Op(op), Key: append([]byte(nil), key...), Value: append([]byte(nil), val...),
-		Version: ver, Writer: writer, ExpiresMs: expires,
-		HasTTL: hasTTL != 0, Tombstone: tomb != 0,
+		Version: ver, Writer: writer, Tombstone: tomb != 0,
+	}
+	if hasTTL != 0 {
+		// At, not FromUnixMilli: a set flag with ms=0 still means an
+		// (already elapsed) deadline, matching the old bool+instant
+		// handling of corrupt records.
+		e.Expiry = expiry.At(time.UnixMilli(int64(expires)).UTC())
 	}
 	r.pos = c.Pos()
 	r.commit = uint64(c.Pos())

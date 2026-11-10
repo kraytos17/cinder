@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 func makeVersioned(value string, version, writer uint64) Entry {
@@ -82,8 +84,7 @@ func TestVersionedPutAssignsMonotonicVersion(t *testing.T) {
 func TestVersionedTTLExpires(t *testing.T) {
 	s := NewLRUStore(1024, nil)
 	e := makeVersioned("v", 1, 10)
-	e.HasTTL = true
-	e.ExpiresAt = time.Now().Add(-time.Second)
+	e.Expiry = expiry.At(time.Now().Add(-time.Second))
 	if err := s.PutVersioned("k", e); err != nil {
 		t.Fatal(err)
 	}
@@ -183,8 +184,7 @@ func TestVersionedForEachSkipsExpired(t *testing.T) {
 	clock := NewManualClock(time.Now())
 	s := NewLRUStore(1<<20, clock)
 	e := makeVersioned("gone", 1, 0)
-	e.HasTTL = true
-	e.ExpiresAt = clock.Now().Add(-time.Second)
+	e.Expiry = expiry.At(clock.Now().Add(-time.Second))
 	if err := s.PutVersioned("gone", e); err != nil {
 		t.Fatal(err)
 	}

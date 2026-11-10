@@ -14,12 +14,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"slices"
-	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
 
 	"github.com/zeebo/xxh3"
 
+	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -57,6 +57,15 @@ type MetaRow struct {
 	KeyHash   uint64
 	Version   uint64
 	Writer    uint64
+}
+
+// Stamp returns the row's LWW identity. MetaRow names the writer field
+// Writer while Entry/Response call it WriterNodeHash — this constructor
+// is where that mapping is reviewed once, instead of at every
+// hand-written literal (a transposition would silently corrupt repair
+// ordering, and every field is uint64/bool).
+func (r MetaRow) Stamp() store.Stamp {
+	return store.Stamp{Version: r.Version, Writer: r.Writer, Tombstone: r.Tombstone}
 }
 
 // SyncItem is one full sync entry.
@@ -497,7 +506,7 @@ func EncodeSync(msg SyncMessage) ([]byte, error) {
 		}
 
 		size += n
-		if it.Entry.HasTTL {
+		if !it.Entry.Expiry.IsNone() {
 			size += 8
 		}
 		if size > MaxMetaBytes*4 {
@@ -515,7 +524,7 @@ func EncodeSync(msg SyncMessage) ([]byte, error) {
 		out = codec.Append(out, binary.LittleEndian, it.Entry.WriterNodeHash)
 
 		var flags uint8
-		if it.Entry.HasTTL {
+		if !it.Entry.Expiry.IsNone() {
 			flags |= 1
 		}
 		if it.Entry.Tombstone {
@@ -523,8 +532,8 @@ func EncodeSync(msg SyncMessage) ([]byte, error) {
 		}
 
 		out = codec.Append(out, binary.LittleEndian, flags)
-		if it.Entry.HasTTL {
-			out = codec.Append(out, binary.LittleEndian, uint64(it.Entry.ExpiresAt.UnixMilli()))
+		if !it.Entry.Expiry.IsNone() {
+			out = codec.Append(out, binary.LittleEndian, uint64(it.Entry.Expiry.UnixMilli()))
 		}
 
 		out = codec.AppendLen(out, binary.LittleEndian, len(it.Entry.Value))
@@ -584,12 +593,12 @@ func DecodeSync(data []byte) (SyncMessage, bool) {
 
 		e.Version, e.WriterNodeHash = ver, writer
 		e.Tombstone = flags&2 != 0
-		if e.HasTTL = flags&1 != 0; e.HasTTL {
+		if flags&1 != 0 {
 			ms, ok := c.U64()
 			if !ok {
 				return msg, false
 			}
-			e.ExpiresAt = time.UnixMilli(int64(ms)).UTC()
+			e.Expiry = expiry.FromUnixMilli(int64(ms))
 		}
 
 		vl, ok := c.U32()

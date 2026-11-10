@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/kraytos17/cinder/internal/expiry"
 )
 
 // FuzzStoreSequence feeds op sequences to both LRU and LFU stores under a
@@ -77,7 +79,7 @@ func FuzzStoreSequence(f *testing.F) {
 				}
 				if hadBefore {
 					if after, ok := st.GetVersioned(key); ok {
-						if CompareLWW(stampOf(after), stampOf(before)) == LWWLess {
+						if CompareLWW(after.Stamp(), before.Stamp()) == LWWLess {
 							t.Fatalf("version decreased on %q: %+v -> %+v", key, before, after)
 						}
 					}
@@ -85,8 +87,7 @@ func FuzzStoreSequence(f *testing.F) {
 			case 1: // PutVersioned with fuzzer-built identity.
 				e := Entry{Value: arg, Version: u64(arg) &^ (1 << 63), WriterNodeHash: u64(arg)}
 				if len(arg) > 0 && arg[0]%2 == 0 {
-					e.HasTTL = true
-					e.ExpiresAt = clk.Now().Add(time.Duration(u64(arg)%500_000) * time.Millisecond)
+					e.Expiry = expiry.At(clk.Now().Add(time.Duration(u64(arg)%500_000) * time.Millisecond))
 				}
 				before, hadBefore := st.GetVersioned(key)
 				err := st.PutVersioned(key, e)
@@ -95,7 +96,7 @@ func FuzzStoreSequence(f *testing.F) {
 				}
 				if hadBefore {
 					if after, ok := st.GetVersioned(key); ok {
-						if CompareLWW(stampOf(after), stampOf(before)) == LWWLess {
+						if CompareLWW(after.Stamp(), before.Stamp()) == LWWLess {
 							t.Fatalf("version decreased on %q", key)
 						}
 					}
