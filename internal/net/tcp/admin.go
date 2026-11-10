@@ -3,7 +3,6 @@ package tcp
 import (
 	"encoding/json/v2"
 
-	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/netport"
@@ -69,16 +68,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		var nodes []adminClusterNode
 		if table != nil {
 			for _, m := range table.Snapshot() {
-				state := m.State.String()
-				switch m.State {
-				case cluster.Alive:
-					state = "alive"
-				case cluster.Suspect:
-					state = "suspect"
-				case cluster.Dead:
-					state = "dead"
-				}
-				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: m.Port, State: state, Incarnation: m.Incarnation})
+				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: m.Port, State: m.State.String(), Incarnation: m.Incarnation})
 			}
 		} else {
 			nodes = []adminClusterNode{{ID: s.nodeID, Host: "127.0.0.1", Port: s.port, State: "alive", Incarnation: 1}}

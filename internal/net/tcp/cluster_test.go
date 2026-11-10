@@ -1,6 +1,7 @@
 package tcp_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -8,12 +9,52 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/netport"
 	"github.com/kraytos17/cinder/internal/store"
 )
+
+func TestAdminClusterNodeStateUsesWireLabels(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	defer srv.Shutdown()
+	if err := srv.ConfigureCluster(nil); err != nil {
+		t.Fatal(err)
+	}
+	table := srv.Table()
+	table.Seed([]cluster.NodeInfo{{ID: "peer", Host: "127.0.0.1", Port: 7001}})
+	for _, tc := range []struct {
+		state cluster.NodeState
+		want  string
+	}{{cluster.Alive, "alive"}, {cluster.Suspect, "suspect"}, {cluster.Dead, "dead"}} {
+		table.ApplyRumor(cluster.NodeInfo{ID: "peer", Host: "127.0.0.1", Port: 7001, State: tc.state, Incarnation: uint64(tc.state + 1)})
+		got := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminCluster})
+		if got.Status != protocol.StatusOK {
+			t.Fatalf("cluster info status = %v", got.Status)
+		}
+		var nodes []struct {
+			ID    string `json:"id"`
+			State string `json:"state"`
+		}
+		if err := json.Unmarshal(got.Value, &nodes); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, node := range nodes {
+			if node.ID == "peer" {
+				found = true
+				if node.State != tc.want {
+					t.Errorf("admin state = %q, want %q", node.State, tc.want)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("admin cluster omitted peer for state %q", tc.want)
+		}
+	}
+}
 
 func TestConfigureRebalanceRejectsInvalidConfig(t *testing.T) {
 	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
@@ -63,9 +104,9 @@ func TestClusterSetGetAcrossNodes(t *testing.T) {
 			{ID: "node1", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node1"]))},
 			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node2"]))},
 		},
-		MaxRetries:    3,
-		BaseBackoffMs: 5,
-		RPCTimeout:    5 * time.Second,
+		MaxRetries:  3,
+		BaseBackoff: 5 * time.Millisecond,
+		RPCTimeout:  5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

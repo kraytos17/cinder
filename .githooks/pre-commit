@@ -1,112 +1,13 @@
-#!/usr/bin/env bash
-# Pre-commit hook: the fast, local half of the CI lint gate.
-#   0. `git diff --check` on staged files except *.md (whitespace errors;
-#      *.md excluded: trailing double-space is a legit Markdown hard break).
-#   1. gofmt check on STAGED Go blobs (what CI enforces).
-#   2. YAML syntax check on staged *.yml/*.yaml (catches workflow typos pre-push).
-#   3. Justfile formatting (`just --fmt --check`).
-# Slow checks (go vet, race-detector tests) stay in CI and `just verify` —
-# run that before pushing. Install with `just hooks-install`; run manually
-# with `just hooks-run`. This hook is local-only by design: CI runs the real
-# gates, not this script (nothing is staged in a fresh checkout).
-set -euo pipefail
+#!/bin/sh
+set -eu
 
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+root=$(git rev-parse --show-toplevel)
+binary=$(git rev-parse --path-format=absolute --git-path cinder-precommit)
 
-fail=0
-
-# --- 0. whitespace errors (excludes markdown hard-breaks) ---
-if ! git diff --cached --check -- . ':!*.md'; then
-    fail=1
-    echo "pre-commit: fix the whitespace errors above (or: git commit --no-verify)" >&2
+if [ ! -x "$binary" ]; then
+	printf '%s\n' "pre-commit: Go hook binary not installed; run 'just hooks-install'." >&2
+	exit 1
 fi
 
-# --- collect staged files once, classify by extension ---
-staged_go=()
-staged_yml=()
-staged_justfile=0
-while IFS= read -r -d '' f; do
-    case "$f" in
-        *.go)
-            staged_go+=("$f")
-            ;;
-        *.yml | *.yaml)
-            staged_yml+=("$f")
-            ;;
-        Justfile)
-            staged_justfile=1
-            ;;
-    esac
-done < <(git diff --cached --name-only -z --diff-filter=ACMR)
-
-# --- 1. gofmt on the staged blob (not the worktree) ---
-if [ "${#staged_go[@]}" -gt 0 ]; then
-    if ! command -v gofmt >/dev/null 2>&1; then
-        echo "pre-commit: gofmt not found — cannot check formatting." >&2
-        echo "  Install Go, or bypass with: git commit --no-verify" >&2
-        exit 1
-    fi
-    bad=()
-    for f in "${staged_go[@]}"; do
-        # gofmt -d prints an empty diff for formatted input; anything else
-        # means the staged blob needs formatting.
-        if [ -n "$(git show ":$f" | gofmt -d 2>/dev/null)" ]; then
-            bad+=("$f")
-        fi
-    done
-    if [ "${#bad[@]}" -gt 0 ]; then
-        fail=1
-        echo "pre-commit: gofmt would reformat ${#bad[@]} staged file(s):" >&2
-        for f in "${bad[@]}"; do
-            # In-place reformat would also touch unstaged hunks — warn when the
-            # worktree differs from the index (partial staging).
-            if git diff --quiet -- "$f"; then
-                echo "  $f" >&2
-            else
-                echo "  $f (has unstaged changes — in-place reformat will touch those too)" >&2
-            fi
-        done
-        echo "  Fix with: gofmt -w <files>  (or: just vet)" >&2
-        echo "  then re-stage and commit again. CI is the source of truth if" >&2
-        echo "  your local Go version disagrees with go.mod's toolchain." >&2
-    fi
-fi
-
-# --- 2. YAML syntax on staged workflows ---
-if [ "${#staged_yml[@]}" -gt 0 ]; then
-    if command -v python3 >/dev/null 2>&1 && python3 -c "import yaml" 2>/dev/null; then
-        for f in "${staged_yml[@]}"; do
-            if ! git show ":$f" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
-                fail=1
-                echo "pre-commit: YAML syntax error in staged file: $f" >&2
-            fi
-        done
-    elif command -v ruby >/dev/null 2>&1; then
-        for f in "${staged_yml[@]}"; do
-            if ! git show ":$f" | ruby -ryaml -e "YAML.safe_load(STDIN.read)" 2>/dev/null; then
-                fail=1
-                echo "pre-commit: YAML syntax error in staged file: $f" >&2
-            fi
-        done
-    else
-        echo "pre-commit: note: neither pyyaml nor ruby found, skipping YAML syntax check" >&2
-    fi
-fi
-
-# --- 3. Justfile formatting ---
-if [ "$staged_justfile" -ne 0 ]; then
-    if command -v just >/dev/null 2>&1; then
-        if ! just --fmt --check >/dev/null 2>&1; then
-            fail=1
-            echo "pre-commit: Justfile needs formatting (run: just --fmt)" >&2
-        fi
-    else
-        echo "pre-commit: note: just not found — skipping Justfile format check" >&2
-    fi
-fi
-if [ "$fail" -ne 0 ]; then
-    echo "pre-commit: FAILED — fix the above, re-stage, and retry (or: git commit --no-verify)" >&2
-    exit 1
-fi
-echo "pre-commit: OK (fast checks only — run \`just verify\` before pushing)"
+cd "$root"
+exec "$binary" "$@"

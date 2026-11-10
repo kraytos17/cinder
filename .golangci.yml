@@ -1,155 +1,169 @@
-# golangci-lint v2 config. Run via `just lint` (uses the go.mod-pinned
-# toolchain, no separate install). CI mirrors it.
 version: "2"
+
 run:
   timeout: 10m
+
 linters:
-  # Start from everything, then carve out what doesn't fit this tree.
   default: all
   disable:
-    # No import restrictions, no naming-length rules, no line-length rules.
+    # Naming, import, and formatting preferences.
     - depguard
     - varnamelen
     - lll
-    # v2-renamed linters whose old names linger in docs: disable both.
     - wsl
-    - wsl_v5 # blank-line placement is churn; gofmt/gofumpt gate formatting
-    # Exhaustive struct literals contradict partial-wire-struct style.
-    - exhaustruct
-    - exhaustruct_v5
-    # Package-doc bikeshedding conflicts with the one-doc-per-package rule.
+    - wsl_v5
     - godoclint
-    # Comment/dot style churn.
     - godot
     - nlreturn
-    - wsl
-    # API-shape opinions that contradict deliberate choices here.
-    - exhaustruct # internal structs evolve; exhaustive literals are noise
-    - ireturn # accepted interfaces are a deliberate API choice
-    - nonamedreturns # named returns document wire layouts
-    - wrapcheck # sentinel errors cross package boundaries by design
-    - noinlineerr # error-inline style varies, fine either way
-    - testpackage # white-box tests are load-bearing (wire internals)
-    - thelper # t.Helper discipline is reviewed, not linted
-    - godox # TODO tracking is git-grep's job
-    # Too noisy for this tree (revisit on request).
+
+    # Struct/API design preferences.
+    - exhaustruct
+    - exhaustruct_v5
+    - ireturn
+    - nonamedreturns
+    - wrapcheck
+    - noinlineerr
+    - funcorder
+    - recvcheck
+
+    # Test conventions.
+    - testpackage
+    - thelper
+    - paralleltest
+    - testableexamples
+
+    # Complexity and maintainability.
     - cyclop
     - funlen
     - gocognit
     - goconst
-    - mnd # magic numbers are wire constants with comments
     - maintidx
-    - nestif # deep decode guards are the point
+    - nestif
+    - mnd
+
+    # Globals, initialization, and miscellaneous.
     - forbidigo
-    - gochecknoglobals # package-level test fixtures are idiomatic here
+    - gochecknoglobals
     - gochecknoinits
-    - lll
-    - musttag # no Marshal-heavy structs
-    - paralleltest # timing-sensitive suites must not run parallel
+    - musttag
     - perfsprint
-    - rowserrcheck # no sql here
-    - sqlclosecheck # no sql here
-    - tagalign # no struct tags to align
-    - tagliatelle # no JSON naming convention enforced
-    - testableexamples
-    - usestdlibvars
-    - errcheck # unchecked returns are reviewed at call sites, not linted
-    - err113 # descriptive per-call errors beat sentinel vars here
-    - funcorder # constructor/method order is historical, not worth churning
-    - recvcheck # mixed ptr/value receivers are idiomatic here (mutate vs pure)
+    - rowserrcheck
+    - sqlclosecheck
+    - tagalign
+    - tagliatelle
+
+    # Error handling and TODO conventions.
+    - errcheck
+    - err113
+    - godox
+
+    - gomodguard
+
   enable:
-    # Narrow re-enables of generally-useful non-default linters.
-    - exhaustive # exhaustive enum switches (opcodes, states)
-    - fatcontext # context.WithTimeout without cancel is a leak
-    - containedctx # don't store ctx in structs
-    - contextcheck # pass ctx through, don't Background() mid-chain
-    - durationcheck # time.Duration conversions, not magic nanos
+    # Context and concurrency safety.
+    - fatcontext
+    - containedctx
+    - contextcheck
     - copyloopvar
     - intrange
-    - modernize # gopls modernization suggestions (min/max, slices, maps)
+
+    # Error handling.
     - nilerr
     - nilnil
-    - testifylint
-    - noctx # net/http surface without ctx
-    - promlinter # metric-name lint for our exposition
-    - zerologlint # no Sprintf-in-Msg (we log with zerolog)
     - errchkjson
+
+    # Code quality and modernization.
+    - exhaustive
+    - modernize
     - gocritic
     - unparam
-    - misspell
     - unconvert
+    - misspell
     - whitespace
     - revive
+
+    # Static analysis.
     - staticcheck
     - unused
     - ineffassign
     - govet
+    - usestdlibvars
+
+    # Networking, metrics, and logging.
+    - noctx
+    - promlinter
+    - zerologlint
+
+    # Testing.
+    - testifylint
+
   settings:
     staticcheck:
-      checks: ["all", "-ST1000", "-ST1003", "-ST1016"]
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+
     revive:
       rules:
-        # One canonical package doc lives in counter.go; the other files
-        # open with ordinary comments (godoclint enforces the single doc).
         - name: package-comments
           disabled: true
+
     misspell:
       locale: US
+
     gocyclo:
-      # Decoders and dispatchers are branchy by nature; fuzz + tests cover
-      # them. Keep the gate for genuinely tangled new code.
       min-complexity: 50
+
     exhaustive:
       default-signifies-exhaustive: true
+
   exclusions:
     generated: lax
+
     rules:
-      # Generated stubs are not our code.
+      # Generated gRPC gateway code.
       - path: internal/grpcgw/gen/*
-        linters: [all]
-      # Test doubles panic on bad asserts by design; dynamic messages
-      # identify the failing double.
+        linters:
+          - all
+
+      # Test-specific exclusions.
       - path: _test\.go
-        linters: [forcetypeassert, err113]
-      # Test servers use httptest without contexts to propagate.
-      - path: _test\.go
-        linters: [noctx]
-      # Test assertions read response structs directly; clearer than getters.
-      - path: _test\.go
-        linters: [protogetter]
-      # Gosec rules triaged as by-design (see justification on each):
-      # G104 same scope as disabled errcheck: reviewed at call sites.
-      # G115 wire-decode conversions happen only after explicit bounds
-      #   checks; overflow panics are what the fuzzers hunt.
-      # G304 data/TLS paths come from operator flags, not remote input.
-      # G301/G302/G306 0644 matches the retired C++ tree's file modes.
-      # G404 peer selection and retry jitter are not security boundaries.
-      - linters: [gosec]
+        linters:
+          - forcetypeassert
+          - err113
+          - noctx
+          - protogetter
+          - unparam
+          - revive
+          - copyloopvar
+          - gosec
+
+      # Gosec rules explicitly triaged as by-design.
+      - linters:
+          - gosec
         text: "G104: Errors unhandled|G115: integer overflow|G304: Potential file inclusion|G301: Expect directory permissions|G302: Expect file permissions|G306: Expect WriteFile permissions|G404: Use of weak random"
-      # Fuzz harnesses burn input fast; gosec crypto/file rules don't apply.
-      - path: _test\.go
-        linters: [gosec]
-      # Test helpers keep shape parity with C++ ports; unused params are fine.
-      - path: _test\.go
-        linters: [unparam, revive]
-      # Parallel subtests share closed-over loop state by design here.
-      - path: _test\.go
-        linters: [copyloopvar]
+
     paths:
       - internal/grpcgw/gen/*
+
 formatters:
   enable:
     - gofmt
     - gofumpt
     - goimports
+
   settings:
     goimports:
       local-prefixes:
         - github.com/kraytos17/cinder
+
   exclusions:
     generated: lax
     paths:
       - internal/grpcgw/gen/*
+
 issues:
   max-issues-per-linter: 50
   max-same-issues: 20

@@ -371,9 +371,9 @@ func TestInteropTwoNodeCppCluster(t *testing.T) {
 			{ID: "node1", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node1"]))},
 			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(portOf(t, addrs["node2"]))},
 		},
-		MaxRetries:    5,
-		BaseBackoffMs: 10,
-		RPCTimeout:    5 * time.Second,
+		MaxRetries:  5,
+		BaseBackoff: 10 * time.Millisecond,
+		RPCTimeout:  5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -507,7 +507,7 @@ func TestInteropCppQuorumSurvivesOneFailure(t *testing.T) {
 			{ID: "node2", Host: "127.0.0.1", Port: netport.Port(ports["node2"])},
 			{ID: "node3", Host: "127.0.0.1", Port: netport.Port(ports["node3"])},
 		},
-		MaxRetries: 5, BaseBackoffMs: 10, RPCTimeout: 5 * time.Second,
+		MaxRetries: 5, BaseBackoff: 10 * time.Millisecond, RPCTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)

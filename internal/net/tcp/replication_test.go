@@ -144,7 +144,7 @@ func (c *testCluster) client() *client.Cluster {
 		nodes = append(nodes, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: netport.Port(p)})
 	}
 	cl, err := client.NewCluster(client.ClusterConfig{
-		Nodes: nodes, MaxRetries: 5, BaseBackoffMs: 10, RPCTimeout: 5 * time.Second,
+		Nodes: nodes, MaxRetries: 5, BaseBackoff: 10 * time.Millisecond, RPCTimeout: 5 * time.Second,
 	})
 	if err != nil {
 		c.t.Fatal(err)

@@ -136,7 +136,7 @@ func TestClusterCounterFollowsRedirect(t *testing.T) {
 		}
 		addrs = append(addrs, client.NodeAddr{ID: id, Host: "127.0.0.1", Port: netport.Port(port)})
 	}
-	cl, err := client.NewCluster(client.ClusterConfig{Nodes: addrs, MaxRetries: 3, BaseBackoffMs: 1, RPCTimeout: 5 * time.Second})
+	cl, err := client.NewCluster(client.ClusterConfig{Nodes: addrs, MaxRetries: 3, BaseBackoff: time.Millisecond, RPCTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}

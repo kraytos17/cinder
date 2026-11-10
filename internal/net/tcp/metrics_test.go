@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -110,7 +111,7 @@ func TestMetricsConnectionsAndHandler(t *testing.T) {
 	}
 	h := metrics.NewHandler(m, srv.MetricGauges)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	h.ServeHTTP(rec, req)
 	body := rec.Body.String()
 	for _, want := range []string{

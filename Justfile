@@ -54,7 +54,7 @@ lint:
 # Auto-fix what the linters can fix safely.
 lint-fix:
     go tool golangci-lint run --fix ./... || true
-    gofmt -w internal/ cmd/
+    gofmt -w internal/ cmd/ tools/
 
 # Pre-push gate: formatting, vet, lint, and race-enabled tests.
 verify: vet lint
@@ -150,6 +150,7 @@ clean:
 # Install the repo-local pre-commit hook.
 hooks-install:
     git config core.hooksPath {{ quote(justfile_directory() / '.githooks') }}
+    go build -o $(git rev-parse --git-path cinder-precommit) ./tools/precommit
     chmod +x .githooks/pre-commit
     @echo "pre-commit hook installed (core.hooksPath=.githooks)"
 

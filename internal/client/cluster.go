@@ -21,12 +21,12 @@ const (
 
 // ClusterConfig configures a multi-node client.
 type ClusterConfig struct {
-	Nodes         []NodeAddr
-	MaxRetries    int           // attempts beyond the first (0 = no retry)
-	BaseBackoffMs int           // exponential: base * 2^attempt, ±20% jitter
-	RPCTimeout    time.Duration // per-RPC deadline (0 = no timeout)
-	TLS           *tls.Config   // nil = plaintext; tlscfg.Client otherwise
-	ClientSecret  string        // client auth credential (empty = open)
+	Nodes        []NodeAddr
+	MaxRetries   int           // attempts beyond the first (0 = no retry)
+	BaseBackoff  time.Duration // exponential: base * 2^attempt, ±20% jitter
+	RPCTimeout   time.Duration // per-RPC deadline (0 = no timeout)
+	TLS          *tls.Config   // nil = plaintext; tlscfg.Client otherwise
+	ClientSecret string        // client auth credential (empty = open)
 }
 
 // Cluster routes requests to ring owners, follows ownership redirects,
@@ -71,7 +71,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		pool:        pool,
 		addrs:       addrs,
 		maxRetries:  cfg.MaxRetries,
-		baseBackoff: time.Duration(cfg.BaseBackoffMs) * time.Millisecond,
+		baseBackoff: cfg.BaseBackoff,
 		learned:     make(map[string]string),
 	}, nil
 }
@@ -127,25 +127,32 @@ func (c *Cluster) tryFollowRedirect(key string, res protocol.Response, node stri
 	return target.ID, true
 }
 
-func retryBackoff(attempt, baseMs int) int {
-	delay := int64(baseMs)
-	for range attempt {
-		delay *= 2
-		if delay > int64(^uint(0)>>1) {
-			return int(^uint(0) >> 1)
-		}
+func retryBackoff(attempt int, base time.Duration) time.Duration {
+	if base <= 0 {
+		return 0
 	}
-	return int(delay)
+	delay := int64(base)
+	for range attempt {
+		if delay > int64(time.Duration(1<<63-1))/2 {
+			return time.Duration(1<<63 - 1)
+		}
+		delay *= 2
+	}
+	return time.Duration(delay)
 }
 
-func jitterBackoff(delayMs int) int {
-	if delayMs <= 0 {
-		return delayMs
+func jitterBackoff(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return delay
 	}
 	jitter := 0.8 + rand.Float64()*0.4
-	d := int(float64(delayMs) * jitter)
+	maxDuration := time.Duration(1<<63 - 1)
+	if float64(delay) >= float64(maxDuration)/jitter {
+		return maxDuration
+	}
+	d := time.Duration(float64(delay) * jitter)
 	if d < 1 {
-		return 1
+		return time.Nanosecond
 	}
 	return d
 }
@@ -173,7 +180,7 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 				if attempt == c.maxRetries {
 					return res, nil
 				}
-				time.Sleep(time.Duration(jitterBackoff(retryBackoff(attempt, int(c.baseBackoff.Milliseconds())))) * time.Millisecond)
+				time.Sleep(jitterBackoff(retryBackoff(attempt, c.baseBackoff)))
 				continue
 			}
 			return res, nil
@@ -183,7 +190,7 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 		if attempt == c.maxRetries {
 			break
 		}
-		time.Sleep(time.Duration(jitterBackoff(retryBackoff(attempt, int(c.baseBackoff.Milliseconds())))) * time.Millisecond)
+		time.Sleep(jitterBackoff(retryBackoff(attempt, c.baseBackoff)))
 	}
 	return protocol.Response{}, lastErr
 }

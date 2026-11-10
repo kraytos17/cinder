@@ -1,9 +1,3 @@
-# Codegen for internal/grpcgw/gen. buf compiles the proto itself — no
-# protoc binary anywhere. Plugins run through `go tool`, so the go.mod-pinned
-# versions do the generation on a fresh checkout with only the Go toolchain.
-# The `module=` option emits flat files directly into gen/ (no cinder/v1
-# nesting, no post-processing). The Go import path comes from the
-# `go_package` option in cinder/v1/cache.proto itself.
 version: v2
 plugins:
   - local: ["go", "tool", "google.golang.org/protobuf/cmd/protoc-gen-go"]

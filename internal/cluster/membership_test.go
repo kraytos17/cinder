@@ -5,6 +5,18 @@ import (
 	"time"
 )
 
+func TestNodeStateStringWireTokens(t *testing.T) {
+	for state, want := range map[NodeState]string{
+		Alive:   "alive",
+		Suspect: "suspect",
+		Dead:    "dead",
+	} {
+		if got := state.String(); got != want {
+			t.Errorf("NodeState(%d).String() = %q, want %q", state, got, want)
+		}
+	}
+}
+
 func testClock() (func() time.Time, *time.Time) {
 	now := time.Now()
 	return func() time.Time { return now }, &now

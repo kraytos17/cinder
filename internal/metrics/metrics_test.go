@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -88,7 +89,7 @@ func TestHandlerServesMetrics(t *testing.T) {
 	c.Record(protocol.OpPing, 10)
 	h := NewHandler(c, func() StoreGauges { return StoreGauges{Bytes: 7} })
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/metrics", nil)
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("code = %d", rec.Code)
@@ -100,7 +101,7 @@ func TestHandlerServesMetrics(t *testing.T) {
 		t.Fatal("no operations in body")
 	}
 	rec2 := httptest.NewRecorder()
-	h.ServeHTTP(rec2, httptest.NewRequest("GET", "/other", nil))
+	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/other", nil))
 	if rec2.Code != 404 {
 		t.Fatalf("other path code = %d, want 404", rec2.Code)
 	}
