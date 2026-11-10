@@ -32,6 +32,16 @@ build:
 test *args:
     go test ./... "$@"
 
+# Full test suite with the race detector (what CI enforces). A separate
+# recipe because `test` appends args after ./... where -race is invalid.
+test-race:
+    go test -race ./...
+
+# Run exactly one fuzz target (for parallel CI matrix legs).
+[positional-arguments]
+fuzz-one target package time="20s":
+    go test -run=NONE -fuzz={{ target }} -fuzztime={{ time }} ./{{ package }}/
+
 # vet + gofmt gate (mirrors the CI job). Fast; no network.
 vet:
     go vet ./... && test -z "$(gofmt -l .)"
@@ -117,11 +127,15 @@ bench-trace *args:
 # buf compiles the proto itself — no protoc binary anywhere. Plugins run
 # through `go tool`, so the go.mod-pinned versions do the generation on a
 # fresh checkout. The `module=` option emits flat files directly into
-# gen/ (no cinder/v1 nesting, no mv step). Verify with
-# go build ./... && go test ./internal/grpcgw/.
+# gen/ (no cinder/v1 nesting, no mv step). `just proto-check` verifies
+# generation matches the committed stubs.
 proto-generate:
     go tool buf lint
     go tool buf generate
+
+# Verify generated stubs match the checked-in flat output.
+proto-check: proto-generate
+    git diff --exit-code -- internal/grpcgw/gen/
 
 # Run a local node (flags pass through to cinderd).
 [positional-arguments]

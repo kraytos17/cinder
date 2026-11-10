@@ -3,67 +3,71 @@ name: Go
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  go:
+  checks:
     runs-on: ubuntu-26.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: true
+          cache-dependency-path: go.mod
 
-      - name: gofmt
-        run: test -z "$(gofmt -l .)"
+      - name: Set up just
+        uses: extractions/setup-just@v4
+        with:
+          just-version: "1"
 
-      - name: go vet
-        run: go vet ./...
+      - name: Formatting and vet
+        run: just vet
 
-      - name: Lint (golangci-lint, pinned via go.mod tool directives)
-        run: go tool golangci-lint run ./...
+      - name: Lint
+        run: just lint
 
       - name: Vulnerability scan
-        run: go tool govulncheck ./...
+        run: just vuln
+
+      - name: Proto lint and generated stubs
+        run: just proto-check
+
+      - name: Module exactness
+        run: go mod tidy && git diff --exit-code -- go.mod go.sum
 
       - name: Build
-        run: go build ./...
+        run: just build
 
-      - name: Proto lint (buf, pinned via go.mod tool directives)
-        run: go tool buf lint
+      - name: Race tests (including fuzz seed corpus)
+        run: just test-race
 
-      - name: Generated stubs are current
-        run: go tool buf generate && mv internal/grpcgw/gen/cinder/v1/*.pb.go internal/grpcgw/gen/ && rm -rf internal/grpcgw/gen/cinder && git diff --exit-code internal/grpcgw/gen/
-
-      - name: Module exactness (no uncommitted tidy drift)
-        run: go mod tidy && git diff --exit-code go.mod go.sum
-
-      - name: Tests (incl. fuzz seed corpus, race detector)
-        run: go test -race ./...
-
-      - name: Fuzz protocol codec (request fixed point)
-        run: go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/
-
-      - name: Fuzz protocol codec (response fixed point)
-        run: go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/
-
-      - name: Fuzz gossip view codec
-        run: go test -run=NONE -fuzz=FuzzGossipView -fuzztime=20s ./internal/cluster/
-
-      - name: Fuzz WAL reader
-        run: go test -run=NONE -fuzz=FuzzWALReader -fuzztime=20s ./internal/persist/
-
-      - name: Fuzz snapshot decoder
-        run: go test -run=NONE -fuzz=FuzzSnapshot -fuzztime=20s ./internal/persist/
-
-      - name: Fuzz anti-entropy codecs
-        run: go test -run=NONE -fuzz=FuzzAECodecs -fuzztime=20s ./internal/ae/
-
-      - name: Fuzz store op sequences
-        run: go test -run=NONE -fuzz=FuzzStoreSequence -fuzztime=20s ./internal/store/
-
-      - name: Fuzz counter codecs
-        run: go test -run=NONE -fuzz=FuzzCounterCodec -fuzztime=20s ./internal/counter/
+      - name: Fuzz targets (20s each, parallel)
+        env:
+          GOMAXPROCS: "1"
+        run: |
+          set -euo pipefail
+          pids=()
+          just fuzz-one FuzzDecodeRequest internal/net/protocol & pids+=("$!")
+          just fuzz-one FuzzDecodeResponse internal/net/protocol & pids+=("$!")
+          just fuzz-one FuzzGossipView internal/cluster & pids+=("$!")
+          just fuzz-one FuzzWALReader internal/persist & pids+=("$!")
+          just fuzz-one FuzzSnapshot internal/persist & pids+=("$!")
+          just fuzz-one FuzzAECodecs internal/ae & pids+=("$!")
+          just fuzz-one FuzzStoreSequence internal/store & pids+=("$!")
+          just fuzz-one FuzzCounterCodec internal/counter & pids+=("$!")
+          result=0
+          for pid in "${pids[@]}"; do
+            if ! wait "$pid"; then result=1; fi
+          done
+          exit "$result"
