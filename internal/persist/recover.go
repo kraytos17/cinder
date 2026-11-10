@@ -1,8 +1,5 @@
 package persist
 
-// Recovery: WAL + snapshot replay on startup, with entry
-// conversion and corruption accounting.
-
 import (
 	"fmt"
 	"os"
@@ -12,7 +9,7 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-func entryFromWal(e Entry, now time.Time) (store.Entry, bool) {
+func (e Entry) toStore(now time.Time) (store.Entry, bool) {
 	out := store.Entry{
 		Value: append([]byte(nil), e.Value...), Version: e.Version,
 		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
@@ -23,7 +20,7 @@ func entryFromWal(e Entry, now time.Time) (store.Entry, bool) {
 	return store.Entry{}, false
 }
 
-func entryFromSnap(e SnapEntry, now time.Time) (store.Entry, bool) {
+func (e SnapEntry) toStore(now time.Time) (store.Entry, bool) {
 	out := store.Entry{
 		Value: append([]byte(nil), e.Value...), Version: e.Version,
 		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
@@ -38,27 +35,29 @@ func entryFromSnap(e SnapEntry, now time.Time) (store.Entry, bool) {
 // active log, truncating torn tails. It opens the active WAL in append
 // mode for serving; the caller wires the store hook after Recover returns.
 // Recovering twice closes the previous writer first.
-
 func (m *Manager) Recover() error {
 	if err := os.MkdirAll(m.dir, 0o755); err != nil {
 		return err
 	}
+
 	m.mu.Lock()
 	if m.wal != nil {
-		_ = m.wal.Sync()
-		_ = m.wal.Close()
+		m.wal.Sync()
+		m.wal.Close()
 		m.wal = nil
 	}
+
 	m.mu.Unlock()
 	now := m.clock()
 	if snap := m.latestSnapshot(); snap != "" {
 		r := NewSnapReader(snap)
 		next, err := r.ReadStream(func(e SnapEntry) bool {
-			ve, ok := entryFromSnap(e, now)
+			ve, ok := e.toStore(now)
 			if !ok {
 				return true // skip expired, don't resurrect
 			}
-			_ = m.store.PutVersioned(string(e.Key), ve)
+
+			m.store.PutVersioned(string(e.Key), ve)
 			m.store.RestoreFreq(string(e.Key), e.Freq)
 			return true
 		})
@@ -72,6 +71,7 @@ func (m *Manager) Recover() error {
 		if err != nil {
 			continue
 		}
+
 		r, err := OpenReader(path)
 		if err != nil {
 			return err
@@ -97,7 +97,7 @@ func (m *Manager) Recover() error {
 				m.store.Remove(string(e.Key))
 				continue
 			}
-			if ve, ok := entryFromWal(e, now); ok {
+			if ve, ok := e.toStore(now); ok {
 				_ = m.store.PutVersioned(string(e.Key), ve)
 			}
 		}
@@ -107,12 +107,14 @@ func (m *Manager) Recover() error {
 			}
 		}
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	w, err := OpenWriter(filepath.Join(m.dir, walFileName), false)
 	if err != nil {
 		return err
 	}
+
 	m.wal = w
 	m.seq = m.maxSealedSeq() + 1
 	m.lastCompact = m.clock()

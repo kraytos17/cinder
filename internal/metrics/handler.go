@@ -25,7 +25,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(h.c.FormatPrometheus(h.gauges()))
+	w.Write(h.c.FormatPrometheus(h.gauges()))
 }

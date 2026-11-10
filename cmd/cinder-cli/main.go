@@ -33,7 +33,6 @@ var version = "dev"
 
 // statusString formats protocol outcomes using the CLI's lowercase,
 // parenthesized status text.
-
 func statusString(s protocol.Status) string {
 	switch s {
 	case protocol.StatusOK:
@@ -184,6 +183,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "error: "+cmd+" requires a key")
 			return 2
 		}
+
 		var delta uint64 = 1
 		if len(rest) > 1 {
 			var err error
@@ -208,7 +208,6 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // extractTTL pulls a trailing/embedded --ttl out of raw args so flags can
 // follow positionals. Returns the remaining args and the raw ttl string.
-
 func extractTTL(args []string) ([]string, string, error) {
 	var out []string
 	ttl := ""

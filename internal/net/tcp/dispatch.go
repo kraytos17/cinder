@@ -1,8 +1,5 @@
 package tcp
 
-// Request routing: opcode classification, auth gating, ownership
-// redirects, trace minting, and the connection read loop.
-
 import (
 	"bufio"
 	"encoding/binary"
@@ -28,14 +25,12 @@ func (s *Server) Dispatch(req protocol.Request) protocol.Response {
 // quorum — applies to gateway calls exactly as it does to TCP clients.
 // Without this, any server-side client secret would deny every gateway
 // call that routes through Dispatch.
-
 func (s *Server) DispatchWithAuth(req protocol.Request, token []byte) protocol.Response {
 	return s.dispatch(req, token)
 }
 
 // opcodeClass categorizes requests so authentication and ownership routing
 // can depend on whether traffic is client, replication, or admin traffic.
-
 type opcodeClass int
 
 const (
@@ -67,7 +62,6 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 // operations prefer client auth, then node auth. Unconfigured auth is open.
 // Node tokens are accepted for this server or any alive member because a
 // sender mints its token using its own node ID.
-
 func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 	s.authMu.RLock()
 	shared, clientSecret := s.sharedSecret, s.clientSharedSecret
@@ -75,6 +69,7 @@ func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 	if shared == "" && clientSecret == "" {
 		return true
 	}
+
 	now := s.clock.Now()
 	switch classifyOpcode(op) {
 	case classReplication:
@@ -105,6 +100,7 @@ func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) 
 	if auth.VerifyNodeToken(shared, s.nodeID, token, now) {
 		return true
 	}
+
 	s.ringMu.RLock()
 	table := s.table
 	s.ringMu.RUnlock()
@@ -115,9 +111,6 @@ func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) 
 		return auth.VerifyNodeToken(shared, id, token, now)
 	})
 }
-
-// StatusOf maps store/replication errors to wire statuses, shared with
-// the gRPC gateway's local-write paths (MultiSet).
 
 func (s *Server) DeleteNoRedirect(key string) protocol.Response {
 	if m, rf, mode := s.replication(); m != nil && rf > 1 {
@@ -130,7 +123,6 @@ func (s *Server) DeleteNoRedirect(key string) protocol.Response {
 }
 
 // ownerOf resolves the ring owner, or self when standalone.
-
 func (s *Server) ownerOf(key string) string {
 	s.ringMu.RLock()
 	defer s.ringMu.RUnlock()
@@ -145,7 +137,6 @@ func (s *Server) ownerOf(key string) string {
 
 // redirectTo builds a "moved to" response value and appends @host:port
 // when membership has a reachable address for the owner.
-
 func (s *Server) redirectTo(owner string) string {
 	var value strings.Builder
 	value.WriteString("moved to ")
@@ -171,7 +162,6 @@ func (s *Server) notReady(owner string) protocol.Response {
 
 // mintTrace preserves supplied trace IDs and fills missing IDs from a
 // unique pair allocated with one atomic increment.
-
 func (s *Server) mintTrace(traceID, spanID uint64) (uint64, uint64) {
 	if traceID == 0 || spanID == 0 {
 		base := s.trace.Add(2) - 1
@@ -213,6 +203,7 @@ func (s *Server) handle(c net.Conn) {
 		if header[0] != protocol.Magic || header[1] != protocol.Version {
 			return // bad protocol header: close the connection
 		}
+
 		payloadLen := binary.BigEndian.Uint32(header[3:7])
 		if payloadLen > protocol.MaxPayloadSize || uint64(payloadLen)+protocol.FrameHeaderSize > connBufferSize {
 			return // oversized payload: close the connection
@@ -220,6 +211,7 @@ func (s *Server) handle(c net.Conn) {
 		if cap(payloadBuf) > maxReusePayload {
 			payloadBuf = nil
 		}
+
 		payload := payloadBuf
 		if uint64(cap(payload)) < uint64(payloadLen) {
 			payload = make([]byte, payloadLen)
@@ -229,9 +221,11 @@ func (s *Server) handle(c net.Conn) {
 		} else {
 			payload = payload[:payloadLen]
 		}
+
 		if _, err := io.ReadFull(br, payload); err != nil {
 			return
 		}
+
 		dec, err := protocol.DecodeRequest(header[:], payload)
 		var res protocol.Response
 		if err != nil {
@@ -247,6 +241,7 @@ func (s *Server) handle(c net.Conn) {
 			res.TraceID = dec.Req.TraceID
 			res.SpanID = dec.Req.SpanID
 		}
+
 		out, err := protocol.EncodeResponseInto(res, encodeBuf)
 		if err != nil {
 			s.met.WriteFailures.Add(1)
@@ -286,7 +281,6 @@ func writeAll(c net.Conn, b []byte) error {
 // replication, admin by opcode. Every decoded request bumps its opcode
 // counter and latency once per decoded request, including requests denied
 // by the authentication gate.
-
 func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Response {
 	start := s.clock.Now()
 	// Request-scoped logger: the wire IDs ride every line, and fan-out
@@ -297,6 +291,7 @@ func (s *Server) dispatch(req protocol.Request, authToken []byte) protocol.Respo
 			Str("key", string(req.Key)).
 			Msg("request")
 	}
+
 	res := s.dispatchInner(req, authToken)
 	s.met.Record(req.Opcode, uint64(s.clock.Now().Sub(start).Nanoseconds()))
 	return res
@@ -343,7 +338,3 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 		return s.admin(req)
 	}
 }
-
-// handleCounterAdjust applies a client increment/decrement as the local
-// node id, then best-effort replicates full state. Ownership-gated like
-// other writes; zero deltas are no-ops that still answer OK.

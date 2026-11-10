@@ -1,8 +1,5 @@
 package tcp
 
-// Replication helpers: replica-set lookup, status conversion, and applying
-// inbound replicated entries.
-
 import (
 	"errors"
 
@@ -37,14 +34,17 @@ func (s *Server) replicaNodes(key string) []string {
 	if ring == nil {
 		return nil
 	}
+
 	rf := s.replicaFactor()
 	if rf < 1 || rf > hashring.MaxReplicas {
 		return nil
 	}
+
 	nodes, err := ring.GetNodes(key, rf)
 	if err != nil || len(nodes) == 0 {
 		return nil
 	}
+
 	out := nodes[:0:0]
 	for _, n := range nodes {
 		if n != s.nodeID {
@@ -89,6 +89,7 @@ func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 		}
 		return protocol.Response{Status: protocol.StatusOK}
 	}
+
 	e := store.Entry{
 		Value:          append([]byte(nil), req.Value...),
 		Version:        req.Version,
@@ -124,5 +125,3 @@ func statusOf(err error) protocol.Status {
 func writeResult(err error) protocol.Response {
 	return protocol.Response{Status: statusOf(err)}
 }
-
-// adminJSON types define the JSON documents returned by admin operations.

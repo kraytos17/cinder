@@ -69,6 +69,7 @@ func New(vnodes int, loadFactor float64) (*Ring, error) {
 	if math.IsNaN(loadFactor) || math.IsInf(loadFactor, 0) || loadFactor < 0 {
 		return nil, errors.New("hashring: bounded_load_factor must be finite and non-negative")
 	}
+
 	r := &Ring{vnodes: vnodes, loadFactor: loadFactor}
 	r.snap.Store(&snapshot{})
 	return r, nil
@@ -105,6 +106,7 @@ func (r *Ring) AddNode(id string) {
 		if len(old.nodes) >= MaxPhysicalNodes {
 			return
 		}
+
 		snap := r.cloneForWrite()
 		phys := uint16(len(snap.nodes))
 		snap.nodes = append(snap.nodes, id)
@@ -113,7 +115,8 @@ func (r *Ring) AddNode(id string) {
 			snap.hashes = append(snap.hashes, hashVnode(id, i))
 			snap.nodeIx = append(snap.nodeIx, phys)
 		}
-		sortRing(snap)
+
+		snap.sort()
 		if r.snap.CompareAndSwap(old, snap) {
 			return
 		}
@@ -136,6 +139,7 @@ func (r *Ring) RemoveNode(id string) {
 		if phys < 0 {
 			return
 		}
+
 		snap := &snapshot{}
 		for i, n := range old.nodes {
 			if i != phys {
@@ -143,6 +147,7 @@ func (r *Ring) RemoveNode(id string) {
 				snap.loads = append(snap.loads, old.loads[i])
 			}
 		}
+
 		remap := make([]uint16, len(old.nodes))
 		next := uint16(0)
 		for i := range old.nodes {
@@ -150,6 +155,7 @@ func (r *Ring) RemoveNode(id string) {
 				remap[i] = 0
 				continue
 			}
+
 			remap[i] = next
 			next++
 		}
@@ -157,6 +163,7 @@ func (r *Ring) RemoveNode(id string) {
 			if int(old.nodeIx[i]) == phys {
 				continue
 			}
+
 			snap.hashes = append(snap.hashes, h)
 			snap.nodeIx = append(snap.nodeIx, remap[old.nodeIx[i]])
 		}
@@ -177,12 +184,14 @@ func (r *Ring) SetNodes(ids []string) error {
 		if _, ok := seen[id]; ok {
 			continue
 		}
+
 		seen[id] = struct{}{}
 		dedup = append(dedup, id)
 	}
 	if len(dedup) > MaxPhysicalNodes {
 		return ErrTooManyNodes
 	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for {
@@ -190,9 +199,10 @@ func (r *Ring) SetNodes(ids []string) error {
 		if sameSet(old.nodes, dedup) {
 			return nil
 		}
+
 		snap := &snapshot{}
 		for _, id := range dedup {
-			if idx := indexOf(old.nodes, id); idx >= 0 {
+			if idx := slices.Index(old.nodes, id); idx >= 0 {
 				snap.nodes = append(snap.nodes, id)
 				snap.loads = append(snap.loads, old.loads[idx])
 			} else {
@@ -206,7 +216,8 @@ func (r *Ring) SetNodes(ids []string) error {
 				snap.nodeIx = append(snap.nodeIx, uint16(pi))
 			}
 		}
-		sortRing(snap)
+
+		snap.sort()
 		if r.snap.CompareAndSwap(old, snap) {
 			return nil
 		}
@@ -218,27 +229,19 @@ func sameSet(a, b []string) bool {
 		return false
 	}
 	for _, x := range a {
-		if indexOf(b, x) < 0 {
+		if !slices.Contains(b, x) {
 			return false
 		}
 	}
 	return true
 }
 
-func indexOf(nodes []string, id string) int {
-	for i, n := range nodes {
-		if n == id {
-			return i
-		}
-	}
-	return -1
-}
-
-func sortRing(snap *snapshot) {
+func (snap *snapshot) sort() {
 	order := make([]int, len(snap.hashes))
 	for i := range order {
 		order[i] = i
 	}
+
 	slices.SortFunc(order, func(a, b int) int { return cmp.Compare(snap.hashes[a], snap.hashes[b]) })
 	hashes := make([]uint64, len(order))
 	ix := make([]uint16, len(order))
@@ -255,6 +258,7 @@ func (r *Ring) GetNode(key string) string {
 	if len(snap.hashes) == 0 {
 		return ""
 	}
+
 	h := hashKey(key)
 	idx, _ := slices.BinarySearch(snap.hashes, h)
 	if idx == len(snap.hashes) {
@@ -270,15 +274,18 @@ func (r *Ring) GetNodes(key string, n ReplicaCount) ([]string, error) {
 	if n <= 0 || n > MaxReplicas {
 		return nil, ErrInvalidReplicaCount
 	}
+
 	snap := r.snap.Load()
 	if len(snap.hashes) == 0 {
 		return nil, nil
 	}
+
 	h := hashKey(key)
 	start, _ := slices.BinarySearch(snap.hashes, h)
 	if start == len(snap.hashes) {
 		start = 0
 	}
+
 	var seen [MaxReplicas]uint16
 	var out []string
 	cur := start
@@ -289,6 +296,7 @@ func (r *Ring) GetNodes(key string, n ReplicaCount) ([]string, error) {
 			seen[len(out)] = ix
 			out = append(out, snap.nodes[ix])
 		}
+
 		cur++
 		if cur == len(snap.hashes) {
 			cur = 0
@@ -307,10 +315,12 @@ func (r *Ring) GetNodeBounded(key string) string {
 	if r.loadFactor <= 0 {
 		return r.GetNode(key)
 	}
+
 	snap := r.snap.Load()
 	if len(snap.hashes) == 0 {
 		return ""
 	}
+
 	h := hashKey(key)
 	idx, _ := slices.BinarySearch(snap.hashes, h)
 	if idx == len(snap.hashes) {
@@ -319,10 +329,12 @@ func (r *Ring) GetNodeBounded(key string) string {
 	if len(snap.nodes) <= 1 {
 		return snap.nodes[snap.nodeIx[idx]]
 	}
+
 	var total uint64
 	for _, c := range snap.loads {
 		total += c.Load()
 	}
+
 	avg := float64(total) / float64(len(snap.nodes))
 	maxLoad := uint64(math.Ceil(avg * r.loadFactor))
 	start := idx
@@ -331,6 +343,7 @@ func (r *Ring) GetNodeBounded(key string) string {
 		if snap.loads[phys].Load() < maxLoad {
 			return snap.nodes[phys]
 		}
+
 		idx++
 		if idx == len(snap.hashes) {
 			idx = 0
@@ -345,7 +358,7 @@ func (r *Ring) GetNodeBounded(key string) string {
 // are ignored.
 func (r *Ring) IncrementLoad(node string) {
 	snap := r.snap.Load()
-	if idx := indexOf(snap.nodes, node); idx >= 0 {
+	if idx := slices.Index(snap.nodes, node); idx >= 0 {
 		snap.loads[idx].Add(1)
 	}
 }
@@ -353,7 +366,7 @@ func (r *Ring) IncrementLoad(node string) {
 // DecrementLoad releases one in-flight slot; unknown nodes are ignored.
 func (r *Ring) DecrementLoad(node string) {
 	snap := r.snap.Load()
-	if idx := indexOf(snap.nodes, node); idx >= 0 {
+	if idx := slices.Index(snap.nodes, node); idx >= 0 {
 		snap.loads[idx].Add(^uint64(0))
 	}
 }
@@ -361,7 +374,7 @@ func (r *Ring) DecrementLoad(node string) {
 // CurrentLoad returns node's in-flight count, or 0 when unknown.
 func (r *Ring) CurrentLoad(node string) uint64 {
 	snap := r.snap.Load()
-	if idx := indexOf(snap.nodes, node); idx >= 0 {
+	if idx := slices.Index(snap.nodes, node); idx >= 0 {
 		return snap.loads[idx].Load()
 	}
 	return 0
@@ -382,6 +395,7 @@ func (r *Ring) LoadFactor() float64 {
 	if len(snap.loads) == 0 {
 		return 0
 	}
+
 	var total uint64
 	for _, c := range snap.loads {
 		total += c.Load()

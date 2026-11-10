@@ -10,10 +10,9 @@ import (
 	"errors"
 	"slices"
 
-	"github.com/kraytos17/cinder/internal/codec"
-
 	"github.com/zeebo/xxh3"
 
+	"github.com/kraytos17/cinder/internal/codec"
 	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -160,39 +159,44 @@ func DecodeDigest(data []byte, expected int) ([]uint64, bool) {
 	return out, true
 }
 
-// GroupFold folds bucket hashes into group hashes: XXH3 over alternating
+// Digest is a bucket or group hash vector: the intermediate state of
+// anti-entropy comparison. ComputeDigest builds the bucket vector, Fold
+// narrows it to group granularity, and Encode serializes it for the wire.
+type Digest []uint64
+
+// Fold folds bucket hashes into group hashes: XXH3 over alternating
 // (bucket u32, hash u64) pairs, including each absolute bucket index so
 // the fold is placement-sensitive.
-func GroupFold(hashes []uint64) []uint64 {
-	n := (len(hashes) + BucketsPerGroup - 1) / BucketsPerGroup
-	out := make([]uint64, 0, n)
+func (d Digest) Fold() Digest {
+	n := (len(d) + BucketsPerGroup - 1) / BucketsPerGroup
+	out := make(Digest, 0, n)
 	for g := range n {
 		begin := g * BucketsPerGroup
-		end := min(begin+BucketsPerGroup, len(hashes))
+		end := min(begin+BucketsPerGroup, len(d))
 
 		var mat []byte
 		for b := begin; b < end; b++ {
 			mat = codec.Append(mat, binary.LittleEndian, uint32(b))
-			mat = codec.Append(mat, binary.LittleEndian, hashes[b])
+			mat = codec.Append(mat, binary.LittleEndian, d[b])
 		}
 		out = append(out, xxh3.Hash(mat))
 	}
 	return out
 }
 
-// EncodeGroupDigest serializes an AEM3 group digest.
-func EncodeGroupDigest(groups []uint64) []byte {
-	out := make([]byte, 0, 8+8*len(groups))
+// Encode serializes an AEM3 group digest.
+func (d Digest) Encode() []byte {
+	out := make([]byte, 0, 8+8*len(d))
 	out = codec.Append(out, binary.LittleEndian, MagicGroupDigest)
-	out = codec.AppendLen(out, binary.LittleEndian, len(groups))
-	for _, h := range groups {
+	out = codec.AppendLen(out, binary.LittleEndian, len(d))
+	for _, h := range d {
 		out = codec.Append(out, binary.LittleEndian, h)
 	}
 	return out
 }
 
 // DecodeGroupDigest parses an AEM3 blob with exact size validation.
-func DecodeGroupDigest(data []byte, expectedGroups int) ([]uint64, bool) {
+func DecodeGroupDigest(data []byte, expectedGroups int) (Digest, bool) {
 	c := codec.NewReader(binary.LittleEndian, data)
 	magic, ok := c.U32()
 	if !ok || magic != MagicGroupDigest {
@@ -204,7 +208,7 @@ func DecodeGroupDigest(data []byte, expectedGroups int) ([]uint64, bool) {
 		return nil, false
 	}
 
-	out := make([]uint64, 0, n)
+	out := make(Digest, 0, n)
 	for range n {
 		h, ok := c.U64()
 		if !ok {
@@ -215,8 +219,8 @@ func DecodeGroupDigest(data []byte, expectedGroups int) ([]uint64, bool) {
 	return out, true
 }
 
-// EncodeRefinement serializes an AEB5 request.
-func EncodeRefinement(r Refinement) []byte {
+// Encode serializes an AEB5 request.
+func (r Refinement) Encode() []byte {
 	out := make([]byte, 0, 12+12*len(r.BucketHashes))
 	out = codec.Append(out, binary.LittleEndian, MagicRefinement)
 	if r.ForceMeta {
@@ -323,8 +327,8 @@ func DecodeMetaRows(data []byte) ([]MetaRow, bool) {
 	return out, true
 }
 
-// EncodeResponse serializes an AER6 digest response.
-func EncodeResponse(r DigestResponse) []byte {
+// Encode serializes an AER6 digest response.
+func (r DigestResponse) Encode() []byte {
 	rows := EncodeMetaRows(r.Rows)
 	sketchSize := 0
 	for _, s := range r.Sketches {
@@ -470,16 +474,8 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	if c.Remaining() != 0 {
 		return out, false
 	}
-
-	sortedCovered := append([]uint32(nil), out.Covered...)
-	slices.Sort(sortedCovered)
-	contains := func(b uint32) bool {
-		i, _ := slices.BinarySearch(sortedCovered, b)
-		return i < len(sortedCovered) && sortedCovered[i] == b
-	}
-
 	for _, row := range out.Rows {
-		if !contains(row.Bucket) {
+		if !slices.Contains(out.Covered, row.Bucket) {
 			return out, false
 		}
 		if seenSketch[row.Bucket] {
@@ -489,11 +485,11 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	return out, true
 }
 
-// EncodeSync serializes an AEMS message: entries then the needlist.
+// Encode serializes an AEMS message: entries then the needlist.
 // Entry layout: key_len u32, key, version u64, writer u64, flags u8
 // (bit0=ttl, bit1=tombstone; other bits rejected on decode),
 // expires_ms u64 if ttl, val_len u32, value.
-func EncodeSync(msg SyncMessage) ([]byte, error) {
+func (msg SyncMessage) Encode() ([]byte, error) {
 	size := 4 + 4 + 8*len(msg.Needs)
 	for _, it := range msg.Entries {
 		n := 4 + len(it.Key) + 8 + 8 + 1 + 4 + len(it.Entry.Value)
@@ -660,7 +656,7 @@ func ibltPositions(checksum uint64, count int) [3]int {
 	return res
 }
 
-func ibltApply(cell *IBLTCell, sign int64, row IBLTItem, checksum uint64) {
+func (cell *IBLTCell) apply(sign int64, row IBLTItem, checksum uint64) {
 	cell.Count += sign
 	cell.KeyXOR ^= row.KeyHash
 	cell.VersionXOR ^= row.Version
@@ -671,7 +667,7 @@ func ibltApply(cell *IBLTCell, sign int64, row IBLTItem, checksum uint64) {
 	cell.ChecksumXOR ^= checksum
 }
 
-func ibltPure(cell IBLTCell) bool {
+func (cell IBLTCell) pure() bool {
 	if cell.Count != 1 && cell.Count != -1 {
 		return false
 	}
@@ -698,7 +694,7 @@ func BuildIBLT(rows []IBLTItem, cells int) []IBLTCell {
 func InsertIBLT(sketch []IBLTCell, row IBLTItem) {
 	sum := ibltChecksum(row.KeyHash, row.Version, row.Writer, row.Tombstone)
 	for _, pos := range ibltPositions(sum, len(sketch)) {
-		ibltApply(&sketch[pos], 1, row, sum)
+		sketch[pos].apply(1, row, sum)
 	}
 }
 
@@ -795,7 +791,7 @@ func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 	queued := make([]bool, len(delta))
 	var queue []int
 	for i := range delta {
-		if ibltPure(delta[i]) {
+		if delta[i].pure() {
 			queue = append(queue, i)
 			queued[i] = true
 		}
@@ -806,7 +802,7 @@ func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 	for cursor := 0; cursor < len(queue); cursor++ {
 		pos := queue[cursor]
 		cell := delta[pos]
-		if !ibltPure(cell) {
+		if !cell.pure() {
 			queued[pos] = false
 			continue
 		}
@@ -820,8 +816,8 @@ func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 		if cell.Count == 1 {
 			diff.RemoteOnly = append(diff.RemoteOnly, row)
 			for _, t := range ibltPositions(sum, len(delta)) {
-				ibltApply(&delta[t], -1, row, sum)
-				if !queued[t] && ibltPure(delta[t]) {
+				delta[t].apply(-1, row, sum)
+				if !queued[t] && delta[t].pure() {
 					queue = append(queue, t)
 					queued[t] = true
 				}
@@ -829,8 +825,8 @@ func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 		} else {
 			diff.LocalOnly = append(diff.LocalOnly, row)
 			for _, t := range ibltPositions(sum, len(delta)) {
-				ibltApply(&delta[t], 1, row, sum)
-				if !queued[t] && ibltPure(delta[t]) {
+				delta[t].apply(1, row, sum)
+				if !queued[t] && delta[t].pure() {
 					queue = append(queue, t)
 					queued[t] = true
 				}

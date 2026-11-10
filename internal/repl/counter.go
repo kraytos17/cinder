@@ -13,6 +13,7 @@ func (m *Manager) ReplicateCounter(key string, encodedState []byte, replicas []s
 	if len(encodedState) == 0 {
 		return
 	}
+
 	req := protocol.Request{
 		Opcode: protocol.OpCounterMerge, Key: []byte(key),
 		Value:   append([]byte(nil), encodedState...),
@@ -25,7 +26,7 @@ func (m *Manager) ReplicateCounter(key string, encodedState []byte, replicas []s
 		go func(node string) {
 			// Best-effort: the next adjustment resends full state, and
 			// anti-entropy repairs any remaining divergence.
-			_, _ = m.transport.Send(node, req)
+			m.transport.Send(node, req)
 		}(node)
 	}
 }

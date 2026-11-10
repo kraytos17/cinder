@@ -57,7 +57,7 @@ func TestCounterMergeApplies(t *testing.T) {
 	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
 	var remote counter.PNCounter
 	_ = remote.Increment("peer", 9)
-	enc := counter.EncodePNCounter(remote)
+	enc := remote.Encode()
 	if res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterMerge, Key: []byte("k"), Value: enc}); res.Status != protocol.StatusOK {
 		t.Fatalf("merge = %v, want OK", res.Status)
 	}
@@ -99,7 +99,7 @@ func TestCounterOwnership(t *testing.T) {
 	}
 	var remote counter.PNCounter
 	_ = remote.Increment("n2", 4)
-	if res := n1.Dispatch(protocol.Request{Opcode: protocol.OpCounterMerge, Key: []byte(key), Value: counter.EncodePNCounter(remote)}); res.Status != protocol.StatusOK {
+	if res := n1.Dispatch(protocol.Request{Opcode: protocol.OpCounterMerge, Key: []byte(key), Value: remote.Encode()}); res.Status != protocol.StatusOK {
 		t.Fatalf("non-owner merge = %v, want OK", res.Status)
 	}
 	if got := counterValue(t, n1.Dispatch(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(key)})); got != 4 {

@@ -14,7 +14,7 @@ func TestEncodeGCounterOracle(t *testing.T) {
 	if err := g.Increment("a", 1); err != nil {
 		t.Fatal(err)
 	}
-	got := EncodeGCounter(g)
+	got := g.Encode()
 	var want []byte
 	want = binary.BigEndian.AppendUint32(want, MagicCRDC)
 	want = append(want, KindGCounter)
@@ -39,7 +39,7 @@ func TestCodecRoundTrip(t *testing.T) {
 	_ = p.Increment("node1", 10)
 	_ = p.Increment("node2", 5)
 	_ = p.Decrement("node1", 3)
-	enc := EncodePNCounter(p)
+	enc := p.Encode()
 	if len(enc) == 0 {
 		t.Fatal("empty encoding")
 	}
@@ -53,7 +53,7 @@ func TestCodecRoundTrip(t *testing.T) {
 	// GCounter body must not decode as PNCounter and vice versa.
 	var g GCounter
 	_ = g.Increment("a", 1)
-	if _, err := DecodePNCounter(EncodeGCounter(g)); !errors.Is(err, ErrDecode) {
+	if _, err := DecodePNCounter(g.Encode()); !errors.Is(err, ErrDecode) {
 		t.Fatalf("cross-kind decode err = %v, want ErrDecode", err)
 	}
 	if _, err := DecodeGCounter(enc); !errors.Is(err, ErrDecode) {
@@ -64,7 +64,7 @@ func TestCodecRoundTrip(t *testing.T) {
 func TestCodecRejects(t *testing.T) {
 	var g GCounter
 	_ = g.Increment("a", 1)
-	good := EncodeGCounter(g)
+	good := g.Encode()
 	cases := map[string][]byte{
 		"empty":       {},
 		"truncated":   good[:len(good)-1],
@@ -118,7 +118,7 @@ func TestBundleRejectsUnsorted(t *testing.T) {
 	buf = binary.BigEndian.AppendUint32(buf, MagicCAE1)
 	buf = binary.BigEndian.AppendUint32(buf, 2)
 	for _, k := range []string{"k2", "k1"} {
-		st := EncodePNCounter(a)
+		st := a.Encode()
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(k)))
 		buf = append(buf, k...)
 		buf = binary.BigEndian.AppendUint32(buf, uint32(len(st)))

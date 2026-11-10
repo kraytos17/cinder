@@ -249,6 +249,7 @@ func (a *payloadAcc) add(n uint64) {
 		a.ok = false
 		return
 	}
+
 	a.size += n
 	a.ok = true
 }
@@ -266,6 +267,7 @@ func splitFrame(header, payload []byte) (Opcode, []byte, error) {
 	if header[1] != Version {
 		return 0, nil, errInvalid("bad version")
 	}
+
 	payloadLen := binary.BigEndian.Uint32(header[3:7])
 	if payloadLen > MaxPayloadSize {
 		return 0, nil, errInvalid("payload too large")
@@ -292,6 +294,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if req.TTL > 0 {
 		acc.add(4)
 	}
+
 	acc.add(1)
 	if !req.ExpiresAt.IsNone() {
 		acc.add(8)
@@ -300,10 +303,12 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 		acc.add(8)
 		acc.add(1)
 	}
+
 	hasTrace := req.TraceID != 0
 	if hasTrace {
 		acc.add(8 + 8)
 	}
+
 	hasAuth := len(authToken) != 0
 	if hasAuth {
 		if len(authToken) != AuthTokenLen {
@@ -324,6 +329,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if cap(w.Out()) < need {
 		w.Reset(make([]byte, 0, need))
 	}
+
 	w.U8(Magic)
 	w.U8(Version)
 	w.U8(uint8(req.Opcode))
@@ -345,6 +351,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if hasAuth {
 		flags |= FlagHasAuth
 	}
+
 	w.U8(uint8(flags))
 	if req.TTL > 0 {
 		w.U32(uint32(req.TTL.Milliseconds()))
@@ -352,6 +359,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if !req.ExpiresAt.IsNone() {
 		w.U64(uint64(req.ExpiresAt.UnixMilli()))
 	}
+
 	w.U64(req.Version)
 	w.U64(req.WriterNodeHash)
 	w.U32(uint32(len(req.Key)))
@@ -388,6 +396,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	if rawOpcode < OpGet || rawOpcode > OpCounterAntiEntropy {
 		return out, errInvalid("unknown opcode")
 	}
+
 	req := &out.Req
 	req.Opcode = rawOpcode
 	r := codec.NewReader(binary.BigEndian, payload)
@@ -395,6 +404,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
+
 	flags := RequestFlags(rawFlags)
 	if flags&FlagHasTTL != 0 {
 		ttl, ok := r.U32()
@@ -413,16 +423,19 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		}
 		req.ExpiresAt = expiry.FromUnixMilli(int64(ms))
 	}
+
 	req.Tombstone = flags&FlagTombstone != 0
 	version, ok := r.U64()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
+
 	req.Version = version
 	writerHash, ok := r.U64()
 	if !ok {
 		return out, errInvalid("truncated frame")
 	}
+
 	req.WriterNodeHash = writerHash
 	keyLen, ok := r.U32()
 	if !ok {
@@ -435,6 +448,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		}
 		req.Key = append([]byte(nil), key...)
 	}
+
 	valLen, ok := r.U32()
 	if !ok {
 		return out, errInvalid("truncated frame")
@@ -451,10 +465,12 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		if !ok {
 			return out, errInvalid("invalid counter adjust")
 		}
+
 		decr, ok := r.U8()
 		if !ok || decr > 1 {
 			return out, errInvalid("invalid counter adjust")
 		}
+
 		req.CounterDelta = delta
 		req.CounterDecrement = decr != 0
 	}
@@ -499,6 +515,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	if res.Tombstone {
 		flags |= RespFlagTombstone
 	}
+
 	hasTrace := res.TraceID != 0
 	if hasTrace {
 		flags |= RespFlagTrace
@@ -528,6 +545,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	if cap(w.Out()) < need {
 		w.Reset(make([]byte, 0, need))
 	}
+
 	w.U8(Magic)
 	w.U8(Version)
 	w.U8(0) // response opcode unused
@@ -547,6 +565,7 @@ func EncodeResponseInto(res Response, buf []byte) ([]byte, error) {
 	} else {
 		w.U32(0)
 	}
+
 	w.Bytes(res.Value)
 	if hasTrace {
 		w.U64(res.TraceID)
@@ -566,6 +585,7 @@ func DecodeResponse(payload []byte) (Response, error) {
 	if !ok {
 		return res, errInvalid("truncated frame")
 	}
+
 	res.Status = Status(status)
 	var flags ResponseFlags
 	if r.Remaining() > 0 {
@@ -576,12 +596,14 @@ func DecodeResponse(payload []byte) (Response, error) {
 		}
 		flags = ResponseFlags(rawFlags)
 	}
+
 	res.Tombstone = flags&RespFlagTombstone != 0
 	if flags&RespFlagVersionMeta != 0 {
 		version, ok := r.U64()
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
+
 		res.Version = version
 		writerHash, ok := r.U64()
 		if !ok {
@@ -599,6 +621,7 @@ func DecodeResponse(payload []byte) (Response, error) {
 		}
 		res.ExpiresAt = expiry.FromUnixMilli(int64(ms))
 	}
+
 	hasVal, ok := r.U32()
 	if !ok {
 		return res, errInvalid("truncated frame")
@@ -610,14 +633,17 @@ func DecodeResponse(payload []byte) (Response, error) {
 		if flags&RespFlagTrace != 0 {
 			traceSize = 16
 		}
+
 		valLen := 0
 		if r.Remaining() > traceSize {
 			valLen = r.Remaining() - traceSize
 		}
+
 		val, ok := r.Bytes(valLen)
 		if !ok {
 			return res, errInvalid("truncated frame")
 		}
+
 		res.HasValue = true
 		res.Value = append([]byte(nil), val...)
 	}

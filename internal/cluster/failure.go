@@ -50,6 +50,7 @@ func NewFailureDetector(clock func() time.Time, t Sender, table *MembershipTable
 	if clock == nil {
 		clock = time.Now
 	}
+
 	fd := &FailureDetector{clock: clock, transport: t, table: table, self: self, state: map[string]*peerState{}}
 	fd.timeout.Store(int64(suspectTimeout))
 	return fd
@@ -99,6 +100,7 @@ func (f *FailureDetector) suspectTimeout() time.Duration {
 // next eligible peer (not self, no pending probe, not dead).
 func (f *FailureDetector) Tick() {
 	now := f.clock()
+
 	var timedOut, dead []string
 	var target string
 	f.mu.Lock()
@@ -108,6 +110,7 @@ func (f *FailureDetector) Tick() {
 			timedOut = append(timedOut, peer)
 		}
 	}
+
 	dead = f.escalateLocked(now)
 	if len(f.peers) > 0 {
 		for range f.peers {
@@ -122,17 +125,20 @@ func (f *FailureDetector) Tick() {
 			if info, ok := f.table.Get(peer); ok && info.State == Dead {
 				continue
 			}
+
 			st := f.state[peer]
 			if st == nil {
 				st = &peerState{}
 				f.state[peer] = st
 			}
+
 			st.pending = true
 			st.sentAt = now
 			target = peer
 			break
 		}
 	}
+
 	f.mu.Unlock()
 	for _, peer := range timedOut {
 		f.table.MarkSuspect(peer)
@@ -143,10 +149,12 @@ func (f *FailureDetector) Tick() {
 	if target == "" {
 		return
 	}
+
 	obs.IfPresent(&f.met, func(m *metrics.Collector) { m.ProbeSent.Add(1) })
 	if e := f.log().Debug(); e != nil {
 		e.Str("target", target).Msg("probing")
 	}
+
 	res, err := f.transport.Send(target, protocol.Request{Opcode: protocol.OpPing})
 	f.onProbeResult(target, err == nil && res.Status == protocol.StatusOK)
 }
@@ -158,11 +166,13 @@ func (f *FailureDetector) onProbeResult(peer string, acked bool) {
 		f.mu.Unlock()
 		return
 	}
+
 	st.pending = false
 	if acked {
 		st.suspected = false
 		st.failures = 0
 	}
+
 	var failures int
 	if !acked {
 		st.failures++
@@ -172,6 +182,7 @@ func (f *FailureDetector) onProbeResult(peer string, acked bool) {
 			st.since = f.clock()
 		}
 	}
+
 	f.mu.Unlock()
 	if acked {
 		info, _ := f.table.Get(peer)
@@ -195,6 +206,7 @@ func (f *FailureDetector) escalateLocked(now time.Time) []string {
 		if !st.suspected {
 			continue
 		}
+
 		info, ok := f.table.Get(peer)
 		if !ok || info.State != Suspect {
 			continue
@@ -209,6 +221,7 @@ func (f *FailureDetector) escalateLocked(now time.Time) []string {
 			st.failures = 0
 		}
 	}
+
 	slices.Sort(dead)
 	return dead
 }

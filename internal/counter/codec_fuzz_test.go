@@ -16,8 +16,8 @@ func FuzzCounterCodec(f *testing.F) {
 	seeds := [][]byte{
 		{},
 		{0x00},
-		EncodeGCounter(g),
-		EncodePNCounter(p),
+		g.Encode(),
+		p.Encode(),
 		EncodeCounterBundle([]BundleEntry{{Key: "k", Counter: p}}),
 		EncodeCounterBundle(nil),
 	}
@@ -26,7 +26,7 @@ func FuzzCounterCodec(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if g, err := DecodeGCounter(data); err == nil {
-			back, err := DecodeGCounter(EncodeGCounter(g))
+			back, err := DecodeGCounter(g.Encode())
 			if err != nil {
 				t.Fatalf("gcounter re-decode failed")
 			}
@@ -35,7 +35,7 @@ func FuzzCounterCodec(f *testing.F) {
 			}
 		}
 		if p, err := DecodePNCounter(data); err == nil {
-			enc := EncodePNCounter(p)
+			enc := p.Encode()
 			if len(enc) == 0 {
 				t.Fatal("pncounter re-encode empty")
 			}

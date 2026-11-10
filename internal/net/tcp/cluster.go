@@ -23,6 +23,7 @@ func (s *Server) ConfigureRebalance(rf hashring.ReplicaCount, quarantine time.Du
 	if quarantine < 0 {
 		return errors.New("tcp: quarantine interval must not be negative")
 	}
+
 	s.ringMu.RLock()
 	ring := s.ring
 	pool := s.pool
@@ -32,6 +33,7 @@ func (s *Server) ConfigureRebalance(rf hashring.ReplicaCount, quarantine time.Du
 		Store: s.store, Ring: ring, Transport: pool, Membership: table,
 		Self: s.nodeID, ReplicaFactor: rf, Quarantine: quarantine,
 	})
+
 	m.SetOnMigrationFailed(func() { s.scheduleMigrationRetry() })
 	m.SetMetrics(s.met)
 	m.SetLogger(s.log())
@@ -44,7 +46,6 @@ func (s *Server) ConfigureRebalance(rf hashring.ReplicaCount, quarantine time.Du
 
 // SetQuarantineInterval changes the rejoin warming window (tests use short
 // or zero ones).
-
 func (s *Server) SetQuarantineInterval(d time.Duration) {
 	s.shardMu.Lock()
 	defer s.shardMu.Unlock()
@@ -53,7 +54,6 @@ func (s *Server) SetQuarantineInterval(d time.Duration) {
 
 // RebalanceNow runs one synchronous rebalance scan (tests drive this
 // directly; the timer path is best-effort). False when unconfigured.
-
 func (s *Server) RebalanceNow() bool {
 	s.shardMu.Lock()
 	m := s.shard
@@ -66,17 +66,18 @@ func (s *Server) RebalanceNow() bool {
 
 // scheduleRebalanceDebounced coalesces rapid membership flaps into a single
 // scan 200ms out, covering the latest ring view.
-
 func (s *Server) scheduleRebalanceDebounced() {
 	s.shardMu.Lock()
 	if s.rebalancePending {
 		s.shardMu.Unlock()
 		return
 	}
+
 	s.rebalancePending = true
 	if s.rebalanceTimer != nil {
 		s.rebalanceTimer.Stop()
 	}
+
 	s.rebalanceTimer = time.AfterFunc(200*time.Millisecond, func() {
 		s.shardMu.Lock()
 		s.rebalancePending = false
@@ -94,7 +95,6 @@ func (s *Server) scheduleRebalanceDebounced() {
 // scheduleQuarantineRetry re-runs the scan after the warming window, and
 // keeps retrying while any owner is still quarantined (a flapping node
 // keeps resetting joined_at).
-
 func (s *Server) scheduleQuarantineRetry() {
 	s.shardMu.Lock()
 	if s.quarantineTimer != nil {
@@ -105,6 +105,7 @@ func (s *Server) scheduleQuarantineRetry() {
 		s.shardMu.Unlock()
 		return
 	}
+
 	s.quarantineTimer = time.AfterFunc(s.quarantineInterval, func() {
 		if s.shut.Load() {
 			return
@@ -119,17 +120,18 @@ func (s *Server) scheduleQuarantineRetry() {
 // scheduleMigrationRetry re-runs the scan 2s after an async migration
 // failure, through the debounce gate. Cheap and non-blocking: it only arms
 // a timer (invoked on the rebalance goroutine, never inline on send).
-
 func (s *Server) scheduleMigrationRetry() {
 	s.shardMu.Lock()
 	if s.migrationPending || s.rebalancePending {
 		s.shardMu.Unlock()
 		return
 	}
+
 	s.migrationPending = true
 	if s.migrationTimer != nil {
 		s.migrationTimer.Stop()
 	}
+
 	s.migrationTimer = time.AfterFunc(2*time.Second, func() {
 		s.shardMu.Lock()
 		s.migrationPending = false
@@ -137,6 +139,7 @@ func (s *Server) scheduleMigrationRetry() {
 		if s.shut.Load() {
 			return
 		}
+
 		s.met.RebalanceMigRetries.Add(1)
 		s.scheduleRebalanceDebounced()
 	})
@@ -151,14 +154,10 @@ func (s *Server) stopRebalanceTimers() {
 			t.Stop()
 		}
 	}
+
 	s.rebalanceTimer, s.quarantineTimer, s.migrationTimer = nil, nil, nil
 	s.rebalancePending, s.migrationPending = false, false
 }
-
-// Serve accepts on l until Shutdown. It blocks; run it in a goroutine.
-// The listener is published under the connection mutex so a concurrent
-// Shutdown always observes it. Background gossip and failure-detector
-// ticks start here when a cluster is configured.
 
 type Peer struct {
 	ID   string
@@ -168,11 +167,11 @@ type Peer struct {
 
 // ParsePeers parses comma-separated "id@host:port" entries. Empty input
 // yields no peers.
-
 func ParsePeers(s string) ([]Peer, error) {
 	if strings.TrimSpace(s) == "" {
 		return nil, nil
 	}
+
 	var out []Peer
 	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
@@ -181,10 +180,12 @@ func ParsePeers(s string) ([]Peer, error) {
 		if at <= 0 || colon <= at+1 {
 			return nil, fmt.Errorf("tcp: bad peer %q, want id@host:port", part)
 		}
+
 		port, err := netport.ParsePort(part[colon+1:])
 		if err != nil {
 			return nil, fmt.Errorf("tcp: bad peer %q, want id@host:port", part)
 		}
+
 		host := part[at+1 : colon]
 		if host == "" {
 			return nil, fmt.Errorf("tcp: bad peer %q, want id@host:port", part)
@@ -198,12 +199,12 @@ func ParsePeers(s string) ([]Peer, error) {
 // consistent hash, and redirects name reachable addresses. It also seeds
 // the membership table, builds the gossip/failure-detector pair over a
 // shared pool, and keeps the ring tracking the alive set.
-
 func (s *Server) ConfigureCluster(peers []Peer) error {
 	ring, err := hashring.New(hashring.DefaultVNodes, 0)
 	if err != nil {
 		return err
 	}
+
 	now := time.Now
 	s.ringMu.Lock()
 	s.ring = ring
@@ -217,6 +218,7 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 		seeds = append(seeds, cluster.NodeInfo{ID: p.ID, Host: p.Host, Port: p.Port})
 		addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
 	}
+
 	table.SetSelfAddress("127.0.0.1", s.port)
 	table.Seed(seeds)
 	pool := client.NewPool(addrs, 5*time.Second)
@@ -241,8 +243,6 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	return nil
 }
 
-// Addr returns the listen address (valid after Serve starts).
-
 func (s *Server) currentAEInterval() time.Duration {
 	s.aeMu.RLock()
 	defer s.aeMu.RUnlock()
@@ -251,8 +251,6 @@ func (s *Server) currentAEInterval() time.Duration {
 	}
 	return s.aeInterval
 }
-
-// AntiEntropy exposes the AE manager for tests.
 
 func (s *Server) currentReplayInterval() time.Duration {
 	s.ringMu.RLock()
@@ -284,7 +282,6 @@ func (s *Server) currentProbeInterval() time.Duration {
 // rebuildRingFromTable publishes the current alive membership as a new ring
 // snapshot. It also refreshes peer addresses and schedules rebalance work
 // when the ring's membership changes.
-
 func (s *Server) rebuildRingFromTable() {
 	s.ringMu.RLock()
 	table := s.table
@@ -294,6 +291,7 @@ func (s *Server) rebuildRingFromTable() {
 	if table == nil || ring == nil {
 		return
 	}
+
 	var ids []string
 	selfSeen := false
 	for _, m := range table.Snapshot() {
@@ -305,6 +303,7 @@ func (s *Server) rebuildRingFromTable() {
 		if m.State != cluster.Alive {
 			continue
 		}
+
 		ids = append(ids, m.ID)
 		if m.ID == s.nodeID {
 			selfSeen = true
@@ -313,7 +312,8 @@ func (s *Server) rebuildRingFromTable() {
 	if !selfSeen {
 		ids = append(ids, s.nodeID)
 	}
-	_ = ring.SetNodes(ids)
+
+	ring.SetNodes(ids)
 	// Push keys this node no longer owns to their new ring owners. The scan
 	// + migration burst is debounced: rapid flaps collapse into one run
 	// over the latest ring view.
@@ -321,9 +321,6 @@ func (s *Server) rebuildRingFromTable() {
 }
 
 // OwnerOf reports the ring owner for key (self when standalone).
-
 func (s *Server) OwnerOf(key string) string {
 	return s.ownerOf(key)
 }
-
-// ID returns this node's stable identifier.

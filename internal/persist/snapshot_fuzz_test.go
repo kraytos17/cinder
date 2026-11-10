@@ -30,7 +30,7 @@ func FuzzSnapshot(f *testing.F) {
 		// Re-encode as v2 and re-decode: fixed point.
 		var body []byte
 		for _, e := range entries {
-			enc, err := encodeSnapEntry(e)
+			enc, err := e.encode()
 			if err != nil {
 				t.Fatalf("re-encode failed: %v", err)
 			}
@@ -89,7 +89,7 @@ func buildSnapSeeds() [][]byte {
 	mk := func(next uint64, entries []SnapEntry) []byte {
 		var body []byte
 		for _, e := range entries {
-			enc, err := encodeSnapEntry(e)
+			enc, err := e.encode()
 			if err != nil {
 				panic(err)
 			}

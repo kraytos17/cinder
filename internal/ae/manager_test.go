@@ -47,9 +47,9 @@ func TestDigestDeterministic(t *testing.T) {
 	}
 }
 
-func TestGroupFoldMatchesBucketCount(t *testing.T) {
+func TestFoldMatchesBucketCount(t *testing.T) {
 	m := &Manager{store: testStore(10), numBuckets: 256}
-	if got := len(GroupFold(m.ComputeDigest())); got != 16 {
+	if got := len(m.ComputeDigest().Fold()); got != 16 {
 		t.Fatalf("groups = %d", got)
 	}
 }
@@ -199,11 +199,11 @@ func TestHandlerRoundTrip(t *testing.T) {
 	putVer(t, a, "k", "va", 5, 1)
 
 	// Initiator digest -> responder answers its own group hashes.
-	st, val := mb.OnDigestRequest(EncodeGroupDigest(GroupFold(mb.ComputeDigest())))
+	st, val := mb.OnDigestRequest(mb.ComputeDigest().Fold().Encode())
 	if st != protocol.StatusOK {
 		t.Fatalf("digest status %v", st)
 	}
-	groups := GroupFold(ma.ComputeDigest())
+	groups := ma.ComputeDigest().Fold()
 	if _, ok := DecodeResponse(val, len(groups)); !ok {
 		t.Fatal("bad digest response")
 	}
@@ -214,7 +214,7 @@ func TestHandlerRoundTrip(t *testing.T) {
 	for b := (kb / BucketsPerGroup) * BucketsPerGroup; b < (kb/BucketsPerGroup+1)*BucketsPerGroup && b < 64; b++ {
 		fb.BucketHashes = append(fb.BucketHashes, BucketHash{Bucket: b, Hash: local[b]})
 	}
-	st, val2 := mb.OnBucketRefinement(EncodeRefinement(fb))
+	st, val2 := mb.OnBucketRefinement(fb.Encode())
 	if st != protocol.StatusOK {
 		t.Fatalf("refinement status %v", st)
 	}
@@ -233,7 +233,7 @@ func TestHandlerRoundTrip(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("items = %+v", items)
 	}
-	syncBytes, err := EncodeSync(SyncMessage{Entries: items})
+	syncBytes, err := SyncMessage{Entries: items}.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}

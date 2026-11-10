@@ -53,6 +53,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	addrs := make(map[string]NodeAddr, len(cfg.Nodes))
 	ids := make([]string, 0, len(cfg.Nodes))
 	for _, n := range cfg.Nodes {
@@ -62,6 +63,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 	if err := ring.SetNodes(ids); err != nil {
 		return nil, err
 	}
+
 	pool := newPoolTLS(cfg.Nodes, cfg.RPCTimeout, cfg.TLS)
 	if cfg.ClientSecret != "" {
 		pool.SetSecrets(Secrets{Client: cfg.ClientSecret})
@@ -94,7 +96,7 @@ func (c *Cluster) learnOwner(key, node string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.learned) >= maxLearnedOwners {
-		c.learned = make(map[string]string)
+		clear(c.learned)
 	}
 	c.learned[key] = node
 }
@@ -113,6 +115,7 @@ func (c *Cluster) tryFollowRedirect(key string, res protocol.Response, node stri
 	if res.Status != protocol.StatusNotReady {
 		return "", false
 	}
+
 	target, ok := ParseRedirectTarget(string(res.Value))
 	if !ok || target.ID == node || hops >= maxRedirectHops {
 		return "", false
@@ -123,6 +126,7 @@ func (c *Cluster) tryFollowRedirect(key string, res protocol.Response, node stri
 	if target.HasAddress() {
 		c.pool.AddAddr(target.ID, target.Host, target.Port)
 	}
+
 	c.learnOwner(key, target.ID)
 	return target.ID, true
 }
@@ -131,6 +135,7 @@ func retryBackoff(attempt int, base time.Duration) time.Duration {
 	if base <= 0 {
 		return 0
 	}
+
 	delay := int64(base)
 	for range attempt {
 		if delay > int64(time.Duration(1<<63-1))/2 {
@@ -145,11 +150,13 @@ func jitterBackoff(delay time.Duration) time.Duration {
 	if delay <= 0 {
 		return delay
 	}
+
 	jitter := 0.8 + rand.Float64()*0.4
 	maxDuration := time.Duration(1<<63 - 1)
 	if float64(delay) >= float64(maxDuration)/jitter {
 		return maxDuration
 	}
+
 	d := time.Duration(float64(delay) * jitter)
 	if d < 1 {
 		return time.Nanosecond
@@ -163,6 +170,7 @@ func jitterBackoff(delay time.Duration) time.Duration {
 // re-resolves via the ring.
 func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Response, error) {
 	node := c.preferredNode(key)
+
 	var visited []string
 	hops := 0
 	var lastErr error
@@ -180,11 +188,13 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 				if attempt == c.maxRetries {
 					return res, nil
 				}
+
 				time.Sleep(jitterBackoff(retryBackoff(attempt, c.baseBackoff)))
 				continue
 			}
 			return res, nil
 		}
+
 		lastErr = err
 		node = c.preferredNodeAfterForget(key)
 		if attempt == c.maxRetries {

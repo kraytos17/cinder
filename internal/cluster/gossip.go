@@ -88,12 +88,14 @@ func (g *GossipManager) Tick() {
 		g.mu.Unlock()
 		return
 	}
+
 	target := g.peers[rand.IntN(len(g.peers))]
 	g.mu.Unlock()
 	obs.IfPresent(&g.met, func(m *metrics.Collector) { m.GossipRounds.Add(1) })
 	if e := g.log().Debug(); e != nil {
 		e.Str("target", target).Msg("gossip")
 	}
+
 	req := protocol.Request{Opcode: protocol.OpGossip, Key: nil, Value: []byte(EncodeView(g.table.Snapshot()))}
 	g.transport.Send(target, req)
 }
@@ -147,6 +149,7 @@ func EncodeView(view []NodeInfo) string {
 		if i > 0 {
 			b.WriteByte(';')
 		}
+
 		b.WriteString(m.ID)
 		b.WriteByte('@')
 		b.WriteString(m.Host)
@@ -160,38 +163,40 @@ func EncodeView(view []NodeInfo) string {
 	return b.String()
 }
 
-// ParseEntry parses one membership entry of the form
+// ParseNodeInfo parses one membership entry of the form
 // id@host:port:state:incarnation. Malformed fields return false.
-func ParseEntry(entry string, out *NodeInfo) bool {
-	idx := strings.Index(entry, "@")
-	if idx < 0 {
-		return false
+func ParseNodeInfo(entry string) (NodeInfo, bool) {
+	var out NodeInfo
+	id, rest, ok := strings.Cut(entry, "@")
+	if !ok {
+		return out, false
 	}
-	c1rel := strings.Index(entry[idx:], ":")
-	if c1rel < 0 {
-		return false
+
+	out.ID = id
+	host, rest, ok := strings.Cut(rest, ":")
+	if !ok {
+		return out, false
 	}
-	c1 := idx + c1rel
-	c2rel := strings.Index(entry[c1+1:], ":")
-	if c2rel < 0 {
-		return false
+
+	out.Host = host
+	portStr, rest, ok := strings.Cut(rest, ":")
+	if !ok {
+		return out, false
 	}
-	c2 := c1 + 1 + c2rel
-	c3rel := strings.Index(entry[c2+1:], ":")
-	if c3rel < 0 {
-		return false
-	}
-	c3 := c2 + 1 + c3rel
-	out.ID = entry[:idx]
-	out.Host = entry[idx+1 : c1]
-	port, err := strconv.Atoi(entry[c1+1 : c2])
+
+	port, err := strconv.Atoi(portStr)
 	// Membership entries permit port 0 to represent a peer whose address
 	// is not yet known. Dial and redirect inputs use strict netport parsing.
 	if err != nil || port < 0 || port > 65535 {
-		return false
+		return out, false
 	}
+
 	out.Port = netport.Port(port)
-	switch entry[c2+1 : c3] {
+	state, incStr, ok := strings.Cut(rest, ":")
+	if !ok {
+		return out, false
+	}
+	switch state {
 	case "alive":
 		out.State = Alive
 	case "suspect":
@@ -199,14 +204,16 @@ func ParseEntry(entry string, out *NodeInfo) bool {
 	case "dead":
 		out.State = Dead
 	default:
-		return false
+		return out, false
 	}
-	inc, err := strconv.ParseUint(entry[c3+1:], 10, 64)
+
+	inc, err := strconv.ParseUint(incStr, 10, 64)
 	if err != nil {
-		return false
+		return out, false
 	}
+
 	out.Incarnation = inc
-	return true
+	return out, true
 }
 
 // DecodeView splits a view, skipping empty and malformed entries.
@@ -216,8 +223,7 @@ func DecodeView(value string) []NodeInfo {
 		if e == "" {
 			continue
 		}
-		var info NodeInfo
-		if ParseEntry(e, &info) {
+		if info, ok := ParseNodeInfo(e); ok {
 			out = append(out, info)
 		}
 	}

@@ -111,8 +111,19 @@ func (q *HintQueue) SetMaxBytes(n uint64) {
 	q.maxByte = n
 }
 
-func hintBytes(h Hint) uint64 {
+// Bytes estimates the queued size of h for budget accounting.
+func (h Hint) Bytes() uint64 {
 	return hintOverhead + uint64(len(h.Target)+len(h.Req.Key)+len(h.Req.Value))
+}
+
+// Stamp returns the LWW identity used for coalescing.
+func (h Hint) Stamp() store.Stamp {
+	return store.Stamp{Version: h.Req.Version, Writer: h.Req.WriterNodeHash, Tombstone: h.Req.Tombstone}
+}
+
+// Covers reports whether h supersedes old for the same target and key.
+func (h Hint) Covers(old Hint) bool {
+	return store.LWWCovers(h.Stamp(), old.Stamp())
 }
 
 // Push queues h, coalescing same (target, key) by LWW stamp and evicting
@@ -120,29 +131,31 @@ func hintBytes(h Hint) uint64 {
 func (q *HintQueue) Push(h Hint) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	incoming := hintBytes(h)
+	incoming := h.Bytes()
 	if incoming > q.maxByte {
 		q.dropped++
 		return false
 	}
 	for i, old := range q.items {
 		if old.Target == h.Target && string(old.Req.Key) == string(h.Req.Key) {
-			if !lwwCoversReq(h.Req, old.Req) {
+			if !h.Covers(old) {
 				return false
 			}
-			q.bytes -= hintBytes(old)
+
+			q.bytes -= old.Bytes()
 			q.items = append(q.items[:i], q.items[i+1:]...)
 			break
 		}
 	}
 	for len(q.items) >= maxHints || q.bytes+incoming > q.maxByte {
-		q.bytes -= hintBytes(q.items[0])
+		q.bytes -= q.items[0].Bytes()
 		q.items = q.items[1:]
 		q.dropped++
 	}
 	if h.ID == 0 {
 		h.ID = hintIDs.Add(1)
 	}
+
 	q.items = append(q.items, h)
 	q.bytes += incoming
 	return true
@@ -153,11 +166,12 @@ func (q *HintQueue) Push(h Hint) bool {
 func (q *HintQueue) Snapshot(now time.Time, limit int) []Hint {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+
 	var out []Hint
 	kept := q.items[:0]
 	for _, h := range q.items {
 		if h.ExpiresAt.Expired(now) {
-			q.bytes -= hintBytes(h)
+			q.bytes -= h.Bytes()
 			continue
 		}
 		if len(out) < limit {
@@ -165,6 +179,7 @@ func (q *HintQueue) Snapshot(now time.Time, limit int) []Hint {
 		}
 		kept = append(kept, h)
 	}
+
 	q.items = kept
 	return out
 }
@@ -176,7 +191,7 @@ func (q *HintQueue) Remove(id uint64) {
 	defer q.mu.Unlock()
 	for i, h := range q.items {
 		if h.ID == id {
-			q.bytes -= hintBytes(h)
+			q.bytes -= h.Bytes()
 			q.items = append(q.items[:i], q.items[i+1:]...)
 			return
 		}
@@ -189,7 +204,7 @@ func (q *HintQueue) RemoveMatch(target, key string, version uint64) {
 	defer q.mu.Unlock()
 	for i, h := range q.items {
 		if h.Target == target && string(h.Req.Key) == key && h.Req.Version == version {
-			q.bytes -= hintBytes(h)
+			q.bytes -= h.Bytes()
 			q.items = append(q.items[:i], q.items[i+1:]...)
 			return
 		}
@@ -215,14 +230,4 @@ func (q *HintQueue) Bytes() uint64 {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.bytes
-}
-
-func lwwCoversReq(a, b protocol.Request) bool {
-	return store.LWWCovers(stampOfRequest(a), stampOfRequest(b))
-}
-
-// stampOfRequest is the single canonical conversion from wire request to
-// LWW comparison currency (see Entry.Stamp for why it exists).
-func stampOfRequest(r protocol.Request) store.Stamp {
-	return store.Stamp{Version: r.Version, Writer: r.WriterNodeHash, Tombstone: r.Tombstone}
 }

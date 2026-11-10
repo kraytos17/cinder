@@ -28,6 +28,7 @@ func (s *Server) handleGet(req protocol.Request) protocol.Response {
 		}
 		return protocol.Response{Status: protocol.StatusOK, Value: e.Value, HasValue: true}
 	}
+
 	val, ok := s.store.Get(string(req.Key))
 	if !ok {
 		// Reads serve from the local copy when present; only a miss
@@ -50,6 +51,7 @@ func (s *Server) handleGetVersioned(req protocol.Request) protocol.Response {
 		}
 		return protocol.Response{Status: protocol.StatusNotFound}
 	}
+
 	res := protocol.Response{
 		Status:         protocol.StatusOK,
 		Version:        e.Version,
@@ -74,12 +76,14 @@ func (s *Server) handleSet(req protocol.Request) protocol.Response {
 		err := m.Write(string(req.Key), req.Value, req.TTL, s.replicaNodes(string(req.Key)), mode, req.TraceID, req.SpanID)
 		return writeResult(err)
 	}
+
 	var err error
 	if req.TTL > 0 {
 		err = s.store.PutWithTTL(string(req.Key), req.Value, req.TTL)
 	} else {
 		err = s.store.Put(string(req.Key), req.Value)
 	}
+
 	if err != nil {
 		return protocol.Response{Status: statusOf(err)}
 	}
@@ -131,9 +135,11 @@ func (s *Server) handleAntiEntropy(req protocol.Request) protocol.Response {
 			st, val := mgr.OnBucketRefinement(req.Value)
 			return protocol.Response{Status: st, Value: val, HasValue: val != nil}
 		}
+
 		st, val := mgr.OnDigestRequest(req.Value)
 		return protocol.Response{Status: st, Value: val, HasValue: val != nil}
 	}
+
 	st, val := mgr.OnSyncRequest(req.Value)
 	return protocol.Response{Status: st, Value: val, HasValue: val != nil}
 }
@@ -147,6 +153,7 @@ func (s *Server) handleCounterAntiEntropy(req protocol.Request) protocol.Respons
 	if mgr == nil {
 		return protocol.Response{Status: protocol.StatusNotSupported}
 	}
+
 	st, val := mgr.OnCounterAntiEntropy(req.Value)
 	return protocol.Response{Status: st, Value: val, HasValue: val != nil}
 }
@@ -158,28 +165,30 @@ func (s *Server) handleCounterAdjust(req protocol.Request) protocol.Response {
 	if req.CounterDelta == 0 {
 		return protocol.Response{Status: protocol.StatusOK}
 	}
+
 	var err error
 	if req.CounterDecrement {
 		err = s.counters.Decrement(string(req.Key), s.nodeID, req.CounterDelta)
 	} else {
 		err = s.counters.Increment(string(req.Key), s.nodeID, req.CounterDelta)
 	}
+
 	if err != nil {
 		return protocol.Response{Status: counterStatusOf(err)}
 	}
+
 	st, ok := s.counters.Get(string(req.Key))
 	if !ok {
 		return protocol.Response{Status: protocol.StatusInternalError}
 	}
 	if m, rf, _ := s.replication(); m != nil && rf > 1 {
-		m.ReplicateCounter(string(req.Key), counter.EncodePNCounter(st), s.replicaNodes(string(req.Key)), req.TraceID, req.SpanID)
+		m.ReplicateCounter(string(req.Key), st.Encode(), s.replicaNodes(string(req.Key)), req.TraceID, req.SpanID)
 	}
 	return protocol.Response{Status: protocol.StatusOK}
 }
 
 // handleCounterMerge folds replicated state in. No ownership check: any
 // replica accepts merges (this is the fan-out target, like OpReplicate).
-
 func (s *Server) handleCounterMerge(req protocol.Request) protocol.Response {
 	st, err := counter.DecodePNCounter(req.Value)
 	if err != nil {
@@ -193,10 +202,9 @@ func (s *Server) handleCounterMerge(req protocol.Request) protocol.Response {
 
 // handleCounterGet serves the local copy when present; only a miss
 // consults ownership, redirecting to the ring owner like other reads.
-
 func (s *Server) handleCounterGet(req protocol.Request) protocol.Response {
 	if st, ok := s.counters.Get(string(req.Key)); ok {
-		enc := counter.EncodePNCounter(st)
+		enc := st.Encode()
 		if len(enc) == 0 {
 			return protocol.Response{Status: protocol.StatusInternalError}
 		}
@@ -207,5 +215,3 @@ func (s *Server) handleCounterGet(req protocol.Request) protocol.Response {
 	}
 	return protocol.Response{Status: protocol.StatusNotFound}
 }
-
-// counterStatusOf maps counter-store errors to protocol statuses.

@@ -1,9 +1,5 @@
 package repl
 
-// Outbound writes: quorum/async fan-out, hint enqueueing, and hint
-// replay. The fan-out plumbing (fanResult/launch/drain) also serves
-// the single quorum read in read.go.
-
 import (
 	"sync"
 	"sync/atomic"
@@ -19,12 +15,12 @@ import (
 
 // Write commits the value locally before sending it to replicas. Async
 // mode returns after the local commit; Quorum mode waits for the required
-// acknowledgements, including the local write.
-
+// acknowledgements, including the local write
 func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []string, mode Mode, traceID, spanID uint64) error {
 	if !mode.Valid() {
 		return ErrInvalidMode
 	}
+
 	version := m.local.MintVersion()
 	e := store.Entry{Value: append([]byte(nil), value...), Version: version, WriterNodeHash: m.writer}
 	if ttl > 0 {
@@ -35,6 +31,7 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 	if err := m.local.PutVersioned(key, e); err != nil {
 		return err
 	}
+
 	req := protocol.Request{
 		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), value...),
 		Version: version, WriterNodeHash: m.writer,
@@ -50,6 +47,7 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 		})
 		return nil
 	}
+
 	err := m.fanOutQuorum(req, replicas)
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		if err != nil {
@@ -73,10 +71,12 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 	if !mode.Valid() {
 		return ErrInvalidMode
 	}
+
 	version := m.local.MintVersion()
 	if err := m.local.RemoveVersioned(key, version, m.writer); err != nil {
 		return err
 	}
+
 	tomb, _ := m.local.GetVersioned(key)
 	req := protocol.Request{
 		Opcode: protocol.OpHint, Key: []byte(key), Tombstone: true,
@@ -93,6 +93,7 @@ func (m *Manager) Delete(key string, replicas []string, mode Mode, traceID, span
 		})
 		return nil
 	}
+
 	err := m.fanOutQuorum(req, replicas)
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		if err != nil {
@@ -117,7 +118,6 @@ type fanResult struct {
 
 // fanOutAsync sends req to every replica concurrently and returns
 // immediately. Failed sends enqueue hints for later replay.
-
 func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []string) {
 	if e := m.log().Debug(); e != nil {
 		log.Fields(e, req.TraceID, req.SpanID).
@@ -125,6 +125,7 @@ func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []strin
 			Strs("replicas", replicas).
 			Msg("replicating")
 	}
+
 	out := m.launch(req, replicas)
 	go func() {
 		// Counted drain: launch sends exactly len(replicas) results and
@@ -141,7 +142,6 @@ func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []strin
 // write. Success fires at W without waiting out stragglers, but a
 // background drain continues so late failures still enqueue hints.
 // Impossibility (acks + pending < W) fails fast with ErrQuorum.
-
 func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 	total := len(replicas) + 1
 	w := total/2 + 1
@@ -149,6 +149,7 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 		// No replicas: the local ack alone satisfies W == 1.
 		return nil
 	}
+
 	out := m.launch(req, replicas)
 	acks := 1 // local write
 	pending := len(replicas)
@@ -160,6 +161,7 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 		} else {
 			acks++
 		}
+
 		if acks >= w {
 			go drain(out, pending, func(r fanResult) {
 				if r.err != nil {
@@ -182,7 +184,6 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 
 // launch sends req to every replica concurrently; the caller drains exactly
 // len(replicas) results.
-
 func (m *Manager) launch(req protocol.Request, replicas []string) <-chan fanResult {
 	out := make(chan fanResult, len(replicas))
 	for _, node := range replicas {
@@ -206,6 +207,7 @@ func (m *Manager) enqueueHint(node string, req protocol.Request) {
 		mt.ReplicaUnreach.Add(1)
 		mt.HintsEnqueued.Add(1)
 	})
+
 	m.hints.Push(h)
 	// Funnel the queue's own drop count (oversize + evictions, including
 	// pushes that bypass the manager) into the collector without
@@ -229,17 +231,14 @@ func (m *Manager) enqueueHint(node string, req protocol.Request) {
 	}
 }
 
-// Read performs a quorum read: local getVersioned plus concurrent
-// GetVersioned fan-out, LWW-max reduce over R votes, background repair of
-// stale replicas (and a local heal). Reads coalesce per (key, R): the
-// first caller runs the fan-out, concurrent callers share its result.
-
 func (m *Manager) ReplayHints() int {
 	if !m.replaying.CompareAndSwap(false, true) {
 		return 0
 	}
+
 	defer m.replaying.Store(false)
 	batch := m.hints.Snapshot(m.clock.Now(), ReplayBatch)
+
 	var wg sync.WaitGroup
 	var replayed atomic.Int64
 	for _, h := range batch {
@@ -255,6 +254,7 @@ func (m *Manager) ReplayHints() int {
 			}
 		}(h)
 	}
+
 	wg.Wait()
 	n := int(replayed.Load())
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {

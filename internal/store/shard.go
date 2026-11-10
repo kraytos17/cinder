@@ -1,10 +1,5 @@
 package store
 
-// Shard internals: node linkage (LRU list), slot allocation,
-// expiry-wheel updates, and capacity eviction. The Store methods in
-// store.go call in here; the LFU frequency bookkeeping lives in lfu.go
-// and dispatches through onAccess.
-
 import (
 	"sync/atomic"
 	"time"
@@ -13,14 +8,12 @@ import (
 	"github.com/kraytos17/cinder/internal/obs"
 )
 
-// ErrCapacityExceeded rejects an entry larger than its destination
-// shard's capacity, even when it would fit the aggregate store capacity.
-
 func expiryTicks(expiresAt, at time.Time) uint64 {
 	rem := expiresAt.Sub(at)
 	if rem <= 0 {
 		return 1
 	}
+
 	ticks := uint64((rem + time.Second - time.Nanosecond) / time.Second)
 	if ticks < 1 {
 		return 1
@@ -32,6 +25,7 @@ func (s *Store) nodeIfResident(sh *shard, idx int) (*node, bool) {
 	if idx < 0 || idx >= len(sh.nodes) {
 		return nil, false
 	}
+
 	n := &sh.nodes[idx]
 	cur, ok := sh.index[n.key]
 	if !ok || cur != idx {
@@ -47,6 +41,7 @@ func (s *Store) allocNode(sh *shard) int {
 		sh.nodes[idx] = node{}
 		return idx
 	}
+
 	idx := len(sh.nodes)
 	sh.nodes = append(sh.nodes, node{})
 	return idx
@@ -59,6 +54,7 @@ func (s *Store) linkHead(sh *shard, idx int) {
 	if sh.head != noLink {
 		sh.nodes[sh.head].lruPrev = idx
 	}
+
 	sh.head = idx
 	if sh.tail == noLink {
 		sh.tail = idx
@@ -84,6 +80,7 @@ func (s *Store) touch(sh *shard, idx int) {
 	if sh.head == idx {
 		return
 	}
+
 	s.unlink(sh, idx)
 	s.linkHead(sh, idx)
 }
@@ -92,7 +89,6 @@ func (s *Store) touch(sh *shard, idx int) {
 // ordering: MRU re-link under LRU, frequency increment under LFU.
 // GetVersioned deliberately does not affect eviction order. Caller holds
 // sh.mu.
-
 func (s *Store) onAccess(sh *shard, idx int) {
 	if s.policy == LFUPolicy {
 		s.incrementFreq(sh, idx)
@@ -112,14 +108,12 @@ func (s *Store) updateWheel(sh *shard, idx int, at time.Time) {
 }
 
 // eraseNode drops index/list/wheel for a node. Caller holds sh.mu.
-
 func (s *Store) eraseNode(sh *shard, idx int) {
 	s.removeNode(sh, idx)
 }
 
 // removeNode unlinks one node and updates all accounting, returning the
 // bytes freed. Caller holds sh.mu.
-
 func (s *Store) removeNode(sh *shard, idx int) uint64 {
 	n := &sh.nodes[idx]
 	s.emit(n.key, n.entry.VersionAndTTL(), n.entry.WriterNodeHash, true)
@@ -130,6 +124,7 @@ func (s *Store) removeNode(sh *shard, idx int) uint64 {
 	if s.policy == LRUPolicy {
 		s.unlink(sh, idx)
 	}
+
 	sh.free = append(sh.free, idx)
 	sh.current -= freed
 	subAtomic(&s.totalSize, freed)
@@ -140,7 +135,6 @@ func (s *Store) removeNode(sh *shard, idx int) uint64 {
 // onEvictExpired runs on every node removal (expiry, eviction, hard
 // remove): it is a no-op under LRU and unlinks the frequency bucket under
 // LFU. Caller holds sh.mu.
-
 func (s *Store) onEvictExpired(sh *shard, idx int) {
 	if s.policy == LFUPolicy {
 		s.removeFromFreqBucket(sh, idx, sh.nodes[idx].freq)
@@ -152,11 +146,11 @@ func (s *Store) onEvictExpired(sh *shard, idx int) {
 // anti-entropy round. Returns bytes freed, or 0 when only tombstones
 // remain (their GC deadline reaps them instead). Victim choice is
 // tail-first under LRU and min-frequency-first under LFU.
-
 func (s *Store) evictOne(sh *shard) uint64 {
 	if s.policy == LFUPolicy {
 		return s.lfuEvictOne(sh)
 	}
+
 	victim := noLink
 	for idx := sh.tail; idx != noLink; idx = sh.nodes[idx].lruPrev {
 		if !sh.nodes[idx].entry.Tombstone {
@@ -167,6 +161,7 @@ func (s *Store) evictOne(sh *shard) uint64 {
 	if victim == noLink {
 		return 0
 	}
+
 	obs.IfPresent(&s.met, func(m *metrics.Collector) { m.EvictionsCap.Add(1) })
 	return s.removeNode(sh, victim)
 }
@@ -183,7 +178,6 @@ func (s *Store) evictIfNeeded(sh *shard) {
 // shardNonEmpty reports whether any node (live or tombstone) is resident.
 // LRU tracks the list head; LFU leaves the linkage unmaintained and uses
 // the index instead. Caller holds sh.mu (or the shard is quiescent).
-
 func (s *Store) shardNonEmpty(sh *shard) bool {
 	if s.policy == LFUPolicy {
 		return len(sh.index) > 0
@@ -192,7 +186,6 @@ func (s *Store) shardNonEmpty(sh *shard) bool {
 }
 
 // subAtomic subtracts n from an atomic counter.
-
 func subAtomic(u *atomic.Uint64, n uint64) {
 	u.Add(^(n - 1))
 }

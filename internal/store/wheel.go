@@ -43,6 +43,7 @@ func (w *Wheel) Insert(id int, ttlTicks uint64) {
 			m = make(map[int]struct{})
 			w.slots[slot] = m
 		}
+
 		m[id] = struct{}{}
 		return
 	}
@@ -100,6 +101,7 @@ func (w *Wheel) Push(x any) {
 	if !ok {
 		panic("store: Push called with non-wheelItem")
 	}
+
 	w.pos[it.id] = len(w.heap)
 	w.heap = append(w.heap, it)
 }

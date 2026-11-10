@@ -95,6 +95,7 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 	if f.Fail[node] {
 		return protocol.Response{}, errors.New("unreachable: " + node)
 	}
+
 	st, ok := f.Stores[node]
 	if !ok {
 		return protocol.Response{}, errors.New("unknown node: " + node)
@@ -120,6 +121,7 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 		if !ok {
 			return protocol.Response{Status: protocol.StatusNotFound}, nil
 		}
+
 		res := protocol.Response{Status: protocol.StatusOK, Version: e.Version, WriterNodeHash: e.WriterNodeHash, Tombstone: e.Tombstone}
 		if !e.Tombstone {
 			res.Value = append([]byte(nil), e.Value...)

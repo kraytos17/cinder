@@ -87,6 +87,7 @@ func NewManager(cfg Config) *Manager {
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
+
 	h := fnv.New64a()
 	h.Write([]byte(cfg.Self))
 	return &Manager{
@@ -116,7 +117,3 @@ func (m *Manager) HintQueue() *HintQueue { return m.hints }
 // WriterHash is the stable per-node LWW tiebreaker, computed as FNV-1a of
 // the node ID.
 func (m *Manager) WriterHash() uint64 { return m.writer }
-
-// Write stores value locally, then fans out Replicate to replicas.
-// Async returns after the local commit; quorum requires W acknowledgements
-// including the local write and fails closed with ErrQuorum.

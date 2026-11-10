@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -217,15 +218,15 @@ func TestGatewayInfoClusterRing(t *testing.T) {
 	if err != nil || info.GetJson() == "" {
 		t.Fatalf("info: %+v %v", info, err)
 	}
-	if !contains(info.GetJson(), `"node_id":"node1"`) {
+	if !strings.Contains(info.GetJson(), `"node_id":"node1"`) {
 		t.Fatalf("info json: %s", info.GetJson())
 	}
 	cluster, err := c.ClusterInfo(ctx, &gen.ClusterInfoRequest{})
-	if err != nil || !contains(cluster.GetJson(), "node1") {
+	if err != nil || !strings.Contains(cluster.GetJson(), "node1") {
 		t.Fatalf("cluster: %+v %v", cluster, err)
 	}
 	ring, err := c.RingInfo(ctx, &gen.RingInfoRequest{})
-	if err != nil || !contains(ring.GetJson(), "vnodes_per_node") {
+	if err != nil || !strings.Contains(ring.GetJson(), "vnodes_per_node") {
 		t.Fatalf("ring: %+v %v", ring, err)
 	}
 }
@@ -289,15 +290,6 @@ func TestGatewayGetVersionedMeta(t *testing.T) {
 	if err != nil || two.GetValue() != "v2" || two.Version <= one.Version {
 		t.Fatalf("versions not monotonic: %+v %+v %v", one, two, err)
 	}
-}
-
-func contains(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }
 
 func TestGatewaySetNotReadyOnNonOwner(t *testing.T) {

@@ -28,6 +28,7 @@ func (s *Server) runGossipLoop(wg *sync.WaitGroup, gossip *cluster.GossipManager
 			return
 		case <-t.C:
 		}
+
 		gossip.Tick()
 		t.Reset(s.currentGossipInterval())
 	}
@@ -44,6 +45,7 @@ func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector) {
 			return
 		case <-t.C:
 		}
+
 		fd.Tick()
 		t.Reset(s.currentProbeInterval())
 	}
@@ -60,6 +62,7 @@ func (s *Server) runAELoop(mgr *ae.Manager) {
 			return
 		case <-t.C:
 		}
+
 		mgr.RunRound(s.replicaFactor())
 		mgr.RunCounterRound(s.replicaFactor())
 		t.Reset(s.currentAEInterval())
@@ -77,6 +80,7 @@ func (s *Server) runReplayLoop(replMgr *repl.Manager) {
 			return
 		case <-t.C:
 		}
+
 		t.Reset(s.currentReplayInterval())
 		if replMgr.HintCount() > 0 {
 			replMgr.ReplayHints()
@@ -94,6 +98,7 @@ func (s *Server) runCompactLoop(pm *persist.Manager) {
 			return
 		case <-t.C:
 		}
+
 		t.Reset(compactTickInterval)
 		pm.MaybeCompact()
 	}

@@ -141,6 +141,7 @@ func (c *Client) Close() error {
 	if c.conn == nil {
 		return nil
 	}
+
 	err := c.conn.Close()
 	c.conn = nil
 	c.br = nil
@@ -163,10 +164,12 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if c.conn == nil {
 		return protocol.Response{}, fmt.Errorf("client: connection closed")
 	}
+
 	frame, err := protocol.EncodeRequestInto(req, tokenFor(c.secrets, time.Now()), c.encodeBuf)
 	if err != nil {
 		return protocol.Response{}, err
 	}
+
 	c.encodeBuf = retainEncodeBuf(frame)
 	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 		return protocol.Response{}, c.fail(err)
@@ -178,6 +181,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 		}
 		frame = frame[n:]
 	}
+
 	// Fixed-size header on the stack: no per-RPC alloc (see the server
 	// read loop for the same pattern).
 	var header [protocol.FrameHeaderSize]byte
@@ -190,6 +194,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if header[2] != 0 {
 		return protocol.Response{}, c.fail(fmt.Errorf("client: response opcode %d", header[2]))
 	}
+
 	n := binary.BigEndian.Uint32(header[3:7])
 	if n > protocol.MaxPayloadSize {
 		return protocol.Response{}, c.fail(fmt.Errorf("client: response too large: %d", n))
@@ -200,6 +205,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	if cap(c.payloadBuf) > maxReusePayloadBytes {
 		c.payloadBuf = nil
 	}
+
 	payload := c.payloadBuf
 	if uint64(cap(payload)) < uint64(n) {
 		payload = make([]byte, n)
@@ -209,9 +215,11 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	} else {
 		payload = payload[:n]
 	}
+
 	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
+
 	res, err := protocol.DecodeResponse(payload)
 	if err != nil {
 		return protocol.Response{}, c.fail(err)
@@ -238,18 +246,22 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 		}
 		frame = frame[n:]
 	}
+
 	header := make([]byte, protocol.FrameHeaderSize)
 	if _, err := io.ReadFull(c.br, header); err != nil {
 		return nil, c.fail(err)
 	}
+
 	n := binary.BigEndian.Uint32(header[3:7])
 	if n > protocol.MaxPayloadSize {
 		return nil, c.fail(fmt.Errorf("client: response too large: %d", n))
 	}
+
 	payload := make([]byte, n)
 	if _, err := io.ReadFull(c.br, payload); err != nil {
 		return nil, c.fail(err)
 	}
+
 	frame = make([]byte, protocol.FrameHeaderSize+len(payload))
 	copy(frame, header)
 	copy(frame[protocol.FrameHeaderSize:], payload)

@@ -1,9 +1,5 @@
 package grpcgw
 
-// Gateway bearer authentication. The service caches the configured bearer
-// representation, checks incoming authorization metadata in constant time,
-// and forwards the verified raw token to the TCP server's dispatch path.
-
 import (
 	"context"
 	"crypto/subtle"
@@ -32,6 +28,7 @@ func (s *service) setClientSecret(secret string) {
 		s.bearer.Store(nil)
 		return
 	}
+
 	raw := auth.ClientToken(secret)
 	s.bearer.Store(&bearerAuth{header: "Bearer " + hex.EncodeToString(raw), raw: raw})
 }
@@ -45,10 +42,12 @@ func (s *service) checkAuth(ctx context.Context) ([]byte, error) {
 	if b == nil {
 		return nil, nil
 	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unauthenticated, "missing credentials")
 	}
+
 	vals := md.Get("authorization")
 	// Length gate first: the constant-time compare below only ever runs
 	// on equal-length inputs.

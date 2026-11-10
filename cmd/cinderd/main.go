@@ -41,6 +41,7 @@ func buildVersion() string {
 	if version != "dev" {
 		return version
 	}
+
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		return version
@@ -103,13 +104,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cinderd:", err)
 		os.Exit(2)
 	}
-	logger := log.New(os.Stderr, lvl)
 
+	logger := log.New(os.Stderr, lvl)
 	peerList, err := tcp.ParsePeers(*peers)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cinderd:", err)
 		os.Exit(2)
 	}
+
 	replicaCount, err := hashring.NewReplicaCount(*replFact)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "cinderd: --replication-factor must be between 1 and 32")
@@ -121,6 +123,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy must be lru|lfu")
 		os.Exit(2)
 	}
+
 	var st *store.Store
 	switch policy {
 	case store.LRUPolicy:
@@ -143,6 +146,7 @@ func main() {
 	if *tombstoneMs > 0 {
 		st.SetTombstoneGCInterval(time.Duration(*tombstoneMs) * time.Millisecond)
 	}
+
 	srv := tcp.NewServer(tcp.ServerConfig{NodeID: *nodeID, Port: netport.Port(*port), Store: st})
 	srv.SetLogger(&logger)
 	logger.Info().Str("node", *nodeID).Int("port", *port).Msg("starting")
@@ -244,7 +248,6 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-
 	lc := net.ListenConfig{}
 	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*port)))
 	if err != nil {
@@ -257,23 +260,20 @@ func main() {
 			logger.Error().Err(err).Msg("serve")
 		}
 	}()
-	// Auxiliary servers close explicitly at shutdown (no defers: setup
-	// failures os.Exit, which would skip deferred calls).
+
 	var msrv *http.Server
 	var gw *grpcgw.Gateway
-	// Prometheus endpoint (0 = disabled). It is plain HTTP on the
-	// loopback listener; expose it only behind appropriate network controls.
 	if *metricsPort > 0 {
 		ml, err := lc.Listen(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(*metricsPort)))
 		if err != nil {
 			logger.Error().Err(err).Msg("metrics listen")
 			os.Exit(1)
 		}
+
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.NewHandler(srv.Metrics(), srv.MetricGauges))
 		// Standard pprof endpoints on the same localhost-only listener,
 		// so the docs/profiling.md workflow runs against a live node.
-		// Same firewall posture as /metrics above.
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -296,7 +296,6 @@ func main() {
 		gw = grpcgw.New(srv)
 		gw.SetClientSecret(clientSec)
 		if clientSec != "" {
-			// An authenticated gateway never serves plaintext.
 			if err := gw.SetTLS(*tlsCert, *tlsKey); err != nil {
 				logger.Error().Err(err).Msg("grpc tls")
 				os.Exit(2)
@@ -314,7 +313,7 @@ func main() {
 	stop()
 	logger.Info().Msg("shutting down")
 	if msrv != nil {
-		_ = msrv.Close()
+		msrv.Close()
 	}
 	if gw != nil {
 		gw.Stop()

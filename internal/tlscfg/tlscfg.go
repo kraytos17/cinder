@@ -18,6 +18,7 @@ func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
 		MinVersion:   tls.VersionTLS12,
@@ -27,6 +28,7 @@ func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 		cfg.ClientCAs = pool
 	}
@@ -75,10 +77,12 @@ func chainOnlyVerifier(pool *x509.CertPool) func([][]byte, [][]*x509.Certificate
 		if len(rawCerts) == 0 {
 			return errors.New("tlscfg: no server certificate presented")
 		}
+
 		leaf, err := x509.ParseCertificate(rawCerts[0])
 		if err != nil {
 			return err
 		}
+
 		opts := x509.VerifyOptions{
 			Roots:     pool,
 			KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
@@ -89,6 +93,7 @@ func chainOnlyVerifier(pool *x509.CertPool) func([][]byte, [][]*x509.Certificate
 				opts.Intermediates.AddCert(c)
 			}
 		}
+
 		_, err = leaf.Verify(opts)
 		return err
 	}
@@ -99,6 +104,7 @@ func loadRoots(caFile string) (*x509.CertPool, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(pem) {
 		return nil, errors.New("tlscfg: no certificates in " + caFile)

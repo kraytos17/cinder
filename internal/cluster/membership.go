@@ -96,6 +96,7 @@ func NewMembershipTable(self string, clock func() time.Time) *MembershipTable {
 		nodes: map[string]*NodeInfo{},
 		clock: clock,
 	}
+
 	t.nodes[self] = &NodeInfo{ID: self, State: Alive}
 	return t
 }
@@ -107,6 +108,7 @@ func (t *MembershipTable) Seed(peers []NodeInfo) {
 		if p.ID == t.self {
 			continue
 		}
+
 		cp := p
 		cp.State = Alive
 		cp.Incarnation = 0
@@ -137,6 +139,7 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 			t.mu.Unlock()
 			return
 		}
+
 		fresh := rumor
 		fresh.JoinedAt = t.clock()
 		t.nodes[rumor.ID] = &fresh
@@ -152,6 +155,7 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 		t.mu.Unlock()
 		return
 	}
+
 	var changed bool
 	if rumor.ID == t.self && rumor.State != Alive {
 		changed = t.refuteLocked(rumor)
@@ -166,6 +170,7 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 			local.Port = rumor.Port
 		}
 	}
+
 	t.mu.Unlock()
 	if changed {
 		t.fire()
@@ -178,6 +183,7 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 	if !ok {
 		return false
 	}
+
 	changed := false
 	if self.Incarnation <= rumor.Incarnation {
 		if rumor.Incarnation > self.Incarnation {
@@ -207,6 +213,7 @@ func (t *MembershipTable) MarkSuspect(id string) {
 		t.mu.Unlock()
 		return
 	}
+
 	n.State = Suspect
 	t.mu.Unlock()
 	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.SuspectMarked.Add(1) })
@@ -221,6 +228,7 @@ func (t *MembershipTable) MarkDead(id string) {
 		t.mu.Unlock()
 		return
 	}
+
 	n.State = Dead
 	t.mu.Unlock()
 	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.DeadMarked.Add(1) })
@@ -245,6 +253,7 @@ func (t *MembershipTable) MarkAlive(id string, incarnation uint64) {
 	if n.State != Alive {
 		n.JoinedAt = t.clock()
 	}
+
 	n.State = Alive
 	n.Incarnation = incarnation
 	t.mu.Unlock()
@@ -317,6 +326,7 @@ func (t *MembershipTable) IsDegraded() bool {
 	if total == 0 {
 		return true
 	}
+
 	visible := 0
 	for _, m := range t.nodes {
 		if m.State == Alive {
@@ -354,6 +364,7 @@ func (t *MembershipTable) IsQuarantined(id string, now time.Time, quarantine tim
 	if quarantine <= 0 {
 		return false
 	}
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	n, ok := t.nodes[id]

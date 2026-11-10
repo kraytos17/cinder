@@ -1,7 +1,5 @@
 package main
 
-// Counter verbs: counter-incr, counter-decr, and counter-get.
-
 import (
 	"fmt"
 	"io"
@@ -23,6 +21,7 @@ func runCounterAdjust(
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	res, err := c.CounterAdjust(key, delta, decrement)
 	if err != nil {
@@ -33,6 +32,7 @@ func runCounterAdjust(
 		fmt.Fprintln(stderr, "error: permission denied")
 		return 1
 	}
+
 	fmt.Fprintln(stdout, statusString(res.Status))
 	return 0
 }
@@ -49,6 +49,7 @@ func runCounterGet(
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
+
 	defer c.Close()
 	res, err := c.CounterGet(key)
 	if err != nil {
@@ -65,9 +66,11 @@ func runCounterGet(
 			fmt.Fprintln(stderr, "error: corrupt counter state")
 			return 1
 		}
+
 		fmt.Fprintln(stdout, st.Value())
 		return 0
 	}
+
 	fmt.Fprintln(stdout, statusString(res.Status))
 	return 0
 }

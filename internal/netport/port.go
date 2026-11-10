@@ -27,6 +27,7 @@ func ParsePort(s string) (Port, error) {
 			return 0, &ParseError{Input: s}
 		}
 	}
+
 	n, err := strconv.Atoi(s)
 	if err != nil || n <= 0 || n > 65535 {
 		return 0, &ParseError{Input: s}

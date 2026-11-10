@@ -62,7 +62,7 @@ func (l noDelayListener) Accept() (net.Conn, error) {
 	// Best-effort like the client side: a socket that refuses the option
 	// still works, just with Nagle enabled.
 	if tc, ok := c.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
+		tc.SetNoDelay(true)
 	}
 	return c, nil
 }
@@ -168,6 +168,7 @@ func NewServer(cfg ServerConfig) *Server {
 	if clock == nil {
 		clock = store.SystemClock{}
 	}
+
 	// The counter store starts with one quarter of the LWW capacity. Its
 	// shard count is clamped to at least one, including for zero capacity.
 	counterCap := cfg.Store.Capacity() / 4
@@ -187,16 +188,12 @@ func NewServer(cfg ServerConfig) *Server {
 		replayInterval: time.Second,
 		aeInterval:     30 * time.Second,
 	}
+
 	cfg.Store.SetMetrics(srv.met)
 	nop := log.Nop()
 	srv.logger.Store(&nop)
 	return srv
 }
-
-// ConfigureRebalance creates the shard manager using the configured ring,
-// pool, and membership table. ConfigureCluster and ConfigureReplication
-// must be called first. A zero quarantine interval disables warming
-// deferrals.
 
 func (s *Server) Serve(l net.Listener) error {
 	s.tlsMu.RLock()
@@ -209,6 +206,7 @@ func (s *Server) Serve(l net.Listener) error {
 	if tlsCfg != nil {
 		l = tls.NewListener(l, tlsCfg)
 	}
+
 	s.mu.Lock()
 	s.listener = l
 	shut := s.shut.Load()
@@ -218,6 +216,7 @@ func (s *Server) Serve(l net.Listener) error {
 		l.Close()
 		return nil
 	}
+
 	s.ringMu.RLock()
 	gossip, fd := s.gossip, s.fd
 	s.ringMu.RUnlock()
@@ -230,6 +229,7 @@ func (s *Server) Serve(l net.Listener) error {
 	s.persistMu.RLock()
 	pm := s.persist
 	s.persistMu.RUnlock()
+
 	var bgWG sync.WaitGroup
 	if gossip != nil && fd != nil {
 		bgWG.Add(2)
@@ -245,6 +245,7 @@ func (s *Server) Serve(l net.Listener) error {
 	if pm != nil {
 		bgWG.Go(func() { s.runCompactLoop(pm) })
 	}
+
 	defer func() {
 		close(s.stopBg)
 		bgWG.Wait()
@@ -263,6 +264,7 @@ func (s *Server) Serve(l net.Listener) error {
 			c.Close()
 			continue
 		}
+
 		s.mu.Lock()
 		s.conns[c] = struct{}{}
 		s.wg.Add(1)
@@ -279,18 +281,21 @@ func (s *Server) Shutdown() {
 	if s.shut.Swap(true) {
 		return
 	}
+
 	s.ringMu.RLock()
 	gossip := s.gossip
 	s.ringMu.RUnlock()
 	if gossip != nil {
 		gossip.Leave()
 	}
+
 	s.persistMu.RLock()
 	pm := s.persist
 	s.persistMu.RUnlock()
 	if pm != nil {
-		_ = pm.Close()
+		pm.Close()
 	}
+
 	s.stopRebalanceTimers()
 	s.closeAll()
 }
@@ -303,6 +308,7 @@ func (s *Server) Kill() {
 	if s.shut.Swap(true) {
 		return
 	}
+
 	s.stopRebalanceTimers()
 	s.closeAll()
 }
@@ -314,6 +320,7 @@ func (s *Server) closeAll() {
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
+
 	s.mu.Unlock()
 	if l != nil {
 		l.Close()
@@ -334,8 +341,6 @@ func (s *Server) done(c net.Conn) {
 	s.wg.Done()
 }
 
-// Peer is a reachable cluster member.
-
 func (s *Server) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -344,9 +349,6 @@ func (s *Server) Addr() string {
 	}
 	return s.listener.Addr().String()
 }
-
-// ConfigureAntiEntropy creates the AE manager over the live ring and
-// pool transport. Call after ConfigureCluster.
 
 func (s *Server) AntiEntropy() *ae.Manager {
 	s.aeMu.RLock()
@@ -368,12 +370,12 @@ func (s *Server) CounterStore() *counter.Store {
 // it out to every configured manager, so call order with Configure*
 // does not matter. Like SetMetrics: every site goes through log(), so
 // unconfigured servers pay nothing.
-
 func (s *Server) SetLogger(l *zerolog.Logger) {
 	if l == nil {
 		nop := log.Nop()
 		l = &nop
 	}
+
 	s.logger.Store(l)
 	s.aeMu.RLock()
 	aeMgr := s.ae
@@ -381,12 +383,14 @@ func (s *Server) SetLogger(l *zerolog.Logger) {
 	if aeMgr != nil {
 		aeMgr.SetLogger(l)
 	}
+
 	s.replMu.RLock()
 	replMgr := s.repl
 	s.replMu.RUnlock()
 	if replMgr != nil {
 		replMgr.SetLogger(l)
 	}
+
 	s.ringMu.RLock()
 	table, gossip, fd := s.table, s.gossip, s.fd
 	s.ringMu.RUnlock()
@@ -399,12 +403,14 @@ func (s *Server) SetLogger(l *zerolog.Logger) {
 	if fd != nil {
 		fd.SetLogger(l)
 	}
+
 	s.shardMu.Lock()
 	shardMgr := s.shard
 	s.shardMu.Unlock()
 	if shardMgr != nil {
 		shardMgr.SetLogger(l)
 	}
+
 	s.persistMu.RLock()
 	pm := s.persist
 	s.persistMu.RUnlock()
@@ -423,7 +429,6 @@ func (s *Server) log() *zerolog.Logger {
 }
 
 // Metrics exposes the observability collector.
-
 func (s *Server) Metrics() *metrics.Collector {
 	return s.met
 }
@@ -457,13 +462,6 @@ func (s *Server) Table() *cluster.MembershipTable {
 	return s.table
 }
 
-// SetGossipInterval changes the gossip tick period (tests use short ones).
-
 func (s *Server) ID() string {
 	return s.nodeID
 }
-
-// Dispatch routes one request through the full TCP dispatch (ownership,
-// replication, admin). The gRPC gateway uses it so both frontends share
-// identical Get/Set/Delete semantics. No auth token is attached; the
-// gateway enforces its bearer separately.

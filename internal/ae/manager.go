@@ -18,7 +18,6 @@ import (
 
 // Transport is the shared inter-node send contract (see
 // internal/transport); *client.Pool satisfies it.
-
 type Transport = transport.Sender
 
 // nopLogger is the shared disabled logger for managers constructed
@@ -28,7 +27,6 @@ var nopLogger = log.Nop()
 // Manager runs anti-entropy rounds: digest exchange, bucket refinement,
 // and targeted synchronization. Each round rebuilds its digest by scanning
 // the current live store contents.
-
 type Manager struct {
 	store      *store.Store
 	ring       *hashring.Ring
@@ -51,7 +49,6 @@ type Manager struct {
 
 // CounterStore is the subset of *counter.Store the AE manager needs.
 // *counter.Store satisfies it; tests stub it.
-
 type CounterStore interface {
 	SortedLiveCounters() []BundleEntry
 	Merge(key string, remote PNCounter) error
@@ -62,7 +59,6 @@ type CounterStore interface {
 // SetCounterStore wires the CRDT counter store. Nil disables counter
 // repair rounds; always set in production (counters live beside the LWW
 // store on every node).
-
 func (m *Manager) SetCounterStore(s CounterStore) {
 	m.counterMu.Lock()
 	defer m.counterMu.Unlock()
@@ -96,19 +92,16 @@ func NewManager(cfg Config) *Manager {
 }
 
 // SetHintJournal enables durable hint storage; nil disables journaling.
-
 func (m *Manager) SetHintJournal(j *Journal) {
 	m.journal = j
 }
 
 // SetMetrics wires the observability collector (nil disables).
-
 func (m *Manager) SetMetrics(c *metrics.Collector) {
 	m.met.Store(c)
 }
 
 // SetLogger installs the operational logger (nil selects Nop).
-
 func (m *Manager) SetLogger(l *zerolog.Logger) {
 	if l == nil {
 		nop := log.Nop()
@@ -118,7 +111,6 @@ func (m *Manager) SetLogger(l *zerolog.Logger) {
 }
 
 // log returns the installed logger (Nop when unset).
-
 func (m *Manager) log() *zerolog.Logger {
 	if l := m.logger.Load(); l != nil {
 		return l
@@ -127,9 +119,8 @@ func (m *Manager) log() *zerolog.Logger {
 }
 
 // ComputeDigest XOR-folds entry hashes per bucket over a full scan.
-
-func (m *Manager) ComputeDigest() []uint64 {
-	digest := make([]uint64, m.numBuckets)
+func (m *Manager) ComputeDigest() Digest {
+	digest := make(Digest, m.numBuckets)
 	m.store.ForEach(func(key string, e store.Entry) {
 		digest[BucketFor(key, m.numBuckets)] ^= EntryHash(key, e.VersionAndTTL(), e.WriterNodeHash)
 	})
@@ -139,7 +130,6 @@ func (m *Manager) ComputeDigest() []uint64 {
 // RunRound runs one initiator round against a replica partner and returns
 // the number of entries repaired locally. Missing partners, transport
 // failures, and invalid replies leave state unchanged and return zero.
-
 func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	partner, ok := m.PickPartner(replicaFactor)
 	if !ok {
@@ -156,9 +146,8 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 
 	local := m.ComputeDigest()
 	res, err := m.transport.Send(partner, protocol.Request{
-		Opcode: protocol.OpAntiEntropyDigest, Value: EncodeGroupDigest(GroupFold(local)),
+		Opcode: protocol.OpAntiEntropyDigest, Value: local.Fold().Encode(),
 	})
-
 	if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
 		return 0
 	}
@@ -169,7 +158,7 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 		return 0
 	}
 
-	localGroups := GroupFold(local)
+	localGroups := local.Fold()
 	divergent := false
 	var divergentGroups int
 	for g := range localGroups {
@@ -181,6 +170,7 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	if !divergent {
 		return 0 // converged round ends here
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEGroupMismatch.Add(uint64(divergentGroups))
 	})
@@ -200,9 +190,8 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	}
 
 	ref, err := m.transport.Send(partner, protocol.Request{
-		Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: EncodeRefinement(req),
+		Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: req.Encode(),
 	})
-
 	if err != nil || ref.Status != protocol.StatusOK || !ref.HasValue {
 		return 0
 	}
@@ -211,6 +200,7 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	if !ok {
 		return 0
 	}
+
 	n := m.finishRefinement(local, partner, refined)
 	if e := m.log().Debug(); e != nil {
 		e.Str("partner", partner).Int("entries", n).Msg("anti-entropy repaired")
@@ -218,21 +208,18 @@ func (m *Manager) RunRound(replicaFactor hashring.ReplicaCount) int {
 	return n
 }
 
-// finishRefinement resolves IBLT sketches (with P2 fallback), diffs
-// metadata, pushes winners, fetches losers, and applies the result.
-
-func mustGet(m *Manager, key string) store.Entry {
+func (m *Manager) mustGet(key string) store.Entry {
 	e, _ := m.store.GetVersioned(key)
 	return e
 }
 
 // PickPartner round-robins over replica sharers, refreshing the set when
 // empty. Nil when RF<=1 or nobody shares keys with this node.
-
 func (m *Manager) PickPartner(replicaFactor hashring.ReplicaCount) (string, bool) {
 	if replicaFactor <= 1 {
 		return "", false
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.partners) == 0 {
@@ -241,6 +228,7 @@ func (m *Manager) PickPartner(replicaFactor hashring.ReplicaCount) (string, bool
 	if len(m.partners) == 0 {
 		return "", false
 	}
+
 	p := m.partners[m.partnerIdx%len(m.partners)]
 	m.partnerIdx++
 	return p, true
@@ -259,6 +247,7 @@ func (m *Manager) refreshPartnersLocked(replicaFactor hashring.ReplicaCount) {
 			}
 		}
 	})
+
 	// Counter-only keys do not appear in the LWW scan. Include them so a
 	// cluster using only CRDT counters still runs the repair exchange.
 	m.counterMu.Lock()
@@ -280,10 +269,12 @@ func (m *Manager) refreshPartnersLocked(replicaFactor hashring.ReplicaCount) {
 			}
 		}
 	}
+
 	m.partners = m.partners[:0]
 	for n := range seen {
 		m.partners = append(m.partners, n)
 	}
+
 	slices.Sort(m.partners)
 	m.partnerIdx = 0
 }

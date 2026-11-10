@@ -1,8 +1,5 @@
 package ae
 
-// Bucket refinement: the peeled-sketch round that narrows
-// divergent buckets before the metadata exchange.
-
 import (
 	"slices"
 
@@ -15,6 +12,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.AEMetaRecv.Add(uint64(len(resp.Rows)))
 	})
+
 	var reconstructed []MetaRow
 	var reconstructedCovered []uint32
 	sketchHasDiff := map[uint32]bool{}
@@ -99,9 +97,8 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		}
 
 		fb, err := m.transport.Send(partner, protocol.Request{
-			Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: EncodeRefinement(fbReq),
+			Opcode: protocol.OpAntiEntropyDigest, Key: []byte(RefinementKey), Value: fbReq.Encode(),
 		})
-
 		if err != nil || fb.Status != protocol.StatusOK || !fb.HasValue {
 			return 0
 		}
@@ -145,5 +142,3 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 	}
 	return m.finishSync(local, partner, resp, reconstructed, reconstructedCovered, sketchHasDiff)
 }
-
-// finishSync validates coverage, diffs, pushes winners and fetches losers.

@@ -8,10 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kraytos17/cinder/internal/codec"
-
 	"github.com/zeebo/xxh3"
 
+	"github.com/kraytos17/cinder/internal/codec"
 	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/repl"
@@ -213,6 +212,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journa
 		if !ok {
 			return repl.Hint{}, false, nil
 		}
+
 		klen, ok := c.U32()
 		if !ok {
 			return repl.Hint{}, false, nil

@@ -34,10 +34,11 @@ type SnapData struct {
 	Entries     []SnapEntry
 }
 
-func encodeSnapEntry(e SnapEntry) ([]byte, error) {
+func (e SnapEntry) encode() ([]byte, error) {
 	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
 		return nil, errTooLarge
 	}
+
 	out := make([]byte, 0, 4+len(e.Key)+4+len(e.Value)+8+8+8+1+8+1)
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
 	out = append(out, e.Key...)
@@ -51,6 +52,7 @@ func encodeSnapEntry(e SnapEntry) ([]byte, error) {
 	} else {
 		out = codec.Append(out, binary.LittleEndian, uint8(1))
 	}
+
 	out = codec.Append(out, binary.LittleEndian, e.Freq)
 	if e.Tombstone {
 		out = codec.Append(out, binary.LittleEndian, uint8(1))
@@ -74,12 +76,13 @@ func NewSnapWriter(path string) *SnapWriter { return &SnapWriter{path: path} }
 func (w *SnapWriter) Write(nextVersion uint64, entries []SnapEntry) error {
 	var body []byte
 	for _, e := range entries {
-		buf, err := encodeSnapEntry(e)
+		buf, err := e.encode()
 		if err != nil {
 			return err
 		}
 		body = append(body, buf...)
 	}
+
 	hdr := make([]byte, 0, 20)
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapVersion))
@@ -122,6 +125,7 @@ func (r *SnapReader) ReadAll() (SnapData, error) {
 	if err != nil {
 		return SnapData{}, err
 	}
+
 	data.NextVersion = next
 	return data, nil
 }
@@ -145,6 +149,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	if binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
 		return 0, fmt.Errorf("persist: invalid snapshot magic")
 	}
+
 	var format snapFormat
 	switch v := binary.LittleEndian.Uint32(raw[4:8]); v {
 	case 1:
@@ -156,6 +161,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	default:
 		return 0, fmt.Errorf("persist: unsupported snapshot version %d", v)
 	}
+
 	nextVersion := binary.LittleEndian.Uint64(raw[8:16])
 	count := binary.LittleEndian.Uint32(raw[16:20])
 	c := codec.NewReader(binary.LittleEndian, raw)
@@ -178,38 +184,47 @@ func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 	if !ok {
 		return e, false
 	}
+
 	key, ok := c.Bytes(int(klen))
 	if !ok {
 		return e, false
 	}
+
 	vlen, ok := c.U32()
 	if !ok {
 		return e, false
 	}
+
 	val, ok := c.Bytes(int(vlen))
 	if !ok {
 		return e, false
 	}
+
 	ver, ok := c.U64()
 	if !ok {
 		return e, false
 	}
+
 	writer, ok := c.U64()
 	if !ok {
 		return e, false
 	}
+
 	expires, ok := c.U64()
 	if !ok {
 		return e, false
 	}
+
 	hasTTL, ok := c.U8()
 	if !ok {
 		return e, false
 	}
+
 	freq, ok := c.U64()
 	if !ok {
 		return e, false
 	}
+
 	var tomb uint8
 	if format >= snapV2 {
 		tomb, ok = c.U8()
@@ -217,6 +232,7 @@ func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 			return e, false
 		}
 	}
+
 	e.Key = append([]byte(nil), key...)
 	e.Value = append([]byte(nil), val...)
 	e.Version, e.Writer = ver, writer
@@ -225,6 +241,7 @@ func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 		// (already elapsed) deadline, matching the old handling.
 		e.Expiry = expiry.At(time.UnixMilli(int64(expires)).UTC())
 	}
+
 	e.Freq = freq
 	e.Tombstone = tomb != 0
 	return e, true

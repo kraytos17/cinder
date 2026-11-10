@@ -173,18 +173,18 @@ func TestQuarantine(t *testing.T) {
 	}
 }
 
-func TestParseEntryVectors(t *testing.T) {
-	var info NodeInfo
-	if !ParseEntry("node1@127.0.0.1:7000:alive:3", &info) {
+func TestParseNodeInfoVectors(t *testing.T) {
+	info, ok := ParseNodeInfo("node1@127.0.0.1:7000:alive:3")
+	if !ok {
 		t.Fatal("valid entry rejected")
 	}
 	if info.ID != "node1" || info.Host != "127.0.0.1" || info.Port != 7000 || info.State != Alive || info.Incarnation != 3 {
 		t.Fatalf("got %+v", info)
 	}
-	if !ParseEntry("n2@10.0.0.1:8080:suspect:42", &info) || info.State != Suspect || info.Incarnation != 42 {
+	if info, ok := ParseNodeInfo("n2@10.0.0.1:8080:suspect:42"); !ok || info.State != Suspect || info.Incarnation != 42 {
 		t.Fatalf("suspect: %+v", info)
 	}
-	if !ParseEntry("n3@192.168.1.1:9090:dead:0", &info) || info.State != Dead {
+	if info, ok := ParseNodeInfo("n3@192.168.1.1:9090:dead:0"); !ok || info.State != Dead {
 		t.Fatalf("dead: %+v", info)
 	}
 	for _, bad := range []string{
@@ -193,7 +193,7 @@ func TestParseEntryVectors(t *testing.T) {
 		"node1@127.0.0.1:99999:alive:1", "node1@127.0.0.1:7000:zombie:1",
 		"node1@127.0.0.1:7000:alive:x",
 	} {
-		if ParseEntry(bad, &info) {
+		if _, ok := ParseNodeInfo(bad); ok {
 			t.Fatalf("%q accepted", bad)
 		}
 	}

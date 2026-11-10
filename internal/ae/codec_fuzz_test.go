@@ -38,9 +38,9 @@ type codecSeed struct {
 
 func aeCodecSeeds() []codecSeed {
 	return []codecSeed{
-		{0, EncodeGroupDigest([]uint64{1, 2, 3})},
+		{0, Digest{1, 2, 3}.Encode()},
 		{0, []byte{}},
-		{1, EncodeRefinement(Refinement{BucketHashes: []BucketHash{{Bucket: 1, Hash: 9}}, ForceMeta: true})},
+		{1, Refinement{BucketHashes: []BucketHash{{Bucket: 1, Hash: 9}}, ForceMeta: true}.Encode()},
 		{1, []byte{0x00}},
 		{2, EncodeMetaRows([]MetaRow{{Bucket: 1, KeyHash: 7, Version: 2, Writer: 3, Tombstone: true}})},
 		{2, []byte{}},
@@ -48,13 +48,13 @@ func aeCodecSeeds() []codecSeed {
 		{3, []byte{}},
 		{4, EncodeIBLT(BuildIBLT([]IBLTItem{{KeyHash: 1, Version: 2, Writer: 3}}, IBLTCells))},
 		{4, []byte{}},
-		{5, EncodeGroupDigest(GroupFold([]uint64{5}))},
+		{5, Digest{5}.Fold().Encode()},
 		{5, []byte{0xFF, 0xFF}},
 	}
 }
 
 func mustEncodeSync(m SyncMessage) []byte {
-	b, err := EncodeSync(m)
+	b, err := m.Encode()
 	if err != nil {
 		panic(err)
 	}
@@ -70,7 +70,7 @@ func digestFuzz(t *testing.T, data []byte) {
 		if !ok {
 			continue
 		}
-		again := EncodeResponse(dec)
+		again := dec.Encode()
 		back, ok := DecodeResponse(again, groups)
 		if !ok {
 			t.Fatalf("re-decode failed")
@@ -87,7 +87,7 @@ func refinementFuzz(t *testing.T, data []byte) {
 	if !ok {
 		return
 	}
-	again := EncodeRefinement(dec)
+	again := dec.Encode()
 	back, ok := DecodeRefinement(again, 256)
 	if !ok {
 		t.Fatalf("re-decode failed")
@@ -123,7 +123,7 @@ func syncFuzz(t *testing.T, data []byte) {
 	if !ok {
 		return
 	}
-	enc, err := EncodeSync(msg)
+	enc, err := msg.Encode()
 	if err != nil {
 		t.Fatalf("re-encode failed: %v", err)
 	}
@@ -159,8 +159,8 @@ func groupFuzz(t *testing.T, data []byte) {
 	if _, ok := DecodeGroupDigest(data, 4); !ok {
 		return
 	}
-	// GroupFold is total: folding any digest twice is idempotent.
-	folded := GroupFold(GroupFold([]uint64{1, 2}))
+	// Fold is total: folding any digest twice is idempotent.
+	folded := Digest{1, 2}.Fold().Fold()
 	if len(folded) != 1 || folded[0] != 3 {
 		t.Fatalf("fold not idempotent: %v", folded)
 	}

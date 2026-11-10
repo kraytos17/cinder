@@ -28,6 +28,7 @@ func (m *Manager) RunCounterRound(replicaFactor hashring.ReplicaCount) {
 	if cs == nil || cs.Size() == 0 {
 		return
 	}
+
 	partner, ok := m.PickPartner(replicaFactor)
 	if !ok {
 		return
@@ -44,10 +45,12 @@ func (m *Manager) exchangeCounterState(partner string) {
 	if cs == nil {
 		return
 	}
+
 	encoded := m.EncodeCounterBatch(m.fetchBytes)
 	if encoded == nil {
 		return
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERounds.Add(1)
 	})
@@ -57,13 +60,15 @@ func (m *Manager) exchangeCounterState(partner string) {
 	if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
 		return
 	}
+
 	remote, err := counter.DecodeCounterBundle(res.Value)
 	if err != nil {
 		return
 	}
 	for _, e := range remote {
-		_ = cs.Merge(e.Key, e.Counter)
+		cs.Merge(e.Key, e.Counter)
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERepaired.Add(uint64(len(remote)))
 	})
@@ -83,6 +88,7 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 	if m.counters == nil || maxBytes < 8 {
 		return nil
 	}
+
 	all := m.counters.SortedLiveCounters()
 	start := 0
 	if m.counterCur != "" {
@@ -91,18 +97,20 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 			start = 0
 		}
 	}
+
 	var selected []BundleEntry
 	bytes := 8 // magic + count u32s
 	if len(all) > 0 {
 		for offset := range all {
 			idx := (start + offset) % len(all)
-			n, ok := counter.RecordBytes(all[idx].Key, all[idx].Counter)
+			n, ok := all[idx].Counter.BundleRecordSize(all[idx].Key)
 			if !ok || n > maxBytes-bytes {
 				if len(selected) == 0 {
 					return nil
 				}
 				break
 			}
+
 			bytes += n
 			selected = append(selected, all[idx])
 		}
@@ -130,12 +138,12 @@ func (m *Manager) OnCounterAntiEntropy(bundle []byte) (protocol.Status, []byte) 
 	if len(bundle) > m.fetchBytes {
 		return protocol.StatusCapacityExceeded, nil
 	}
+
 	remote, err := counter.DecodeCounterBundle(bundle)
 	if err != nil {
 		return protocol.StatusInvalidArgument, nil
 	}
-	// Staged all-or-nothing preflight: clone local state into a scratch
-	// budget store and merge the batch there first.
+
 	staged := counter.NewStore(cs.CapacityBytes())
 	for _, e := range cs.SortedLiveCounters() {
 		if err := staged.Merge(e.Key, e.Counter); err != nil {
@@ -152,6 +160,7 @@ func (m *Manager) OnCounterAntiEntropy(bundle []byte) (protocol.Status, []byte) 
 			return protocol.StatusCapacityExceeded, nil
 		}
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.CounterAERepaired.Add(uint64(len(remote)))
 	})

@@ -49,10 +49,10 @@ func addSat(a, b uint64) uint64 {
 	return a + b
 }
 
-// Bytes is the billable size: key plus every actor id plus its two
+// BillableSize is the billable size: key plus every actor id plus its two
 // component slots. Deterministic and cheap; recomputed on merge rather
 // than cached per write.
-func Bytes(key string, p PNCounter) uint64 {
+func (p PNCounter) BillableSize(key string) uint64 {
 	total := uint64(len(key))
 	for _, side := range []GCounter{p.Pos, p.Neg} {
 		for _, actor := range side.Actors() {
@@ -83,6 +83,7 @@ func NewStore(capacityBytes uint64) *Store {
 	for i := range s.shards {
 		s.shards[i].index = make(map[string]PNCounter)
 	}
+
 	s.capacity.Store(capacityBytes)
 	return s
 }
@@ -106,6 +107,7 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 	if actor == "" {
 		return ErrInvalidActor
 	}
+
 	// Actors are node IDs (bounded vocabulary, unlike user keys), so
 	// canonicalizing converges every counter's component map on one
 	// shared backing per actor. The Merge path needs no equivalent:
@@ -124,10 +126,12 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 		} else {
 			side = it.Neg
 		}
+
 		var growth uint64
 		if _, exists := side.components[actor]; !exists {
 			growth = uint64(len(actor)) + 2*8
 		}
+
 		sliceCap := s.shardCapacity()
 		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
 			return ErrCapacityExceeded
@@ -147,10 +151,12 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 				return err
 			}
 		}
+
 		sh.current += growth
 		sh.index[key] = it
 		return nil
 	}
+
 	var fresh PNCounter
 	var err error
 	if positive {
@@ -158,20 +164,21 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 	} else {
 		err = fresh.Decrement(actor, delta)
 	}
+
 	if err != nil {
 		if errors.Is(err, ErrOverflow) {
 			return ErrCapacityExceeded
 		}
 		return err
 	}
-	need := Bytes(key, fresh)
+
+	need := fresh.BillableSize(key)
 	sliceCap := s.shardCapacity()
 	if need > sliceCap || sh.current > sliceCap-need {
 		return ErrCapacityExceeded
 	}
+
 	sh.current += need
-	// Same canonicalization as store admission: one shared backing per
-	// live key instead of per-shard copies.
 	sh.index[unique.Make(key).Value()] = fresh
 	return nil
 }
@@ -193,28 +200,32 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	if remote.Empty() {
 		return nil
 	}
+
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if it, ok := sh.index[key]; ok {
 		merged := it.Clone()
 		merged.Merge(remote)
-		oldSize, newSize := Bytes(key, it), Bytes(key, merged)
+		oldSize, newSize := it.BillableSize(key), merged.BillableSize(key)
 		// Merge only adds components, so the size never shrinks.
 		growth := newSize - oldSize
 		sliceCap := s.shardCapacity()
 		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
 			return ErrCapacityExceeded
 		}
+
 		sh.current += growth
 		sh.index[key] = merged
 		return nil
 	}
-	need := Bytes(key, remote)
+
+	need := remote.BillableSize(key)
 	sliceCap := s.shardCapacity()
 	if need > sliceCap || sh.current > sliceCap-need {
 		return ErrCapacityExceeded
 	}
+
 	sh.current += need
 	sh.index[unique.Make(key).Value()] = remote.Clone()
 	return nil
@@ -255,7 +266,8 @@ func (s *Store) Remove(key string) bool {
 	if !ok {
 		return false
 	}
-	sh.current -= Bytes(key, it)
+
+	sh.current -= it.BillableSize(key)
 	delete(sh.index, key)
 	return true
 }

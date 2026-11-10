@@ -73,6 +73,7 @@ func (s *service) Get(ctx context.Context, req *gen.GetRequest) (*gen.GetRespons
 	if err != nil {
 		return &gen.GetResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpGet, Key: []byte(req.GetKey())}, tok)
 	out := &gen.GetResponse{Status: toProtoStatus(res.Status)}
 	if res.HasValue {
@@ -86,10 +87,12 @@ func (s *service) Set(ctx context.Context, req *gen.SetRequest) (*gen.SetRespons
 	if err != nil {
 		return &gen.SetResponse{}, err
 	}
+
 	r := protocol.Request{Opcode: protocol.OpSet, Key: []byte(req.GetKey()), Value: []byte(req.GetValue())}
 	if req.GetTtlMs() > 0 {
 		r.TTL = time.Duration(req.GetTtlMs()) * time.Millisecond
 	}
+
 	res := s.node.DispatchWithAuth(r, tok)
 	return &gen.SetResponse{Status: toProtoStatus(res.Status)}, nil
 }
@@ -99,6 +102,7 @@ func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.Dele
 	if err != nil {
 		return &gen.DeleteResponse{}, err
 	}
+
 	res := s.node.DeleteNoRedirect(req.GetKey())
 	return &gen.DeleteResponse{Status: toProtoStatus(res.Status)}, nil
 }
@@ -108,6 +112,7 @@ func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest
 	if err != nil {
 		return &gen.GetVersionedResponse{}, err
 	}
+
 	out := &gen.GetVersionedResponse{}
 	e, ok := s.node.Store().GetVersioned(req.GetKey())
 	if !ok || e.Tombstone {
@@ -116,6 +121,7 @@ func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest
 		out.Status = gen.StatusCode_STATUS_CODE_NOT_FOUND
 		return out, nil
 	}
+
 	out.Status = gen.StatusCode_STATUS_CODE_UNSPECIFIED
 	out.Value = new(string(e.Value))
 	out.Version = e.Version
@@ -130,6 +136,7 @@ func (s *service) Ping(ctx context.Context, _ *gen.PingRequest) (*gen.PingRespon
 	if err != nil {
 		return &gen.PingResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpPing}, tok)
 	return &gen.PingResponse{Status: toProtoStatus(res.Status)}, nil
 }
@@ -139,6 +146,7 @@ func (s *service) CounterAdjust(ctx context.Context, req *gen.CounterAdjustReque
 	if err != nil {
 		return &gen.CounterAdjustResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{
 		Opcode: protocol.OpCounterAdjust, Key: []byte(req.GetKey()),
 		CounterDelta: req.GetDelta(), CounterDecrement: req.GetDecrement(),
@@ -151,6 +159,7 @@ func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*
 	if err != nil {
 		return &gen.CounterGetResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(req.GetKey())}, tok)
 	out := &gen.CounterGetResponse{Status: toProtoStatus(res.Status)}
 	if res.Status == protocol.StatusOK && res.HasValue {
@@ -171,6 +180,7 @@ func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.
 	if err != nil {
 		return &gen.MultiGetResponse{}, err
 	}
+
 	out := &gen.MultiGetResponse{}
 	for _, key := range req.GetKeys() {
 		r := &gen.GetResponse{}
@@ -190,6 +200,7 @@ func (s *service) MultiSet(ctx context.Context, req *gen.MultiSetRequest) (*gen.
 	if err != nil {
 		return &gen.MultiSetResponse{}, err
 	}
+
 	out := &gen.MultiSetResponse{}
 	self := s.node.ID()
 	for _, setReq := range req.GetRequests() {
@@ -215,6 +226,7 @@ func (s *service) Info(ctx context.Context, _ *gen.InfoRequest) (*gen.InfoRespon
 	if err != nil {
 		return &gen.InfoResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminInfo}, tok)
 	return &gen.InfoResponse{Json: string(res.Value)}, nil
 }
@@ -224,6 +236,7 @@ func (s *service) ClusterInfo(ctx context.Context, _ *gen.ClusterInfoRequest) (*
 	if err != nil {
 		return &gen.ClusterInfoResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminCluster}, tok)
 	return &gen.ClusterInfoResponse{Json: string(res.Value)}, nil
 }
@@ -233,6 +246,7 @@ func (s *service) RingInfo(ctx context.Context, _ *gen.RingInfoRequest) (*gen.Ri
 	if err != nil {
 		return &gen.RingInfoResponse{}, err
 	}
+
 	res := s.node.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminRing}, tok)
 	return &gen.RingInfoResponse{Json: string(res.Value)}, nil
 }
@@ -268,11 +282,13 @@ func (g *Gateway) SetTLS(certFile, keyFile string) error {
 	if err != nil {
 		return err
 	}
+
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.serving {
 		return errors.New("grpcgw: SetTLS after Serve has no effect")
 	}
+
 	g.tlsConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
 	return nil
 }
@@ -285,11 +301,12 @@ func (g *Gateway) Serve(lis net.Listener) error {
 		g.mu.Unlock()
 		return errors.New("grpcgw: already serving")
 	}
+
 	g.serving = true
 	tlsCfg := g.tlsConfig
 	g.mu.Unlock()
-
 	secret, _ := g.svc.clientSecret.Load().(string)
+
 	var srv *grpc.Server
 	if tlsCfg != nil {
 		srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
@@ -302,6 +319,7 @@ func (g *Gateway) Serve(lis net.Listener) error {
 		}
 		srv = grpc.NewServer()
 	}
+
 	gen.RegisterCinderCacheServiceServer(srv, g.svc)
 	g.mu.Lock()
 	g.srv = srv

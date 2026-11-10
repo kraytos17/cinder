@@ -1,8 +1,5 @@
 package main
 
-// Multi-key verbs: mget prints "key: value" lines, mset applies
-// batches. Output formatting is covered by the CLI tests.
-
 import (
 	"fmt"
 	"io"

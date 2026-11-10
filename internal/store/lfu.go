@@ -49,6 +49,7 @@ func (s *Store) removeFromFreqBucket(sh *shard, idx int, freq uint64) {
 	if !ok {
 		return
 	}
+
 	pos := sh.nodes[idx].freqIdx
 	last := len(vec) - 1
 	if pos != last {
@@ -97,6 +98,7 @@ func (s *Store) RestoreFreq(key string, freq uint64) {
 	if s.policy != LFUPolicy || freq <= 1 {
 		return
 	}
+
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -104,6 +106,7 @@ func (s *Store) RestoreFreq(key string, freq uint64) {
 	if !ok || sh.nodes[idx].freq >= freq {
 		return
 	}
+
 	s.removeFromFreqBucket(sh, idx, sh.nodes[idx].freq)
 	sh.nodes[idx].freq = freq
 	sh.nodes[idx].freqIdx = len(sh.freqBuckets[freq])
@@ -116,6 +119,7 @@ func (s *Store) EntryFreq(key string) uint64 {
 	if s.policy != LFUPolicy {
 		return 0
 	}
+
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

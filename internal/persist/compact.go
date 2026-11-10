@@ -1,8 +1,5 @@
 package persist
 
-// Compaction: trigger evaluation, snapshot + WAL rewrite, and
-// sealed-segment / snapshot pruning.
-
 import (
 	"cmp"
 	"fmt"
@@ -22,9 +19,9 @@ func (m *Manager) MaybeCompact() bool {
 		size = m.wal.Size()
 		entries = m.wal.Entries()
 	}
+
 	now := m.clock()
 	m.mu.Unlock()
-
 	due := interval > 0 && !now.Before(last.Add(interval))
 	if !due && maxBytes > 0 && size >= 0 && uint64(size) >= maxBytes {
 		due = true
@@ -38,6 +35,7 @@ func (m *Manager) MaybeCompact() bool {
 	if err := m.Compact(); err != nil {
 		return false
 	}
+
 	m.mu.Lock()
 	m.lastCompact = m.clock()
 	m.mu.Unlock()
@@ -52,20 +50,24 @@ func (m *Manager) MaybeCompact() bool {
 // active WAL, deletes sealed segments, and keeps the newest two snapshots.
 func (m *Manager) Compact() error {
 	live := m.store.LiveEntries()
+
 	var nextVersion uint64
 	snaps := make([]SnapEntry, 0, len(live))
 	for _, p := range live {
 		if p.Entry.Version >= nextVersion {
 			nextVersion = p.Entry.Version + 1
 		}
+
 		se := SnapEntry{
 			Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
 			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone,
 			Freq: p.Freq,
 		}
+
 		se.Expiry = p.Entry.Expiry
 		snaps = append(snaps, se)
 	}
+
 	name := fmt.Sprintf("%s%d%s", snapshotPre, m.clock().UnixNano(), snapshotSuf)
 	path := filepath.Join(m.dir, name)
 	if err := NewSnapWriter(path).Write(nextVersion, snaps); err != nil {
@@ -74,17 +76,20 @@ func (m *Manager) Compact() error {
 	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0o644); err != nil {
 		return err
 	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.wal != nil {
-		_ = m.wal.Sync()
-		_ = m.wal.Close()
+		m.wal.Sync()
+		m.wal.Close()
 		m.wal = nil
 	}
+
 	w, err := OpenWriter(filepath.Join(m.dir, walFileName), true)
 	if err != nil {
 		return err
 	}
+
 	m.wal = w
 	m.deleteSealed()
 	m.pruneSnapshots(name)
@@ -100,6 +105,7 @@ func (m *Manager) latestSnapshot() string {
 			return p
 		}
 	}
+
 	var names []string
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -113,6 +119,7 @@ func (m *Manager) latestSnapshot() string {
 	if len(names) == 0 {
 		return ""
 	}
+
 	slices.Sort(names)
 	return filepath.Join(m.dir, names[len(names)-1])
 }
@@ -133,6 +140,7 @@ func (m *Manager) walFiles() []string {
 		seq  uint64
 		path string
 	}
+
 	var segs []seg
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -147,6 +155,7 @@ func (m *Manager) walFiles() []string {
 			}
 		}
 	}
+
 	slices.SortFunc(segs, func(a, b seg) int { return cmp.Compare(a.seq, b.seq) })
 	var out []string
 	for _, s := range segs {
@@ -184,7 +193,7 @@ func (m *Manager) deleteSealed() {
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, walSegmentPre) && strings.HasSuffix(name, walSegmentSuf) {
-			_ = os.Remove(filepath.Join(m.dir, name))
+			os.Remove(filepath.Join(m.dir, name))
 		}
 	}
 }
@@ -200,6 +209,7 @@ func (m *Manager) pruneSnapshots(keep string) {
 			names = append(names, e.Name())
 		}
 	}
+
 	slices.Sort(names)
 	for len(names) > snapshotsToKeep {
 		oldest := names[0]
@@ -207,6 +217,6 @@ func (m *Manager) pruneSnapshots(keep string) {
 		if oldest == keep {
 			continue
 		}
-		_ = os.Remove(filepath.Join(m.dir, oldest))
+		os.Remove(filepath.Join(m.dir, oldest))
 	}
 }

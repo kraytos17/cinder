@@ -136,11 +136,13 @@ func newStore(capacityBytes uint64, clock Clock, policy Policy) *Store {
 	if clock == nil {
 		clock = SystemClock{}
 	}
+
 	n := sharding.CountFor(capacityBytes)
 	overhead := uint64(NodeOverhead)
 	if policy == LFUPolicy {
 		overhead = lfuNodeOverhead
 	}
+
 	s := &Store{clock: clock, policy: policy, shards: make([]shard, n), nodeOverhead: overhead}
 	s.capacity.Store(capacityBytes)
 	s.nextVer.Store(uint64(clock.Now().UnixNano()))
@@ -337,12 +339,12 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-
 	if idx, ok := sh.index[key]; ok {
 		resident := &sh.nodes[idx]
 		if CompareLWW(e.Stamp(), resident.entry.Stamp()) == LWWLess {
 			return nil // stale replay: reject, no-op success
 		}
+
 		oldPacked := resident.entry.VersionAndTTL()
 		oldWriter := resident.entry.WriterNodeHash
 		s.observeVersion(e.Version + 1)
@@ -362,6 +364,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 			s.emit(key, oldPacked, oldWriter, true)
 			return nil
 		}
+
 		r := &sh.nodes[fresh]
 		s.emit(key, oldPacked, oldWriter, true)
 		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
@@ -375,6 +378,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	if size > s.shardCap() {
 		return ErrCapacityExceeded
 	}
+
 	s.observeVersion(e.Version + 1)
 	idx := s.allocNode(sh)
 	n := &sh.nodes[idx]
@@ -393,6 +397,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	} else {
 		s.linkHead(sh, idx)
 	}
+
 	sh.current += size
 	s.totalSize.Add(size)
 	s.totalNum.Add(1)
@@ -400,6 +405,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	if _, ok := sh.index[key]; !ok {
 		return nil // self-evicted under pressure: nothing to report
 	}
+
 	r := &sh.nodes[sh.index[key]]
 	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
 	s.updateWheel(sh, sh.index[key], at)
@@ -414,12 +420,12 @@ func (s *Store) Get(key string) ([]byte, bool) {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-
 	idx, ok := sh.index[key]
 	if !ok {
 		s.bumpMisses()
 		return nil, false
 	}
+
 	n := &sh.nodes[idx]
 	if n.entry.Expired(s.clock.Now()) {
 		s.eraseNode(sh, idx)
@@ -430,6 +436,7 @@ func (s *Store) Get(key string) ([]byte, bool) {
 		s.bumpMisses()
 		return nil, false
 	}
+
 	s.onAccess(sh, idx)
 	s.bumpHits()
 	return append([]byte(nil), n.entry.Value...), true
@@ -441,18 +448,19 @@ func (s *Store) GetVersioned(key string) (Entry, bool) {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-
 	idx, ok := sh.index[key]
 	if !ok {
 		s.bumpMisses()
 		return Entry{}, false
 	}
+
 	n := &sh.nodes[idx]
 	if n.entry.Expired(s.clock.Now()) {
 		s.eraseNode(sh, idx)
 		s.bumpExpiredOnRead()
 		return Entry{}, false
 	}
+
 	s.bumpHits()
 	return n.entry.Clone(), true
 }
@@ -463,11 +471,11 @@ func (s *Store) Remove(key string) bool {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
-
 	idx, ok := sh.index[key]
 	if !ok {
 		return false
 	}
+
 	old := sh.nodes[idx].entry.Clone()
 	s.eraseNode(sh, idx)
 	s.persistDel(key, old)
@@ -517,6 +525,7 @@ func (s *Store) EvictExpired() int {
 				ticks = t
 			}
 		}
+
 		sh.lastTick = now
 		for range ticks {
 			sh.wheel.Tick(func(id int) {
@@ -528,6 +537,7 @@ func (s *Store) EvictExpired() int {
 					sh.wheel.Insert(id, expiryTicks(exp, now))
 					return
 				}
+
 				s.eraseNode(sh, id)
 				obs.IfPresent(&s.met, func(m *metrics.Collector) { m.EvictionsTTL.Add(1) })
 				evicted++
@@ -563,6 +573,7 @@ func (s *Store) LiveEntries() []EntryPair {
 				if e.Expired(now) {
 					continue
 				}
+
 				out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone(), Freq: sh.nodes[idx].freq})
 			}
 		} else {
@@ -586,6 +597,3 @@ func (s *Store) ForEach(fn func(key string, e Entry)) {
 		fn(p.Key, p.Entry)
 	}
 }
-
-// expiryTicks maps an absolute expiry to wheel ticks: at least 1 ahead, so
-// sub-second TTLs fire on the very next evictExpired.

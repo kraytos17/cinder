@@ -24,7 +24,7 @@ func FuzzWALReader(f *testing.F) {
 				if !ok {
 					break
 				}
-				enc, err := encodeRecord(e)
+				enc, err := e.encode()
 				if err != nil {
 					t.Fatalf("re-encode of accepted record failed: %v", err)
 				}
@@ -53,7 +53,7 @@ func FuzzWALReader(f *testing.F) {
 func buildWALSeeds() [][]byte {
 	out := make([][]byte, 0, 8)
 	mk := func(e Entry) []byte {
-		enc, err := encodeRecord(e)
+		enc, err := e.encode()
 		if err != nil {
 			panic(err)
 		}

@@ -1,9 +1,5 @@
 package main
 
-// Single-key verbs: get, set, del, ping, info, cluster, ring, and
-// get-versioned. Values print raw; misses print "(not found)". CLI tests
-// cover the output format.
-
 import (
 	"fmt"
 	"io"
@@ -83,6 +79,3 @@ func runSingle(
 	fmt.Fprintln(stdout, statusString(res.Status))
 	return 0
 }
-
-// runCounterAdjust applies one increment/decrement. The server answers
-// plain OK (no state), so output follows the single-key command format.

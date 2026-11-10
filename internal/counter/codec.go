@@ -46,7 +46,7 @@ const minRecordBytes = 2*4 + 2
 var ErrDecode = errors.New("counter: invalid encoding")
 
 // encodedSize returns the exact buffer need for one side's components.
-func encodedComponentsSize(g GCounter) int {
+func (g GCounter) encodedSize() int {
 	n := 4 // count u32
 	for _, actor := range g.Actors() {
 		n += 4 + len(actor) + 8
@@ -54,54 +54,59 @@ func encodedComponentsSize(g GCounter) int {
 	return n
 }
 
-// EncodeGCounter serializes g. Empty actor ids or u32-overflowing lengths
+// Encode serializes g. Empty actor ids or u32-overflowing lengths
 // cannot occur from a valid in-memory counter; they return nil.
-func EncodeGCounter(g GCounter) []byte {
+func (g GCounter) Encode() []byte {
 	if len(g.components) > math.MaxUint32 {
 		return nil
 	}
-	need := 4 + 1 + encodedComponentsSize(g)
+
+	need := 4 + 1 + g.encodedSize()
 	buf := make([]byte, 0, need)
 	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
 	buf = append(buf, KindGCounter)
-	buf = appendComponents(buf, g)
+	buf = g.appendTo(buf)
 	if buf == nil {
 		return nil
 	}
 	return buf
 }
 
-// EncodePNCounter serializes p: the GCounter body for P, then for N (each
+// Encode serializes p: the GCounter body for P, then for N (each
 // with its own count; no second magic/kind).
-func EncodePNCounter(p PNCounter) []byte {
+func (p PNCounter) Encode() []byte {
 	if len(p.Pos.components) > math.MaxUint32 || len(p.Neg.components) > math.MaxUint32 {
 		return nil
 	}
-	need := 4 + 1 + encodedComponentsSize(p.Pos) + encodedComponentsSize(p.Neg)
+
+	need := 4 + 1 + p.Pos.encodedSize() + p.Neg.encodedSize()
 	buf := make([]byte, 0, need)
 	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
 	buf = append(buf, KindPNCounter)
-	buf = appendComponents(buf, p.Pos)
+	buf = p.Pos.appendTo(buf)
 	if buf == nil {
 		return nil
 	}
-	buf = appendComponents(buf, p.Neg)
+
+	buf = p.Neg.appendTo(buf)
 	if buf == nil {
 		return nil
 	}
 	return buf
 }
 
-func appendComponents(buf []byte, g GCounter) []byte {
+func (g GCounter) appendTo(buf []byte) []byte {
 	actors := g.Actors()
 	if len(actors) > math.MaxUint32 {
 		return nil
 	}
+
 	buf = codec.AppendLen(buf, binary.BigEndian, len(actors))
 	for _, actor := range actors {
 		if actor == "" || len(actor) > math.MaxUint32 {
 			return nil
 		}
+
 		buf = codec.AppendLen(buf, binary.BigEndian, len(actor))
 		buf = append(buf, actor...)
 		buf = codec.Append(buf, binary.BigEndian, g.components[actor])
@@ -117,11 +122,12 @@ func DecodeGCounter(data []byte) (GCounter, error) {
 	if !ok || magic != MagicCRDC {
 		return g, ErrDecode
 	}
+
 	kind, ok := r.U8()
 	if !ok || kind != KindGCounter {
 		return g, ErrDecode
 	}
-	if !decodeComponents(&r, &g) {
+	if !g.decodeFrom(&r) {
 		return GCounter{}, ErrDecode
 	}
 	if r.Remaining() != 0 {
@@ -139,23 +145,26 @@ func DecodePNCounter(data []byte) (PNCounter, error) {
 	if !ok || magic != MagicCRDC {
 		return p, ErrDecode
 	}
+
 	kind, ok := r.U8()
 	if !ok || kind != KindPNCounter {
 		return p, ErrDecode
 	}
+
 	var pos, neg GCounter
-	if !decodeComponents(&r, &pos) || !decodeComponents(&r, &neg) {
+	if !pos.decodeFrom(&r) || !neg.decodeFrom(&r) {
 		return PNCounter{}, ErrDecode
 	}
 	if r.Remaining() != 0 {
 		return PNCounter{}, ErrDecode
 	}
+
 	p.Pos = pos
 	p.Neg = neg
 	return p, nil
 }
 
-func decodeComponents(r *codec.Reader, g *GCounter) bool {
+func (g *GCounter) decodeFrom(r *codec.Reader) bool {
 	count, ok := r.U32()
 	if !ok {
 		return false
@@ -168,6 +177,7 @@ func decodeComponents(r *codec.Reader, g *GCounter) bool {
 		if !ok || len(actor) == 0 {
 			return false
 		}
+
 		val, ok := r.U64()
 		if !ok {
 			return false
@@ -196,16 +206,19 @@ func EncodeCounterBundle(entries []BundleEntry) []byte {
 		if len(e.Key) == 0 || len(e.Key) > math.MaxUint32 {
 			return nil
 		}
-		st := EncodePNCounter(e.Counter)
+
+		st := e.Counter.Encode()
 		if len(st) == 0 || len(st) > math.MaxUint32 {
 			return nil
 		}
+
 		states[i] = st
 		need += 4 + len(e.Key) + 4 + len(st)
 	}
 	if len(entries) > math.MaxUint32 {
 		return nil
 	}
+
 	buf := make([]byte, 0, need)
 	buf = codec.Append(buf, binary.BigEndian, MagicCAE1)
 	buf = codec.AppendLen(buf, binary.BigEndian, len(entries))
@@ -226,6 +239,7 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 	if !ok || magic != MagicCAE1 {
 		return nil, ErrDecode
 	}
+
 	count, ok := r.U32()
 	if !ok {
 		return nil, ErrDecode
@@ -233,6 +247,7 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 	if uint64(count) > uint64(r.Remaining())/uint64(minRecordBytes) {
 		return nil, ErrDecode
 	}
+
 	out := make([]BundleEntry, 0, count)
 	var prev string
 	hasPrev := false
@@ -241,6 +256,7 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 		if !ok || len(key) == 0 {
 			return nil, ErrDecode
 		}
+
 		state, ok := r.Blob()
 		if !ok || len(state) == 0 {
 			return nil, ErrDecode
@@ -248,10 +264,12 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 		if hasPrev && string(key) <= prev {
 			return nil, ErrDecode
 		}
+
 		c, err := DecodePNCounter(state)
 		if err != nil {
 			return nil, ErrDecode
 		}
+
 		prev, hasPrev = string(key), true
 		out = append(out, BundleEntry{Key: string(key), Counter: c})
 	}
@@ -261,9 +279,10 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 	return out, nil
 }
 
-// RecordBytes returns the encoded width of one bundle record.
-func RecordBytes(key string, p PNCounter) (int, bool) {
-	st := EncodePNCounter(p)
+// BundleRecordSize returns the encoded width of one bundle record for
+// key and p.
+func (p PNCounter) BundleRecordSize(key string) (int, bool) {
+	st := p.Encode()
 	if len(st) == 0 || len(key) == 0 || len(key) > math.MaxUint32 || len(st) > math.MaxUint32 {
 		return 0, false
 	}

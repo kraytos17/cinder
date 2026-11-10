@@ -27,7 +27,6 @@ var nopLogger = log.Nop()
 // replays snapshots and WAL records during recovery, and compacts the log.
 // Its directory contains wal.log, sealed wal_<seq>.log segments,
 // snapshot_<nanos>.dat files, and a CURRENT snapshot pointer.
-
 type Manager struct {
 	dir   string
 	store *store.Store
@@ -47,7 +46,6 @@ type Manager struct {
 // DefaultSnapshotInterval, DefaultMaxWALBytes, and DefaultMaxWALEntries
 // control automatic compaction. Periodic snapshots bound recovery replay;
 // byte and record limits bound the active WAL. Zero disables a trigger.
-
 const (
 	DefaultSnapshotInterval = 60 * time.Second
 	DefaultMaxWALBytes      = 64 << 20
@@ -55,11 +53,11 @@ const (
 )
 
 // NewManager returns a manager over dir (created on demand) and store.
-
 func NewManager(dir string, st *store.Store, clock func() time.Time) *Manager {
 	if clock == nil {
 		clock = time.Now
 	}
+
 	m := &Manager{
 		dir:              dir,
 		store:            st,
@@ -68,13 +66,13 @@ func NewManager(dir string, st *store.Store, clock func() time.Time) *Manager {
 		maxWALBytes:      DefaultMaxWALBytes,
 		maxWALEntries:    DefaultMaxWALEntries,
 	}
+
 	m.lastCompact = m.clock()
 	return m
 }
 
 // SetSnapshotInterval changes the periodic auto-compact cadence (0 disables
 // the time trigger). The countdown starts at construction/recovery.
-
 func (m *Manager) SetSnapshotInterval(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -83,7 +81,6 @@ func (m *Manager) SetSnapshotInterval(d time.Duration) {
 
 // SetMaxWALBytes caps the active WAL past which MaybeCompact fires (0
 // disables the size trigger).
-
 func (m *Manager) SetMaxWALBytes(n uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -92,7 +89,6 @@ func (m *Manager) SetMaxWALBytes(n uint64) {
 
 // SetMaxWALEntries caps the active WAL record count past which
 // MaybeCompact fires (0 disables the count trigger).
-
 func (m *Manager) SetMaxWALEntries(n uint64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -100,7 +96,6 @@ func (m *Manager) SetMaxWALEntries(n uint64) {
 }
 
 // SetLogger installs the operational logger (nil selects Nop).
-
 func (m *Manager) SetLogger(l *zerolog.Logger) {
 	if l == nil {
 		nop := log.Nop()
@@ -110,7 +105,6 @@ func (m *Manager) SetLogger(l *zerolog.Logger) {
 }
 
 // log returns the installed logger (Nop when unset).
-
 func (m *Manager) log() *zerolog.Logger {
 	if l := m.logger.Load(); l != nil {
 		return l
@@ -118,18 +112,13 @@ func (m *Manager) log() *zerolog.Logger {
 	return &nopLogger
 }
 
-// MaybeCompact compacts once when a trigger fires — the snapshot interval
-// elapsed since the last compact (or startup), the active WAL passed the
-// byte budget, or the record count passed the entry budget — and reports
-// whether it did. The server tick calls this every second; tests drive it
-// directly with a fake clock.
-
 func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.wal == nil {
 		return
 	}
+
 	rec := Entry{Key: []byte(key)}
 	if hardDelete {
 		rec.Op = OpDel
@@ -143,11 +132,10 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
 		rec.Tombstone = e.Tombstone
 		rec.Expiry = e.Expiry
 	}
-	_ = m.wal.Append(rec)
+	m.wal.Append(rec)
 }
 
 // Sync flushes kernel buffers to disk.
-
 func (m *Manager) Sync() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -158,19 +146,18 @@ func (m *Manager) Sync() error {
 }
 
 // Close syncs and closes the active WAL.
-
 func (m *Manager) Close() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.wal == nil {
 		return nil
 	}
+
 	err := m.wal.Sync()
 	if cerr := m.wal.Close(); err == nil {
 		err = cerr
 	}
+
 	m.wal = nil
 	return err
 }
-
-// entryFrom converts a decoded record, skipping already-expired ones.

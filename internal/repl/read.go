@@ -1,8 +1,5 @@
 package repl
 
-// Quorum reads: singleflight-coalesced fan-out, LWW-max reduction,
-// and background repair of divergent or missing replicas.
-
 import (
 	"strconv"
 
@@ -16,7 +13,6 @@ import (
 // Read performs a local read or a quorum read, depending on the replica set
 // and requested quorum. Concurrent quorum reads for the same key and R
 // share one in-flight fan-out.
-
 func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, traceID, spanID uint64) (store.Entry, error) {
 	if r < 1 || r > hashring.MaxReplicas {
 		return store.Entry{}, ErrInvalidReplicaCount
@@ -27,6 +23,7 @@ func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, t
 		}
 		return store.Entry{}, ErrNotFound
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.QuorumReads.Add(1)
 	})
@@ -52,6 +49,7 @@ func (m *Manager) readCoalesced(key string, r hashring.ReplicaCount, run func() 
 	if err != nil {
 		return store.Entry{}, err
 	}
+
 	e, _ := v.(store.Entry)
 	return e, nil
 }
@@ -59,7 +57,6 @@ func (m *Manager) readCoalesced(key string, r hashring.ReplicaCount, run func() 
 // flightKey namespaces one coalesced flight. '\x00' cannot appear in a
 // way that collides: keys are arbitrary bytes-as-string, so the length
 // prefix keeps (key, R) pairs unambiguous.
-
 func flightKey(key string, r hashring.ReplicaCount) string {
 	return strconv.Itoa(int(r)) + "\x00" + key
 }
@@ -69,6 +66,7 @@ func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCoun
 	if e, ok := m.local.GetVersioned(key); ok {
 		rd.noteLocal(e)
 	}
+
 	req := protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key), TraceID: traceID, SpanID: spanID}
 	out := m.launch(req, replicas)
 	for rd.pending > 0 && rd.acks < int(r) {
@@ -84,6 +82,7 @@ func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCoun
 			<-out
 		}
 	}()
+
 	best, ok := rd.winner()
 	if !ok {
 		// Served miss, not a failure: the quorum answered, the key is
@@ -105,7 +104,6 @@ func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCoun
 // repair writes the LWW winner back to every replica on a best-effort
 // basis. Failed repairs are not queued as hints; later reads or
 // anti-entropy can repair them.
-
 func (m *Manager) repair(key string, replicas []string, winner store.Entry, traceID, spanID uint64) {
 	req := protocol.Request{
 		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), winner.Value...),
@@ -115,6 +113,7 @@ func (m *Manager) repair(key string, replicas []string, winner store.Entry, trac
 	if !winner.Expiry.IsNone() {
 		req.ExpiresAt = winner.Expiry
 	}
+
 	out := m.launch(req, replicas)
 	go func() {
 		for range replicas {
@@ -127,7 +126,6 @@ func (m *Manager) repair(key string, replicas []string, winner store.Entry, trac
 // OK-with-version votes count as acks; NotFound marks repair; transport
 // failures are ignored. Tombstone votes carry no value: the marker itself
 // is the vote, and mapping it to NotFound is the caller's job.
-
 type reducer struct {
 	r       int
 	pending int
@@ -162,6 +160,7 @@ func (d *reducer) noteRemote(res protocol.Response, err error) {
 			d.repair = true
 			return
 		}
+
 		cur := d.best.Stamp()
 		if store.LWWWinsOver(vote, cur) {
 			d.best = voteToEntry(res)
@@ -191,7 +190,3 @@ func (d *reducer) winner() (store.Entry, bool) {
 	}
 	return d.best, true
 }
-
-// ReplayHints retries queued hints against healthy replicas, at most
-// ReplayBatch FIFO. Concurrent calls collapse to zero; returns the replay
-// count. Expired hints are dropped.

@@ -41,6 +41,7 @@ func (g *GCounter) Increment(actor string, delta uint64) error {
 	if delta == 0 {
 		return nil
 	}
+
 	cur := g.components[actor]
 	if delta > math.MaxUint64-cur {
 		return ErrOverflow
@@ -48,6 +49,7 @@ func (g *GCounter) Increment(actor string, delta uint64) error {
 	if g.components == nil {
 		g.components = make(map[string]uint64)
 	}
+
 	g.components[actor] = cur + delta
 	return nil
 }
@@ -91,6 +93,7 @@ func (g GCounter) Actors() []string {
 	for actor := range g.components {
 		out = append(out, actor)
 	}
+
 	slices.Sort(out)
 	return out
 }
@@ -115,6 +118,7 @@ func (g GCounter) Clone() GCounter {
 	if len(g.components) == 0 {
 		return GCounter{}
 	}
+
 	out := make(map[string]uint64, len(g.components))
 	maps.Copy(out, g.components)
 	return GCounter{components: out}

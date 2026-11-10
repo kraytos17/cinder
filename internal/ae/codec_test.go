@@ -26,11 +26,11 @@ func mustHex(t *testing.T, s string) []byte {
 func TestOracleGroupDigest(t *testing.T) {
 	buckets := make([]uint64, 17)
 	buckets[0] = 0x123456789ABCDEF0
-	groups := GroupFold(buckets)
+	groups := Digest(buckets).Fold()
 	if len(groups) != 2 {
 		t.Fatalf("groups = %d", len(groups))
 	}
-	got := EncodeGroupDigest(groups)
+	got := groups.Encode()
 	want := mustHex(t, "334D4541020000006097734C8796ADC8299368DD226403CA")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("group digest:\n got %X\nwant %X", got, want)
@@ -45,13 +45,13 @@ func TestOracleGroupDigest(t *testing.T) {
 
 func TestOracleRefinement(t *testing.T) {
 	req := Refinement{BucketHashes: []BucketHash{{Bucket: 3, Hash: 0xAAAAAAAAAAAAAAAA}, {Bucket: 7, Hash: 0xBBBBBBBBBBBBBBBB}}}
-	got := EncodeRefinement(req)
+	got := req.Encode()
 	want := mustHex(t, "35424541000000000200000003000000AAAAAAAAAAAAAAAA07000000BBBBBBBBBBBBBBBB")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("refinement:\n got %X\nwant %X", got, want)
 	}
 	req.ForceMeta = true
-	got = EncodeRefinement(req)
+	got = req.Encode()
 	want = mustHex(t, "35424541010000000200000003000000AAAAAAAAAAAAAAAA07000000BBBBBBBBBBBBBBBB")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("refinement+force:\n got %X\nwant %X", got, want)
@@ -136,7 +136,7 @@ func TestOracleIBLTHeader(t *testing.T) {
 }
 
 func TestOracleDigestResponse(t *testing.T) {
-	groups := GroupFold(append([]uint64{0x123456789ABCDEF0}, make([]uint64, 16)...))
+	groups := Digest(append([]uint64{0x123456789ABCDEF0}, make([]uint64, 16)...)).Fold()
 	rows := []MetaRow{
 		{Bucket: 3, KeyHash: 0x1111111111111111, Version: 5, Writer: 42},
 		{Bucket: 3, Tombstone: true, KeyHash: 0x2222222222222222, Version: 6, Writer: 43},
@@ -147,7 +147,7 @@ func TestOracleDigestResponse(t *testing.T) {
 		Covered:      []uint32{3},
 		Rows:         rows,
 	}
-	got := EncodeResponse(resp)
+	got := resp.Encode()
 	want := mustHex(t, "36524541020000006097734C8796ADC8299368DD226403CA0100000003000000AAAAAAAAAAAAAAAA01000000030000003E0000000200000003000000111111111111111105000000000000002A000000000000000003000000222222222222222206000000000000002B000000000000000100000000")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("response:\n got %X\nwant %X", got, want)
@@ -164,7 +164,7 @@ func TestOracleDigestResponse(t *testing.T) {
 	}
 	// Row outside the covered set is rejected.
 	bad := DigestResponse{GroupHashes: groups, BucketHashes: []BucketHash{{Bucket: 3, Hash: 1}}, Covered: []uint32{9}, Rows: rows}
-	if _, ok := DecodeResponse(EncodeResponse(bad), 2); ok {
+	if _, ok := DecodeResponse(bad.Encode(), 2); ok {
 		t.Fatal("uncovered row accepted")
 	}
 	// Duplicate sketch buckets are rejected.
@@ -173,7 +173,7 @@ func TestOracleDigestResponse(t *testing.T) {
 		GroupHashes: groups, Covered: []uint32{3},
 		Sketches: []SketchRef{{Bucket: 3, Blob: sk}, {Bucket: 3, Blob: sk}},
 	}
-	if _, ok := DecodeResponse(EncodeResponse(dup), 2); ok {
+	if _, ok := DecodeResponse(dup.Encode(), 2); ok {
 		t.Fatal("duplicate sketch accepted")
 	}
 }
@@ -183,7 +183,7 @@ func TestOracleSync(t *testing.T) {
 		Entries: []SyncItem{{Key: "key-9", Entry: entryForTest("hello", 9, 7)}},
 		Needs:   []uint64{0xDEADBEEFDEADBEEF},
 	}
-	got, err := EncodeSync(msg)
+	got, err := msg.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}

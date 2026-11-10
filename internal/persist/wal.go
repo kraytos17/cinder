@@ -51,16 +51,16 @@ type Entry struct {
 }
 
 // recordSize validates one record's bounds and returns its staged size.
-func recordSize(e Entry) (int, error) {
+func (e Entry) recordSize() (int, error) {
 	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
 		return 0, errTooLarge
 	}
 	return 1 + 4 + len(e.Key) + 4 + len(e.Value) + 8 + 8 + 8 + 1 + 1 + 8, nil
 }
 
-// appendRecord serializes one v2 record plus its XXH3 checksum onto buf.
+// appendTo serializes one v2 record plus its XXH3 checksum onto buf.
 // The checksum covers exactly the encoded record bytes preceding it.
-func appendRecord(out []byte, e Entry) []byte {
+func (e Entry) appendTo(out []byte) []byte {
 	start := len(out)
 	out = codec.Append(out, binary.LittleEndian, uint8(e.Op))
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
@@ -80,17 +80,18 @@ func appendRecord(out []byte, e Entry) []byte {
 	} else {
 		out = codec.Append(out, binary.LittleEndian, uint8(0))
 	}
+
 	out = codec.Append(out, binary.LittleEndian, xxh3.Hash(out[start:]))
 	return out
 }
 
-// encodeRecord serializes one v2 record plus its XXH3 checksum.
-func encodeRecord(e Entry) ([]byte, error) {
-	size, err := recordSize(e)
+// encode serializes one v2 record plus its XXH3 checksum.
+func (e Entry) encode() ([]byte, error) {
+	size, err := e.recordSize()
 	if err != nil {
 		return nil, err
 	}
-	return appendRecord(make([]byte, 0, size), e), nil
+	return e.appendTo(make([]byte, 0, size)), nil
 }
 
 var errTooLarge = errors.New("persist: WAL entry too large")
@@ -126,16 +127,19 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 		}
 		return &Writer{f: f, size: 8}, nil
 	}
+
 	f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, err
 	}
+
 	// Validate the existing header before resuming append mode.
 	fi, err := f.Stat()
 	if err != nil {
 		f.Close()
 		return nil, err
 	}
+
 	needHeader := false
 	if fi.Size() == 0 {
 		needHeader = true
@@ -146,6 +150,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 			f.Close()
 			return nil, err
 		}
+
 		n, _ := rf.ReadAt(hdr, 0)
 		rf.Close()
 		if n < 8 || binary.LittleEndian.Uint32(hdr[:4]) != walMagic || !validWalVersion(binary.LittleEndian.Uint32(hdr[4:])) {
@@ -163,6 +168,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 			return nil, err
 		}
 	}
+
 	// Size from disk: resumed logs count what is already there.
 	var size int64
 	if fi, err := f.Stat(); err == nil {
@@ -184,10 +190,11 @@ func writeHeader(f *os.File) error {
 // Append encodes one record and writes it to the append-only WAL. Call
 // Sync when the caller requires the data to be flushed for crash durability.
 func (w *Writer) Append(e Entry) error {
-	buf, err := encodeRecord(e)
+	buf, err := e.encode()
 	if err != nil {
 		return err
 	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n, err := w.f.Write(buf)
@@ -205,20 +212,23 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 	if len(es) == 0 {
 		return 0, nil
 	}
+
 	// Validate up front so a late oversized entry cannot leave a partial
 	// batch on disk, then stage into one buffer for a single write.
 	total := 0
 	for _, e := range es {
-		size, err := recordSize(e)
+		size, err := e.recordSize()
 		if err != nil {
 			return 0, err
 		}
 		total += size
 	}
+
 	out := make([]byte, 0, total)
 	for _, e := range es {
-		out = appendRecord(out, e)
+		out = e.appendTo(out)
 	}
+
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	n, err := w.f.Write(out)
@@ -226,6 +236,7 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	w.entries += uint64(len(es))
 	return total, nil
 }
@@ -291,6 +302,7 @@ func OpenReader(path string) (*Reader, error) {
 		}
 		return nil, err
 	}
+
 	r.data = data
 	if len(data) < 4 {
 		return r, nil // empty image: nothing to decode
@@ -339,38 +351,47 @@ func (r *Reader) Next() (Entry, bool) {
 		r.pos = c.Pos()
 		return zero, false
 	}
+
 	klen, ok := c.U32()
 	if !ok {
 		return zero, false
 	}
+
 	key, ok := c.Bytes(int(klen))
 	if !ok {
 		return zero, false
 	}
+
 	vlen, ok := c.U32()
 	if !ok {
 		return zero, false
 	}
+
 	val, ok := c.Bytes(int(vlen))
 	if !ok {
 		return zero, false
 	}
+
 	ver, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
+
 	writer, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
+
 	expires, ok := c.U64()
 	if !ok {
 		return zero, false
 	}
+
 	hasTTL, ok := c.U8()
 	if !ok {
 		return zero, false
 	}
+
 	var tomb uint8
 	if r.format == FormatV2 {
 		tomb, ok = c.U8()
@@ -394,6 +415,7 @@ func (r *Reader) Next() (Entry, bool) {
 			return zero, false
 		}
 	}
+
 	e := Entry{
 		Op: Op(op), Key: append([]byte(nil), key...), Value: append([]byte(nil), val...),
 		Version: ver, Writer: writer, Tombstone: tomb != 0,
@@ -404,6 +426,7 @@ func (r *Reader) Next() (Entry, bool) {
 		// handling of corrupt records.
 		e.Expiry = expiry.At(time.UnixMilli(int64(expires)).UTC())
 	}
+
 	r.pos = c.Pos()
 	r.commit = uint64(c.Pos())
 	return e, true

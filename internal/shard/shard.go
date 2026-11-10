@@ -129,6 +129,7 @@ func (m *Manager) Rebalance() bool {
 		entry store.Entry
 		owner string
 	}
+
 	type migratePush struct {
 		key     string
 		entry   store.Entry
@@ -147,7 +148,7 @@ func (m *Manager) Rebalance() bool {
 		if err != nil || len(desired) == 0 {
 			continue
 		}
-		if contains(desired, m.self) {
+		if slices.Contains(desired, m.self) {
 			// Keep the local copy; repair every other member.
 			for _, owner := range desired {
 				if owner == m.self {
@@ -166,6 +167,7 @@ func (m *Manager) Rebalance() bool {
 			deferred++
 			continue
 		}
+
 		mp := migratePush{key: p.Key, entry: p.Entry, primary: desired[0]}
 		for _, r := range desired[1:] {
 			if m.table.IsQuarantined(r, now, m.quarantine) {
@@ -176,10 +178,10 @@ func (m *Manager) Rebalance() bool {
 		}
 		migrates = append(migrates, mp)
 	}
-
 	for _, c := range copies {
 		m.pushReplica(c.key, c.entry, c.owner)
 	}
+
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.RebalanceCopies.Add(uint64(len(copies)))
 		mt.RebalanceMigrations.Add(uint64(len(migrates)))
@@ -220,6 +222,7 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 	if !m.alive(primary) {
 		return
 	}
+
 	expected := 1 + len(peers)
 	var acks atomic.Int64
 	var wg sync.WaitGroup
@@ -238,12 +241,14 @@ func (m *Manager) migrateKey(key string, e store.Entry, primary string, peers []
 	if e := m.log().Debug(); e != nil {
 		e.Str("key", key).Str("primary", primary).Strs("peers", peers).Msg("migrating")
 	}
+
 	_, err := m.transport.Send(primary, makeReplicateRequest(key, e))
 	wg.Wait()
 	if err != nil {
 		if ev := m.log().Warn(); ev != nil {
 			ev.Str("key", key).Str("primary", primary).Msg("migration failed")
 		}
+
 		obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 			mt.RebalanceMigFailures.Add(1)
 		})
@@ -273,9 +278,5 @@ func (m *Manager) pushReplica(key string, e store.Entry, owner string) {
 	if !m.alive(owner) {
 		return
 	}
-	_, _ = m.transport.Send(owner, makeReplicateRequest(key, e))
-}
-
-func contains(ids []string, id string) bool {
-	return slices.Contains(ids, id)
+	m.transport.Send(owner, makeReplicateRequest(key, e))
 }

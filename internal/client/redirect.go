@@ -29,6 +29,7 @@ func ParseRedirect(value string) string {
 	if !strings.HasPrefix(value, prefix) {
 		return ""
 	}
+
 	rest := value[len(prefix):]
 	if at := strings.Index(rest, "@"); at >= 0 {
 		rest = rest[:at]
@@ -43,17 +44,15 @@ func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 	if id == "" {
 		return RedirectTarget{}, false
 	}
+
 	target := RedirectTarget{ID: id}
 	rest := value[len("moved to "):]
 	_, after, ok := strings.Cut(rest, "@")
 	if !ok {
 		return target, true
 	}
+
 	addr := after
-	// Prefer SplitHostPort (handles bracketed "[::1]:7002", which the
-	// server now emits for v6 peers); fall back to a last-colon split
-	// for the bare "host:port" and unbracketed-v6 forms the gossip
-	// wire format also produces.
 	host, portStr := func() (string, string) {
 		if h, p, err := net.SplitHostPort(addr); err == nil {
 			return h, p
@@ -63,9 +62,11 @@ func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 		}
 		return "", ""
 	}()
+
 	if host == "" {
 		return target, true
 	}
+
 	port, err := netport.ParsePort(portStr)
 	if err != nil {
 		return target, true
@@ -73,6 +74,7 @@ func ParseRedirectTarget(value string) (RedirectTarget, bool) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		host = ip.String()
 	}
+
 	target.Host = host
 	target.Port = port
 	return target, true

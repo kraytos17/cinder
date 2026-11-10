@@ -53,7 +53,6 @@ func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	gauge("store_bytes", g.Bytes)
 	gauge("store_entries", g.Entries)
 	gauge("store_capacity_bytes", g.Capacity)
-
 	for op := protocol.Opcode(1); op <= maxOpcode; op++ {
 		counterLbl("operations_total", c.ops[int(op)].Load(), "opcode", OpName(op))
 	}
@@ -63,11 +62,13 @@ func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 		if cnt == 0 {
 			continue
 		}
+
 		name := OpName(op)
 		sb.WriteString("# HELP cinder_request_latency_seconds Request handling latency by opcode\n# TYPE cinder_request_latency_seconds summary\n")
 		for _, ql := range quantileLabels {
 			fmt.Fprintf(&sb, "cinder_request_latency_seconds{opcode=%q,quantile=%q} %.6g\n", name, ql.label, float64(h.Percentile(ql.q))/1e9)
 		}
+
 		fmt.Fprintf(&sb, "cinder_request_latency_seconds_sum{opcode=%q} %.6g\n", name, float64(h.SumNs())/1e9)
 		fmt.Fprintf(&sb, "cinder_request_latency_seconds_count{opcode=%q} %d\n", name, cnt)
 	}

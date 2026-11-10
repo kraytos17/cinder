@@ -65,6 +65,7 @@ func (p *Pool) AddAddr(id, host string, port netport.Port) {
 	if ip, err := netip.ParseAddr(host); err == nil {
 		host = ip.String()
 	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.addrs[id] = NodeAddr{ID: id, Host: host, Port: port}
@@ -109,12 +110,14 @@ func (p *Pool) Send(node string, req protocol.Request) (protocol.Response, error
 	if err != nil {
 		return protocol.Response{}, err
 	}
+
 	res, err := c.Do(req)
 	if err != nil {
 		p.mu.Lock()
 		if cur, ok := p.conns[node]; ok && cur == c {
 			delete(p.conns, node)
 		}
+
 		p.mu.Unlock()
 		return protocol.Response{}, err
 	}
@@ -127,10 +130,12 @@ func (p *Pool) connFor(node string) (*Client, error) {
 	if c, ok := p.conns[node]; ok {
 		return c, nil
 	}
+
 	a, ok := p.addrs[node]
 	if !ok {
 		return nil, fmt.Errorf("client: unknown node %q", node)
 	}
+
 	var c *Client
 	var err error
 	if p.tlsCfg != nil {
@@ -138,9 +143,11 @@ func (p *Pool) connFor(node string) (*Client, error) {
 	} else {
 		c, err = Dial(a.dialAddr(), p.timeout)
 	}
+
 	if err != nil {
 		return nil, err
 	}
+
 	c.SetSecrets(p.secrets)
 	p.conns[node] = c
 	return c, nil

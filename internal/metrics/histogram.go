@@ -26,6 +26,7 @@ func (h *Histogram) Record(ns uint64) {
 			idx = numBuckets - 1
 		}
 	}
+
 	h.buckets[idx].Add(1)
 	h.count.Add(1)
 	h.totalNs.Add(ns)
@@ -45,6 +46,7 @@ func (h *Histogram) Percentile(q float64) uint64 {
 	if c == 0 {
 		return 0
 	}
+
 	target := uint64(q*float64(c)) + 1
 	var cum uint64
 	for i := range numBuckets {

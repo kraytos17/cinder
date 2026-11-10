@@ -156,6 +156,7 @@ func (r *Reader) U8() (uint8, bool) {
 	if r.Remaining() < 1 {
 		return 0, false
 	}
+
 	v := r.buf[r.off]
 	r.off++
 	return v, true
@@ -166,6 +167,7 @@ func (r *Reader) U32() (uint32, bool) {
 	if r.Remaining() < 4 {
 		return 0, false
 	}
+
 	v := r.order.Uint32(r.buf[r.off:])
 	r.off += 4
 	return v, true
@@ -176,6 +178,7 @@ func (r *Reader) U64() (uint64, bool) {
 	if r.Remaining() < 8 {
 		return 0, false
 	}
+
 	v := r.order.Uint64(r.buf[r.off:])
 	r.off += 8
 	return v, true
@@ -186,6 +189,7 @@ func (r *Reader) Bytes(n int) ([]byte, bool) {
 	if n < 0 || r.Remaining() < n {
 		return nil, false
 	}
+
 	v := r.buf[r.off : r.off+n]
 	r.off += n
 	return v, true

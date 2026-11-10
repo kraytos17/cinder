@@ -1,9 +1,5 @@
 package tcp
 
-// Configuration surface: wiring managers, secrets, persistence,
-// and every runtime-tunable interval. Pure setters over the Server
-// built by NewServer; see server.go.
-
 import (
 	"errors"
 	"time"
@@ -24,6 +20,7 @@ func (s *Server) ConfigureReplication(rf hashring.ReplicaCount, mode repl.Mode, 
 	if !mode.Valid() {
 		return repl.ErrInvalidMode
 	}
+
 	s.replMu.Lock()
 	s.repl = m
 	s.rf = rf
@@ -39,12 +36,12 @@ func (s *Server) ConfigureReplication(rf hashring.ReplicaCount, mode repl.Mode, 
 // ConfigureTLS enables TLS with a certificate chain and key, optionally
 // requiring client certificates from the configured CA. Call before Serve;
 // it also enables TLS for inter-node pool connections.
-
 func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 	cfg, err := tlscfg.Server(certFile, keyFile, caFile)
 	if err != nil {
 		return err
 	}
+
 	s.tlsMu.Lock()
 	s.tlsCfg = cfg
 	s.tlsMu.Unlock()
@@ -68,7 +65,6 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 // token. Empty secrets leave their corresponding traffic class
 // unauthenticated. A static client bearer requires TLS; configure TLS
 // before setting clientSecret. Node tokens can be used without TLS.
-
 func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 	if clientSecret != "" {
 		s.tlsMu.RLock()
@@ -78,6 +74,7 @@ func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 			return errors.New("tcp: client auth requires TLS (replayable bearer token)")
 		}
 	}
+
 	s.authMu.Lock()
 	s.sharedSecret = shared
 	s.clientSharedSecret = clientSecret
@@ -95,15 +92,16 @@ func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 // ConfigurePersistence enables the WAL + snapshots in dir, recovering
 // before serving. The store hook is wired after recovery so replay never
 // logs itself. Call before Serve.
-
 func (s *Server) ConfigurePersistence(dir string) error {
 	m := persist.NewManager(dir, s.store, nil)
 	if err := m.Recover(); err != nil {
 		return err
 	}
+
 	s.store.SetPersistence(func(key string, e store.Entry, hardDelete bool) {
 		m.OnWrite(key, e, hardDelete)
 	})
+
 	m.SetLogger(s.log())
 	s.persistMu.Lock()
 	s.persist = m
@@ -112,7 +110,6 @@ func (s *Server) ConfigurePersistence(dir string) error {
 }
 
 // Compact snapshots and rotates the WAL; wired to ADMIN_COMPACT.
-
 func (s *Server) Compact() error {
 	s.persistMu.RLock()
 	m := s.persist
@@ -125,7 +122,6 @@ func (s *Server) Compact() error {
 
 // SetSnapshotInterval changes the periodic auto-compact cadence (0 disables
 // the time trigger). No-op without ConfigurePersistence.
-
 func (s *Server) SetSnapshotInterval(d time.Duration) {
 	s.persistMu.RLock()
 	m := s.persist
@@ -138,7 +134,6 @@ func (s *Server) SetSnapshotInterval(d time.Duration) {
 
 // SetMaxWALBytes caps the active WAL past which auto-compact fires (0
 // disables the size trigger). No-op without ConfigurePersistence.
-
 func (s *Server) SetMaxWALBytes(n uint64) {
 	s.persistMu.RLock()
 	m := s.persist
@@ -151,7 +146,6 @@ func (s *Server) SetMaxWALBytes(n uint64) {
 
 // SetMaxWALEntries caps the active WAL record count past which
 // MaybeCompact fires (0 disables the count trigger).
-
 func (s *Server) SetMaxWALEntries(n uint64) {
 	s.persistMu.RLock()
 	m := s.persist
@@ -162,8 +156,6 @@ func (s *Server) SetMaxWALEntries(n uint64) {
 	m.SetMaxWALEntries(n)
 }
 
-// ReplayHints retries queued hints; exposed for tests and the replay tick.
-
 func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 	s.ringMu.RLock()
 	ring := s.ring
@@ -173,6 +165,7 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 		Store: s.store, Ring: ring, Self: s.nodeID, Transport: pool,
 		Buckets: numBuckets, FetchBytes: fetchBytes,
 	})
+
 	m.SetCounterStore(s.counters)
 	m.SetMetrics(s.met)
 	m.SetLogger(s.log())
@@ -182,7 +175,6 @@ func (s *Server) ConfigureAntiEntropy(numBuckets uint32, fetchBytes int) {
 }
 
 // SetAntiEntropyInterval changes the AE round period.
-
 func (s *Server) SetAntiEntropyInterval(d time.Duration) {
 	s.aeMu.Lock()
 	defer s.aeMu.Unlock()
@@ -199,7 +191,6 @@ func (s *Server) SetGossipInterval(d time.Duration) {
 }
 
 // SetProbeInterval changes the failure-detector tick period.
-
 func (s *Server) SetProbeInterval(d time.Duration) {
 	s.ringMu.Lock()
 	defer s.ringMu.Unlock()
@@ -207,7 +198,6 @@ func (s *Server) SetProbeInterval(d time.Duration) {
 }
 
 // SetSuspectTimeout changes the suspect/dead timeout.
-
 func (s *Server) SetSuspectTimeout(d time.Duration) {
 	s.ringMu.Lock()
 	defer s.ringMu.Unlock()
@@ -219,7 +209,6 @@ func (s *Server) SetSuspectTimeout(d time.Duration) {
 
 // SetReplayInterval changes the hint-replay tick period (tests use short
 // ones). Zero or negative selects the 1s default.
-
 func (s *Server) SetReplayInterval(d time.Duration) {
 	s.ringMu.Lock()
 	defer s.ringMu.Unlock()

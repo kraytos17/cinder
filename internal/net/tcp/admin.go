@@ -73,6 +73,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		} else {
 			nodes = []adminClusterNode{{ID: s.nodeID, Host: "127.0.0.1", Port: s.port, State: "alive", Incarnation: 1}}
 		}
+
 		if nodes == nil {
 			nodes = []adminClusterNode{}
 		}

@@ -27,6 +27,7 @@ func NodeToken(secret, nodeID string, at time.Time) []byte {
 	if secret == "" {
 		return nil
 	}
+
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(nodeID + ":" + strconv.FormatInt(at.Unix()/windowSeconds, 10)))
 	return mac.Sum(nil)
@@ -40,6 +41,7 @@ func VerifyNodeToken(secret, nodeID string, token []byte, at time.Time) bool {
 	if secret == "" || len(token) != sha256.Size {
 		return false
 	}
+
 	base := at.Unix() / windowSeconds
 	for i := int64(0); i <= WindowSeconds/windowSeconds+1; i++ {
 		mac := hmac.New(sha256.New, []byte(secret))
@@ -57,6 +59,7 @@ func ClientToken(secret string) []byte {
 	if secret == "" {
 		return nil
 	}
+
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(clientDomain))
 	return mac.Sum(nil)
