@@ -95,12 +95,10 @@ func TestRunCancel(t *testing.T) {
 	}
 }
 
-// TestRunThreeNodeRF2 runs the default mix against a 3-node RF=2 async
-// cluster: routing, quorum-less async fan-out, and read-repair all sit
-// on the measured path. Multi-worker over-claim is bounded by the worker
-// count, so the total lands in [TotalOps, TotalOps+Workers].
-func TestRunThreeNodeRF2(t *testing.T) {
-	ids := []string{"node1", "node2", "node3"}
+// spinCluster starts an RF=2 async loopback cluster and returns its
+// client addresses plus shutdown. tb abstracts *testing.T/*testing.B.
+func spinCluster(tb testing.TB, ids []string) ([]client.NodeAddr, func()) {
+	tb.Helper()
 	type node struct {
 		srv  *tcp.Server
 		addr client.NodeAddr
@@ -111,7 +109,7 @@ func TestRunThreeNodeRF2(t *testing.T) {
 	for _, id := range ids {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		listeners = append(listeners, l)
 		ports[id] = l.Addr().(*net.TCPAddr).Port
@@ -120,31 +118,43 @@ func TestRunThreeNodeRF2(t *testing.T) {
 		st := store.NewLRUStore(1<<20, nil)
 		srv := tcp.NewServer(tcp.ServerConfig{NodeID: id, Port: netport.Port(ports[id]), Store: st})
 		var peers []tcp.Peer
-		var addrs []client.NodeAddr
+		var paddrs []client.NodeAddr
 		for _, pid := range ids {
 			if pid == id {
 				continue
 			}
 			peers = append(peers, tcp.Peer{ID: pid, Host: "127.0.0.1", Port: netport.Port(ports[pid])})
-			addrs = append(addrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: netport.Port(ports[pid])})
+			paddrs = append(paddrs, client.NodeAddr{ID: pid, Host: "127.0.0.1", Port: netport.Port(ports[pid])})
 		}
 		if err := srv.ConfigureCluster(peers); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
-		pool := client.NewPool(addrs, 5*time.Second)
+		pool := client.NewPool(paddrs, 5*time.Second)
 		mgr := repl.NewManager(repl.Config{Local: st, Self: id, Clock: nil, Transport: pool})
 		if err := srv.ConfigureReplication(2, repl.Async, mgr); err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		go srv.Serve(listeners[i])
 		nodes = append(nodes, node{srv: srv, addr: client.NodeAddr{ID: id, Host: "127.0.0.1", Port: netport.Port(ports[id])}})
 	}
-	defer func() {
+	addrs := make([]client.NodeAddr, 0, len(nodes))
+	for _, n := range nodes {
+		addrs = append(addrs, n.addr)
+	}
+	return addrs, func() {
 		for _, n := range nodes {
 			n.srv.Shutdown()
 		}
-	}()
-	addrs := []client.NodeAddr{nodes[0].addr, nodes[1].addr, nodes[2].addr}
+	}
+}
+
+// TestRunThreeNodeRF2 runs the default mix against a 3-node RF=2 async
+// cluster: routing, quorum-less async fan-out, and read-repair all sit
+// on the measured path. Multi-worker over-claim is bounded by the worker
+// count, so the total lands in [TotalOps, TotalOps+Workers].
+func TestRunThreeNodeRF2(t *testing.T) {
+	addrs, stop := spinCluster(t, []string{"node1", "node2", "node3"})
+	defer stop()
 	res, err := load.Run(context.Background(), load.Config{
 		Nodes: addrs, Workers: 4, TotalOps: 1000,
 		KeySpace: 200, HotKeys: 10, HotFraction: 0.5, ValueSize: 32, Seed: 3,
@@ -161,5 +171,31 @@ func TestRunThreeNodeRF2(t *testing.T) {
 	}
 	if res.Throughput() <= 0 || res.Sets.Quantile(0.99) <= 0 {
 		t.Fatalf("no signal: %+v", res.Throughput())
+	}
+}
+
+// BenchmarkLoadMixed3NodeRF2 is the publishable load shape: 3-node RF=2
+// async cluster, hot-skewed default mix, fixed seed for comparable runs.
+// b.N is advisory (the op budget rules); per-op ns and p99 print per run.
+func BenchmarkLoadMixed3NodeRF2(b *testing.B) {
+	addrs, stop := spinCluster(b, []string{"node1", "node2", "node3"})
+	defer stop()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; b.Loop(); i++ {
+		res, err := load.Run(context.Background(), load.Config{
+			Nodes: addrs, Workers: 8, TotalOps: 10000,
+			KeySpace: 2000, HotKeys: 50, HotFraction: 0.5, ValueSize: 256,
+			Seed: uint64(i), MaxRetries: 5, RPCTimeout: 5 * time.Second,
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if got := res.Errors.Load(); got != 0 {
+			b.Fatalf("errors = %d, first %v", got, res.FirstErr.Load())
+		}
+		b.ReportMetric(float64(res.Sets.Quantile(0.99)), "set-p99-ns")
+		b.ReportMetric(float64(res.Gets.Quantile(0.99)), "get-p99-ns")
+		b.ReportMetric(res.Throughput(), "ops/s")
 	}
 }
