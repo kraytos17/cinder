@@ -116,7 +116,7 @@ func (s *Store) eraseNode(sh *shard, idx int) {
 // bytes freed. Caller holds sh.mu.
 func (s *Store) removeNode(sh *shard, idx int) uint64 {
 	n := &sh.nodes[idx]
-	s.emit(n.key, n.entry.VersionAndTTL(), n.entry.WriterNodeHash, true)
+	s.emit(n.key, n.entry.VersionAndTTL(), n.entry.WriterNodeHash)
 	freed := s.entrySize(n.key, n.entry)
 	s.onEvictExpired(sh, idx)
 	sh.wheel.Remove(idx)

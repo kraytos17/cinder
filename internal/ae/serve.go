@@ -15,7 +15,7 @@ func (m *Manager) OnDigestRequest(value []byte) (protocol.Status, []byte) {
 		return protocol.StatusInvalidArgument, nil
 	}
 
-	resp := DigestResponse{GroupHashes: m.ComputeDigest().Fold()}
+	resp := DigestResponse{GroupHashes: m.digestForRoundOrScan().Fold()}
 	return protocol.StatusOK, resp.Encode()
 }
 
@@ -27,7 +27,7 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 		return protocol.StatusInvalidArgument, nil
 	}
 
-	local := m.ComputeDigest()
+	local := m.digestForRoundOrScan()
 	resp := DigestResponse{GroupHashes: local.Fold()}
 	requested := map[uint32]bool{}
 	for _, bh := range req.BucketHashes {

@@ -353,15 +353,16 @@ Small buckets continue using metadata rows; if any sketch fails to peel, that
 bucket is retried through the existing explicit-metadata path. This bounds
 the extra work and wire bytes while retaining as the correctness fallback.
 
-**Full-scan digests**: every round rehashes the whole store (a plain scan
-XOR-folding each entry into its bucket), so converged rounds cost one scan
-instead of a 2 KiB copy. The retired C++ tree kept per-bucket XORs on the
-write path with a wall-clock full-rehash backstop; the Go port deliberately
-replaces that with a full rehash per round — behavior-identical, no
-divert-while-scanning machinery, no `full-rehash-interval` knob. The cost
-is ~1 alloc/entry (see `just bench`: `BenchmarkComputeDigest`), which is
-the standing invitation to reintroduce incremental digests if a profile
-ever demands it.
+**Incremental digests**: every accepted mutation XOR-folds its entry hash
+into its bucket accumulator at write time (store mutation sink, leaf-only
+under the shard lock), so converged rounds cost one 2 KiB copy instead of
+a full scan (~10k-key bench: 2.5 ms scan → 0.5 µs copy, 10020 → 1 alloc).
+Torn cross-bucket reads only look divergent and self-heal next round. A
+wall-clock full-rehash backstop (default 5 min, `SetRehashInterval`
+override) publishes the scan, counts `anti_entropy_rehash_mismatches` on
+any scan-vs-accumulator disagreement (always a bug outside tests), and
+bounds the silent-divergence window; the first digest after boot always
+rehashes (cold start).
 
 **Entry format** (sync payload entries):
 

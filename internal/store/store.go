@@ -69,8 +69,9 @@ const noLink = -1
 
 // MutationSink observes every accepted write, remove, and eviction while
 // the caller holds the shard lock, so it must be leaf-only: never call
-// back into the store, never block. Removal passes removed=true.
-type MutationSink func(key string, versionAndTTL, writer uint64, removed bool)
+// back into the store, never block. Add and remove fold identically for
+// XOR accumulators, so no direction flag is carried.
+type MutationSink func(key string, versionAndTTL, writer uint64)
 
 type node struct {
 	key   string
@@ -229,9 +230,9 @@ func (s *Store) bumpWrite(tombstone, overwrote bool) {
 	})
 }
 
-func (s *Store) emit(key string, versionAndTTL, writer uint64, removed bool) {
+func (s *Store) emit(key string, versionAndTTL, writer uint64) {
 	if ms := s.sink.Load(); ms != nil {
-		ms.fn(key, versionAndTTL, writer, removed)
+		ms.fn(key, versionAndTTL, writer)
 	}
 }
 
@@ -361,13 +362,13 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 		// minimum); re-derive instead of touching a dead index.
 		fresh, ok := sh.index[key]
 		if !ok {
-			s.emit(key, oldPacked, oldWriter, true)
+			s.emit(key, oldPacked, oldWriter)
 			return nil
 		}
 
 		r := &sh.nodes[fresh]
-		s.emit(key, oldPacked, oldWriter, true)
-		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
+		s.emit(key, oldPacked, oldWriter)
+		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 		s.updateWheel(sh, fresh, at)
 		s.persistPut(key, r.entry)
 		s.bumpWrite(e.Tombstone, true)
@@ -407,7 +408,7 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	}
 
 	r := &sh.nodes[sh.index[key]]
-	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash, false)
+	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 	s.updateWheel(sh, sh.index[key], at)
 	s.persistPut(key, r.entry)
 	s.bumpWrite(e.Tombstone, false)

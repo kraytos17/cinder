@@ -86,11 +86,11 @@ store directly).
   nothing is ever sent while holding store state) with a quarantine window
   for crash-looping nodes; 200 ms debounce on ring rebuild, self-retrying
   quarantine timer, 2 s migration-failure retry. See `rebalance.md`.
-- **Anti-entropy** — background repair between replica partners: full-scan
-  group digests every round (no incremental accumulators — a deliberate
-  simplification, behavior-identical), then targeted sync of divergent
-  buckets only; large divergent buckets go through IBLT sketches with a
-  metadata-row fallback; see `rebalance.md`.
+- **Anti-entropy** — background repair between replica partners: incremental
+  per-bucket XOR digests fed by the store mutation sink (2 KiB copy per
+  round, full-scan backstop every 5 min with mismatch counting), then
+  targeted sync of divergent buckets only; large divergent buckets go
+  through IBLT sketches with a metadata-row fallback; see `rebalance.md`.
 
 ## Durability and operations
 
