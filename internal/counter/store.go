@@ -179,7 +179,7 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 	}
 
 	sh.current += need
-	sh.index[unique.Make(key).Value()] = fresh
+	sh.index[key] = fresh
 	return nil
 }
 
@@ -227,7 +227,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	}
 
 	sh.current += need
-	sh.index[unique.Make(key).Value()] = remote.Clone()
+	sh.index[key] = remote.Clone()
 	return nil
 }
 
