@@ -54,7 +54,29 @@ TCP set/get round-trip (+ parallel variant) in `net/tcp`.
   sequential Set+Get round-trips over loopback TCP — framing, dispatch,
   and store. Not network I/O, delayed completion, or contention. Keep it
   for cheap A/B comparisons; confirm anything load-bearing with a real
-  load test before generalizing.
+  load test before generalizing (see below).
+
+## Load testing (`internal/load`)
+
+Benchmarks measure single paths in-process. `internal/load` measures the
+system: it drives a live cluster over real TCP with a mixed get/set/del
+workload (configurable mix, keyspace, hot-key fraction, workers, op
+budget or deadline, seed) and reports client-observed latency histograms
+(p50/p99/max per op) plus throughput and transport-error counts.
+
+```go
+res, _ := load.Run(ctx, load.Config{
+    Nodes: addrs, Workers: 8, TotalOps: 100_000,
+    KeySpace: 10000, HotKeys: 100, HotFraction: 0.8, ValueSize: 256,
+})
+res.Sets.Quantile(0.99) // p99 set latency, nanoseconds
+res.Throughput()        // ops/sec
+```
+
+Rules: fix a seed for comparable runs; size KeySpace so the working set
+fits the stores (spilling into eviction measures a different system);
+read p99, not the mean — the mean hides the tail this tool exists to
+show. Tune `GOGC`/`GOMEMLIMIT` only against a p99 measured here.
 
 ## CPU profiling with pprof
 
