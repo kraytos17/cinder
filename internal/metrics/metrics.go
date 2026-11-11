@@ -146,6 +146,10 @@ type Collector struct {
 	DecodeFailures atomic.Uint64
 	Redirects      atomic.Uint64
 	WriteFailures  atomic.Uint64
+	// SlowConsumerDrops counts connections closed because a response
+	// write exceeded the write timeout: the peer was not reading.
+	// Distinct from WriteFailures (encode errors, resets).
+	SlowConsumerDrops atomic.Uint64
 }
 
 // NewCollector returns an empty collector.

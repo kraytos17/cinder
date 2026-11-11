@@ -3,6 +3,7 @@ package tcp
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"strings"
@@ -196,7 +197,11 @@ func (s *Server) handle(c net.Conn) {
 	// Reused encode buffer, same retention argument as payloadBuf above.
 	var encodeBuf []byte
 	for {
-		c.SetDeadline(time.Now().Add(idleTimeout))
+		// Read-idle budget only: a slow sender that never completes a
+		// frame trips this. Writes get their own shorter budget below.
+		if err := c.SetReadDeadline(time.Now().Add(idleTimeout)); err != nil {
+			return
+		}
 		if _, err := io.ReadFull(br, header[:]); err != nil {
 			return
 		}
@@ -252,7 +257,23 @@ func (s *Server) handle(c net.Conn) {
 		} else {
 			encodeBuf = out[:0]
 		}
+
+		if err := c.SetWriteDeadline(time.Now().Add(s.currentWriteTimeout())); err != nil {
+			s.met.WriteFailures.Add(1)
+			return
+		}
 		if err := writeAll(c, out); err != nil {
+			// A write deadline means the peer stopped reading: count a
+			// slow-consumer drop, not a generic write failure. Other
+			// write errors (resets, closed sockets) stay failures.
+			if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+				s.met.SlowConsumerDrops.Add(1)
+				if e := s.log().Debug(); e != nil {
+					e.Int("bytes", len(out)).Msg("slow consumer dropped")
+				}
+				return
+			}
+
 			s.met.WriteFailures.Add(1)
 			return
 		}

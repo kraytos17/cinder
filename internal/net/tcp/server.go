@@ -34,7 +34,13 @@ const (
 	// rejected instead of buffering unbounded descriptors.
 	maxConnections = 10_000
 	// idleTimeout closes connections with no completed request/response.
+	// It bounds reads only; writes get their own shorter budget below so
+	// one slow reader cannot park a handler for the full idle window.
 	idleTimeout = 30 * time.Second
+	// writeTimeout bounds a single response write. Exceeding it means the
+	// peer is not reading: the connection closes and counts a slow
+	// consumer drop instead of lingering until the idle deadline.
+	writeTimeout = 10 * time.Second
 	// maxReusePayload bounds the retained per-connection staging buffer:
 	// payloads above it still work, but allocate fresh each time instead
 	// of pinning a ~1 MiB slab per connection after one large value.
@@ -120,6 +126,10 @@ type Server struct {
 	gossipInterval time.Duration
 	probeInterval  time.Duration
 	suspectTimeout time.Duration
+	// writeTimeoutNs bounds a single response write in nanoseconds; 0
+	// selects the writeTimeout default. Atomic so the hot read path
+	// takes no lock (unlike the tick-interval knobs nearby).
+	writeTimeoutNs atomic.Int64
 	// replayInterval is the base hint-retry delay; consecutive all-failed
 	// rounds back off from here toward replayMax.
 	replayInterval time.Duration

@@ -224,3 +224,19 @@ func (s *Server) SetReplayMaxInterval(d time.Duration) {
 	defer s.ringMu.Unlock()
 	s.replayMax = d
 }
+
+// SetWriteTimeout bounds a single response write; exceeding it closes
+// the connection as a slow consumer. Zero or negative selects the
+// writeTimeout default.
+func (s *Server) SetWriteTimeout(d time.Duration) {
+	s.writeTimeoutNs.Store(int64(d))
+}
+
+// currentWriteTimeout returns the configured write budget, or the
+// default when unset or non-positive.
+func (s *Server) currentWriteTimeout() time.Duration {
+	if d := time.Duration(s.writeTimeoutNs.Load()); d > 0 {
+		return d
+	}
+	return writeTimeout
+}
