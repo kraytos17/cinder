@@ -80,6 +80,7 @@ func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	counter("replication_quorum_deletes_ok_total", c.QuorumDeletesOK.Load())
 	counter("replication_quorum_deletes_failed_total", c.QuorumDeletesEr.Load())
 	counter("replication_quorum_reads_total", c.QuorumReads.Load())
+	counter("replication_quorum_late_failures_total", c.QuorumLateFail.Load())
 	counter("replication_reads_coalesced_total", c.ReadsCoalesced.Load())
 	counter("replication_read_repairs_total", c.ReadRepairs.Load())
 	counter("replication_hints_enqueued_total", c.HintsEnqueued.Load())

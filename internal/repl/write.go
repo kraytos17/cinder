@@ -163,19 +163,11 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 		}
 
 		if acks >= w {
-			go drain(out, pending, func(r fanResult) {
-				if r.err != nil {
-					m.enqueueHint(r.node, req)
-				}
-			})
+			go m.drainHints(req, out, pending)
 			return nil
 		}
 		if acks+pending < w {
-			go drain(out, pending, func(r fanResult) {
-				if r.err != nil {
-					m.enqueueHint(r.node, req)
-				}
-			})
+			go m.drainHints(req, out, pending)
 			return ErrQuorum
 		}
 	}
@@ -199,6 +191,19 @@ func drain(out <-chan fanResult, n int, fn func(fanResult)) {
 	for range n {
 		fn(<-out)
 	}
+}
+
+// drainHints consumes straggler results after the quorum decision fired,
+// queueing hints for late failures. Late failures count separately from
+// in-window failures: the client already got its answer, but a replica
+// is behind and will need a hint replay.
+func (m *Manager) drainHints(req protocol.Request, out <-chan fanResult, n int) {
+	drain(out, n, func(r fanResult) {
+		if r.err != nil {
+			m.enqueueHint(r.node, req)
+			obs.IfPresent(&m.met, func(mt *metrics.Collector) { mt.QuorumLateFail.Add(1) })
+		}
+	})
 }
 
 func (m *Manager) enqueueHint(node string, req protocol.Request) {
@@ -226,7 +231,7 @@ func (m *Manager) enqueueHint(node string, req protocol.Request) {
 		if m.journal.NeedsCompaction() {
 			// Best-effort: failure leaves the old journal intact and
 			// the next enqueue retries.
-			_ = m.journal.Compact(m.hints)
+			m.journal.Compact(m.hints)
 		}
 	}
 }

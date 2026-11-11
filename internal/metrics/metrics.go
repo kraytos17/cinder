@@ -92,15 +92,18 @@ type Collector struct {
 	EvictionsCap  atomic.Uint64
 	ExpiresOnRead atomic.Uint64
 
-	AsyncWrites      atomic.Uint64
-	AsyncDeletes     atomic.Uint64
-	QuorumWritesOK   atomic.Uint64
-	QuorumWritesErr  atomic.Uint64
-	QuorumDeletesOK  atomic.Uint64
-	QuorumDeletesEr  atomic.Uint64
-	QuorumReads      atomic.Uint64
-	ReadsCoalesced   atomic.Uint64
-	ReadRepairs      atomic.Uint64
+	AsyncWrites     atomic.Uint64
+	AsyncDeletes    atomic.Uint64
+	QuorumWritesOK  atomic.Uint64
+	QuorumWritesErr atomic.Uint64
+	QuorumDeletesOK atomic.Uint64
+	QuorumDeletesEr atomic.Uint64
+	QuorumReads     atomic.Uint64
+	ReadsCoalesced  atomic.Uint64
+	ReadRepairs     atomic.Uint64
+	// QuorumLateFail counts replica sends that failed after the quorum
+	// decision already fired (stragglers drained into hints).
+	QuorumLateFail   atomic.Uint64
 	HintsEnqueued    atomic.Uint64
 	HintsReplayed    atomic.Uint64
 	HintsDropped     atomic.Uint64
