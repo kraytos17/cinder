@@ -3,6 +3,7 @@ package repl
 import (
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -280,6 +281,158 @@ func TestReadSingleflight(t *testing.T) {
 		if n := inner.SendCount("n2"); n != 1 {
 			t.Fatalf("singleflight: %d fan-outs for %d readers", n, readers)
 		}
+	})
+}
+
+// Version 0 is the reserved no-version sentinel (StatusOK is the zero
+// value, so a zero-value Response must never vote). The reducer drops
+// version-0 OK votes; only a nonzero version counts as an ack.
+func TestReducerIgnoresVersionZero(t *testing.T) {
+	var d reducer
+	d.r, d.pending = 2, 1
+	d.noteRemote(protocol.Response{}, nil)
+	if d.acks != 0 || d.hasBest {
+		t.Fatalf("zero-value response voted: %+v", d)
+	}
+	if _, ok := d.winner(); ok {
+		t.Fatal("phantom winner from zero-value response")
+	}
+
+	d.noteRemote(protocol.Response{Status: protocol.StatusOK, Version: 0, WriterNodeHash: 7}, nil)
+	if d.acks != 0 || d.hasBest {
+		t.Fatalf("version-0 vote counted: %+v", d)
+	}
+
+	d.noteRemote(protocol.Response{Status: protocol.StatusOK, Version: 5, WriterNodeHash: 7, Value: []byte("v"), HasValue: true}, nil)
+	if d.acks != 1 || !d.hasBest {
+		t.Fatalf("versioned vote lost: %+v", d)
+	}
+}
+
+// End to end: a replica holding only an explicit version-0 entry must not
+// produce a phantom winner; the read is a miss.
+func TestReadVersionZeroIsMiss(t *testing.T) {
+	ft := testkit.NewStores("n2")
+	if err := ft.Stores["n2"].PutVersioned("k", store.Entry{Version: 0, WriterNodeHash: 1}); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
+	if _, err := m.Read("k", []string{"n2"}, 2, 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("version-0 read = %v, want ErrNotFound", err)
+	}
+}
+
+// Hint coalescing applies the same tombstone-wins tie-break as reads: a
+// live hint at a tied stamp must not replace a queued tombstone, while a
+// tombstone at a tied stamp replaces a queued live hint.
+func TestHintCoalesceTombstoneTie(t *testing.T) {
+	mk := func(v, w uint64, tomb bool) protocol.Request {
+		return protocol.Request{Opcode: protocol.OpReplicate, Key: []byte("k"), Value: []byte("v"), Version: v, WriterNodeHash: w, Tombstone: tomb}
+	}
+	exp := expiry.At(time.Now().Add(time.Minute))
+
+	q := NewHintQueue()
+	if !q.Push(Hint{Target: "n2", Req: mk(5, 1, true), ExpiresAt: exp}) {
+		t.Fatal("tombstone push")
+	}
+	if q.Push(Hint{Target: "n2", Req: mk(5, 1, false), ExpiresAt: exp}) {
+		t.Fatal("live hint replaced a tied tombstone")
+	}
+	if q.Len() != 1 || !q.items[0].Req.Tombstone {
+		t.Fatalf("tombstone lost: %+v", q.items)
+	}
+
+	q2 := NewHintQueue()
+	if !q2.Push(Hint{Target: "n2", Req: mk(5, 1, false), ExpiresAt: exp}) {
+		t.Fatal("live push")
+	}
+	if !q2.Push(Hint{Target: "n2", Req: mk(5, 1, true), ExpiresAt: exp}) {
+		t.Fatal("tombstone must replace tied live hint")
+	}
+	if q2.Len() != 1 || !q2.items[0].Req.Tombstone {
+		t.Fatalf("tombstone did not win: %+v", q2.items)
+	}
+}
+
+// Flights are keyed by (key, R, replica set): concurrent reads for the
+// same key and R but different replica sets must not share a flight.
+// A straggler must not hold the decision: with local + one fast replica
+// satisfying R=2, the read returns before the slow replica responds, and
+// the background drain still consumes its late arrival (no leak —
+// goleak-verified via the eventual send count).
+func TestReadDoesNotWaitForStragglers(t *testing.T) {
+	inner := testkit.NewStores("n2", "n3")
+	st := &stragglerTransport{inner: inner, delay: map[string]time.Duration{"n3": 50 * time.Millisecond}}
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: st})
+	if err := m.Local().Put("k", []byte("v")); err != nil {
+		t.Fatal(err)
+	}
+	le, _ := m.Local().GetVersioned("k")
+	for _, n := range []string{"n2", "n3"} {
+		if err := inner.Stores[n].PutVersioned("k", le); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
+	if err != nil || string(e.Value) != "v" {
+		t.Fatalf("got %+v, %v", e, err)
+	}
+	if st.responded.Load() {
+		t.Fatal("decision waited for the straggler")
+	}
+	waitFor(t, "straggler drain", func() bool { return inner.SendCount("n3") == 1 })
+}
+
+// stragglerTransport delays sends to listed nodes, marking when a delayed
+// response is served.
+type stragglerTransport struct {
+	inner     *testkit.Stores
+	delay     map[string]time.Duration
+	responded atomic.Bool
+}
+
+func (s *stragglerTransport) Send(node string, req protocol.Request) (protocol.Response, error) {
+	if d := s.delay[node]; d > 0 {
+		time.Sleep(d)
+		s.responded.Store(true)
+	}
+	return s.inner.Send(node, req)
+}
+
+func TestReadSingleflightSeparatesReplicaSets(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		inner := testkit.NewStores("n2", "n3")
+		gt := &gateTransport{inner: inner, release: make(chan struct{})}
+		m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: gt})
+		le2 := store.Entry{Value: []byte("from-n2"), Version: 3, WriterNodeHash: 1}
+		le3 := store.Entry{Value: []byte("from-n3"), Version: 3, WriterNodeHash: 1}
+		if err := inner.Stores["n2"].PutVersioned("k", le2); err != nil {
+			t.Fatal(err)
+		}
+		if err := inner.Stores["n3"].PutVersioned("k", le3); err != nil {
+			t.Fatal(err)
+		}
+		var va, vb store.Entry
+		var erra, errb error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); va, erra = m.Read("k", []string{"n2"}, 2, 0, 0) }()
+		go func() { defer wg.Done(); vb, errb = m.Read("k", []string{"n3"}, 2, 0, 0) }()
+		synctest.Wait()
+		close(gt.release)
+		wg.Wait()
+		if erra != nil || errb != nil {
+			t.Fatalf("errs = %v, %v", erra, errb)
+		}
+		if string(va.Value) != "from-n2" || string(vb.Value) != "from-n3" {
+			t.Fatalf("cross-talk: a=%q b=%q", va.Value, vb.Value)
+		}
+		// Both replica sets were contacted (repair fan-out also sends,
+		// so counts are >= 1, not exactly 1). Before the fix the second
+		// waiter shared the first flight and its set saw zero sends.
+		waitFor(t, "both sets hit", func() bool {
+			return inner.SendCount("n2") >= 1 && inner.SendCount("n3") >= 1
+		})
 	})
 }
 

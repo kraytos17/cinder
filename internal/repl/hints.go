@@ -61,7 +61,10 @@ var (
 )
 
 // Transport is the shared inter-node send contract (see
-// internal/transport); *client.Pool satisfies it.
+// internal/transport); *client.Pool satisfies it. Send must be bounded:
+// the manager parks one goroutine per replica until Send returns
+// (client.Pool enforces RPCTimeout, 5s in production). An unbounded
+// transport parks fan-out goroutines for the transport's lifetime.
 type Transport = transport.Sender
 
 // HintTTL bounds how long an undelivered write remains eligible for replay.

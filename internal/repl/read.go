@@ -1,7 +1,9 @@
 package repl
 
 import (
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/metrics"
@@ -27,7 +29,7 @@ func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, t
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.QuorumReads.Add(1)
 	})
-	return m.readCoalesced(key, r, func() (store.Entry, error) {
+	return m.readCoalesced(key, replicas, r, func() (store.Entry, error) {
 		return m.readOnce(key, replicas, r, traceID, spanID)
 	})
 }
@@ -37,8 +39,8 @@ func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, t
 // that multiple callers used the same in-flight operation and drives the
 // ReadsCoalesced metric.
 
-func (m *Manager) readCoalesced(key string, r hashring.ReplicaCount, run func() (store.Entry, error)) (store.Entry, error) {
-	v, err, shared := m.flights.Do(flightKey(key, r), func() (any, error) {
+func (m *Manager) readCoalesced(key string, replicas []string, r hashring.ReplicaCount, run func() (store.Entry, error)) (store.Entry, error) {
+	v, err, shared := m.flights.Do(flightKey(key, replicas, r), func() (any, error) {
 		return run()
 	})
 	if shared {
@@ -54,11 +56,28 @@ func (m *Manager) readCoalesced(key string, r hashring.ReplicaCount, run func() 
 	return e, nil
 }
 
-// flightKey namespaces one coalesced flight. '\x00' cannot appear in a
-// way that collides: keys are arbitrary bytes-as-string, so the length
-// prefix keeps (key, R) pairs unambiguous.
-func flightKey(key string, r hashring.ReplicaCount) string {
-	return strconv.Itoa(int(r)) + "\x00" + key
+// flightKey namespaces one coalesced flight by (R, key, replica set).
+// The set is part of the key because the answer depends on who is asked:
+// sharing a flight across different sets would serve one waiter's
+// replicas' answer to another. Order-insensitive (sorted); length-prefixed
+// so arbitrary key bytes cannot collide with set members.
+func flightKey(key string, replicas []string, r hashring.ReplicaCount) string {
+	set := append([]string(nil), replicas...)
+	slices.Sort(set)
+
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(int(r)))
+	b.WriteByte(0)
+	b.WriteString(strconv.Itoa(len(key)))
+	b.WriteByte(0)
+	b.WriteString(key)
+	for _, n := range set {
+		b.WriteByte(0)
+		b.WriteString(strconv.Itoa(len(n)))
+		b.WriteByte(0)
+		b.WriteString(n)
+	}
+	return b.String()
 }
 
 func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCount, traceID, spanID uint64) (store.Entry, error) {

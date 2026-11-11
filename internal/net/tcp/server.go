@@ -120,9 +120,11 @@ type Server struct {
 	gossipInterval time.Duration
 	probeInterval  time.Duration
 	suspectTimeout time.Duration
-	// replayInterval controls how often queued hints are retried after
-	// failed replica sends.
+	// replayInterval is the base hint-retry delay; consecutive all-failed
+	// rounds back off from here toward replayMax.
 	replayInterval time.Duration
+	// replayMax caps the hint-retry backoff.
+	replayMax time.Duration
 
 	replMu sync.RWMutex
 	repl   *repl.Manager
@@ -186,6 +188,7 @@ func NewServer(cfg ServerConfig) *Server {
 		probeInterval:  time.Second,
 		suspectTimeout: 3 * time.Second,
 		replayInterval: time.Second,
+		replayMax:      30 * time.Second,
 		aeInterval:     30 * time.Second,
 	}
 

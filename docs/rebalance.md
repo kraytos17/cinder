@@ -300,9 +300,12 @@ and expired records are skipped.
   from growing the file without bound. Atomic via tmp file + rename; the
   replication manager triggers it inline on enqueue, so retries apply.
 - **Recovery order**: hint recovery runs before serving. A background
-  replay tick (1 s, `SetReplayInterval` for tests) drains queued hints
-  once their target is reachable again; ticks that fire while it is still
-  down fail silently and the next tick retries.
+  replay loop (base 1 s, `SetReplayInterval` for tests) drains queued hints
+  once their target is reachable again; rounds that make progress or find
+  an empty queue stay at the base delay, while consecutive all-failed
+  rounds back off doubling toward the max (30 s, `SetReplayMaxInterval`).
+  The loop runs under `Serve`'s `WaitGroup` and each round is synchronous,
+  so shutdown drains the in-flight batch.
 
 ## Anti-Entropy
 

@@ -261,6 +261,15 @@ func (s *Server) currentReplayInterval() time.Duration {
 	return s.replayInterval
 }
 
+func (s *Server) currentReplayMaxInterval() time.Duration {
+	s.ringMu.RLock()
+	defer s.ringMu.RUnlock()
+	if s.replayMax <= 0 {
+		return 30 * time.Second
+	}
+	return s.replayMax
+}
+
 func (s *Server) currentGossipInterval() time.Duration {
 	s.ringMu.RLock()
 	defer s.ringMu.RUnlock()

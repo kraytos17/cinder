@@ -207,10 +207,20 @@ func (s *Server) SetSuspectTimeout(d time.Duration) {
 	}
 }
 
-// SetReplayInterval changes the hint-replay tick period (tests use short
-// ones). Zero or negative selects the 1s default.
+// SetReplayInterval changes the base hint-replay delay: the loop retries
+// at this cadence while rounds make progress, backing off toward the max
+// on consecutive all-failed rounds (tests use short ones). Zero or
+// negative selects the 1s default.
 func (s *Server) SetReplayInterval(d time.Duration) {
 	s.ringMu.Lock()
 	defer s.ringMu.Unlock()
 	s.replayInterval = d
+}
+
+// SetReplayMaxInterval caps the hint-replay backoff. Zero or negative
+// selects the 30s default.
+func (s *Server) SetReplayMaxInterval(d time.Duration) {
+	s.ringMu.Lock()
+	defer s.ringMu.Unlock()
+	s.replayMax = d
 }
