@@ -95,11 +95,11 @@ func DialTLS(addr string, timeout time.Duration, cfg *tls.Config) (*Client, erro
 
 	setNoDelay(raw)
 	c := tls.Client(raw, cfg)
-	// Bound the handshake by the RPC timeout: the old DialWithDialer
-	// path left it unbounded, hanging the caller on a blackholed peer.
-	if err := c.SetDeadline(time.Now().Add(timeout)); err != nil {
-		raw.Close()
-		return nil, err
+	if timeout > 0 {
+		if err := c.SetDeadline(time.Now().Add(timeout)); err != nil {
+			raw.Close()
+			return nil, err
+		}
 	}
 	if err := c.Handshake(); err != nil { //nolint:noctx // no caller context to propagate; handshake bounded by the SetDeadline above
 		raw.Close()
@@ -121,6 +121,15 @@ func retainEncodeBuf(buf []byte) []byte {
 		return nil
 	}
 	return buf[:0]
+}
+
+// setDeadline bounds the in-flight RPC, or clears any deadline when the
+// client was dialed with a non-positive timeout ("0 = no timeout").
+func (c *Client) setDeadline() error {
+	if c.timeout <= 0 {
+		return c.conn.SetDeadline(time.Time{})
+	}
+	return c.conn.SetDeadline(time.Now().Add(c.timeout))
 }
 
 // setNoDelay disables Nagle's algorithm on TCP connections. Request +
@@ -171,7 +180,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	}
 
 	c.encodeBuf = retainEncodeBuf(frame)
-	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+	if err := c.setDeadline(); err != nil {
 		return protocol.Response{}, c.fail(err)
 	}
 	for len(frame) > 0 {
@@ -236,7 +245,7 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 	if c.conn == nil {
 		return nil, fmt.Errorf("client: connection closed")
 	}
-	if err := c.conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+	if err := c.setDeadline(); err != nil {
 		return nil, c.fail(err)
 	}
 	for len(frame) > 0 {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
+	"github.com/kraytos17/cinder/internal/metrics"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -78,9 +79,9 @@ func counterTestPair(t *testing.T, fetchBytes int) (*Manager, *Manager, *counter
 
 func TestCounterRoundConverges(t *testing.T) {
 	m1, _, cs1, cs2 := counterTestPair(t, 1<<20)
-	_ = cs1.Increment("k", "n1", 5)
-	_ = cs2.Increment("k", "n2", 7)
-	_ = cs2.Increment("only2", "n2", 3)
+	cs1.Increment("k", "n1", 5)
+	cs2.Increment("k", "n2", 7)
+	cs2.Increment("only2", "n2", 3)
 	m1.RunCounterRound(2)
 	if v, _ := cs1.Value("k"); v != 12 {
 		t.Fatalf("k = %d, want 12", v)
@@ -99,11 +100,170 @@ func TestCounterRoundEmptySkips(t *testing.T) {
 	}
 }
 
+// Partition healing with reordered and duplicate deliveries converges:
+// merge newest, then stale, then newest-again; the LWW-free merge is
+// idempotent and order-insensitive, so both sides land on 7-4=3.
+func TestCounterPartitionHealingReorderedDuplicateConverge(t *testing.T) {
+	sender := counter.NewStore(1 << 20)
+	if err := sender.Increment("k", "n1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := sender.Decrement("k", "n2", 4); err != nil {
+		t.Fatal(err)
+	}
+	var stale PNCounter
+	if err := stale.Increment("n1", 2); err != nil {
+		t.Fatal(err)
+	}
+	receiver := counter.NewStore(1 << 20)
+	newest, ok := sender.Get("k")
+	if !ok {
+		t.Fatal("sender missing k")
+	}
+	for _, state := range []PNCounter{newest, stale, newest} {
+		if err := receiver.Merge("k", state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, ok := receiver.Value("k"); !ok || v != 3 {
+		t.Fatalf("k = %d %v, want 3 after reorder+duplicate", v, ok)
+	}
+	if v, _ := sender.Value("k"); v != 3 {
+		t.Fatalf("sender k = %d, want 3", v)
+	}
+}
+
+// A merge rejected for capacity leaves the resident untouched; after
+// expansion the same serialized state applies and matches the sender.
+func TestCounterCapacityRejectedRetryAfterExpansion(t *testing.T) {
+	sender := counter.NewStore(1 << 20)
+	if err := sender.Increment("big", "n1", 9); err != nil {
+		t.Fatal(err)
+	}
+	state, ok := sender.Get("big")
+	if !ok {
+		t.Fatal("sender missing big")
+	}
+	receiver := counter.NewStore(1)
+	if err := receiver.Merge("big", state); !errors.Is(err, counter.ErrCapacityExceeded) {
+		t.Fatalf("merge = %v, want capacity rejection", err)
+	}
+	if _, ok := receiver.Get("big"); ok {
+		t.Fatal("failed merge planted state")
+	}
+	receiver.SetCapacity(256)
+	if err := receiver.Merge("big", state); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := receiver.Value("big"); v != 9 {
+		t.Fatalf("big = %d, want 9", v)
+	}
+}
+
+// Dropped counter merges heal through the AE round with no LWW traffic:
+// the peer is down for the first round, then converges once reachable.
+func TestCounterAntiEntropyRepairsDroppedMerge(t *testing.T) {
+	ring, err := hashring.New(hashring.DefaultVNodes, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring.AddNode("n1")
+	ring.AddNode("n2")
+	ft := &counterTransport{mgrs: map[string]*Manager{}, fail: map[string]bool{}}
+	st1, st2 := store.NewLRUStore(1<<20, nil), store.NewLRUStore(1<<20, nil)
+	m1 := NewManager(Config{Store: st1, Ring: ring, Self: "n1", Transport: ft, FetchBytes: 1 << 20})
+	m2 := NewManager(Config{Store: st2, Ring: ring, Self: "n2", Transport: ft, FetchBytes: 1 << 20})
+	cs1, cs2 := counter.NewStore(1<<20), counter.NewStore(1<<20)
+	m1.SetCounterStore(cs1)
+	m2.SetCounterStore(cs2)
+	ft.mgrs["n1"] = m1
+	ft.mgrs["n2"] = m2
+	if err := cs1.Increment("k", "n1", 5); err != nil {
+		t.Fatal(err)
+	}
+	ft.fail["n2"] = true
+	m1.RunCounterRound(2)
+	if _, ok := cs2.Get("k"); ok {
+		t.Fatal("peer healed while down")
+	}
+	ft.fail["n2"] = false
+	m1.RunCounterRound(2)
+	if v, ok := cs2.Value("k"); !ok || v != 5 {
+		t.Fatalf("k = %d %v, want 5 after heal", v, ok)
+	}
+	if st1.Size() != 0 || st2.Size() != 0 {
+		t.Fatal("counter repair must not touch LWW stores")
+	}
+}
+
+// Bounded budgets converge across rounds without starving keys behind
+// the cursor: with a 128-byte budget both keys land within 16 rounds.
+func TestCounterCursorRepairsAcrossBoundedBatches(t *testing.T) {
+	m1, _, cs1, cs2 := counterTestPair(t, 128)
+	if err := cs1.Increment("a", "n1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs1.Increment("b", "n1", 3); err != nil {
+		t.Fatal(err)
+	}
+	for range 16 {
+		m1.RunCounterRound(2)
+	}
+	if v, ok := cs2.Value("a"); !ok || v != 1 {
+		t.Fatalf("a = %d %v, want 1", v, ok)
+	}
+	if v, ok := cs2.Value("b"); !ok || v != 3 {
+		t.Fatalf("b = %d %v, want 3", v, ok)
+	}
+}
+
+// A batch budget smaller than one record defers the send: no round is
+// counted, the cursor does not advance, and a later adequate round
+// still delivers from the start (nothing stranded behind the cursor).
+func TestCounterRejectsCounterLargerThanBatchBudget(t *testing.T) {
+	ring, err := hashring.New(hashring.DefaultVNodes, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring.AddNode("n1")
+	ring.AddNode("n2")
+	ft := &counterTransport{mgrs: map[string]*Manager{}, fail: map[string]bool{}}
+	st1, st2 := store.NewLRUStore(1<<20, nil), store.NewLRUStore(1<<20, nil)
+	// Sender budget too small for one record; responder adequate.
+	m1 := NewManager(Config{Store: st1, Ring: ring, Self: "n1", Transport: ft, FetchBytes: 32})
+	m2 := NewManager(Config{Store: st2, Ring: ring, Self: "n2", Transport: ft, FetchBytes: 1 << 20})
+	cs1, cs2 := counter.NewStore(1<<20), counter.NewStore(1<<20)
+	m1.SetCounterStore(cs1)
+	m2.SetCounterStore(cs2)
+	ft.mgrs["n1"] = m1
+	ft.mgrs["n2"] = m2
+	c := metrics.NewCollector()
+	m1.SetMetrics(c)
+	if err := cs1.Increment("k", "n1", 1); err != nil {
+		t.Fatal(err)
+	}
+	m1.RunCounterRound(2)
+	if got := c.CounterAERounds.Load(); got != 0 {
+		t.Fatalf("rounds = %d, want 0 (deferred, not attempted)", got)
+	}
+	if _, ok := cs2.Get("k"); ok {
+		t.Fatal("oversize budget sent state")
+	}
+	if m1.counterCur != "" {
+		t.Fatalf("cursor advanced to %q on a deferred round", m1.counterCur)
+	}
+	m1.fetchBytes = 1 << 20
+	m1.RunCounterRound(2)
+	if v, ok := cs2.Value("k"); !ok || v != 1 {
+		t.Fatalf("k = %d %v, want 1 after adequate round", v, ok)
+	}
+}
+
 func TestCounterBatchCursorWraps(t *testing.T) {
 	m1, _, cs1, _ := counterTestPair(t, 0)
-	_ = cs1.Increment("a", "n1", 1)
-	_ = cs1.Increment("b", "n1", 1)
-	_ = cs1.Increment("c", "n1", 1)
+	cs1.Increment("a", "n1", 1)
+	cs1.Increment("b", "n1", 1)
+	cs1.Increment("c", "n1", 1)
 	// Tiny budget: one record per batch; successive batches advance.
 	first := m1.EncodeCounterBatch(64)
 	dec1, err := counter.DecodeCounterBundle(first)
@@ -130,7 +290,7 @@ func TestCounterBatchCursorWraps(t *testing.T) {
 
 func TestOnCounterRejectsOversizeAndMalformed(t *testing.T) {
 	m1, _, cs1, _ := counterTestPair(t, 16)
-	_ = cs1.Increment("k", "n1", 1)
+	cs1.Increment("k", "n1", 1)
 	full := counter.EncodeCounterBundle(cs1.SortedLiveCounters())
 	if st, _ := m1.OnCounterAntiEntropy(full); st != protocol.StatusCapacityExceeded {
 		t.Fatalf("oversize bundle st = %v, want CapacityExceeded", st)

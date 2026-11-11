@@ -1,16 +1,5 @@
 // Package codec is the shared binary framing kit for the wire-adjacent
-// codecs (protocol, persist, AE, counters). It replaces four copies of
-// the same helpers: the putU8/putU32/putU64 triplets (persist, ae),
-// the bounds-checked reader/writer method sets (protocol, counter), and
-// the u32-length-prefixed blob chains (AE journal, counter codec).
-//
-// Shape notes: Reader/Writer are deliberately NOT generic over
-// endianness — Go methods cannot introduce type parameters, and the
-// order would still dispatch through the binary.ByteOrder interface
-// either way, so a type parameter buys nothing. Generics earn their
-// keep in the free functions instead: Append/Get collapse the
-// per-width helpers into one function each, with the width taken from
-// the value's type.
+// codecs (protocol, persist, AE, counters).
 //
 // Encodings use the specified byte order and append fields in wire order;
 // package golden-vector and fuzz tests verify the resulting formats.

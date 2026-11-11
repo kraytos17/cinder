@@ -31,9 +31,8 @@ type Config struct {
 	Nodes []client.NodeAddr
 	// Client behavior.
 	MaxRetries int
-	// RPCTimeout bounds each RPC. Zero selects the tree-standard 5s:
-	// passing 0 through would trip Client.Do's unconditional deadline
-	// (now+0 expires immediately despite the "0 = no timeout" doc).
+	// RPCTimeout bounds each RPC. Zero selects the tree-standard 5s
+	// default; pass an explicit value for tighter or looser bounds.
 	RPCTimeout time.Duration
 	// Load shape.
 	Workers     int
