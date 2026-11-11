@@ -24,10 +24,12 @@ go test -bench='BenchmarkStorePut' -benchtime=1s -benchmem ./internal/store/
 `-benchmem` is always on: **allocation counts are the GC-tuning signal**.
 A benchmark that is fast but allocates per operation is a latency
 time-bomb under heap pressure — treat `allocs/op` as a first-class result
-next to `ns/op`, and `B/op` as the size of the bomb. The per-round
-anti-entropy digest costs ~1 alloc/entry through `LiveEntries`; that number
-is the standing invitation to reintroduce incremental digests if a profile
-ever demands it.
+next to `ns/op`, and `B/op` as the size of the bomb. Past wins live here
+as regression guards: key canonicalization via `unique.Make` cost ~9% of
+Put CPU plus a weak-backed table per resident key (94% of Put live heap)
+while sharing with nothing, and was removed (Put 2386→685ns, 9→2
+allocs); per-bucket AE digests moved to write-time accumulators
+(scan 1.8ms → 0.5µs copy).
 
 Current families: store put/get/TTL/miss/eviction, ring lookup and
 replica sets, codec encode/decode with MB/s, WAL sequential/batch appends,

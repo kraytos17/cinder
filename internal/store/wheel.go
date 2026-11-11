@@ -17,7 +17,8 @@ type Wheel struct {
 	ticks  uint64
 	heap   []wheelItem
 	pos    map[int]int // id -> heap index, for O(1) removal
-	batch  []int       // reused drain buffer
+	live   map[int]struct{}
+	batch  []int // reused drain buffer
 }
 
 const wheelSlots = 256
@@ -29,7 +30,7 @@ type wheelItem struct {
 
 // NewWheel returns an empty wheel.
 func NewWheel() *Wheel {
-	return &Wheel{pos: make(map[int]int)}
+	return &Wheel{pos: make(map[int]int), live: make(map[int]struct{})}
 }
 
 // Insert schedules id to fire after ttlTicks ticks, replacing any existing
@@ -45,13 +46,23 @@ func (w *Wheel) Insert(id int, ttlTicks uint64) {
 		}
 
 		m[id] = struct{}{}
+		w.live[id] = struct{}{}
 		return
 	}
+
 	heap.Push(w, wheelItem{fireAt: w.ticks + ttlTicks, id: id})
+	w.live[id] = struct{}{}
 }
 
-// Remove cancels any schedule for id.
+// Remove cancels any schedule for id. Unscheduled ids (the common case:
+// fresh or reused node indices are never scheduled) cost one map lookup
+// instead of a 256-slot scan.
 func (w *Wheel) Remove(id int) {
+	if _, ok := w.live[id]; !ok {
+		return
+	}
+
+	delete(w.live, id)
 	for s := range w.slots {
 		if m := w.slots[s]; m != nil {
 			if _, ok := m[id]; ok {
@@ -78,6 +89,7 @@ func (w *Wheel) Tick(onExpired func(id int)) {
 	w.slots[w.cursor] = nil
 	w.batch = w.batch[:0]
 	for id := range m {
+		delete(w.live, id)
 		w.batch = append(w.batch, id)
 	}
 	for _, id := range w.batch {
@@ -88,6 +100,8 @@ func (w *Wheel) Tick(onExpired func(id int)) {
 		if !ok {
 			panic("store: heap held a non-wheelItem")
 		}
+
+		delete(w.live, item.id)
 		onExpired(item.id)
 	}
 }

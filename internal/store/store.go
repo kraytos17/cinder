@@ -11,7 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unique"
 
 	"github.com/kraytos17/cinder/internal/expiry"
 	"github.com/kraytos17/cinder/internal/metrics"
@@ -383,13 +382,6 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.observeVersion(e.Version + 1)
 	idx := s.allocNode(sh)
 	n := &sh.nodes[idx]
-	// Canonicalize the key: the index map copies only the string header,
-	// but every admission otherwise parks a second copy of the bytes next
-	// to the map's. unique's table is weak-backed (verified: dropped keys
-	// are collected), so hot keys converge on one shared backing while
-	// churned keys cost nothing long-term. Lookups above intentionally use
-	// the raw param — equality needs no canonical form.
-	key = unique.Make(key).Value()
 	n.key = key
 	n.entry = e.Clone()
 	sh.index[key] = idx
