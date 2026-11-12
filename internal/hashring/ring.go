@@ -46,10 +46,27 @@ var ErrInvalidReplicaCount = errors.New("hashring: replica count must be between
 var ErrTooManyNodes = errors.New("hashring: consistent hash ring exceeds node index capacity")
 
 type snapshot struct {
-	hashes []uint64
-	nodeIx []uint16 // parallel to hashes: index into nodes
-	nodes  []string
-	loads  []*atomic.Uint64 // parallel to nodes, shared across snapshots
+	hashes  []uint64
+	nodeIx  []uint16 // parallel to hashes: index into nodes
+	nodes   []string
+	loads   []*atomic.Uint64 // parallel to nodes, shared across snapshots
+	version uint64
+}
+
+// NodeStats reports the current physical-node view of a ring.
+type NodeStats struct {
+	ID          string `json:"id"`
+	TokenCount  int    `json:"token_count"`
+	CurrentLoad uint64 `json:"current_load"`
+}
+
+// Stats is an immutable point-in-time description of ring membership.
+type Stats struct {
+	VNodesPerNode int         `json:"vnodes_per_node"`
+	RingVersion   uint64      `json:"ring_version"`
+	Nodes         []NodeStats `json:"nodes"`
+	TotalLoad     uint64      `json:"total_load"`
+	LoadFactor    float64     `json:"load_factor"`
 }
 
 // Ring is a consistent-hash ring. The zero value is unusable; use New.
@@ -117,6 +134,7 @@ func (r *Ring) AddNode(id string) {
 		}
 
 		snap.sort()
+		snap.version = old.version + 1
 		if r.snap.CompareAndSwap(old, snap) {
 			return
 		}
@@ -167,7 +185,9 @@ func (r *Ring) RemoveNode(id string) {
 			snap.hashes = append(snap.hashes, h)
 			snap.nodeIx = append(snap.nodeIx, remap[old.nodeIx[i]])
 		}
+
 		// Removal preserves the relative vnode order, so no re-sort needed.
+		snap.version = old.version + 1
 		if r.snap.CompareAndSwap(old, snap) {
 			return
 		}
@@ -218,6 +238,7 @@ func (r *Ring) SetNodes(ids []string) error {
 		}
 
 		snap.sort()
+		snap.version = old.version + 1
 		if r.snap.CompareAndSwap(old, snap) {
 			return nil
 		}
@@ -406,4 +427,27 @@ func (r *Ring) LoadFactor() float64 {
 // Nodes returns the physical membership in ring order.
 func (r *Ring) Nodes() []string {
 	return append([]string(nil), r.snap.Load().nodes...)
+}
+
+// Stats returns live vnode counts, physical membership, load, and the
+// monotonic membership version from one immutable ring snapshot.
+func (r *Ring) Stats() Stats {
+	snap := r.snap.Load()
+	out := Stats{
+		VNodesPerNode: r.vnodes,
+		RingVersion:   snap.version,
+		Nodes:         make([]NodeStats, len(snap.nodes)),
+	}
+	for i, id := range snap.nodes {
+		load := snap.loads[i].Load()
+		out.Nodes[i] = NodeStats{ID: id, CurrentLoad: load}
+		out.TotalLoad += load
+	}
+	for _, ix := range snap.nodeIx {
+		out.Nodes[ix].TokenCount++
+	}
+	if len(snap.nodes) > 0 {
+		out.LoadFactor = float64(out.TotalLoad) / float64(len(snap.nodes))
+	}
+	return out
 }

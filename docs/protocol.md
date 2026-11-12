@@ -110,8 +110,8 @@ the former on writes, replication uses the latter.
 | 9 | `ANTI_ENTROPY_DIGEST` | initiator sends its group digest, later a bucket refinement for divergent groups (`key` = `bucket-refinement-v3`); see [Anti-Entropy Payloads](#anti-entropy-payloads) |
 | 10 | `ANTI_ENTROPY_SYNC` | entries where the sender wins plus a needlist of key hashes where it loses (partner answers with entries); `key` empty |
 | 11 | `ADMIN_INFO` | request: empty; response: `value` = JSON node info (node_id, port, capacity, store stats, config) |
-| 12 | `ADMIN_CLUSTER` | request: empty; response: `value` = JSON membership array (id, host, port, state, incarnation) |
-| 13 | `ADMIN_RING` | request: empty; response: `value` = JSON ring snapshot (self, vnodes_per_node) |
+| 12 | `ADMIN_CLUSTER` | request: empty; response: `value` = JSON membership array (id, host, port, state, incarnation); includes known dead/suspect nodes |
+| 13 | `ADMIN_RING` | request: empty; response: `value` = JSON live ring stats (`self`, actual `vnodes_per_node`, live `nodes` with token/load stats, `rf`, `ring_version`, total load, load factor) |
 | 14 | `ADMIN_COMPACT` | request: empty; response: `status` = OK on success |
 | 15 | `ADMIN_CONFIG_RELOAD` | request: empty; response: `status` = OK on success |
 | 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK, then server shuts down gracefully |

@@ -35,12 +35,18 @@ type adminClusterNode struct {
 	Port        netport.Port `json:"port"`
 	State       string       `json:"state"`
 	Incarnation uint64       `json:"incarnation"`
+	Standalone  bool         `json:"standalone,omitempty"`
 }
 
 type adminRing struct {
-	Self          string `json:"self"`
-	VNodesPerNode int    `json:"vnodes_per_node"`
-	Note          string `json:"note"`
+	Self          string                `json:"self"`
+	VNodesPerNode int                   `json:"vnodes_per_node"`
+	Note          string                `json:"note"`
+	Nodes         []hashring.NodeStats  `json:"nodes"`
+	ReplicaFactor hashring.ReplicaCount `json:"rf"`
+	RingVersion   uint64                `json:"ring_version"`
+	TotalLoad     uint64                `json:"total_load"`
+	LoadFactor    float64               `json:"load_factor"`
 }
 
 type adminReloadResult struct {
@@ -70,14 +76,15 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		s.ringMu.RLock()
 		table := s.table
 		s.ringMu.RUnlock()
+
 		var nodes []adminClusterNode
-		if table != nil {
+		if table == nil {
+			host, port := s.advertisedAddress()
+			nodes = []adminClusterNode{{ID: s.nodeID, Host: host, Port: port, State: "alive", Incarnation: 1, Standalone: true}}
+		} else {
 			for _, m := range table.Snapshot() {
 				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: m.Port, State: m.State.String(), Incarnation: m.Incarnation})
 			}
-		} else {
-			host, port := s.advertisedAddress()
-			nodes = []adminClusterNode{{ID: s.nodeID, Host: host, Port: port, State: "alive", Incarnation: 1}}
 		}
 
 		if nodes == nil {
@@ -85,9 +92,22 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		}
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(nodes)}
 	case protocol.OpAdminRing:
+		s.ringMu.RLock()
+		ring := s.ring
+		s.ringMu.RUnlock()
+		rf := max(s.replicaFactor(), 1)
+		stats := hashring.Stats{VNodesPerNode: 0, Nodes: []hashring.NodeStats{}}
+		if ring != nil {
+			stats = ring.Stats()
+		}
+		if stats.Nodes == nil {
+			stats.Nodes = []hashring.NodeStats{}
+		}
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminRing{
-			Self: s.nodeID, VNodesPerNode: 150,
-			Note: "ring is an immutable snapshot with 150 vnodes per physical node",
+			Self: s.nodeID, VNodesPerNode: stats.VNodesPerNode,
+			Note:  "ring is an immutable snapshot",
+			Nodes: stats.Nodes, ReplicaFactor: rf, RingVersion: stats.RingVersion,
+			TotalLoad: stats.TotalLoad, LoadFactor: stats.LoadFactor,
 		})}
 	case protocol.OpAdminCompact:
 		if err := s.Compact(); err != nil {

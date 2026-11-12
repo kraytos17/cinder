@@ -197,7 +197,7 @@ func ParsePeers(s string) ([]Peer, error) {
 // caller has completed TLS, secrets, persistence recovery, and replication
 // configuration.
 func (s *Server) ConfigureCluster(peers []Peer) error {
-	ring, err := hashring.New(hashring.DefaultVNodes, 0)
+	ring, err := hashring.New(s.vnodes, 0)
 	if err != nil {
 		return err
 	}

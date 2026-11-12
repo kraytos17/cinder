@@ -82,6 +82,45 @@ func TestMultipleNodes(t *testing.T) {
 	}
 }
 
+func TestStatsReportsLiveTokensLoadAndVersion(t *testing.T) {
+	r, err := New(7, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := r.Stats()
+	if initial.VNodesPerNode != 7 || initial.RingVersion != 0 || len(initial.Nodes) != 0 {
+		t.Fatalf("empty stats = %+v", initial)
+	}
+	if err := r.SetNodes([]string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	r.IncrementLoad("b")
+	got := r.Stats()
+	if got.VNodesPerNode != 7 || got.RingVersion != 1 || len(got.Nodes) != 2 {
+		t.Fatalf("ring stats = %+v", got)
+	}
+	for _, n := range got.Nodes {
+		if n.TokenCount != 7 {
+			t.Errorf("node %q token count = %d, want 7", n.ID, n.TokenCount)
+		}
+		if n.ID == "b" && n.CurrentLoad != 1 {
+			t.Errorf("node b current load = %d, want 1", n.CurrentLoad)
+		}
+	}
+	if err := r.SetNodes([]string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+	if v := r.Stats().RingVersion; v != 2 {
+		t.Fatalf("ring version after membership change = %d, want 2", v)
+	}
+	if err := r.SetNodes([]string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+	if v := r.Stats().RingVersion; v != 2 {
+		t.Fatalf("no-op membership changed version: %d", v)
+	}
+}
+
 func TestAddNodeDistributes(t *testing.T) {
 	r := mustRing(t, 100, 0)
 	r.AddNode("node1")

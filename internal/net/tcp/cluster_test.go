@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/netport"
+	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -53,6 +55,120 @@ func TestAdminClusterNodeStateUsesWireLabels(t *testing.T) {
 		if !found {
 			t.Errorf("admin cluster omitted peer for state %q", tc.want)
 		}
+	}
+}
+
+func TestAdminRingReportsLiveRingStats(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node-a", Store: store.NewLRUStore(1<<20, nil)})
+	defer srv.Shutdown()
+	if err := srv.ConfigureCluster([]tcp.Peer{{ID: "node-b", Host: "b", Port: 7001}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureRebalance(2, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureReplication(2, repl.Async, nil); err != nil {
+		t.Fatal(err)
+	}
+	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminRing})
+	if res.Status != protocol.StatusOK {
+		t.Fatalf("status = %v", res.Status)
+	}
+	var got struct {
+		Self          string `json:"self"`
+		VNodesPerNode int    `json:"vnodes_per_node"`
+		RF            int    `json:"rf"`
+		RingVersion   uint64 `json:"ring_version"`
+		Nodes         []struct {
+			ID         string `json:"id"`
+			TokenCount int    `json:"token_count"`
+		} `json:"nodes"`
+		Note string `json:"note"`
+	}
+	if err := json.Unmarshal(res.Value, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Self != "node-a" || got.VNodesPerNode != hashring.DefaultVNodes || got.RF != 2 {
+		t.Fatalf("ring header = %+v", got)
+	}
+	if len(got.Nodes) != 2 {
+		t.Fatalf("nodes = %+v", got.Nodes)
+	}
+	for _, n := range got.Nodes {
+		if n.TokenCount != hashring.DefaultVNodes {
+			t.Errorf("node %q token count = %d", n.ID, n.TokenCount)
+		}
+	}
+	if strings.Contains(got.Note, "150") {
+		t.Errorf("ring note still hard-codes vnode count: %q", got.Note)
+	}
+	// The ring response is live placement membership: a known-dead peer must
+	// remain in admin cluster but be absent from the ring node list.
+	srv.Table().MarkDead("node-b")
+	clusterRes := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminCluster})
+	var members []adminClusterNodeForTest
+	if err := json.Unmarshal(clusterRes.Value, &members); err != nil {
+		t.Fatal(err)
+	}
+	deadSeen := false
+	for _, m := range members {
+		if m.ID == "node-b" && m.State == "dead" {
+			deadSeen = true
+		}
+	}
+	if !deadSeen {
+		t.Fatalf("cluster view did not retain dead peer: %+v", members)
+	}
+	res = srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminRing})
+	if err := json.Unmarshal(res.Value, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Nodes) != 1 || got.Nodes[0].ID != "node-a" {
+		t.Fatalf("ring still contains dead node: %+v", got.Nodes)
+	}
+}
+
+func TestAdminRingReportsActualNonDefaultVNodes(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node", VNodes: 9, Store: store.NewLRUStore(1<<20, nil)})
+	defer srv.Shutdown()
+	if err := srv.ConfigureCluster(nil); err != nil {
+		t.Fatal(err)
+	}
+	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminRing})
+	if res.Status != protocol.StatusOK {
+		t.Fatalf("status = %v", res.Status)
+	}
+	var got struct {
+		VNodesPerNode int `json:"vnodes_per_node"`
+	}
+	if err := json.Unmarshal(res.Value, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.VNodesPerNode != 9 {
+		t.Fatalf("vnode count = %d, want configured ring count 9", got.VNodesPerNode)
+	}
+}
+
+type adminClusterNodeForTest struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+func TestAdminClusterStandaloneUsesConfiguredAdvertiseAddress(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "alone", AdvertiseHost: "cache.example.test", Port: 7123, Store: store.NewLRUStore(1<<20, nil)})
+	defer srv.Shutdown()
+	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminCluster})
+	var nodes []struct {
+		ID          string       `json:"id"`
+		Host        string       `json:"host"`
+		Port        netport.Port `json:"port"`
+		Incarnation uint64       `json:"incarnation"`
+	}
+	if err := json.Unmarshal(res.Value, &nodes); err != nil {
+		t.Fatal(err)
+	}
+	if len(nodes) != 1 || nodes[0].Host != "cache.example.test" || nodes[0].Port != 7123 || nodes[0].Incarnation != 1 {
+		t.Fatalf("standalone cluster = %+v", nodes)
 	}
 }
 

@@ -112,6 +112,7 @@ type Server struct {
 	ringMu sync.RWMutex
 	ring   *hashring.Ring
 	peers  []Peer
+	vnodes int
 
 	aeMu       sync.RWMutex
 	ae         *ae.Manager
@@ -180,6 +181,7 @@ type ServerConfig struct {
 	NodeID        string
 	Port          netport.Port
 	AdvertiseHost string
+	VNodes        int
 	Store         *store.Store
 	Clock         store.Clock
 }
@@ -192,6 +194,11 @@ func NewServer(cfg ServerConfig) *Server {
 		clock = store.SystemClock{}
 	}
 
+	vnodes := cfg.VNodes
+	if vnodes <= 0 {
+		vnodes = hashring.DefaultVNodes
+	}
+
 	// The counter store starts with one quarter of the LWW capacity. Its
 	// shard count is clamped to at least one, including for zero capacity.
 	counterCap := cfg.Store.Capacity() / 4
@@ -202,6 +209,7 @@ func NewServer(cfg ServerConfig) *Server {
 		nodeID:         cfg.NodeID,
 		port:           cfg.Port,
 		advertiseHost:  cfg.AdvertiseHost,
+		vnodes:         vnodes,
 		clock:          clock,
 		conns:          make(map[net.Conn]struct{}),
 		sem:            make(chan struct{}, maxConnections),
