@@ -71,9 +71,9 @@ func TestValidateCoreFlags(t *testing.T) {
 		{name: "negative tombstone", port: 7000, buckets: 1, tomb: -1, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateCoreFlags(tc.port, tc.buckets, tc.tomb)
-			if (err != nil) != tc.wantErr {
-				t.Fatalf("validateCoreFlags() error = %v, wantErr=%v", err, tc.wantErr)
+			errs := validateCoreFlags(tc.port, tc.buckets, tc.tomb)
+			if (len(errs) != 0) != tc.wantErr {
+				t.Fatalf("validateCoreFlags() errors = %v, wantErr=%v", errs, tc.wantErr)
 			}
 		})
 	}

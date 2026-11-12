@@ -149,6 +149,9 @@ type Server struct {
 
 	tlsMu  sync.RWMutex
 	tlsCfg *tls.Config
+	// TLS file paths for handshake-time certificate loading. The chain is
+	// re-read on every handshake so Reload rotates without restarts.
+	tlsCertFile, tlsKeyFile, tlsCAFile string
 
 	authMu             sync.RWMutex
 	sharedSecret       string

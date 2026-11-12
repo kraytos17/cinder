@@ -41,15 +41,61 @@ func validateListenerHostsWithLookup(bindHost, advertiseHost, metricsHost, grpcH
 	return selfHost, nil
 }
 
-func validateCoreFlags(port, aeBuckets, tombstoneMs int) error {
+func validateCoreFlags(port, aeBuckets, tombstoneMs int) []error {
+	var errs []error
 	if tombstoneMs < 0 {
-		return fmt.Errorf("--tombstone-gc-ms must be >= 0")
+		errs = append(errs, fmt.Errorf("--tombstone-gc-ms must be >= 0"))
 	}
 	if port < 0 || port > 65535 {
-		return fmt.Errorf("--port must be between 0 and 65535")
+		errs = append(errs, fmt.Errorf("--port must be between 0 and 65535"))
 	}
 	if aeBuckets <= 0 {
-		return fmt.Errorf("--anti-entropy-buckets must be positive")
+		errs = append(errs, fmt.Errorf("--anti-entropy-buckets must be positive"))
+	}
+	return errs
+}
+
+func validateAuxPortRange(metricsPort, grpcPort int) error {
+	if metricsPort < 0 || metricsPort > 65535 || grpcPort < 0 || grpcPort > 65535 {
+		return fmt.Errorf("--metrics-port and --grpc-port must be between 0 and 65535")
+	}
+	return nil
+}
+
+func validateNonNegativeIntervals(aeIntervalMs, quarantineIntervalMs, snapshotIntervalS, rpcTimeoutMs, aeFetchBytes int) error {
+	for _, iv := range []struct {
+		name  string
+		value int
+	}{
+		{"--anti-entropy-interval-ms", aeIntervalMs},
+		{"--quarantine-interval-ms", quarantineIntervalMs},
+		{"--snapshot-interval-s", snapshotIntervalS},
+		{"--rpc-timeout-ms", rpcTimeoutMs},
+		{"--anti-entropy-fetch-bytes", aeFetchBytes},
+	} {
+		if iv.value < 0 {
+			return fmt.Errorf("%s must be >= 0", iv.name)
+		}
+	}
+	return nil
+}
+
+func validateCapacity(capacity uint64) error {
+	if capacity == 0 {
+		return fmt.Errorf("--capacity must be positive")
+	}
+	return nil
+}
+
+func validateListenerPortCollisions(port, grpcPort, metricsPort int) error {
+	if grpcPort > 0 && grpcPort == port {
+		return fmt.Errorf("--grpc-port must not equal --port")
+	}
+	if metricsPort > 0 && metricsPort == port {
+		return fmt.Errorf("--metrics-port must not equal --port")
+	}
+	if grpcPort > 0 && metricsPort > 0 && grpcPort == metricsPort {
+		return fmt.Errorf("--grpc-port must not equal --metrics-port")
 	}
 	return nil
 }

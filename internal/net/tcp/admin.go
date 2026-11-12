@@ -43,6 +43,10 @@ type adminRing struct {
 	Note          string `json:"note"`
 }
 
+type adminReloadResult struct {
+	Applied []string `json:"applied"`
+}
+
 func (s *Server) admin(req protocol.Request) protocol.Response {
 	mustJSON := func(v any) []byte {
 		b, err := json.Marshal(v)
@@ -85,13 +89,56 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 			Self: s.nodeID, VNodesPerNode: 150,
 			Note: "ring is an immutable snapshot with 150 vnodes per physical node",
 		})}
-	case protocol.OpAdminCompact, protocol.OpAdminConfigReload:
-		if req.Opcode == protocol.OpAdminCompact {
-			if err := s.Compact(); err != nil {
-				return protocol.Response{Status: protocol.StatusInternalError}
-			}
+	case protocol.OpAdminCompact:
+		if err := s.Compact(); err != nil {
+			return protocol.Response{Status: protocol.StatusInternalError}
 		}
 		return protocol.Response{Status: protocol.StatusOK}
+	case protocol.OpAdminConfigReload:
+		var payload map[string]any
+		if len(req.Value) > 0 {
+			if err := json.Unmarshal(req.Value, &payload); err != nil {
+				return protocol.Response{Status: protocol.StatusInvalidArgument}
+			}
+		}
+
+		var bad []string
+		for k := range payload {
+			if !isReloadableKey(k) {
+				bad = append(bad, k)
+			}
+		}
+		if len(bad) > 0 {
+			return protocol.Response{Status: protocol.StatusInvalidArgument, HasValue: true, Value: mustJSON(map[string]any{
+				"error":      "not reloadable, requires restart",
+				"rejected":   bad,
+				"reloadable": reloadableKeys,
+			})}
+		}
+
+		var rc ReloadableConfig
+		if len(payload) == 0 {
+			return protocol.Response{Status: protocol.StatusOK}
+		}
+
+		raw, err := json.Marshal(payload)
+		if err != nil {
+			return protocol.Response{Status: protocol.StatusInternalError}
+		}
+		if err := json.Unmarshal(raw, &rc); err != nil {
+			return protocol.Response{Status: protocol.StatusInvalidArgument}
+		}
+		if _, err := s.Reload(rc); err != nil {
+			return protocol.Response{Status: protocol.StatusInvalidArgument, HasValue: true, Value: mustJSON(map[string]any{
+				"error": err.Error(),
+			})}
+		}
+
+		present := make([]string, 0, len(payload))
+		for k := range payload {
+			present = append(present, k)
+		}
+		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminReloadResult{Applied: present})}
 	case protocol.OpAdminShutdown:
 		return protocol.Response{Status: protocol.StatusOK}
 	default:

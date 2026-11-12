@@ -544,7 +544,10 @@ both sides of the partition are reconciled by LWW.
 
 Flags only (`cinderd --help` is authoritative); parsed by urfave/cli v3.
 There is no config file and no hot-reload. `config-reload` is accepted and
-answers OK. `cinder-cli` and `cinder-admin` use urfave/cli v3 subcommands;
+answers OK. Startup validates every flag before serving and reports all
+failures at once (exit 2); `--consistency` is always parsed, and at
+replication-factor 1 it is ignored with a warning. Auxiliary listeners must
+not collide with each other or the data port. `cinder-cli` and `cinder-admin` use urfave/cli v3 subcommands;
 their connection flags can appear before the subcommand, as in the existing
 examples. The CLI keeps accepting `--ttl` after set/mset positional arguments.
 

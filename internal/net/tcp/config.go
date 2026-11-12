@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"crypto/tls"
 	"errors"
 	"time"
 
@@ -35,15 +36,19 @@ func (s *Server) ConfigureReplication(rf hashring.ReplicaCount, mode repl.Mode, 
 
 // ConfigureTLS enables TLS with a certificate chain and key, optionally
 // requiring client certificates from the configured CA. Call before Serve;
-// it also enables TLS for inter-node pool connections.
+// it also enables TLS for inter-node pool connections. The certificate is
+// re-read from disk on every handshake, so Reload can rotate it without
+// disturbing established connections.
 func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 	cfg, err := tlscfg.Server(certFile, keyFile, caFile)
 	if err != nil {
 		return err
 	}
 
+	cfg.GetCertificate = s.certReloader()
 	s.tlsMu.Lock()
 	s.tlsCfg = cfg
+	s.tlsCertFile, s.tlsKeyFile, s.tlsCAFile = certFile, keyFile, caFile
 	s.tlsMu.Unlock()
 	s.ringMu.RLock()
 	pool := s.pool
@@ -56,6 +61,43 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 		}
 		pool.SetTLS(ccfg)
 	}
+	return nil
+}
+
+// certReloader returns a GetCertificate callback that loads the currently
+// configured chain from disk. A failed load fails that handshake; the last
+// good in-memory certificate keeps serving until a load succeeds.
+func (s *Server) certReloader() func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		s.tlsMu.RLock()
+		certFile, keyFile := s.tlsCertFile, s.tlsKeyFile
+		s.tlsMu.RUnlock()
+		cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return nil, err
+		}
+		return &cert, nil
+	}
+}
+
+// rotateTLSCertificate swaps the serving certificate after Reload validated
+// the new files. The CA file is unchanged (rotating peer verification
+// requires a restart) and established connections are unaffected.
+func (s *Server) rotateTLSCertificate(certFile, keyFile string, cert tls.Certificate) error {
+	s.tlsMu.RLock()
+	caFile := s.tlsCAFile
+	s.tlsMu.RUnlock()
+	cfg, err := tlscfg.Server(certFile, keyFile, caFile)
+	if err != nil {
+		return err
+	}
+
+	cfg.Certificates = []tls.Certificate{cert}
+	cfg.GetCertificate = s.certReloader()
+	s.tlsMu.Lock()
+	s.tlsCfg = cfg
+	s.tlsCertFile, s.tlsKeyFile = certFile, keyFile
+	s.tlsMu.Unlock()
 	return nil
 }
 
