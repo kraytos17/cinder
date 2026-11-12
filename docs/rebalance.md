@@ -542,8 +542,11 @@ both sides of the partition are reconciled by LWW.
 
 ## Configuration Reference
 
-Flags only (`cinderd --help` is authoritative); there is no config file and
-no hot-reload. `config-reload` is accepted and answers OK.
+Flags only (`cinderd --help` is authoritative); parsed by urfave/cli v3.
+There is no config file and no hot-reload. `config-reload` is accepted and
+answers OK. `cinder-cli` and `cinder-admin` use urfave/cli v3 subcommands;
+their connection flags can appear before the subcommand, as in the existing
+examples. The CLI keeps accepting `--ttl` after set/mset positional arguments.
 
 The data listener defaults to loopback for compatibility. To accept remote
 connections, set `--bind` to a local interface/address (often `0.0.0.0`) and

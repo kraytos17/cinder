@@ -1,21 +1,10 @@
 // Command cinder-cli sends cache and counter operations to a Cinder server.
-//
-// Usage: cinder-cli [--host H] [-p PORT] <command> [key] [value] [extra...]
-//
-// Flags include --ttl MS (set/mset), --client-secret, --verbose, and TLS
-// certificate options. CINDER_CLIENT_SECRET supplies the client secret when
-// the flag is omitted. Authenticated requests require TLS.
-//
-// Commands are get, set, del, ping, info, cluster, ring, mget, mset,
-// get-versioned, counter-incr, counter-decr, and counter-get. Values print
-// raw; misses print "(not found)"; versioned reads include LWW metadata;
-// multi-key commands print "key: value" lines. Output formats are covered
-// by CLI tests.
 package main
 
 import (
+	"context"
 	"crypto/tls"
-	"flag"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urfave/cli/v3"
+
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/tlscfg"
@@ -31,8 +22,52 @@ import (
 
 var version = "dev"
 
-// statusString formats protocol outcomes using the CLI's lowercase,
-// parenthesized status text.
+type operation string
+
+const (
+	opGet          operation = "get"
+	opGetVersioned operation = "get-versioned"
+	opSet          operation = "set"
+	opDel          operation = "del"
+	opPing         operation = "ping"
+	opInfo         operation = "info"
+	opCluster      operation = "cluster"
+	opRing         operation = "ring"
+	opMultiGet     operation = "mget"
+	opMultiSet     operation = "mset"
+	opCounterIncr  operation = "counter-incr"
+	opCounterDecr  operation = "counter-decr"
+	opCounterGet   operation = "counter-get"
+)
+
+type connectionOptions struct {
+	host, tlsCert, tlsKey, tlsCA, clientSecret string
+	port                                       int
+	useTLS                                     bool
+}
+
+func exitWithCode(code int) error { return cli.Exit("", code) }
+
+type keyValuePairs struct {
+	keys, values []string
+}
+
+func parseKeyValuePairs(args []string) (keyValuePairs, error) {
+	if len(args) == 0 || len(args)%2 != 0 {
+		return keyValuePairs{}, errors.New("mset requires key/value pairs")
+	}
+
+	out := keyValuePairs{
+		keys:   make([]string, 0, len(args)/2),
+		values: make([]string, 0, len(args)/2),
+	}
+	for i := 0; i < len(args); i += 2 {
+		out.keys = append(out.keys, args[i])
+		out.values = append(out.values, args[i+1])
+	}
+	return out, nil
+}
+
 func statusString(s protocol.Status) string {
 	switch s {
 	case protocol.StatusOK:
@@ -63,77 +98,116 @@ func statusString(s protocol.Status) string {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("cinder-cli", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	var (
-		host         string
-		port         int
-		verbose      bool
-		useTLS       bool
-		tlsCert      string
-		tlsKey       string
-		tlsCA        string
-		clientSecret string
-		ttlMs        int
-	)
+	args, trailingTTL, err := extractTTL(args)
+	if err != nil {
+		fmt.Fprintln(stderr, "error:", err)
+		return 2
+	}
 
-	fs.StringVar(&host, "host", "127.0.0.1", "Server host")
-	fs.IntVar(&port, "port", 7000, "Server port")
-	fs.IntVar(&port, "p", 7000, "Server port (shorthand)")
-	fs.BoolVar(&verbose, "verbose", false, "Enable verbose (debug) logging")
-	fs.BoolVar(&verbose, "v", false, "Enable verbose (debug) logging (shorthand)")
-	fs.BoolVar(&useTLS, "tls", false, "Enable TLS encryption")
-	fs.StringVar(&tlsCert, "tls-cert", "", "Path to TLS certificate chain (PEM)")
-	fs.StringVar(&tlsKey, "tls-key", "", "Path to TLS private key (PEM)")
-	fs.StringVar(&tlsCA, "tls-ca", "", "Path to CA certificate for peer verification (PEM)")
-	fs.StringVar(&clientSecret, "client-secret", "", "Shared secret for client authentication (or CINDER_CLIENT_SECRET)")
-	fs.IntVar(&ttlMs, "ttl", 0, "TTL in ms (set/mset only)")
-	showVersion := fs.Bool("version", false, "print version and exit")
-	// The flag package stops parsing at the first positional. Extract --ttl
-	// first so it can appear after mset positional arguments.
-	args, ttlStr, ttlErr := extractTTL(args)
-	if ttlErr != nil {
-		fmt.Fprintln(stderr, "error:", ttlErr)
+	root := &cli.Command{
+		Name:                   "cinder-cli",
+		Usage:                  "send cache and counter operations to a Cinder server",
+		Version:                version,
+		HideVersion:            true,
+		Suggest:                false,
+		Writer:                 stdout,
+		ErrWriter:              stderr,
+		HideHelpCommand:        true,
+		UseShortOptionHandling: true,
+		ExitErrHandler:         func(context.Context, *cli.Command, error) {},
+		Flags: []cli.Flag{
+			&cli.StringFlag{Name: "host", Value: "127.0.0.1", Usage: "Server host"},
+			&cli.IntFlag{Name: "port", Aliases: []string{"p"}, Value: 7000, Usage: "Server port"},
+			&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Usage: "Enable verbose (debug) logging"},
+			&cli.BoolFlag{Name: "tls", Usage: "Enable TLS encryption"},
+			&cli.StringFlag{Name: "tls-cert", Usage: "Path to TLS certificate chain (PEM)"},
+			&cli.StringFlag{Name: "tls-key", Usage: "Path to TLS private key (PEM)"},
+			&cli.StringFlag{Name: "tls-ca", Usage: "Path to CA certificate for peer verification (PEM)"},
+			&cli.StringFlag{Name: "client-secret", Usage: "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"},
+			&cli.IntFlag{Name: "ttl", Usage: "TTL in ms (set/mset only)"},
+			&cli.BoolFlag{Name: "version", Usage: "print version and exit"},
+		},
+		Commands: []*cli.Command{
+			{Name: string(opGet), Usage: "get a value", Action: cliCommandAction(opGet, trailingTTL, stdout, stderr)},
+			{Name: string(opGetVersioned), Usage: "get a value with LWW metadata", Action: cliCommandAction(opGetVersioned, trailingTTL, stdout, stderr)},
+			{Name: string(opSet), Usage: "set a value", Action: cliCommandAction(opSet, trailingTTL, stdout, stderr)},
+			{Name: string(opDel), Usage: "delete a key", Action: cliCommandAction(opDel, trailingTTL, stdout, stderr)},
+			{Name: string(opPing), Usage: "ping the server", Action: cliCommandAction(opPing, trailingTTL, stdout, stderr)},
+			{Name: string(opInfo), Usage: "show node information", Action: cliCommandAction(opInfo, trailingTTL, stdout, stderr)},
+			{Name: string(opCluster), Usage: "show cluster membership", Action: cliCommandAction(opCluster, trailingTTL, stdout, stderr)},
+			{Name: string(opRing), Usage: "show ring information", Action: cliCommandAction(opRing, trailingTTL, stdout, stderr)},
+			{Name: string(opMultiGet), Usage: "get multiple values", Action: cliCommandAction(opMultiGet, trailingTTL, stdout, stderr)},
+			{Name: string(opMultiSet), Usage: "set multiple values", Action: cliCommandAction(opMultiSet, trailingTTL, stdout, stderr)},
+			{Name: string(opCounterIncr), Usage: "increment a counter", Action: cliCommandAction(opCounterIncr, trailingTTL, stdout, stderr)},
+			{Name: string(opCounterDecr), Usage: "decrement a counter", Action: cliCommandAction(opCounterDecr, trailingTTL, stdout, stderr)},
+			{Name: string(opCounterGet), Usage: "read a counter", Action: cliCommandAction(opCounterGet, trailingTTL, stdout, stderr)},
+		},
+		Action: func(_ context.Context, cmd *cli.Command) error {
+			if cmd.NArg() > 0 {
+				fmt.Fprintf(stderr, "error: unknown command: %s\n", cmd.Args().First())
+				return cli.Exit("", 1)
+			}
+			if cmd.Bool("version") {
+				fmt.Fprintf(stdout, "cinder-cli (go) %s\n", version)
+				return nil
+			}
+
+			fmt.Fprintln(stderr, "error: command required: get|set|del|ping|info|cluster|ring|mget|mset|get-versioned|counter-incr|counter-decr|counter-get")
+			return cli.Exit("", 2)
+		},
+	}
+
+	err = root.Run(context.Background(), append([]string{"cinder-cli"}, args...))
+	if err != nil {
+		if ec, ok := errors.AsType[cli.ExitCoder](err); ok {
+			return ec.ExitCode()
+		}
+
+		fmt.Fprintln(stderr, "error:", err)
 		return 2
 	}
-	if err := fs.Parse(args); err != nil {
-		return 2
+	return 0
+}
+
+func cliCommandAction(op operation, trailingTTL string, stdout, stderr io.Writer) cli.ActionFunc {
+	return func(_ context.Context, cmd *cli.Command) error {
+		return executeCommand(op, readConnectionOptions(cmd), cmd.Args().Slice(), cmd.Int("ttl"), trailingTTL, stdout, stderr)
 	}
-	if ttlStr != "" && ttlMs == 0 {
-		n, err := strconv.Atoi(ttlStr)
+}
+
+func readConnectionOptions(cmd *cli.Command) connectionOptions {
+	secret := cmd.String("client-secret")
+	if secret == "" {
+		secret = os.Getenv("CINDER_CLIENT_SECRET")
+	}
+	return connectionOptions{
+		host: cmd.String("host"), port: cmd.Int("port"), useTLS: cmd.Bool("tls"),
+		tlsCert: cmd.String("tls-cert"), tlsKey: cmd.String("tls-key"), tlsCA: cmd.String("tls-ca"), clientSecret: secret,
+	}
+}
+
+func executeCommand(op operation, conn connectionOptions, args []string, ttlMs int, trailingTTL string, stdout, stderr io.Writer) error {
+	if trailingTTL != "" && ttlMs == 0 {
+		n, err := strconv.Atoi(trailingTTL)
 		if err != nil || n < 0 {
 			fmt.Fprintln(stderr, "error: invalid --ttl value")
-			return 2
+			return exitWithCode(2)
 		}
 		ttlMs = n
 	}
-	if *showVersion {
-		fmt.Fprintf(stdout, "cinder-cli (go) %s\n", version)
-		return 0
-	}
 
 	var tlsCfg *tls.Config
-	if useTLS {
+	if conn.useTLS {
 		var err error
-		tlsCfg, err = tlscfg.Client(tlsCert, tlsKey, tlsCA)
+		tlsCfg, err = tlscfg.Client(conn.tlsCert, conn.tlsKey, conn.tlsCA)
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
-			return 1
+			return exitWithCode(1)
 		}
 	}
-	if clientSecret == "" {
-		clientSecret = os.Getenv("CINDER_CLIENT_SECRET")
-	}
 
-	pos := fs.Args()
-	if len(pos) == 0 {
-		fmt.Fprintln(stderr, "error: command required: get|set|del|ping|info|cluster|ring|mget|mset|get-versioned|counter-incr|counter-decr|counter-get")
-		return 2
-	}
-
-	cmd, rest := pos[0], pos[1:]
-	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	auth := client.Secrets{Client: clientSecret}
+	addr := net.JoinHostPort(conn.host, strconv.Itoa(conn.port))
+	auth := client.Secrets{Client: conn.clientSecret}
 	dial := func() (*client.Client, error) {
 		var c *client.Client
 		var err error
@@ -142,6 +216,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		} else {
 			c, err = client.Dial(addr, 5*time.Second)
 		}
+
 		if err != nil {
 			return nil, err
 		}
@@ -150,64 +225,66 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return c, nil
 	}
 
-	switch cmd {
-	case "mget":
-		if len(rest) == 0 {
+	switch op {
+	case opMultiGet:
+		if len(args) == 0 {
 			fmt.Fprintln(stderr, "error: mget requires at least one key")
-			return 1
+			return exitWithCode(1)
 		}
-		return runMultiGet(dial, rest, stdout, stderr)
-	case "mset":
-		if len(rest) == 0 || len(rest)%2 != 0 {
-			fmt.Fprintln(stderr, "error: mset requires key/value pairs")
-			return 1
+		return codeError(runMultiGet(dial, args, stdout, stderr))
+	case opMultiSet:
+		pairs, err := parseKeyValuePairs(args)
+		if err != nil {
+			fmt.Fprintln(stderr, "error:", err)
+			return exitWithCode(1)
 		}
-
-		var keys, values []string
-		for i := 0; i < len(rest); i += 2 {
-			keys = append(keys, rest[i])
-			values = append(values, rest[i+1])
-		}
-		return runMultiSet(dial, keys, values, ttlMs, stdout, stderr)
-	case "get", "get-versioned", "set", "del", "ping", "info", "cluster", "ring":
+		return codeError(runMultiSet(dial, pairs.keys, pairs.values, ttlMs, stdout, stderr))
+	case opGet, opGetVersioned, opSet, opDel, opPing, opInfo, opCluster, opRing:
 		key, value := "", ""
-		if len(rest) > 0 {
-			key = rest[0]
+		if len(args) > 0 {
+			key = args[0]
 		}
-		if len(rest) > 1 {
-			value = rest[1]
+		if len(args) > 1 {
+			value = args[1]
 		}
-		return runSingle(dial, cmd, key, value, ttlMs, stdout, stderr)
-	case "counter-incr", "counter-decr":
-		if len(rest) == 0 {
-			fmt.Fprintln(stderr, "error: "+cmd+" requires a key")
-			return 2
+		return codeError(runSingle(dial, string(op), key, value, ttlMs, stdout, stderr))
+	case opCounterIncr, opCounterDecr:
+		if len(args) == 0 {
+			fmt.Fprintf(stderr, "error: %s requires a key\n", op)
+			return exitWithCode(2)
 		}
 
-		var delta uint64 = 1
-		if len(rest) > 1 {
-			var err error
-			delta, err = strconv.ParseUint(rest[1], 10, 64)
+		delta := uint64(1)
+		if len(args) > 1 {
+			parsed, err := strconv.ParseUint(args[1], 10, 64)
 			if err != nil {
 				fmt.Fprintln(stderr, "error: invalid delta (want 0..2^64-1)")
-				return 2
+				return exitWithCode(2)
 			}
+			delta = parsed
 		}
-		return runCounterAdjust(dial, rest[0], delta, cmd == "counter-decr", stdout, stderr)
-	case "counter-get":
-		if len(rest) == 0 {
+		return codeError(runCounterAdjust(dial, args[0], delta, op == opCounterDecr, stdout, stderr))
+	case opCounterGet:
+		if len(args) == 0 {
 			fmt.Fprintln(stderr, "error: counter-get requires a key")
-			return 2
+			return exitWithCode(2)
 		}
-		return runCounterGet(dial, rest[0], stdout, stderr)
+		return codeError(runCounterGet(dial, args[0], stdout, stderr))
 	default:
-		fmt.Fprintf(stderr, "error: unknown command: %s\n", cmd)
-		return 1
+		fmt.Fprintf(stderr, "error: unknown command: %s\n", op)
+		return exitWithCode(1)
 	}
 }
 
-// extractTTL pulls a trailing/embedded --ttl out of raw args so flags can
-// follow positionals. Returns the remaining args and the raw ttl string.
+func codeError(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return exitWithCode(code)
+}
+
+// extractTTL preserves the established `mset KEY VALUE --ttl MS` spelling,
+// since command flags otherwise parse before positional arguments.
 func extractTTL(args []string) ([]string, string, error) {
 	var out []string
 	ttl := ""
@@ -231,6 +308,4 @@ func extractTTL(args []string) ([]string, string, error) {
 	return out, ttl, nil
 }
 
-func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
-}
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

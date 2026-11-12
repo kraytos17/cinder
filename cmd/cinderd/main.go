@@ -4,8 +4,8 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/pprof"
@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/urfave/cli/v3"
 
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
@@ -30,13 +32,8 @@ import (
 	"github.com/kraytos17/cinder/internal/tlscfg"
 )
 
-// version is the release tag, optionally set with -ldflags
-// "-X main.version=X". When it remains "dev", buildVersion reports the
-// module version or VCS revision embedded by the Go toolchain when available.
 var version = "dev"
 
-// buildVersion reports the stamped version, then the module version, then
-// a short VCS revision, and finally "dev" when build metadata is unavailable.
 func buildVersion() string {
 	if version != "dev" {
 		return version
@@ -57,228 +54,304 @@ func buildVersion() string {
 	return version
 }
 
-func main() {
-	var (
-		port               = flag.Int("port", 7000, "TCP listen port")
-		bindHost           = flag.String("bind", "127.0.0.1", "TCP listener bind host or IP")
-		advertiseHost      = flag.String("advertise-host", "", "reachable host advertised to cluster peers (defaults to --bind; required with wildcard --bind)")
-		nodeID             = flag.String("node-id", "node1", "stable node identifier")
-		capacity           = flag.Uint64("capacity", 67_108_864, "store capacity in bytes")
-		peers              = flag.String("peers", "", "comma-separated id@host:port cluster members")
-		replFact           = flag.Int("replication-factor", 1, "replica count (1 = none)")
-		consist            = flag.String("consistency", "async", "write consistency: async|quorum")
-		gossipMs           = flag.Int("gossip-interval-ms", 1000, "gossip round interval")
-		probeMs            = flag.Int("ping-interval-ms", 1000, "failure-detector probe interval")
-		suspectMs          = flag.Int("suspect-timeout-ms", 3000, "suspect and dead escalation timeout")
-		gossipRPCTimeoutMs = flag.Int("gossip-rpc-timeout-ms", 0, "gossip/probe RPC deadline in milliseconds (0 = min(ping interval, 1s))")
-		aeInterval         = flag.Int("anti-entropy-interval-ms", 30000, "anti-entropy round interval")
-		aeBuckets          = flag.Int("anti-entropy-buckets", 256, "anti-entropy digest buckets")
-		quarantineMs       = flag.Int("quarantine-interval-ms", 10000, "rejoin warming window before a node receives migrated keys (0 = disabled)")
-		grpcPort           = flag.Int("grpc-port", 0, "gRPC gateway port (0 = disabled)")
-		grpcBind           = flag.String("grpc-bind", "127.0.0.1", "gRPC gateway bind host or IP")
-		metricsPort        = flag.Int("metrics-port", 0, "Prometheus /metrics HTTP port (0 = disabled)")
-		metricsBind        = flag.String("metrics-bind", "127.0.0.1", "metrics and pprof bind host or IP")
-		tls                = flag.Bool("tls", false, "enable TLS encryption")
-		tlsCert            = flag.String("tls-cert", "", "path to TLS certificate chain (PEM)")
-		tlsKey             = flag.String("tls-key", "", "path to TLS private key (PEM)")
-		tlsCA              = flag.String("tls-ca", "", "path to CA certificate for peer verification (PEM)")
-		sharedSecret       = flag.String("shared-secret", "", "shared secret for node authentication (or CINDER_SHARED_SECRET)")
-		clientSecret       = flag.String("client-shared-secret", "", "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)")
-		enablePersist      = flag.Bool("enable-persistence", false, "enable WAL + snapshots")
-		dataDir            = flag.String("data-dir", "", "persistence directory (required with --enable-persistence)")
-		snapshotSecs       = flag.Int("snapshot-interval-s", 60, "seconds between automatic snapshots (0 = disabled)")
-		maxWALBytes        = flag.Uint64("max-wal-bytes", 64<<20, "active WAL bytes before out-of-cycle compact (0 = disabled)")
-		maxWALEntries      = flag.Uint64("max-wal-entries", 10000, "active WAL records before out-of-cycle compact (0 = disabled)")
-		rpcTimeoutMs       = flag.Int("rpc-timeout-ms", 5000, "replication and anti-entropy RPC deadline in milliseconds (0 = no timeout)")
-		aeFetchBytes       = flag.Int("anti-entropy-fetch-bytes", 1<<20, "per-round anti-entropy repair fetch budget in bytes")
-		maxHintBytes       = flag.Uint64("max-hint-bytes", 0, "hinted-handoff byte budget (0 = default 64MiB)")
-		tombstoneMs        = flag.Int("tombstone-gc-ms", 0, "delete-marker GC grace in milliseconds (0 = default 5min)")
-		evictPolicy        = flag.String("eviction-policy", "lru", "eviction policy: lru|lfu")
-		logLevel           = flag.String("log-level", "info", "log level: trace|debug|info|warn|error")
-		showVers           = flag.Bool("version", false, "print version and exit")
-	)
+type daemonConfig struct {
+	port, grpcPort, metricsPort                                       int
+	bindHost, advertiseHost, grpcBind, metricsBind                    string
+	nodeID, peers, consistency, evictionPolicy, logLevel              string
+	replicationFactor, gossipIntervalMs, probeIntervalMs, suspectMs   int
+	gossipRPCTimeoutMs, aeIntervalMs, aeBuckets, quarantineIntervalMs int
+	capacity, maxWALBytes, maxWALEntries, maxHintBytes                uint64
+	tls, enablePersistence                                            bool
+	tlsCert, tlsKey, tlsCA, sharedSecret, clientSecret, dataDir       string
+	snapshotIntervalS, rpcTimeoutMs, aeFetchBytes, tombstoneGCMS      int
+}
 
-	flag.Parse()
-	if *showVers {
-		fmt.Printf("cinderd (go) %s\n", buildVersion())
-		return
+func defaultDaemonConfig() daemonConfig {
+	return daemonConfig{
+		port: 7000, bindHost: "127.0.0.1", nodeID: "node1", capacity: 67_108_864,
+		replicationFactor: 1, consistency: "async", gossipIntervalMs: 1000,
+		probeIntervalMs: 1000, suspectMs: 3000, aeIntervalMs: 30000,
+		aeBuckets: 256, quarantineIntervalMs: 10000, grpcBind: "127.0.0.1",
+		metricsBind: "127.0.0.1", snapshotIntervalS: 60, maxWALBytes: 64 << 20,
+		maxWALEntries: 10000, rpcTimeoutMs: 5000, aeFetchBytes: 1 << 20,
+		evictionPolicy: "lru", logLevel: "info",
+	}
+}
+
+func (cfg daemonConfig) flags() []cli.Flag {
+	return []cli.Flag{
+		&cli.IntFlag{Name: "port", Value: cfg.port, Usage: "TCP listen port"},
+		&cli.StringFlag{Name: "bind", Value: cfg.bindHost, Usage: "TCP listener bind host or IP"},
+		&cli.StringFlag{Name: "advertise-host", Value: cfg.advertiseHost, Usage: "reachable host advertised to cluster peers (defaults to --bind; required with wildcard --bind)"},
+		&cli.StringFlag{Name: "node-id", Value: cfg.nodeID, Usage: "stable node identifier"},
+		&cli.Uint64Flag{Name: "capacity", Value: cfg.capacity, Usage: "store capacity in bytes"},
+		&cli.StringFlag{Name: "peers", Value: cfg.peers, Usage: "comma-separated id@host:port cluster members"},
+		&cli.IntFlag{Name: "replication-factor", Value: cfg.replicationFactor, Usage: "replica count (1 = none)"},
+		&cli.StringFlag{Name: "consistency", Value: cfg.consistency, Usage: "write consistency: async|quorum"},
+		&cli.IntFlag{Name: "gossip-interval-ms", Value: cfg.gossipIntervalMs, Usage: "gossip round interval"},
+		&cli.IntFlag{Name: "ping-interval-ms", Value: cfg.probeIntervalMs, Usage: "failure-detector probe interval"},
+		&cli.IntFlag{Name: "suspect-timeout-ms", Value: cfg.suspectMs, Usage: "suspect and dead escalation timeout"},
+		&cli.IntFlag{Name: "gossip-rpc-timeout-ms", Value: cfg.gossipRPCTimeoutMs, Usage: "gossip/probe RPC deadline in milliseconds (0 = min(ping interval, 1s))"},
+		&cli.IntFlag{Name: "anti-entropy-interval-ms", Value: cfg.aeIntervalMs, Usage: "anti-entropy round interval"},
+		&cli.IntFlag{Name: "anti-entropy-buckets", Value: cfg.aeBuckets, Usage: "anti-entropy digest buckets"},
+		&cli.IntFlag{Name: "quarantine-interval-ms", Value: cfg.quarantineIntervalMs, Usage: "rejoin warming window (0 = disabled)"},
+		&cli.IntFlag{Name: "grpc-port", Value: cfg.grpcPort, Usage: "gRPC gateway port (0 = disabled)"},
+		&cli.StringFlag{Name: "grpc-bind", Value: cfg.grpcBind, Usage: "gRPC gateway bind host or IP"},
+		&cli.IntFlag{Name: "metrics-port", Value: cfg.metricsPort, Usage: "Prometheus /metrics HTTP port (0 = disabled)"},
+		&cli.StringFlag{Name: "metrics-bind", Value: cfg.metricsBind, Usage: "metrics and pprof bind host or IP"},
+		&cli.BoolFlag{Name: "tls", Value: cfg.tls, Usage: "enable TLS encryption"},
+		&cli.StringFlag{Name: "tls-cert", Value: cfg.tlsCert, Usage: "path to TLS certificate chain (PEM)"},
+		&cli.StringFlag{Name: "tls-key", Value: cfg.tlsKey, Usage: "path to TLS private key (PEM)"},
+		&cli.StringFlag{Name: "tls-ca", Value: cfg.tlsCA, Usage: "path to CA certificate for peer verification (PEM)"},
+		&cli.StringFlag{Name: "shared-secret", Value: cfg.sharedSecret, Usage: "shared secret for node authentication (or CINDER_SHARED_SECRET)"},
+		&cli.StringFlag{Name: "client-shared-secret", Value: cfg.clientSecret, Usage: "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)"},
+		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.enablePersistence, Usage: "enable WAL + snapshots"},
+		&cli.StringFlag{Name: "data-dir", Value: cfg.dataDir, Usage: "persistence directory (required with --enable-persistence)"},
+		&cli.IntFlag{Name: "snapshot-interval-s", Value: cfg.snapshotIntervalS, Usage: "seconds between automatic snapshots (0 = disabled)"},
+		&cli.Uint64Flag{Name: "max-wal-bytes", Value: cfg.maxWALBytes, Usage: "active WAL bytes before out-of-cycle compact (0 = disabled)"},
+		&cli.Uint64Flag{Name: "max-wal-entries", Value: cfg.maxWALEntries, Usage: "active WAL records before out-of-cycle compact (0 = disabled)"},
+		&cli.IntFlag{Name: "rpc-timeout-ms", Value: cfg.rpcTimeoutMs, Usage: "replication and anti-entropy RPC deadline in milliseconds (0 = no timeout)"},
+		&cli.IntFlag{Name: "anti-entropy-fetch-bytes", Value: cfg.aeFetchBytes, Usage: "per-round anti-entropy repair fetch budget in bytes"},
+		&cli.Uint64Flag{Name: "max-hint-bytes", Value: cfg.maxHintBytes, Usage: "hinted-handoff byte budget (0 = default 64MiB)"},
+		&cli.IntFlag{Name: "tombstone-gc-ms", Value: cfg.tombstoneGCMS, Usage: "delete-marker GC grace in milliseconds (0 = default 5min)"},
+		&cli.StringFlag{Name: "eviction-policy", Value: cfg.evictionPolicy, Usage: "eviction policy: lru|lfu"},
+		&cli.StringFlag{Name: "log-level", Value: cfg.logLevel, Usage: "log level: trace|debug|info|warn|error"},
+		&cli.BoolFlag{Name: "version", Value: false, Usage: "print version and exit"},
+	}
+}
+
+func readDaemonConfig(cmd *cli.Command) daemonConfig {
+	cfg := daemonConfig{
+		port: cmd.Int("port"), bindHost: cmd.String("bind"), advertiseHost: cmd.String("advertise-host"),
+		nodeID: cmd.String("node-id"), capacity: cmd.Uint64("capacity"), peers: cmd.String("peers"),
+		replicationFactor: cmd.Int("replication-factor"), consistency: cmd.String("consistency"),
+		gossipIntervalMs: cmd.Int("gossip-interval-ms"), probeIntervalMs: cmd.Int("ping-interval-ms"),
+		suspectMs: cmd.Int("suspect-timeout-ms"), gossipRPCTimeoutMs: cmd.Int("gossip-rpc-timeout-ms"),
+		aeIntervalMs: cmd.Int("anti-entropy-interval-ms"), aeBuckets: cmd.Int("anti-entropy-buckets"),
+		quarantineIntervalMs: cmd.Int("quarantine-interval-ms"), grpcPort: cmd.Int("grpc-port"),
+		grpcBind: cmd.String("grpc-bind"), metricsPort: cmd.Int("metrics-port"), metricsBind: cmd.String("metrics-bind"),
+		tls: cmd.Bool("tls"), tlsCert: cmd.String("tls-cert"), tlsKey: cmd.String("tls-key"), tlsCA: cmd.String("tls-ca"),
+		sharedSecret: cmd.String("shared-secret"), clientSecret: cmd.String("client-shared-secret"),
+		enablePersistence: cmd.Bool("enable-persistence"), dataDir: cmd.String("data-dir"),
+		snapshotIntervalS: cmd.Int("snapshot-interval-s"), maxWALBytes: cmd.Uint64("max-wal-bytes"),
+		maxWALEntries: cmd.Uint64("max-wal-entries"), rpcTimeoutMs: cmd.Int("rpc-timeout-ms"),
+		aeFetchBytes: cmd.Int("anti-entropy-fetch-bytes"), maxHintBytes: cmd.Uint64("max-hint-bytes"),
+		tombstoneGCMS: cmd.Int("tombstone-gc-ms"), evictionPolicy: cmd.String("eviction-policy"), logLevel: cmd.String("log-level"),
 	}
 
-	selfHost, err := validateListenerHosts(*bindHost, *advertiseHost, *metricsBind, *grpcBind)
+	cfg.sharedSecret = configuredSecret(cfg.sharedSecret, "CINDER_SHARED_SECRET")
+	cfg.clientSecret = configuredSecret(cfg.clientSecret, "CINDER_CLIENT_SECRET")
+	return cfg
+}
+
+func run(args []string, stdout, stderr io.Writer) int {
+	cfg := defaultDaemonConfig()
+	root := &cli.Command{
+		Name:                   "cinderd",
+		Usage:                  "run a Cinder cache node",
+		Version:                buildVersion(),
+		HideVersion:            true,
+		Suggest:                false,
+		Writer:                 stdout,
+		ErrWriter:              stderr,
+		HideHelpCommand:        true,
+		UseShortOptionHandling: true,
+		ExitErrHandler:         func(context.Context, *cli.Command, error) {},
+		Flags:                  cfg.flags(),
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.Bool("version") {
+				fmt.Fprintf(stdout, "cinderd (go) %s\n", buildVersion())
+				return nil
+			}
+			return runDaemon(ctx, readDaemonConfig(cmd), stderr)
+		},
+	}
+
+	err := root.Run(context.Background(), append([]string{"cinderd"}, args...))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, err)
+		if ec, ok := errors.AsType[cli.ExitCoder](err); ok {
+			return ec.ExitCode()
+		}
+		return 2
+	}
+	return 0
+}
+
+func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
+	if cfg.tls {
+		if cfg.tlsCert == "" || cfg.tlsKey == "" {
+			return fmt.Errorf("--tls requires --tls-cert and --tls-key")
+		}
+		if err := srv.ConfigureTLS(cfg.tlsCert, cfg.tlsKey, cfg.tlsCA); err != nil {
+			return fmt.Errorf("tls: %w", err)
+		}
+	}
+	if cfg.sharedSecret != "" || cfg.clientSecret != "" {
+		if err := srv.ConfigureSecrets(cfg.sharedSecret, cfg.clientSecret); err != nil {
+			return fmt.Errorf("secrets: %w", err)
+		}
+	}
+	if cfg.enablePersistence {
+		if cfg.dataDir == "" {
+			return fmt.Errorf("--data-dir is required with --enable-persistence")
+		}
+		if err := srv.ConfigurePersistence(cfg.dataDir); err != nil {
+			return fmt.Errorf("persistence: %w", err)
+		}
+
+		srv.SetSnapshotInterval(time.Duration(cfg.snapshotIntervalS) * time.Second)
+		srv.SetMaxWALBytes(cfg.maxWALBytes)
+		srv.SetMaxWALEntries(cfg.maxWALEntries)
+	}
+	return nil
+}
+
+func configureReplication(srv *tcp.Server, st *store.Store, cfg daemonConfig, peerList []tcp.Peer, replicaCount hashring.ReplicaCount) error {
+	if replicaCount <= 1 {
+		return nil
 	}
 
-	lvl, err := log.ParseLevel(*logLevel)
+	mode, err := repl.ParseMode(cfg.consistency)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
+		return daemonUsageError(errors.New("--consistency must be async|quorum"))
 	}
 
-	logger := log.New(os.Stderr, lvl)
-	peerList, err := tcp.ParsePeers(*peers)
+	addrs := make([]client.NodeAddr, 0, len(peerList))
+	for _, p := range peerList {
+		addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
+	}
+
+	pool := client.NewPool(addrs, time.Duration(cfg.rpcTimeoutMs)*time.Millisecond)
+	if cfg.tls {
+		ccfg, err := tlscfg.Client(cfg.tlsCert, cfg.tlsKey, cfg.tlsCA)
+		if err != nil {
+			return daemonUsageError(fmt.Errorf("pool tls: %w", err))
+		}
+		pool.SetTLS(ccfg)
+	}
+	if cfg.sharedSecret != "" {
+		pool.SetSecrets(client.Secrets{NodeID: cfg.nodeID, Shared: cfg.sharedSecret})
+	}
+
+	mgr := repl.NewManager(repl.Config{Local: st, Self: cfg.nodeID, Clock: nil, Transport: pool})
+	if cfg.maxHintBytes > 0 {
+		mgr.SetMaxHintBytes(cfg.maxHintBytes)
+	}
+	if err := srv.ConfigureReplication(replicaCount, mode, mgr); err != nil {
+		return daemonUsageError(fmt.Errorf("replication configuration: %w", err))
+	}
+	if cfg.enablePersistence {
+		j, _, err := ae.OpenJournal(filepath.Join(cfg.dataDir, "hints.log"), mgr.HintQueue())
+		if err != nil {
+			return daemonUsageError(fmt.Errorf("hint journal: %w", err))
+		}
+		mgr.SetHintJournal(j)
+	}
+	return nil
+}
+
+func daemonUsageError(err error) error   { return cli.Exit("cinderd: "+err.Error(), 2) }
+func daemonRuntimeError(err error) error { return cli.Exit("cinderd: "+err.Error(), 1) }
+
+func runDaemon(parent context.Context, cfg daemonConfig, stderr io.Writer) error {
+	selfHost, err := validateListenerHosts(cfg.bindHost, cfg.advertiseHost, cfg.metricsBind, cfg.grpcBind)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
+		return daemonUsageError(err)
 	}
-	if err := validateClusterPort(*port, len(peerList)); err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
+	if cfg.metricsPort < 0 || cfg.metricsPort > 65535 || cfg.grpcPort < 0 || cfg.grpcPort > 65535 {
+		return daemonUsageError(errors.New("--metrics-port and --grpc-port must be between 0 and 65535"))
+	}
+	if err := validateCoreFlags(cfg.port, cfg.aeBuckets, cfg.tombstoneGCMS); err != nil {
+		return daemonUsageError(err)
 	}
 
-	gossipRPCTimeout, err := clusterRPCTimeout(*probeMs, *suspectMs, *gossipMs, *gossipRPCTimeoutMs)
+	peerList, err := tcp.ParsePeers(cfg.peers)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
+		return daemonUsageError(err)
+	}
+	if err := validateClusterPort(cfg.port, len(peerList)); err != nil {
+		return daemonUsageError(err)
 	}
 
-	replicaCount, err := hashring.NewReplicaCount(*replFact)
+	gossipTimeout, err := clusterRPCTimeout(cfg.probeIntervalMs, cfg.suspectMs, cfg.gossipIntervalMs, cfg.gossipRPCTimeoutMs)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd: --replication-factor must be between 1 and 32")
-		os.Exit(2)
+		return daemonUsageError(err)
+	}
+	if err := validateGRPCTLS(cfg.grpcPort, cfg.tls, cfg.clientSecret); err != nil {
+		return daemonUsageError(err)
 	}
 
-	policy, err := store.ParsePolicy(*evictPolicy)
+	replicaCount, err := hashring.NewReplicaCount(cfg.replicationFactor)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd: --eviction-policy must be lru|lfu")
-		os.Exit(2)
+		return daemonUsageError(errors.New("--replication-factor must be between 1 and 32"))
 	}
 
+	policy, err := store.ParsePolicy(cfg.evictionPolicy)
+	if err != nil {
+		return daemonUsageError(errors.New("--eviction-policy must be lru|lfu"))
+	}
+
+	lvl, err := log.ParseLevel(cfg.logLevel)
+	if err != nil {
+		return daemonUsageError(err)
+	}
+
+	logger := log.New(stderr, lvl)
 	var st *store.Store
 	switch policy {
 	case store.LRUPolicy:
-		st = store.NewLRUStore(*capacity, nil)
+		st = store.NewLRUStore(cfg.capacity, nil)
 	case store.LFUPolicy:
-		st = store.NewLFUStore(*capacity, nil)
+		st = store.NewLFUStore(cfg.capacity, nil)
 	}
-	if err := validateCoreFlags(*port, *aeBuckets, *tombstoneMs); err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
-	}
-	if *tombstoneMs > 0 {
-		st.SetTombstoneGCInterval(time.Duration(*tombstoneMs) * time.Millisecond)
+	if cfg.tombstoneGCMS > 0 {
+		st.SetTombstoneGCInterval(time.Duration(cfg.tombstoneGCMS) * time.Millisecond)
 	}
 
-	srv := tcp.NewServer(tcp.ServerConfig{NodeID: *nodeID, Port: netport.Port(*port), AdvertiseHost: selfHost, Store: st})
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: cfg.nodeID, Port: netport.Port(cfg.port), AdvertiseHost: selfHost, Store: st})
 	srv.SetLogger(&logger)
-	logger.Info().Str("node", *nodeID).Str("bind", *bindHost).Str("advertise_host", selfHost).Int("port", *port).Msg("starting")
-	srv.SetGossipRPCTimeout(gossipRPCTimeout)
+	logger.Info().Str("node", cfg.nodeID).Str("bind", cfg.bindHost).Str("advertise_host", selfHost).Int("port", cfg.port).Msg("starting")
+	srv.SetGossipRPCTimeout(gossipTimeout)
 	if err := srv.ConfigureCluster(peerList); err != nil {
-		logger.Error().Err(err).Msg("cluster")
-		os.Exit(2)
+		return daemonUsageError(fmt.Errorf("cluster: %w", err))
 	}
 
-	srv.SetGossipInterval(time.Duration(*gossipMs) * time.Millisecond)
-	srv.SetProbeInterval(time.Duration(*probeMs) * time.Millisecond)
-	srv.SetSuspectTimeout(time.Duration(*suspectMs) * time.Millisecond)
-	srv.SetAntiEntropyInterval(time.Duration(*aeInterval) * time.Millisecond)
-	srv.ConfigureAntiEntropy(uint32(*aeBuckets), *aeFetchBytes)
-	if err := srv.ConfigureRebalance(replicaCount, time.Duration(*quarantineMs)*time.Millisecond); err != nil {
-		logger.Error().Err(err).Msg("rebalance configuration")
-		os.Exit(2)
+	srv.SetGossipInterval(time.Duration(cfg.gossipIntervalMs) * time.Millisecond)
+	srv.SetProbeInterval(time.Duration(cfg.probeIntervalMs) * time.Millisecond)
+	srv.SetSuspectTimeout(time.Duration(cfg.suspectMs) * time.Millisecond)
+	srv.SetAntiEntropyInterval(time.Duration(cfg.aeIntervalMs) * time.Millisecond)
+	srv.ConfigureAntiEntropy(uint32(cfg.aeBuckets), cfg.aeFetchBytes)
+	if err := srv.ConfigureRebalance(replicaCount, time.Duration(cfg.quarantineIntervalMs)*time.Millisecond); err != nil {
+		return daemonUsageError(fmt.Errorf("rebalance configuration: %w", err))
 	}
-	if *tls {
-		if *tlsCert == "" || *tlsKey == "" {
-			logger.Error().Msg("--tls requires --tls-cert and --tls-key")
-			os.Exit(2)
-		}
-		if err := srv.ConfigureTLS(*tlsCert, *tlsKey, *tlsCA); err != nil {
-			logger.Error().Err(err).Msg("tls")
-			os.Exit(2)
-		}
+	if err := configureSecurityAndPersistence(srv, cfg); err != nil {
+		return err
+	}
+	if err := configureReplication(srv, st, cfg, peerList, replicaCount); err != nil {
+		return err
 	}
 
-	shared := configuredSecret(*sharedSecret, "CINDER_SHARED_SECRET")
-	clientSec := configuredSecret(*clientSecret, "CINDER_CLIENT_SECRET")
-	if err := validateGRPCTLS(*grpcPort, *tls, clientSec); err != nil {
-		fmt.Fprintln(os.Stderr, "cinderd:", err)
-		os.Exit(2)
-	}
-	if shared != "" || clientSec != "" {
-		if err := srv.ConfigureSecrets(shared, clientSec); err != nil {
-			logger.Error().Err(err).Msg("secrets")
-			os.Exit(2)
-		}
-	}
-	if *enablePersist {
-		if *dataDir == "" {
-			logger.Error().Msg("--data-dir is required with --enable-persistence")
-			os.Exit(2)
-		}
-		if err := srv.ConfigurePersistence(*dataDir); err != nil {
-			logger.Error().Err(err).Msg("persistence")
-			os.Exit(2)
-		}
+	ctx, stop := signal.NotifyContext(parent, syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-		srv.SetSnapshotInterval(time.Duration(*snapshotSecs) * time.Second)
-		srv.SetMaxWALBytes(*maxWALBytes)
-		srv.SetMaxWALEntries(*maxWALEntries)
-	}
-	if replicaCount > 1 {
-		mode, err := repl.ParseMode(*consist)
-		if err != nil {
-			logger.Error().Msg("--consistency must be async|quorum")
-			os.Exit(2)
-		}
-
-		addrs := make([]client.NodeAddr, 0, len(peerList))
-		for _, p := range peerList {
-			addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
-		}
-
-		pool := client.NewPool(addrs, time.Duration(*rpcTimeoutMs)*time.Millisecond)
-		if *tls {
-			ccfg, err := tlscfg.Client(*tlsCert, *tlsKey, *tlsCA)
-			if err != nil {
-				logger.Error().Err(err).Msg("pool tls")
-				os.Exit(2)
-			}
-			pool.SetTLS(ccfg)
-		}
-		if shared != "" {
-			pool.SetSecrets(client.Secrets{NodeID: *nodeID, Shared: shared})
-		}
-
-		mgr := repl.NewManager(repl.Config{Local: st, Self: *nodeID, Clock: nil, Transport: pool})
-		if *maxHintBytes > 0 {
-			mgr.SetMaxHintBytes(*maxHintBytes)
-		}
-		if err := srv.ConfigureReplication(replicaCount, mode, mgr); err != nil {
-			logger.Error().Err(err).Msg("replication configuration")
-			os.Exit(2)
-		}
-		if *enablePersist {
-			j, _, err := ae.OpenJournal(filepath.Join(*dataDir, "hints.log"), mgr.HintQueue())
-			if err != nil {
-				logger.Error().Err(err).Msg("hint journal")
-				os.Exit(2)
-			}
-			mgr.SetHintJournal(j)
-		}
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	lc := net.ListenConfig{}
-	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(*bindHost, strconv.Itoa(*port)))
+	l, err := lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.bindHost, strconv.Itoa(cfg.port)))
 	if err != nil {
-		logger.Error().Err(err).Msg("listen")
-		os.Exit(1)
+		return daemonRuntimeError(fmt.Errorf("listen: %w", err))
 	}
 
+	defer l.Close()
 	var msrv *http.Server
 	var gw *grpcgw.Gateway
-	if *metricsPort > 0 {
-		ml, err := lc.Listen(ctx, "tcp", net.JoinHostPort(*metricsBind, strconv.Itoa(*metricsPort)))
+	if cfg.metricsPort > 0 {
+		ml, err := lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.metricsBind, strconv.Itoa(cfg.metricsPort)))
 		if err != nil {
-			logger.Error().Err(err).Msg("metrics listen")
-			os.Exit(1)
+			return daemonRuntimeError(fmt.Errorf("metrics listen: %w", err))
 		}
 
 		mux := http.NewServeMux()
 		mux.Handle("/metrics", metrics.NewHandler(srv.Metrics(), srv.MetricGauges))
-		// Standard pprof endpoints on the same localhost-only listener,
-		// so the docs/profiling.md workflow runs against a live node.
 		mux.HandleFunc("/debug/pprof/", pprof.Index)
 		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
 		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
@@ -291,32 +364,25 @@ func main() {
 			}
 		}()
 	}
-	if *grpcPort > 0 {
-		gl, err := lc.Listen(ctx, "tcp", net.JoinHostPort(*grpcBind, strconv.Itoa(*grpcPort)))
+	if cfg.grpcPort > 0 {
+		gl, err := lc.Listen(ctx, "tcp", net.JoinHostPort(cfg.grpcBind, strconv.Itoa(cfg.grpcPort)))
 		if err != nil {
-			logger.Error().Err(err).Msg("grpc listen")
-			os.Exit(1)
+			return daemonRuntimeError(fmt.Errorf("grpc listen: %w", err))
 		}
 
 		gw = grpcgw.New(srv)
-		gw.SetClientSecret(clientSec)
-		if *tls {
-			if err := gw.SetTLS(*tlsCert, *tlsKey); err != nil {
-				logger.Error().Err(err).Msg("grpc tls")
-				os.Exit(2)
+		gw.SetClientSecret(cfg.clientSecret)
+		if cfg.tls {
+			if err := gw.SetTLS(cfg.tlsCert, cfg.tlsKey); err != nil {
+				return daemonUsageError(fmt.Errorf("grpc tls: %w", err))
 			}
 		}
-
 		go func() {
 			if err := gw.Serve(gl); err != nil {
 				logger.Error().Err(err).Msg("grpc")
 			}
 		}()
 	}
-
-	// Start the TCP server only after all listeners and gateway security
-	// settings are configured. Serve starts gossip after registering the
-	// listener, so peers cannot see a partially initialized daemon.
 	go func() {
 		if err := srv.Serve(l); err != nil {
 			logger.Error().Err(err).Msg("serve")
@@ -332,5 +398,9 @@ func main() {
 	if gw != nil {
 		gw.Stop()
 	}
+
 	srv.Shutdown()
+	return nil
 }
+
+func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

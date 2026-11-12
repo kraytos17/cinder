@@ -103,3 +103,20 @@ func TestAdminUnknownCommand(t *testing.T) {
 		t.Fatalf("unknown: out=%q err=%q code=%d", out, errOut, code)
 	}
 }
+
+func TestAdminHelpAndVersion(t *testing.T) {
+	var out, errOut strings.Builder
+	if code := run([]string{"--help"}, &out, &errOut); code != 0 {
+		t.Fatalf("help exit=%d stderr=%q", code, errOut.String())
+	}
+	for _, want := range []string{"info", "cluster", "compact", "shutdown", "--client-secret"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help missing %q", want)
+		}
+	}
+	out.Reset()
+	errOut.Reset()
+	if code := run([]string{"--version"}, &out, &errOut); code != 0 || !strings.Contains(out.String(), "cinder-admin (go)") {
+		t.Fatalf("version exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}

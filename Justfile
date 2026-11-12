@@ -42,19 +42,18 @@ test-race:
 fuzz-one target package time="20s":
     go test -run=NONE -fuzz={{ target }} -fuzztime={{ time }} ./{{ package }}/
 
-# vet + gofmt gate (mirrors the CI job). Fast; no network.
+# vet + configured formatting gate.
 vet:
-    go vet ./... && test -z "$(gofmt -l .)"
+    go vet ./... && go tool golangci-lint fmt --diff
 
-# Lint gate: the full .golangci.yml suite (formatters, staticcheck,
-# errcheck-free style, modernize, misspell, gosec...).
+# Lint gate: the full .golangci.yml suite.
 lint:
     go tool golangci-lint run ./...
 
 # Auto-fix what the linters can fix safely.
 lint-fix:
+    go tool golangci-lint fmt
     go tool golangci-lint run --fix ./... || true
-    gofmt -w internal/ cmd/ tools/
 
 # Pre-push gate: formatting, vet, lint, and race-enabled tests.
 verify: vet lint

@@ -33,7 +33,7 @@ protocol (v6) with gRPC gateway and TLS 1.2.
 
 ## Daily loop (Justfile)
 
-* `just build` / `just test` / `just vet` (gofmt + vet gate).
+* `just build` / `just test` / `just vet` (vet gate).
   `just lint` is the golangci-lint suite (`.golangci.yml`, pinned via
   `go tool` — no installs); `just verify` is the fast pre-push gate
   (fmt + vet + lint + `go test -race ./...`, goleak mains included).

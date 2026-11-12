@@ -6,6 +6,7 @@ toolchain go1.27.3
 
 require (
 	github.com/rs/zerolog v1.35.1
+	github.com/urfave/cli/v3 v3.14.0
 	github.com/zeebo/xxh3 v1.1.0
 	go.uber.org/goleak v1.3.0
 	golang.org/x/sync v0.25.0

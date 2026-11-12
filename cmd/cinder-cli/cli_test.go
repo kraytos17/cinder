@@ -208,6 +208,18 @@ func TestCliVersion(t *testing.T) {
 	}
 }
 
+func TestCliHelp(t *testing.T) {
+	var out, errB strings.Builder
+	if code := run([]string{"--help"}, &out, &errB); code != 0 {
+		t.Fatalf("help exit=%d stderr=%q", code, errB.String())
+	}
+	for _, want := range []string{"mset", "counter-incr", "--client-secret", "--ttl"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("help missing %q", want)
+		}
+	}
+}
+
 // Go CLI against a Go TLS server (fixture certs): exercises the --tls
 // path end to end.
 func TestCliTLS(t *testing.T) {
