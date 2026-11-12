@@ -56,6 +56,18 @@ itself, it refutes by bumping its own incarnation to `rumor.incarnation + 1`
 and forcing itself back to `Alive`; the higher
 incarnation then overrides the stale rumor everywhere it propagates.
 
+On cluster configuration, a process seeds its own incarnation from its local
+wall-clock nanoseconds before gossip begins. This makes a restart normally
+newer than the previous process without persisted membership state. If a peer
+reports a still-higher self incarnation (for example, because its clock was
+ahead), the restarted process advances to one greater before publishing its
+next view.
+For other nodes, a changed address or port is adopted only with a strictly
+higher incarnation; delayed old rumors therefore cannot revert a new address.
+As with any timestamp floor, severe clock rollback across process restarts is
+not guaranteed by the local clock alone; the peer-observation refutation is
+the convergence mechanism when a peer retains the higher stamp.
+
 ## Failure Detection
 
 A SWIM-style probe cycle runs on a configurable interval. Probe and
@@ -533,9 +545,23 @@ both sides of the partition are reconciled by LWW.
 Flags only (`cinderd --help` is authoritative); there is no config file and
 no hot-reload. `config-reload` is accepted and answers OK.
 
+The data listener defaults to loopback for compatibility. To accept remote
+connections, set `--bind` to a local interface/address (often `0.0.0.0`) and
+set `--advertise-host` to the address or DNS name reachable by cluster peers.
+Wildcard bind addresses require an explicit advertise host. Metrics/pprof and
+gRPC listeners stay loopback-only unless their respective `--metrics-bind` or
+`--grpc-bind` options are changed.
+Port `0` remains available for standalone/ephemeral use; it is rejected when
+`--peers` is configured because the cluster address must be fixed before
+gossip starts.
+
 | Flag | Default | Description |
 |------|---------|--------------|
 | `--port` | `7000` | TCP listen port |
+| `--bind` | `127.0.0.1` | Local TCP listener host or IP; wildcard addresses listen on all interfaces |
+| `--advertise-host` | `--bind` (unless wildcard) | Reachable host shared with cluster peers; required when `--bind` is wildcard |
+| `--metrics-bind` | `127.0.0.1` | Metrics and pprof listener host or IP |
+| `--grpc-bind` | `127.0.0.1` | gRPC listener host or IP |
 | `--node-id` | `node1` | Stable node identifier |
 | `--capacity` | `67108864` | Per-node store capacity in bytes |
 | `--peers` | (empty) | Cluster members, comma-separated `id@host:port` |
@@ -544,10 +570,11 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--gossip-interval-ms` | `1000` | Membership gossip dissemination interval |
 | `--ping-interval-ms` | `1000` | Failure-detector ping interval |
 | `--suspect-timeout-ms` | `3000` | Time a `Suspect` persists before being marked `Dead` |
+| `--gossip-rpc-timeout-ms` | `0` (automatic: `min(ping interval, 1s)`) | Per-RPC deadline for gossip/probe pool; must be positive after defaulting, no greater than ping interval, and less than suspect timeout |
 | `--quarantine-interval-ms` | `10000` | Rejoin warming window (`0` disables it) |
 | `--anti-entropy-interval-ms` | `30000` | Anti-entropy round interval (`0` disables it) |
 | `--anti-entropy-buckets` | `256` | Digest buckets |
-| `--grpc-port` | `0` | gRPC gateway port (`0` disables it) |
+| `--grpc-port` | `0` | gRPC gateway port (`0` disables it); when `--tls` is set, gRPC also uses TLS |
 | `--metrics-port` | `0` | Prometheus `/metrics` HTTP port (`0` disables it) |
 | `--tls` | `false` | Enable TLS encryption (requires `--tls-cert` + `--tls-key`) |
 | `--tls-cert` / `--tls-key` | (empty) | PEM certificate chain / private key |
@@ -559,7 +586,8 @@ no hot-reload. `config-reload` is accepted and answers OK.
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
 | `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
 | `--max-wal-entries` | `10000` | Active WAL records before out-of-cycle compact (`0` = disabled) |
-| `--rpc-timeout-ms` | `5000` | Per-RPC deadline in milliseconds (`0` = no timeout) |
+| `--rpc-timeout-ms` | `5000` | Per-RPC deadline for replication and anti-entropy (`0` = no timeout) |
+| `--gossip-rpc-timeout-ms` | `0` | Gossip/probe RPC deadline (`0` = `min(--ping-interval-ms, 1000)`; cannot exceed ping interval or suspect timeout) |
 | `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget in bytes |
 | `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
 | `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
@@ -577,17 +605,19 @@ own listeners), `--io-threads` (Go runtime schedules), `--snapshot-compression` 
 `--wal-fsync` (writes already land per-append; `Sync` gates durability),
 `--max-wal-segment-bytes` / `--max-sealed-segments` (sealing has no
 size trigger; rotation happens on compact).
-The gRPC gateway serves TLS exactly when a client secret is configured
-(same certificate as `--tls-cert`/`--tls-key`); otherwise plaintext,
-mirroring C++.
+When `--tls` is enabled, the gRPC gateway also uses TLS with
+`--tls-cert`/`--tls-key`, regardless of whether a client secret is configured.
+If `--client-shared-secret` is set and gRPC is enabled, `--tls` is required;
+without a client secret, gRPC may remain plaintext when `--tls` is disabled.
 
 ```bash
-# Three-node cluster in a minute (terminals 1–3):
-cinderd --port 7000 --node-id node1 --peers "node2@127.0.0.1:7001,node3@127.0.0.1:7002" \
+# Three-node cluster in a minute (terminals 1–3); replace the example
+# addresses with reachable addresses for your hosts:
+cinderd --bind 0.0.0.0 --advertise-host 10.0.0.1 --port 7000 --node-id node1 --peers "node2@10.0.0.2:7001,node3@10.0.0.3:7002" \
   --replication-factor 2 --consistency quorum --enable-persistence --data-dir /tmp/cinder1
-cinderd --port 7001 --node-id node2 --peers "node1@127.0.0.1:7000,node3@127.0.0.1:7002" \
+cinderd --bind 0.0.0.0 --advertise-host 10.0.0.2 --port 7001 --node-id node2 --peers "node1@10.0.0.1:7000,node3@10.0.0.3:7002" \
   --replication-factor 2 --consistency quorum --enable-persistence --data-dir /tmp/cinder2
-cinderd --port 7002 --node-id node3 --peers "node1@127.0.0.1:7000,node2@127.0.0.1:7001" \
+cinderd --bind 0.0.0.0 --advertise-host 10.0.0.3 --port 7002 --node-id node3 --peers "node1@10.0.0.1:7000,node2@10.0.0.2:7001" \
   --replication-factor 2 --consistency quorum --enable-persistence --data-dir /tmp/cinder3
 
 cinder-cli --port 7000 set mykey myvalue   # quorum write

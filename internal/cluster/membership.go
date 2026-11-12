@@ -157,17 +157,36 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 	}
 
 	var changed bool
-	if rumor.ID == t.self && rumor.State != Alive {
-		changed = t.refuteLocked(rumor)
+	if rumor.ID == t.self {
+		if rumor.State != Alive {
+			changed = t.refuteLocked(rumor)
+		} else if rumor.Incarnation > local.Incarnation {
+			// A peer may still know an incarnation newer than this process
+			// learned at startup. Refute it by moving strictly past that
+			// incarnation; never copy the peer's potentially stale address.
+			inc := nextIncarnation(rumor.Incarnation)
+			if local.Incarnation != inc || local.State != Alive {
+				local.Incarnation = inc
+				local.State = Alive
+				changed = true
+			}
+		}
 	} else {
+		newerIncarnation := rumor.Incarnation > local.Incarnation
 		changed = local.State != rumor.State || local.Incarnation != rumor.Incarnation
 		local.State = rumor.State
 		local.Incarnation = rumor.Incarnation
-		if local.Host == "" && rumor.Host != "" {
-			local.Host = rumor.Host
-		}
-		if local.Port == 0 && rumor.Port != 0 {
-			local.Port = rumor.Port
+		if newerIncarnation || local.Host == "" {
+			// Address ownership follows the incarnation: a restart's new
+			// address supersedes the old one only with a newer stamp.
+			if rumor.Host != "" && local.Host != rumor.Host {
+				local.Host = rumor.Host
+				changed = true
+			}
+			if rumor.Port != 0 && local.Port != rumor.Port {
+				local.Port = rumor.Port
+				changed = true
+			}
 		}
 	}
 
@@ -175,6 +194,29 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 	if changed {
 		t.fire()
 	}
+}
+
+func nextIncarnation(inc uint64) uint64 {
+	if inc == ^uint64(0) {
+		return inc
+	}
+	return inc + 1
+}
+
+// InitializeSelfIncarnation gives a newly started process a timestamp-sized
+// incarnation before it begins gossip. If a peer has already observed an even
+// newer incarnation, ApplyRumor advances self past that value before
+// advertising again. The timestamp is an initial floor, not the sole
+// correctness mechanism.
+func (t *MembershipTable) InitializeSelfIncarnation() {
+	t.mu.Lock()
+	if self, ok := t.nodes[t.self]; ok {
+		inc := uint64(t.clock().UnixNano())
+		if inc > self.Incarnation {
+			self.Incarnation = inc
+		}
+	}
+	t.mu.Unlock()
 }
 
 // refuteLocked answers a non-alive rumor about self. Caller holds mu.
@@ -186,11 +228,11 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 
 	changed := false
 	if self.Incarnation <= rumor.Incarnation {
-		if rumor.Incarnation > self.Incarnation {
-			self.Incarnation = rumor.Incarnation
+		inc := nextIncarnation(rumor.Incarnation)
+		if self.Incarnation != inc {
+			self.Incarnation = inc
+			changed = true
 		}
-		self.Incarnation++
-		changed = true
 	}
 	if self.State != Alive {
 		self.State = Alive

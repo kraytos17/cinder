@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/netport"
@@ -163,5 +164,81 @@ func TestServerAutoCompacts(t *testing.T) {
 		if res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("key %q lost across auto-compact + restart: %+v %v", key, res, err)
 		}
+	}
+}
+
+func TestClusterDoesNotAdvertiseNodeBeforePersistenceRecovery(t *testing.T) {
+	peerListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerPort := netport.Port(peerListener.Addr().(*net.TCPAddr).Port)
+	peer := tcp.NewServer(tcp.ServerConfig{
+		NodeID: "peer", Port: peerPort, Store: store.NewLRUStore(1<<20, nil),
+	})
+	if err := peer.ConfigureCluster(nil); err != nil {
+		t.Fatal(err)
+	}
+	peerDone := make(chan error, 1)
+	go func() { peerDone <- peer.Serve(peerListener) }()
+	t.Cleanup(func() {
+		peer.Shutdown()
+		select {
+		case err := <-peerDone:
+			if err != nil {
+				t.Errorf("peer Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("peer Serve did not stop")
+		}
+	})
+
+	nodeListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodePort := netport.Port(nodeListener.Addr().(*net.TCPAddr).Port)
+	node := tcp.NewServer(tcp.ServerConfig{
+		NodeID: "recovering", Port: nodePort, Store: store.NewLRUStore(1<<20, nil),
+	})
+	if err := node.ConfigureCluster([]tcp.Peer{{ID: "peer", Host: "127.0.0.1", Port: peerPort}}); err != nil {
+		t.Fatal(err)
+	}
+
+	assertNotAdvertised := func(stage string) {
+		t.Helper()
+		if _, ok := peer.Table().Get("recovering"); ok {
+			t.Fatalf("node was advertised before recovery completed (%s)", stage)
+		}
+	}
+	assertNotAdvertised("cluster configured")
+	if err := node.ConfigurePersistence(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	assertNotAdvertised("persistence recovered")
+
+	nodeDone := make(chan error, 1)
+	go func() { nodeDone <- node.Serve(nodeListener) }()
+	t.Cleanup(func() {
+		node.Shutdown()
+		select {
+		case err := <-nodeDone:
+			if err != nil {
+				t.Errorf("node Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("node Serve did not stop")
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got, ok := peer.Table().Get("recovering"); ok && got.State == cluster.Alive {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("recovered node did not become visible after StartCluster")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

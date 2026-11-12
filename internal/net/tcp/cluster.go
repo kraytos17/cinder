@@ -1,8 +1,5 @@
 package tcp
 
-// Cluster membership: static peers, ring rebuilds, rebalance
-// scheduling, and quarantine/migration retry timers.
-
 import (
 	"errors"
 	"fmt"
@@ -195,10 +192,10 @@ func ParsePeers(s string) ([]Peer, error) {
 	return out, nil
 }
 
-// ConfigureCluster installs the ring view: self plus peers own keys by
-// consistent hash, and redirects name reachable addresses. It also seeds
-// the membership table, builds the gossip/failure-detector pair over a
-// shared pool, and keeps the ring tracking the alive set.
+// ConfigureCluster prepares the ring view and membership services without
+// starting gossip or failure detection. Serve starts them only after the
+// caller has completed TLS, secrets, persistence recovery, and replication
+// configuration.
 func (s *Server) ConfigureCluster(peers []Peer) error {
 	ring, err := hashring.New(hashring.DefaultVNodes, 0)
 	if err != nil {
@@ -212,6 +209,8 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	s.ringMu.Unlock()
 
 	table := cluster.NewMembershipTable(s.nodeID, now)
+	table.InitializeSelfIncarnation()
+
 	var seeds []cluster.NodeInfo
 	var addrs []client.NodeAddr
 	for _, p := range peers {
@@ -219,9 +218,15 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 		addrs = append(addrs, client.NodeAddr{ID: p.ID, Host: p.Host, Port: p.Port})
 	}
 
-	table.SetSelfAddress("127.0.0.1", s.port)
+	host, port := s.advertisedAddress()
+	table.SetSelfAddress(host, port)
 	table.Seed(seeds)
-	pool := client.NewPool(addrs, 5*time.Second)
+	rpcTimeout := time.Duration(s.gossipRPCTimeoutNs.Load())
+	if rpcTimeout <= 0 {
+		rpcTimeout = time.Second
+	}
+
+	pool := client.NewPool(addrs, rpcTimeout)
 	gossip := cluster.NewGossipManager(now, pool, table, s.nodeID, s.gossipInterval)
 	fd := cluster.NewFailureDetector(now, pool, table, s.nodeID, s.suspectTimeout)
 	table.SetMetrics(s.met)
@@ -235,11 +240,36 @@ func (s *Server) ConfigureCluster(peers []Peer) error {
 	s.gossip = gossip
 	s.fd = fd
 	s.pool = pool
+	s.clusterConfigured = true
 	s.ringMu.Unlock()
-	gossip.Start()
-	fd.Start()
 	table.OnChange(func() { s.rebuildRingFromTable() })
 	s.rebuildRingFromTable()
+	return nil
+}
+
+// startCluster begins gossip and failure detection after all node
+// dependencies are configured. Serve invokes it after listener setup and
+// before starting the background loops.
+func (s *Server) startCluster() error {
+	s.ringMu.Lock()
+	if !s.clusterConfigured {
+		s.ringMu.Unlock()
+		return nil // standalone server
+	}
+	if s.clusterStarted {
+		s.ringMu.Unlock()
+		return nil
+	}
+
+	s.clusterStarted = true
+	gossip, fd := s.gossip, s.fd
+	s.ringMu.Unlock()
+	if gossip != nil {
+		gossip.Start()
+	}
+	if fd != nil {
+		fd.Start()
+	}
 	return nil
 }
 
@@ -296,6 +326,7 @@ func (s *Server) rebuildRingFromTable() {
 	table := s.table
 	ring := s.ring
 	pool := s.pool
+	started := s.clusterStarted
 	s.ringMu.RUnlock()
 	if table == nil || ring == nil {
 		return
@@ -323,6 +354,9 @@ func (s *Server) rebuildRingFromTable() {
 	}
 
 	ring.SetNodes(ids)
+	if !started {
+		return
+	}
 	// Push keys this node no longer owns to their new ring owners. The scan
 	// + migration burst is debounced: rapid flaps collapse into one run
 	// over the latest ring view.

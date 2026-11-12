@@ -63,6 +63,65 @@ func TestApplyRumorStaleIgnored(t *testing.T) {
 	}
 }
 
+func TestApplyRumorNewerIncarnationUpdatesAddress(t *testing.T) {
+	clk, _ := testClock()
+	tb := NewMembershipTable("n1", clk)
+	tb.Seed([]NodeInfo{{ID: "n2", Host: "10.0.0.2", Port: 7002}})
+	changes := 0
+	tb.OnChange(func() { changes++ })
+
+	// Stale/equal incarnation rumors cannot rewrite the address.
+	tb.ApplyRumor(NodeInfo{ID: "n2", Host: "10.0.0.20", Port: 7020, State: Alive, Incarnation: 0})
+	if got, _ := tb.Get("n2"); got.Host != "10.0.0.2" || got.Port != 7002 {
+		t.Fatalf("equal-incarnation rumor changed address: %+v", got)
+	}
+	if changes != 0 {
+		t.Fatalf("equal-incarnation rumor fired %d changes", changes)
+	}
+
+	tb.ApplyRumor(NodeInfo{ID: "n2", Host: "10.0.0.20", Port: 7020, State: Alive, Incarnation: 1})
+	if got, _ := tb.Get("n2"); got.Host != "10.0.0.20" || got.Port != 7020 || got.Incarnation != 1 {
+		t.Fatalf("newer-incarnation address not applied: %+v", got)
+	}
+	if changes != 1 {
+		t.Fatalf("newer-incarnation address change fired %d callbacks, want 1", changes)
+	}
+}
+
+func TestSelfIncarnationInitializationAndRefutation(t *testing.T) {
+	now := time.Unix(1234, 5678)
+	tb := NewMembershipTable("n1", func() time.Time { return now })
+	tb.InitializeSelfIncarnation()
+	self, _ := tb.Self()
+	if self.Incarnation != uint64(now.UnixNano()) {
+		t.Fatalf("startup incarnation = %d, want %d", self.Incarnation, now.UnixNano())
+	}
+	address := NodeInfo{ID: "n1", Host: "new-host", Port: 7100, State: Alive, Incarnation: self.Incarnation}
+	tb.SetSelfAddress(address.Host, address.Port)
+
+	// A peer can have seen an incarnation larger than the startup clock
+	// floor. Refute it locally while preserving this process's address.
+	tb.ApplyRumor(NodeInfo{ID: "n1", Host: "old-host", Port: 7000, State: Alive, Incarnation: self.Incarnation + 100})
+	got, _ := tb.Self()
+	if got.State != Alive || got.Incarnation != self.Incarnation+101 {
+		t.Fatalf("self did not advance past observed incarnation: %+v", got)
+	}
+	if got.Host != "new-host" || got.Port != 7100 {
+		t.Fatalf("peer overwrote self address: %+v", got)
+	}
+}
+
+func TestInitializeSelfIncarnationPreservesHigherExistingValue(t *testing.T) {
+	now := time.Unix(1234, 5678)
+	tb := NewMembershipTable("n1", func() time.Time { return now })
+	tb.MarkAlive("n1", uint64(now.UnixNano())+100)
+	tb.InitializeSelfIncarnation()
+	got, _ := tb.Self()
+	if want := uint64(now.UnixNano()) + 100; got.Incarnation != want {
+		t.Fatalf("startup reset existing incarnation: got %d, want %d", got.Incarnation, want)
+	}
+}
+
 func TestApplyRumorEqualStampNoChange(t *testing.T) {
 	clk, _ := testClock()
 	tb := NewMembershipTable("n1", clk)

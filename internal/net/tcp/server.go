@@ -86,7 +86,10 @@ type Server struct {
 	store  *store.Store
 	nodeID string
 	port   netport.Port
-	clock  store.Clock
+	// advertiseHost is the externally reachable host shared with cluster
+	// peers. It is independent from the local listener's bind address.
+	advertiseHost string
+	clock         store.Clock
 	// counters holds CRDT counter state separately from the LWW cache. Its
 	// initial capacity is one quarter of the LWW store's capacity.
 	counters *counter.Store
@@ -117,15 +120,18 @@ type Server struct {
 	// Membership and liveness. The ring always reflects the alive set:
 	// every membership change rebuilds it, so redirects, replica sets,
 	// and the pool follow failures without a restart.
-	table  *cluster.MembershipTable
-	gossip *cluster.GossipManager
-	fd     *cluster.FailureDetector
-	pool   *client.Pool
-	stopBg chan struct{}
+	table             *cluster.MembershipTable
+	gossip            *cluster.GossipManager
+	fd                *cluster.FailureDetector
+	pool              *client.Pool
+	clusterConfigured bool
+	clusterStarted    bool
+	stopBg            chan struct{}
 
-	gossipInterval time.Duration
-	probeInterval  time.Duration
-	suspectTimeout time.Duration
+	gossipInterval     time.Duration
+	probeInterval      time.Duration
+	suspectTimeout     time.Duration
+	gossipRPCTimeoutNs atomic.Int64
 	// writeTimeoutNs bounds a single response write in nanoseconds; 0
 	// selects the writeTimeout default. Atomic so the hot read path
 	// takes no lock (unlike the tick-interval knobs nearby).
@@ -165,12 +171,14 @@ type Server struct {
 }
 
 // ServerConfig configures a TCP server. A zero Port allows the listener to
-// choose an available port; a nil Clock selects the system clock.
+// choose an available port; AdvertiseHost is the reachable cluster host
+// (empty defaults to loopback); a nil Clock selects the system clock.
 type ServerConfig struct {
-	NodeID string
-	Port   netport.Port
-	Store  *store.Store
-	Clock  store.Clock
+	NodeID        string
+	Port          netport.Port
+	AdvertiseHost string
+	Store         *store.Store
+	Clock         store.Clock
 }
 
 // NewServer returns a server configured with cfg. The counter store is
@@ -190,6 +198,7 @@ func NewServer(cfg ServerConfig) *Server {
 		met:            metrics.NewCollector(),
 		nodeID:         cfg.NodeID,
 		port:           cfg.Port,
+		advertiseHost:  cfg.AdvertiseHost,
 		clock:          clock,
 		conns:          make(map[net.Conn]struct{}),
 		sem:            make(chan struct{}, maxConnections),
@@ -205,6 +214,11 @@ func NewServer(cfg ServerConfig) *Server {
 	cfg.Store.SetMetrics(srv.met)
 	nop := log.Nop()
 	srv.logger.Store(&nop)
+	if srv.advertiseHost == "" {
+		srv.advertiseHost = "127.0.0.1"
+	}
+
+	srv.gossipRPCTimeoutNs.Store(int64(time.Second))
 	return srv
 }
 
@@ -222,12 +236,30 @@ func (s *Server) Serve(l net.Listener) error {
 
 	s.mu.Lock()
 	s.listener = l
+	if addr, ok := l.Addr().(*net.TCPAddr); ok {
+		// Port 0 is useful for tests and supervised deployments. Advertise
+		// the actual bound port, not the requested zero.
+		s.port = netport.Port(addr.Port)
+	}
+
 	shut := s.shut.Load()
+	advertiseHost := s.advertiseHost
+	port := s.port
 	s.mu.Unlock()
+	s.ringMu.RLock()
+	table := s.table
+	s.ringMu.RUnlock()
+	if table != nil {
+		table.SetSelfAddress(advertiseHost, port)
+	}
 	if shut {
 		// Shut down before Serve started: never serve, just release.
 		l.Close()
 		return nil
+	}
+	if err := s.startCluster(); err != nil {
+		l.Close()
+		return err
 	}
 
 	s.ringMu.RLock()
@@ -361,6 +393,12 @@ func (s *Server) Addr() string {
 		return ""
 	}
 	return s.listener.Addr().String()
+}
+
+func (s *Server) advertisedAddress() (string, netport.Port) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.advertiseHost, s.port
 }
 
 func (s *Server) AntiEntropy() *ae.Manager {

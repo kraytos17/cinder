@@ -55,8 +55,9 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 	switch req.Opcode {
 	case protocol.OpAdminInfo:
 		curBytes, curEntries := s.store.Stats()
+		_, port := s.advertisedAddress()
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminInfo{
-			NodeID: s.nodeID, Port: int(s.port), CapacityBytes: s.store.Capacity(),
+			NodeID: s.nodeID, Port: int(port), CapacityBytes: s.store.Capacity(),
 			CurrentBytes: curBytes, CurrentEntries: curEntries,
 			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: 1, Consistency: "async",
 			LogLevel: "info", Peers: []string{},
@@ -71,7 +72,8 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 				nodes = append(nodes, adminClusterNode{ID: m.ID, Host: m.Host, Port: m.Port, State: m.State.String(), Incarnation: m.Incarnation})
 			}
 		} else {
-			nodes = []adminClusterNode{{ID: s.nodeID, Host: "127.0.0.1", Port: s.port, State: "alive", Incarnation: 1}}
+			host, port := s.advertisedAddress()
+			nodes = []adminClusterNode{{ID: s.nodeID, Host: host, Port: port, State: "alive", Incarnation: 1}}
 		}
 
 		if nodes == nil {

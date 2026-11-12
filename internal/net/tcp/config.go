@@ -207,6 +207,23 @@ func (s *Server) SetSuspectTimeout(d time.Duration) {
 	}
 }
 
+// SetGossipRPCTimeout bounds gossip and failure-detector RPCs. A
+// non-positive duration selects the 1s default. Existing pool connections
+// are dropped so they redial under the new budget.
+func (s *Server) SetGossipRPCTimeout(d time.Duration) {
+	if d <= 0 {
+		d = time.Second
+	}
+
+	s.gossipRPCTimeoutNs.Store(int64(d))
+	s.ringMu.RLock()
+	pool := s.pool
+	s.ringMu.RUnlock()
+	if pool != nil {
+		pool.SetTimeout(d)
+	}
+}
+
 // SetReplayInterval changes the base hint-replay delay: the loop retries
 // at this cadence while rounds make progress, backing off toward the max
 // on consecutive all-failed rounds (tests use short ones). Zero or

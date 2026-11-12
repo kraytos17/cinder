@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/cluster"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
 	"github.com/kraytos17/cinder/internal/netport"
@@ -139,6 +140,184 @@ func TestTLSGoToGo(t *testing.T) {
 	}
 	defer c.Close()
 	mustSetGet(t, c)
+}
+
+func TestConfigureTLSAndSecretsUpdatePreparedClusterPool(t *testing.T) {
+	caPath, certPath, keyPath := genCerts(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerPort := netport.Port(listener.Addr().(*net.TCPAddr).Port)
+	nodeListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	nodePort := netport.Port(nodeListener.Addr().(*net.TCPAddr).Port)
+	peer := tcp.NewServer(tcp.ServerConfig{NodeID: "peer", Port: peerPort, Store: store.NewLRUStore(1<<20, nil)})
+	if err := peer.ConfigureCluster([]tcp.Peer{{ID: "node", Host: "127.0.0.1", Port: nodePort}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.ConfigureTLS(certPath, keyPath, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := peer.ConfigureSecrets("shared-secret", ""); err != nil {
+		t.Fatal(err)
+	}
+	peerDone := make(chan error, 1)
+	go func() { peerDone <- peer.Serve(listener) }()
+	t.Cleanup(func() {
+		peer.Shutdown()
+		select {
+		case err := <-peerDone:
+			if err != nil {
+				t.Errorf("peer Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("peer Serve did not stop")
+		}
+	})
+
+	addr := tcp.Peer{ID: "peer", Host: "127.0.0.1", Port: peerPort}
+	node := tcp.NewServer(tcp.ServerConfig{NodeID: "node", Port: nodePort, Store: store.NewLRUStore(1<<20, nil)})
+	if err := node.ConfigureCluster([]tcp.Peer{addr}); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ConfigureTLS(certPath, keyPath, caPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.ConfigureSecrets("shared-secret", ""); err != nil {
+		t.Fatal(err)
+	}
+	node.SetGossipInterval(10 * time.Millisecond)
+	node.SetProbeInterval(10 * time.Millisecond)
+	node.SetSuspectTimeout(time.Second)
+	nodeDone := make(chan error, 1)
+	go func() { nodeDone <- node.Serve(nodeListener) }()
+	t.Cleanup(func() {
+		node.Shutdown()
+		select {
+		case err := <-nodeDone:
+			if err != nil {
+				t.Errorf("node Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("node Serve did not stop")
+		}
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, ok := peer.Table().Get("node")
+		if ok && info.State == cluster.Alive && info.Incarnation > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("secure prepared pool did not exchange gossip: %+v", info)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestSecureThreeNodeClusterStartupConverges(t *testing.T) {
+	caPath, certPath, keyPath := genCerts(t)
+	const nodeCount = 3
+	listeners := make([]net.Listener, nodeCount)
+	ports := make([]netport.Port, nodeCount)
+	for i := range nodeCount {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			for _, opened := range listeners {
+				if opened != nil {
+					opened.Close()
+				}
+			}
+			t.Fatal(err)
+		}
+		listeners[i] = l
+		ports[i] = netport.Port(l.Addr().(*net.TCPAddr).Port)
+	}
+
+	servers := make([]*tcp.Server, nodeCount)
+	dones := make([]chan error, nodeCount)
+	for i := range nodeCount {
+		id := fmt.Sprintf("secure-%d", i)
+		peers := make([]tcp.Peer, 0, nodeCount-1)
+		for j := range nodeCount {
+			if i != j {
+				peers = append(peers, tcp.Peer{ID: fmt.Sprintf("secure-%d", j), Host: "127.0.0.1", Port: ports[j]})
+			}
+		}
+		srv := tcp.NewServer(tcp.ServerConfig{
+			NodeID: id, Port: ports[i], Store: store.NewLRUStore(1<<20, nil),
+		})
+		if err := srv.ConfigureCluster(peers); err != nil {
+			t.Fatal(err)
+		}
+		// These calls intentionally follow ConfigureCluster: they must
+		// update the already-prepared gossip/failure-detector pool before
+		// Serve starts the background loops.
+		if err := srv.ConfigureTLS(certPath, keyPath, caPath); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.ConfigureSecrets("secure-cluster-secret", ""); err != nil {
+			t.Fatal(err)
+		}
+		srv.SetGossipInterval(10 * time.Millisecond)
+		srv.SetProbeInterval(10 * time.Millisecond)
+		srv.SetSuspectTimeout(time.Second)
+		servers[i] = srv
+		dones[i] = make(chan error, 1)
+		i := i
+		go func() { dones[i] <- srv.Serve(listeners[i]) }()
+	}
+	t.Cleanup(func() {
+		for _, srv := range servers {
+			if srv != nil {
+				srv.Shutdown()
+			}
+		}
+		for i, done := range dones {
+			if done == nil {
+				continue
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Errorf("node %d Serve: %v", i, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Errorf("node %d Serve did not stop", i)
+			}
+		}
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		allConverged := true
+		for i, srv := range servers {
+			for j := range nodeCount {
+				if i == j {
+					continue
+				}
+				info, ok := srv.Table().Get(fmt.Sprintf("secure-%d", j))
+				if !ok || info.State != cluster.Alive || info.Incarnation == 0 {
+					allConverged = false
+					break
+				}
+			}
+		}
+		if allConverged {
+			return
+		}
+		if time.Now().After(deadline) {
+			for i, srv := range servers {
+				t.Errorf("node %d membership at timeout: %+v", i, srv.Table().Snapshot())
+			}
+			t.Fatal("secure three-node membership did not converge")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestTLSPlaintextRejected(t *testing.T) {

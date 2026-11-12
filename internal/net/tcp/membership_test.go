@@ -54,6 +54,7 @@ func TestFailureDetectorMarksDeadNode(t *testing.T) {
 		srv.SetGossipInterval(100 * time.Millisecond)
 		srv.SetProbeInterval(100 * time.Millisecond)
 		srv.SetSuspectTimeout(300 * time.Millisecond)
+		srv.SetGossipRPCTimeout(50 * time.Millisecond)
 		go srv.Serve(l)
 		return srv
 	}
@@ -67,6 +68,21 @@ func TestFailureDetectorMarksDeadNode(t *testing.T) {
 
 	// Crash node2: no leave, so node1 must detect it.
 	s2.Kill()
+	crashedAt := time.Now()
+	suspectDeadline := crashedAt.Add(2 * time.Second)
+	for {
+		if info, ok := s1.Table().Get("node2"); ok && info.State == cluster.Suspect {
+			if elapsed := time.Since(crashedAt); elapsed > 2*time.Second {
+				t.Fatalf("peer marked suspect after %v, beyond timeout + probe budget", elapsed)
+			}
+			break
+		}
+		if time.Now().After(suspectDeadline) {
+			n, _ := s1.Table().Get("node2")
+			t.Fatalf("node2 never marked suspect within the bounded probe window: %+v", n)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if info, ok := s1.Table().Get("node2"); ok && info.State == cluster.Dead {

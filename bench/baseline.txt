@@ -1,0 +1,324 @@
+PASS
+ok  	github.com/kraytos17/cinder/cmd/cinder-admin	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/cmd/cinder-cli	0.002s
+?   	github.com/kraytos17/cinder/cmd/cinderd	[no test files]
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/ae
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkComputeDigest-8    	     759	   1731831 ns/op	 4909366 B/op	   10020 allocs/op
+BenchmarkComputeDigest-8    	     639	   1737363 ns/op	 4909356 B/op	   10020 allocs/op
+BenchmarkComputeDigest-8    	     612	   1950996 ns/op	 4909354 B/op	   10020 allocs/op
+BenchmarkComputeDigest-8    	     703	   1796774 ns/op	 4909353 B/op	   10020 allocs/op
+BenchmarkComputeDigest-8    	     675	   1872946 ns/op	 4909355 B/op	   10020 allocs/op
+BenchmarkDigestForRound-8   	 2193345	       547.0 ns/op	    2048 B/op	       1 allocs/op
+BenchmarkDigestForRound-8   	 2116066	       559.6 ns/op	    2048 B/op	       1 allocs/op
+BenchmarkDigestForRound-8   	 2158610	       561.6 ns/op	    2048 B/op	       1 allocs/op
+BenchmarkDigestForRound-8   	 2070789	       571.1 ns/op	    2048 B/op	       1 allocs/op
+BenchmarkDigestForRound-8   	 2005402	       612.5 ns/op	    2048 B/op	       1 allocs/op
+BenchmarkIBLTBuildPeel-8    	   38781	     29012 ns/op	   43136 B/op	      21 allocs/op
+BenchmarkIBLTBuildPeel-8    	   42963	     29204 ns/op	   43136 B/op	      21 allocs/op
+BenchmarkIBLTBuildPeel-8    	   41578	     28990 ns/op	   43136 B/op	      21 allocs/op
+BenchmarkIBLTBuildPeel-8    	   41178	     28462 ns/op	   43136 B/op	      21 allocs/op
+BenchmarkIBLTBuildPeel-8    	   41425	     29512 ns/op	   43136 B/op	      21 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/ae	18.202s
+PASS
+ok  	github.com/kraytos17/cinder/internal/auth	0.001s
+PASS
+ok  	github.com/kraytos17/cinder/internal/client	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/internal/cluster	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/internal/codec	0.001s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/counter
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkCounterIncrementHotActor-8   	12308529	       100.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCounterIncrementHotActor-8   	11092735	       101.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCounterIncrementHotActor-8   	11657245	       102.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCounterIncrementHotActor-8   	11933964	       100.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCounterIncrementHotActor-8   	12332277	       103.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkCounterIncrementNewKeys-8    	 1819491	       645.7 ns/op	     399 B/op	       3 allocs/op
+BenchmarkCounterIncrementNewKeys-8    	 1912035	       685.5 ns/op	     438 B/op	       3 allocs/op
+BenchmarkCounterIncrementNewKeys-8    	 1705489	       617.0 ns/op	     371 B/op	       3 allocs/op
+BenchmarkCounterIncrementNewKeys-8    	 1797021	       657.9 ns/op	     390 B/op	       3 allocs/op
+BenchmarkCounterIncrementNewKeys-8    	 1771233	       640.8 ns/op	     379 B/op	       3 allocs/op
+BenchmarkCounterMergeNew-8            	 1809860	       646.8 ns/op	     394 B/op	       3 allocs/op
+BenchmarkCounterMergeNew-8            	 1794144	       630.1 ns/op	     388 B/op	       3 allocs/op
+BenchmarkCounterMergeNew-8            	 1790116	       623.7 ns/op	     385 B/op	       3 allocs/op
+BenchmarkCounterMergeNew-8            	 1730022	       632.9 ns/op	     372 B/op	       3 allocs/op
+BenchmarkCounterMergeNew-8            	 1782997	       639.5 ns/op	     383 B/op	       3 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/counter	27.934s
+PASS
+ok  	github.com/kraytos17/cinder/internal/expiry	0.002s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/grpcgw
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkGatewaySetGet-8             	   10000	    122597 ns/op	   18424 B/op	     304 allocs/op
+BenchmarkGatewaySetGet-8             	    8535	    124580 ns/op	   18413 B/op	     304 allocs/op
+BenchmarkGatewaySetGet-8             	    9403	    123160 ns/op	   18447 B/op	     304 allocs/op
+BenchmarkGatewaySetGet-8             	    8624	    121770 ns/op	   18490 B/op	     304 allocs/op
+BenchmarkGatewaySetGet-8             	    9433	    124300 ns/op	   18462 B/op	     304 allocs/op
+BenchmarkGatewayCounterAdjustGet-8   	    8674	    128996 ns/op	   19240 B/op	     310 allocs/op
+BenchmarkGatewayCounterAdjustGet-8   	    8480	    134139 ns/op	   19250 B/op	     310 allocs/op
+BenchmarkGatewayCounterAdjustGet-8   	    9498	    129990 ns/op	   19355 B/op	     310 allocs/op
+BenchmarkGatewayCounterAdjustGet-8   	    8352	    134022 ns/op	   19257 B/op	     310 allocs/op
+BenchmarkGatewayCounterAdjustGet-8   	    8902	    134139 ns/op	   19242 B/op	     310 allocs/op
+BenchmarkGatewayAuthedSetGet-8       	    8269	    144887 ns/op	   19940 B/op	     318 allocs/op
+BenchmarkGatewayAuthedSetGet-8       	    8283	    144422 ns/op	   19998 B/op	     318 allocs/op
+BenchmarkGatewayAuthedSetGet-8       	    8350	    144209 ns/op	   19889 B/op	     318 allocs/op
+BenchmarkGatewayAuthedSetGet-8       	    7786	    146716 ns/op	   19882 B/op	     318 allocs/op
+BenchmarkGatewayAuthedSetGet-8       	    8282	    144684 ns/op	   19930 B/op	     318 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/grpcgw	17.437s
+?   	github.com/kraytos17/cinder/internal/grpcgw/gen	[no test files]
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/hashring
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkRingGetNode/vnodes=50-8         	48566902	        24.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=50-8         	48008408	        24.76 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=50-8         	48724021	        24.54 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=50-8         	47744469	        24.30 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=50-8         	49074648	        25.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=150-8        	34223030	        35.70 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=150-8        	34497064	        35.16 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=150-8        	34099226	        34.70 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=150-8        	29136271	        36.09 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=150-8        	32418081	        36.47 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=300-8        	28406762	        44.36 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=300-8        	26423077	        43.03 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=300-8        	25052068	        42.28 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=300-8        	27219625	        46.12 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNode/vnodes=300-8        	28252410	        43.77 ns/op	       0 B/op	       0 allocs/op
+BenchmarkRingGetNodes/rf=2-8             	14317365	        90.52 ns/op	      32 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=2-8             	12940251	        89.29 ns/op	      32 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=2-8             	13090054	        88.05 ns/op	      32 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=2-8             	14702596	        88.69 ns/op	      32 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=2-8             	12908983	        93.15 ns/op	      32 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=3-8             	10876665	       108.8 ns/op	      64 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=3-8             	10699033	       112.2 ns/op	      64 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=3-8             	10434592	       112.9 ns/op	      64 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=3-8             	10960756	       107.1 ns/op	      64 B/op	       1 allocs/op
+BenchmarkRingGetNodes/rf=3-8             	11230598	       112.1 ns/op	      64 B/op	       1 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/hashring	33.292s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/load
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkLoadMixed3NodeRF2-8   	       6	 178810444 ns/op	   1048576 get-p99-ns	     55927 ops/s	   1048576 set-p99-ns	19161508 B/op	  268372 allocs/op
+BenchmarkLoadMixed3NodeRF2-8   	       6	 195895970 ns/op	   2097152 get-p99-ns	     46845 ops/s	   1048576 set-p99-ns	19121992 B/op	  268246 allocs/op
+BenchmarkLoadMixed3NodeRF2-8   	       5	 202837316 ns/op	   1048576 get-p99-ns	     47765 ops/s	   1048576 set-p99-ns	18898676 B/op	  268491 allocs/op
+BenchmarkLoadMixed3NodeRF2-8   	       6	 197276372 ns/op	   1048576 get-p99-ns	     53015 ops/s	   1048576 set-p99-ns	19142382 B/op	  268325 allocs/op
+BenchmarkLoadMixed3NodeRF2-8   	       6	 189889423 ns/op	   1048576 get-p99-ns	     55448 ops/s	   1048576 set-p99-ns	19117700 B/op	  268262 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/load	5.600s
+PASS
+ok  	github.com/kraytos17/cinder/internal/log	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/internal/metrics	0.002s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/net/protocol
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkEncodeRequest-8    	11595480	       106.0 ns/op	2546.44 MB/s	     320 B/op	       1 allocs/op
+BenchmarkEncodeRequest-8    	10679595	       112.9 ns/op	2390.46 MB/s	     320 B/op	       1 allocs/op
+BenchmarkEncodeRequest-8    	10678972	       112.9 ns/op	2391.33 MB/s	     320 B/op	       1 allocs/op
+BenchmarkEncodeRequest-8    	 9833307	       126.7 ns/op	2130.85 MB/s	     320 B/op	       1 allocs/op
+BenchmarkEncodeRequest-8    	 9882931	       114.0 ns/op	2368.14 MB/s	     320 B/op	       1 allocs/op
+BenchmarkDecodeRequest-8    	 8789208	       134.2 ns/op	2251.12 MB/s	     272 B/op	       2 allocs/op
+BenchmarkDecodeRequest-8    	 9242688	       126.3 ns/op	2391.55 MB/s	     272 B/op	       2 allocs/op
+BenchmarkDecodeRequest-8    	 9661609	       132.7 ns/op	2275.82 MB/s	     272 B/op	       2 allocs/op
+BenchmarkDecodeRequest-8    	 9122002	       140.1 ns/op	2155.00 MB/s	     272 B/op	       2 allocs/op
+BenchmarkDecodeRequest-8    	 8998207	       124.1 ns/op	2433.30 MB/s	     272 B/op	       2 allocs/op
+BenchmarkEncodeResponse-8   	14212201	        86.99 ns/op	     288 B/op	       1 allocs/op
+BenchmarkEncodeResponse-8   	13872790	        88.13 ns/op	     288 B/op	       1 allocs/op
+BenchmarkEncodeResponse-8   	13887996	        87.04 ns/op	     288 B/op	       1 allocs/op
+BenchmarkEncodeResponse-8   	13484476	        94.96 ns/op	     288 B/op	       1 allocs/op
+BenchmarkEncodeResponse-8   	11417302	        98.87 ns/op	     288 B/op	       1 allocs/op
+BenchmarkDecodeResponse-8   	11029268	       108.3 ns/op	2632.77 MB/s	     256 B/op	       1 allocs/op
+BenchmarkDecodeResponse-8   	10605416	       102.8 ns/op	2773.17 MB/s	     256 B/op	       1 allocs/op
+BenchmarkDecodeResponse-8   	13179805	       104.5 ns/op	2727.75 MB/s	     256 B/op	       1 allocs/op
+BenchmarkDecodeResponse-8   	12315201	       100.7 ns/op	2831.41 MB/s	     256 B/op	       1 allocs/op
+BenchmarkDecodeResponse-8   	11418016	       104.4 ns/op	2730.23 MB/s	     256 B/op	       1 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/net/protocol	24.218s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/net/tcp
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkRPCSetGet-8        	   65995	     18401 ns/op	  27.82 MB/s	    1350 B/op	      10 allocs/op
+BenchmarkRPCSetGet-8        	   61968	     19458 ns/op	  26.31 MB/s	    1351 B/op	      10 allocs/op
+BenchmarkRPCSetGet-8        	   57877	     19583 ns/op	  26.14 MB/s	    1351 B/op	      10 allocs/op
+BenchmarkRPCSetGet-8        	   67308	     19349 ns/op	  26.46 MB/s	    1350 B/op	      10 allocs/op
+BenchmarkRPCSetGet-8        	   63248	     17923 ns/op	  28.57 MB/s	    1351 B/op	      10 allocs/op
+BenchmarkRPCSetParallel-8   	  403873	      4084 ns/op	  62.68 MB/s	     812 B/op	       6 allocs/op
+BenchmarkRPCSetParallel-8   	  347203	      3695 ns/op	  69.28 MB/s	     812 B/op	       6 allocs/op
+BenchmarkRPCSetParallel-8   	  345303	      3567 ns/op	  71.76 MB/s	     812 B/op	       6 allocs/op
+BenchmarkRPCSetParallel-8   	  333411	      3492 ns/op	  73.31 MB/s	     812 B/op	       6 allocs/op
+BenchmarkRPCSetParallel-8   	  332181	      3388 ns/op	  75.57 MB/s	     812 B/op	       6 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/net/tcp	12.650s
+PASS
+ok  	github.com/kraytos17/cinder/internal/netport	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/internal/obs	0.001s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/persist
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkWalAppendSequential/n=8-8         	  123501	      9465 ns/op	 216.38 MB/s	    2852 B/op	      15 allocs/op
+BenchmarkWalAppendSequential/n=8-8         	  124483	     10510 ns/op	 194.87 MB/s	    2866 B/op	      15 allocs/op
+BenchmarkWalAppendSequential/n=8-8         	  119518	     10645 ns/op	 192.40 MB/s	    2866 B/op	      15 allocs/op
+BenchmarkWalAppendSequential/n=8-8         	   81506	     13040 ns/op	 157.05 MB/s	    2863 B/op	      15 allocs/op
+BenchmarkWalAppendSequential/n=8-8         	  113533	     10324 ns/op	 198.38 MB/s	    2865 B/op	      15 allocs/op
+BenchmarkWalAppendSequential/n=64-8        	   25688	     44697 ns/op	 366.55 MB/s	   20800 B/op	      71 allocs/op
+BenchmarkWalAppendSequential/n=64-8        	   27040	     46057 ns/op	 355.74 MB/s	   20801 B/op	      71 allocs/op
+BenchmarkWalAppendSequential/n=64-8        	   25308	     44634 ns/op	 367.08 MB/s	   20784 B/op	      71 allocs/op
+BenchmarkWalAppendSequential/n=64-8        	   27990	     44881 ns/op	 365.05 MB/s	   20801 B/op	      71 allocs/op
+BenchmarkWalAppendSequential/n=64-8        	   28522	     44235 ns/op	 370.38 MB/s	   20785 B/op	      71 allocs/op
+BenchmarkWalAppendSequential/n=512-8       	    3885	    313562 ns/op	 418.01 MB/s	  164216 B/op	     519 allocs/op
+BenchmarkWalAppendSequential/n=512-8       	    3949	    322280 ns/op	 406.70 MB/s	  164217 B/op	     519 allocs/op
+BenchmarkWalAppendSequential/n=512-8       	    3903	    323596 ns/op	 405.05 MB/s	  164216 B/op	     519 allocs/op
+BenchmarkWalAppendSequential/n=512-8       	    3632	    321979 ns/op	 407.08 MB/s	  164215 B/op	     519 allocs/op
+BenchmarkWalAppendSequential/n=512-8       	    3175	    369974 ns/op	 354.27 MB/s	  164218 B/op	     519 allocs/op
+BenchmarkWalAppendBatch/n=8-8              	  156111	      7364 ns/op	 278.12 MB/s	    2977 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=8-8              	  162165	      7410 ns/op	 276.39 MB/s	    2977 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=8-8              	  172198	      7323 ns/op	 279.67 MB/s	    2977 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=8-8              	  163740	      7424 ns/op	 275.87 MB/s	    2977 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=8-8              	  164358	      7392 ns/op	 277.06 MB/s	    2977 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=64-8             	   69112	     16635 ns/op	 984.89 MB/s	   20775 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=64-8             	   71017	     18062 ns/op	 907.12 MB/s	   20775 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=64-8             	   57705	     17883 ns/op	 916.18 MB/s	   20775 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=64-8             	   70635	     16236 ns/op	1009.14 MB/s	   20775 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=64-8             	   68439	     15700 ns/op	1043.54 MB/s	   20775 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=512-8            	   14613	     81743 ns/op	1603.47 MB/s	  164196 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=512-8            	   14626	     83390 ns/op	1571.80 MB/s	  164199 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=512-8            	   14709	     81888 ns/op	1600.62 MB/s	  164198 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=512-8            	   13665	     85522 ns/op	1532.60 MB/s	  164198 B/op	       8 allocs/op
+BenchmarkWalAppendBatch/n=512-8            	   13881	     83200 ns/op	1575.38 MB/s	  164199 B/op	       8 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/persist	52.375s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/repl
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkHintPush-8                	  164396	      7963 ns/op	     673 B/op	       1 allocs/op
+BenchmarkHintPush-8                	  160386	      7953 ns/op	     674 B/op	       1 allocs/op
+BenchmarkHintPush-8                	  161395	      7941 ns/op	     674 B/op	       1 allocs/op
+BenchmarkHintPush-8                	  161901	      7925 ns/op	     674 B/op	       1 allocs/op
+BenchmarkHintPush-8                	  164287	      7833 ns/op	     674 B/op	       1 allocs/op
+BenchmarkHintPushContended/procs1-8         	 7699456	       155.7 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs1-8         	 8204660	       151.0 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs1-8         	 8220309	       154.7 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs1-8         	 7944958	       152.9 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs1-8         	 7900906	       146.5 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs2-8         	 5630924	       210.0 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs2-8         	 5653600	       214.8 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs2-8         	 5768062	       214.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs2-8         	 5439549	       214.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs2-8         	 5565638	       217.1 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs4-8         	 4033972	       272.9 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs4-8         	 4267728	       274.4 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs4-8         	 4133160	       278.9 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs4-8         	 4361631	       291.7 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs4-8         	 4207942	       297.0 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs8-8         	 2869642	       364.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs8-8         	 3551592	       377.1 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs8-8         	 3398689	       406.0 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs8-8         	 2919230	       389.6 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushContended/procs8-8         	 3362364	       365.2 ns/op	      72 B/op	       2 allocs/op
+BenchmarkHintPushSnapshotMixed-8            	    3165	    374375 ns/op	  279468 B/op	     541 allocs/op
+BenchmarkHintPushSnapshotMixed-8            	    3370	    360341 ns/op	  279460 B/op	     541 allocs/op
+BenchmarkHintPushSnapshotMixed-8            	    3487	    370543 ns/op	  279466 B/op	     541 allocs/op
+BenchmarkHintPushSnapshotMixed-8            	    3273	    366292 ns/op	  279455 B/op	     541 allocs/op
+BenchmarkHintPushSnapshotMixed-8            	    3190	    355479 ns/op	  279451 B/op	     541 allocs/op
+BenchmarkHintSnapshot-8                     	   30878	     39676 ns/op	  130240 B/op	       9 allocs/op
+BenchmarkHintSnapshot-8                     	   29856	     39878 ns/op	  130240 B/op	       9 allocs/op
+BenchmarkHintSnapshot-8                     	   30367	     39646 ns/op	  130240 B/op	       9 allocs/op
+BenchmarkHintSnapshot-8                     	   29853	     38980 ns/op	  130240 B/op	       9 allocs/op
+BenchmarkHintSnapshot-8                     	   30171	     39512 ns/op	  130240 B/op	       9 allocs/op
+BenchmarkWriteQuorum/rf1-8                  	 6015040	       192.3 ns/op	      32 B/op	       4 allocs/op
+BenchmarkWriteQuorum/rf1-8                  	 5764953	       200.3 ns/op	      32 B/op	       4 allocs/op
+BenchmarkWriteQuorum/rf1-8                  	 6333216	       206.7 ns/op	      32 B/op	       4 allocs/op
+BenchmarkWriteQuorum/rf1-8                  	 6113272	       188.6 ns/op	      32 B/op	       4 allocs/op
+BenchmarkWriteQuorum/rf1-8                  	 6212094	       194.4 ns/op	      32 B/op	       4 allocs/op
+BenchmarkWriteQuorum/rf2-8                  	  511687	      2481 ns/op	     704 B/op	      13 allocs/op
+BenchmarkWriteQuorum/rf2-8                  	  531019	      2551 ns/op	     704 B/op	      13 allocs/op
+BenchmarkWriteQuorum/rf2-8                  	  462162	      2570 ns/op	     704 B/op	      13 allocs/op
+BenchmarkWriteQuorum/rf2-8                  	  402862	      2578 ns/op	     704 B/op	      13 allocs/op
+BenchmarkWriteQuorum/rf2-8                  	  431943	      2602 ns/op	     704 B/op	      13 allocs/op
+BenchmarkWriteQuorum/rf3-8                  	  321465	      3755 ns/op	     925 B/op	      16 allocs/op
+BenchmarkWriteQuorum/rf3-8                  	  318722	      3703 ns/op	     924 B/op	      16 allocs/op
+BenchmarkWriteQuorum/rf3-8                  	  316776	      3813 ns/op	     924 B/op	      16 allocs/op
+BenchmarkWriteQuorum/rf3-8                  	  332167	      4002 ns/op	     924 B/op	      16 allocs/op
+BenchmarkWriteQuorum/rf3-8                  	  322494	      3936 ns/op	     924 B/op	      16 allocs/op
+BenchmarkWriteQuorum/rf5-8                  	  167672	      6947 ns/op	    1375 B/op	      24 allocs/op
+BenchmarkWriteQuorum/rf5-8                  	  172057	      7543 ns/op	    1375 B/op	      24 allocs/op
+BenchmarkWriteQuorum/rf5-8                  	  156442	      7389 ns/op	    1375 B/op	      24 allocs/op
+BenchmarkWriteQuorum/rf5-8                  	  160508	      7606 ns/op	    1375 B/op	      24 allocs/op
+BenchmarkWriteQuorum/rf5-8                  	  163824	      7192 ns/op	    1375 B/op	      24 allocs/op
+BenchmarkReadMiss-8                         	  355860	      3010 ns/op	     824 B/op	      14 allocs/op
+BenchmarkReadMiss-8                         	  384144	      2976 ns/op	     824 B/op	      14 allocs/op
+BenchmarkReadMiss-8                         	  453271	      2892 ns/op	     824 B/op	      14 allocs/op
+BenchmarkReadMiss-8                         	  369848	      2978 ns/op	     824 B/op	      14 allocs/op
+BenchmarkReadMiss-8                         	  428626	      3040 ns/op	     824 B/op	      14 allocs/op
+BenchmarkReadRepair-8                       	  197265	      6160 ns/op	    1428 B/op	      31 allocs/op
+BenchmarkReadRepair-8                       	  170949	      5872 ns/op	    1429 B/op	      31 allocs/op
+BenchmarkReadRepair-8                       	  201804	      5781 ns/op	    1430 B/op	      31 allocs/op
+BenchmarkReadRepair-8                       	  219019	      5428 ns/op	    1430 B/op	      31 allocs/op
+BenchmarkReadRepair-8                       	  219452	      5452 ns/op	    1430 B/op	      31 allocs/op
+BenchmarkReplayBatch256-8                   	    3206	    355909 ns/op	  202887 B/op	    1299 allocs/op
+BenchmarkReplayBatch256-8                   	    3184	    358661 ns/op	  202974 B/op	    1300 allocs/op
+BenchmarkReplayBatch256-8                   	    3244	    362055 ns/op	  202986 B/op	    1300 allocs/op
+BenchmarkReplayBatch256-8                   	    3322	    364224 ns/op	  202984 B/op	    1300 allocs/op
+BenchmarkReplayBatch256-8                   	    3036	    377082 ns/op	  202946 B/op	    1299 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/repl	90.006s
+PASS
+ok  	github.com/kraytos17/cinder/internal/shard	0.002s
+PASS
+ok  	github.com/kraytos17/cinder/internal/sharding	0.002s
+goos: linux
+goarch: amd64
+pkg: github.com/kraytos17/cinder/internal/store
+cpu: 11th Gen Intel(R) Core(TM) i5-11320H @ 3.20GHz
+BenchmarkStorePut-8             	 1930028	       579.4 ns/op	     576 B/op	       2 allocs/op
+BenchmarkStorePut-8             	 2057208	       597.7 ns/op	     572 B/op	       2 allocs/op
+BenchmarkStorePut-8             	 2017028	       577.0 ns/op	     574 B/op	       2 allocs/op
+BenchmarkStorePut-8             	 2092136	       591.8 ns/op	     572 B/op	       2 allocs/op
+BenchmarkStorePut-8             	 2087622	       589.1 ns/op	     572 B/op	       2 allocs/op
+BenchmarkStorePutTTL-8          	 1000000	      1271 ns/op	     692 B/op	       3 allocs/op
+BenchmarkStorePutTTL-8          	 1000000	      1314 ns/op	     692 B/op	       3 allocs/op
+BenchmarkStorePutTTL-8          	 1000000	      1284 ns/op	     692 B/op	       3 allocs/op
+BenchmarkStorePutTTL-8          	 1000000	      1300 ns/op	     692 B/op	       3 allocs/op
+BenchmarkStorePutTTL-8          	 1000000	      1327 ns/op	     692 B/op	       3 allocs/op
+BenchmarkStoreGetHit-8          	 4984992	       241.3 ns/op	     256 B/op	       1 allocs/op
+BenchmarkStoreGetHit-8          	 4837933	       292.1 ns/op	     256 B/op	       1 allocs/op
+BenchmarkStoreGetHit-8          	 4359696	       267.9 ns/op	     256 B/op	       1 allocs/op
+BenchmarkStoreGetHit-8          	 4314987	       266.5 ns/op	     256 B/op	       1 allocs/op
+BenchmarkStoreGetHit-8          	 4310454	       262.1 ns/op	     256 B/op	       1 allocs/op
+BenchmarkStoreGetMiss-8         	47920683	        26.73 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStoreGetMiss-8         	45723832	        27.58 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStoreGetMiss-8         	49547095	        25.97 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStoreGetMiss-8         	42249753	        23.75 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStoreGetMiss-8         	49535658	        26.04 ns/op	       0 B/op	       0 allocs/op
+BenchmarkStoreEvictPressure-8   	 3021274	       367.8 ns/op	     512 B/op	       2 allocs/op
+BenchmarkStoreEvictPressure-8   	 2990466	       384.9 ns/op	     512 B/op	       2 allocs/op
+BenchmarkStoreEvictPressure-8   	 2677862	       419.9 ns/op	     512 B/op	       2 allocs/op
+BenchmarkStoreEvictPressure-8   	 3059686	       380.7 ns/op	     512 B/op	       2 allocs/op
+BenchmarkStoreEvictPressure-8   	 3125257	       402.0 ns/op	     512 B/op	       2 allocs/op
+PASS
+ok  	github.com/kraytos17/cinder/internal/store	70.803s
+PASS
+ok  	github.com/kraytos17/cinder/internal/testkit	0.002s
+?   	github.com/kraytos17/cinder/internal/tlscfg	[no test files]
+?   	github.com/kraytos17/cinder/internal/transport	[no test files]
+PASS
+ok  	github.com/kraytos17/cinder/tools/precommit	0.001s

@@ -88,6 +88,19 @@ func (p *Pool) SetTLS(cfg *tls.Config) {
 	}
 }
 
+// SetTimeout changes the dial and per-RPC timeout for future pool
+// connections. Existing Clients retain the timeout they were created with,
+// so drop them to ensure the new budget takes effect immediately.
+func (p *Pool) SetTimeout(timeout time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.timeout = timeout
+	for id, c := range p.conns {
+		delete(p.conns, id)
+		go c.Close()
+	}
+}
+
 // SetSecrets installs the credentials attached to every send (minted per
 // RPC, since node tokens are time-windowed) and drops existing connections
 // so redials pick them up. Client secret wins; else the node token when a
