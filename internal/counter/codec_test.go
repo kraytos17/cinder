@@ -77,6 +77,27 @@ func TestEncodedSizeMatchesEncoding(t *testing.T) {
 	}
 }
 
+func TestEncodeEncodedCounterBundleMatchesCounterBundle(t *testing.T) {
+	entries := make([]BundleEntry, 0, 3)
+	encoded := make([]EncodedBundleEntry, 0, 3)
+	for _, key := range []string{"a", "b", "c"} {
+		var state PNCounter
+		if err := state.Increment("node-a", uint64(len(key))); err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, BundleEntry{Key: key, Counter: state})
+		encoded = append(encoded, EncodedBundleEntry{Key: key, State: state.Encode()})
+	}
+	got := EncodeEncodedCounterBundle(encoded)
+	want := EncodeCounterBundle(entries)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("encoded bundle mismatch:\n got %x\nwant %x", got, want)
+	}
+	if _, err := DecodeCounterBundle(got); err != nil {
+		t.Fatalf("decode encoded bundle: %v", err)
+	}
+}
+
 func TestCodecRejects(t *testing.T) {
 	var g GCounter
 	_ = g.Increment("a", 1)

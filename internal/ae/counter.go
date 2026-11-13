@@ -103,7 +103,7 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 		}
 	}
 
-	selected := make([]BundleEntry, 0, min(len(all), 1024))
+	selected := make([]counter.EncodedBundleEntry, 0, min(len(all), 1024))
 	lastSelected := ""
 	bytes := 8 // magic + count u32s
 	if len(all) > 0 {
@@ -118,13 +118,13 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 				break
 			}
 
-			state, ok := m.counters.Get(key)
+			encoded, ok := m.counters.Encode(key)
 			if !ok {
 				continue
 			}
 
-			actualSize, valid := state.BundleRecordSize(key)
-			if !valid || actualSize > maxBytes-bytes {
+			actualSize := 4 + len(key) + 4 + len(encoded)
+			if actualSize > maxBytes-bytes {
 				if len(selected) == 0 {
 					return nil
 				}
@@ -132,7 +132,7 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 			}
 
 			bytes += actualSize
-			selected = append(selected, BundleEntry{Key: key, Counter: state})
+			selected = append(selected, counter.EncodedBundleEntry{Key: key, State: encoded})
 			lastSelected = key
 		}
 	}
@@ -140,9 +140,9 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 	// stores converge over several bounded rounds (wrap-around scan).
 	if len(selected) > 0 {
 		m.counterCur = lastSelected
-		slices.SortFunc(selected, func(a, b BundleEntry) int { return cmp.Compare(a.Key, b.Key) })
+		slices.SortFunc(selected, func(a, b counter.EncodedBundleEntry) int { return cmp.Compare(a.Key, b.Key) })
 	}
-	return counter.EncodeCounterBundle(selected)
+	return counter.EncodeEncodedCounterBundle(selected)
 }
 
 // OnCounterAntiEntropy merges a bounded remote batch and returns a bounded

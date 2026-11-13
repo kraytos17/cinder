@@ -156,6 +156,24 @@ func BenchmarkAEEncodeCounterBatch10K(b *testing.B) {
 	}
 }
 
+func BenchmarkAECloneAndEncodeCounterBatch10K(b *testing.B) {
+	cs := counter.NewStore(1 << 30)
+	for i := range 10_000 {
+		if err := cs.Increment(fmt.Sprintf("counter-%08d", i), "node-a", uint64(i+1)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		all := cs.SortedLiveCounters()
+		selected := make([]counter.EncodedBundleEntry, len(all))
+		for i, entry := range all {
+			selected[i] = counter.EncodedBundleEntry{Key: entry.Key, State: entry.Counter.Encode()}
+		}
+		benchAEBytes = counter.EncodeEncodedCounterBundle(selected)
+	}
+}
+
 var (
 	benchAERows     [][]MetaRow
 	benchAEDiff     Diff

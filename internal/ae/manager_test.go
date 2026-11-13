@@ -1,6 +1,7 @@
 package ae
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -189,6 +190,51 @@ func TestCollectMetadataBudget(t *testing.T) {
 		t.Fatalf("rows = %d", len(rows))
 	}
 	_ = covered
+}
+
+func TestCollectMetadataBudgetPreservesBucketOrderAndProgress(t *testing.T) {
+	st := testStore(1 << 20)
+	m := &Manager{store: st, numBuckets: 16}
+	var keyForBucket [16]string
+	for i := range 10000 {
+		key := "meta-budget-" + strconv.Itoa(i)
+		b := BucketFor(key, 16)
+		if keyForBucket[b] == "" {
+			keyForBucket[b] = key
+		}
+	}
+	for _, key := range keyForBucket {
+		if key != "" {
+			putVer(t, st, key, key, uint64(len(key)), 1)
+		}
+	}
+
+	// Budget fits exactly one bucket header + one row; first bucket must
+	// progress even if its own rows exceed budget, then later calls advance.
+	firstBlob, firstCovered := m.CollectMetadata(allBuckets(16), 8+4+metaRowBytes)
+	firstRows, ok := DecodeMetaRows(firstBlob)
+	if !ok || len(firstCovered) != 1 || len(firstRows) != 1 {
+		t.Fatalf("first batch rows=%d covered=%v ok=%v", len(firstRows), firstCovered, ok)
+	}
+	secondBlob, secondCovered := m.CollectMetadata(allBuckets(16)[1:], 8+4+metaRowBytes)
+	secondRows, ok := DecodeMetaRows(secondBlob)
+	if !ok || len(secondCovered) != 1 || len(secondRows) != 1 || secondCovered[0] <= firstCovered[0] {
+		t.Fatalf("second batch rows=%d covered=%v ok=%v first=%v", len(secondRows), secondCovered, ok, firstCovered)
+	}
+
+	// With a generous budget, rows are grouped by ascending bucket and
+	// key-hash ordered within each bucket independent of map traversal order.
+	blob, covered := m.CollectMetadata(allBuckets(16), MaxMetaBytes)
+	rows, ok := DecodeMetaRows(blob)
+	if !ok || len(covered) != 16 || len(rows) != len(keyForBucket) {
+		t.Fatalf("full metadata rows=%d covered=%d ok=%v", len(rows), len(covered), ok)
+	}
+	for i := 1; i < len(rows); i++ {
+		prev, cur := rows[i-1], rows[i]
+		if prev.Bucket > cur.Bucket || (prev.Bucket == cur.Bucket && prev.KeyHash > cur.KeyHash) {
+			t.Fatalf("metadata order invalid at %d: %+v then %+v", i, prev, cur)
+		}
+	}
 }
 
 func TestHandlerRoundTrip(t *testing.T) {

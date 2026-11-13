@@ -208,36 +208,49 @@ type BundleEntry struct {
 	Counter PNCounter
 }
 
+// EncodedBundleEntry is one already-encoded counter state selected for a
+// bundle. Counter bytes must be a valid canonical CRDC PNCounter encoding.
+type EncodedBundleEntry struct {
+	Key   string
+	State []byte
+}
+
 // EncodeCounterBundle serializes entries (already sorted, cursor-selected)
 // as a CAE1 bundle.
 func EncodeCounterBundle(entries []BundleEntry) []byte {
-	need := 4 + 4
-	states := make([][]byte, len(entries))
-	for i, e := range entries {
-		if len(e.Key) == 0 || len(e.Key) > math.MaxUint32 {
-			return nil
-		}
-
-		st := e.Counter.Encode()
-		if len(st) == 0 || len(st) > math.MaxUint32 {
-			return nil
-		}
-
-		states[i] = st
-		need += 4 + len(e.Key) + 4 + len(st)
+	encoded := make([]EncodedBundleEntry, len(entries))
+	for i, entry := range entries {
+		encoded[i] = EncodedBundleEntry{Key: entry.Key, State: entry.Counter.Encode()}
 	}
-	if len(entries) > math.MaxUint32 {
+	return EncodeEncodedCounterBundle(encoded)
+}
+
+// EncodeEncodedCounterBundle serializes already-encoded canonical counter
+// states, avoiding a second clone/encode pass for selected store entries.
+func EncodeEncodedCounterBundle(entries []EncodedBundleEntry) []byte {
+	if uint64(len(entries)) > math.MaxUint32 {
 		return nil
+	}
+
+	need := 8
+	for i, entry := range entries {
+		if len(entry.Key) == 0 || uint64(len(entry.Key)) > math.MaxUint32 || len(entry.State) == 0 || uint64(len(entry.State)) > math.MaxUint32 {
+			return nil
+		}
+		if i > 0 && entries[i-1].Key >= entry.Key {
+			return nil
+		}
+		need += 4 + len(entry.Key) + 4 + len(entry.State)
 	}
 
 	buf := make([]byte, 0, need)
 	buf = codec.Append(buf, binary.BigEndian, MagicCAE1)
 	buf = codec.AppendLen(buf, binary.BigEndian, len(entries))
-	for i, e := range entries {
-		buf = codec.AppendLen(buf, binary.BigEndian, len(e.Key))
-		buf = append(buf, e.Key...)
-		buf = codec.AppendLen(buf, binary.BigEndian, len(states[i]))
-		buf = append(buf, states[i]...)
+	for _, entry := range entries {
+		buf = codec.AppendLen(buf, binary.BigEndian, len(entry.Key))
+		buf = append(buf, entry.Key...)
+		buf = codec.AppendLen(buf, binary.BigEndian, len(entry.State))
+		buf = append(buf, entry.State...)
 	}
 	return buf
 }

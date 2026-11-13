@@ -74,7 +74,7 @@ type CounterStore interface {
 	SortedLiveCounters() []BundleEntry
 	SortedLiveCounterKeys() []string
 	BundleRecordSize(key string) (int, bool)
-	Get(key string) (PNCounter, bool)
+	Encode(key string) ([]byte, bool)
 	Merge(key string, remote PNCounter) error
 	Size() int
 	CapacityBytes() uint64
