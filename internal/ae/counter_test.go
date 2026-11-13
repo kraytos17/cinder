@@ -2,6 +2,7 @@ package ae
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -256,6 +257,33 @@ func TestCounterRejectsCounterLargerThanBatchBudget(t *testing.T) {
 	m1.RunCounterRound(2)
 	if v, ok := cs2.Value("k"); !ok || v != 1 {
 		t.Fatalf("k = %d %v, want 1 after adequate round", v, ok)
+	}
+}
+
+func TestCounterBatchEncodedSizeStaysWithinBudget(t *testing.T) {
+	m1, _, cs1, _ := counterTestPair(t, 512)
+	for i := range 100 {
+		key := fmt.Sprintf("counter-%03d", i)
+		actor := fmt.Sprintf("actor-%02d", i%7)
+		if err := cs1.Increment(key, actor, uint64(i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 50 {
+		batch := m1.EncodeCounterBatch(512)
+		if len(batch) > 512 {
+			t.Fatalf("encoded batch bytes=%d, budget=512", len(batch))
+		}
+		if len(batch) == 8 {
+			break // canonical empty CAE1 bundle
+		}
+		entries, err := counter.DecodeCounterBundle(batch)
+		if err != nil {
+			t.Fatalf("decode batch: %v", err)
+		}
+		if len(entries) == 0 {
+			t.Fatal("non-empty batch decoded to zero entries")
+		}
 	}
 }
 

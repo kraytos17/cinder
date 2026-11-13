@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -76,3 +77,90 @@ func BenchmarkIBLTBuildPeel(b *testing.B) {
 		}
 	}
 }
+
+func benchmarkAEStore(b *testing.B, count int) *store.Store {
+	b.Helper()
+	st := store.NewLRUStore(1<<30, nil)
+	value := make([]byte, 64)
+	for i := range count {
+		if err := st.PutVersioned(fmt.Sprintf("ae-key-%08d", i), store.Entry{
+			Value: value, Version: uint64(i + 1), WriterNodeHash: 1,
+		}); err != nil {
+			b.Fatal(err)
+		}
+	}
+	return st
+}
+
+func BenchmarkAECollectRows10K(b *testing.B) {
+	st := benchmarkAEStore(b, 10_000)
+	m := &Manager{store: st, numBuckets: 256}
+	buckets := allBuckets(256)
+	b.ReportAllocs()
+	for b.Loop() {
+		benchAERows = m.CollectRows(buckets)
+	}
+}
+
+func BenchmarkAECollectMetadata10K(b *testing.B) {
+	st := benchmarkAEStore(b, 10_000)
+	m := &Manager{store: st, numBuckets: 256}
+	buckets := allBuckets(256)
+	b.ReportAllocs()
+	for b.Loop() {
+		benchAEMetadata, benchAECovered = m.CollectMetadata(buckets, MaxMetaBytes)
+	}
+}
+
+func BenchmarkAEDiffRows10K(b *testing.B) {
+	st := benchmarkAEStore(b, 10_000)
+	m := &Manager{store: st, numBuckets: 256}
+	perBucket := m.CollectRows(allBuckets(256))
+	var rows []MetaRow
+	for _, bucketRows := range perBucket {
+		for _, row := range bucketRows {
+			row.Version++ // every remote row is newer, exercising the need path
+			rows = append(rows, row)
+		}
+	}
+	buckets := allBuckets(256)
+	b.ReportAllocs()
+	for b.Loop() {
+		benchAEDiff = m.DiffRows(rows, buckets, buckets)
+	}
+}
+
+func BenchmarkAECollectEntries10K(b *testing.B) {
+	st := benchmarkAEStore(b, 10_000)
+	m := &Manager{store: st, numBuckets: 256, fetchBytes: 1 << 20}
+	keys := make([]string, 0, 10_000)
+	st.ForEach(func(key string, _ store.Entry) { keys = append(keys, key) })
+	b.ReportAllocs()
+	for b.Loop() {
+		benchAEItems = m.CollectEntriesForKeys(keys, 1<<20)
+	}
+}
+
+func BenchmarkAEEncodeCounterBatch10K(b *testing.B) {
+	cs := counter.NewStore(1 << 30)
+	for i := range 10_000 {
+		if err := cs.Increment(fmt.Sprintf("counter-%08d", i), "node-a", uint64(i+1)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	m := &Manager{fetchBytes: 1 << 20}
+	m.SetCounterStore(cs)
+	b.ReportAllocs()
+	for b.Loop() {
+		benchAEBytes = m.EncodeCounterBatch(1 << 20)
+	}
+}
+
+var (
+	benchAERows     [][]MetaRow
+	benchAEDiff     Diff
+	benchAEItems    []SyncItem
+	benchAEBytes    []byte
+	benchAEMetadata []byte
+	benchAECovered  []uint32
+)

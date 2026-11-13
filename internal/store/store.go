@@ -620,3 +620,34 @@ func (s *Store) ForEach(fn func(key string, e Entry)) {
 		fn(p.Key, p.Entry)
 	}
 }
+
+// EntryMeta is the value-free portion of one present store entry. It is
+// suitable for digest/metadata scans that must not copy resident values.
+type EntryMeta struct {
+	Key   string
+	Entry Entry
+}
+
+// MetadataSnapshot copies present-entry identity metadata under shard locks
+// and omits value bytes. Tombstones are included; expired entries are skipped
+// just like LiveEntries.
+func (s *Store) MetadataSnapshot() []EntryMeta {
+	now := s.clock.Now()
+	var out []EntryMeta
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for key, idx := range sh.index {
+			e := sh.nodes[idx].entry
+			if e.Expired(now) {
+				continue
+			}
+			out = append(out, EntryMeta{Key: key, Entry: Entry{
+				Version: e.Version, WriterNodeHash: e.WriterNodeHash,
+				Expiry: e.Expiry, Tombstone: e.Tombstone,
+			}})
+		}
+		sh.mu.Unlock()
+	}
+	return out
+}

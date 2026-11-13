@@ -61,6 +61,22 @@ func TestCodecRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEncodedSizeMatchesEncoding(t *testing.T) {
+	var p PNCounter
+	if err := p.Increment("node-a", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Decrement("node-with-long-name", 5); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := p.EncodedSize(), len(p.Encode()); got != want {
+		t.Fatalf("PNCounter EncodedSize=%d, len(Encode)=%d", got, want)
+	}
+	if got, want := p.Pos.EncodedSize(), len(p.Pos.Encode()); got != want {
+		t.Fatalf("GCounter EncodedSize=%d, len(Encode)=%d", got, want)
+	}
+}
+
 func TestCodecRejects(t *testing.T) {
 	var g GCounter
 	_ = g.Increment("a", 1)

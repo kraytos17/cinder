@@ -1,7 +1,8 @@
 package ae
 
 import (
-	"sort"
+	"cmp"
+	"slices"
 
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
@@ -89,21 +90,27 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 		return nil
 	}
 
-	all := m.counters.SortedLiveCounters()
+	all := m.counters.SortedLiveCounterKeys()
 	start := 0
 	if m.counterCur != "" {
-		start = sort.Search(len(all), func(i int) bool { return all[i].Key > m.counterCur })
+		idx, found := slices.BinarySearch(all, m.counterCur)
+		start = idx
+		if found {
+			start++
+		}
 		if start >= len(all) {
 			start = 0
 		}
 	}
 
-	var selected []BundleEntry
+	selected := make([]BundleEntry, 0, min(len(all), 1024))
+	lastSelected := ""
 	bytes := 8 // magic + count u32s
 	if len(all) > 0 {
 		for offset := range all {
 			idx := (start + offset) % len(all)
-			n, ok := all[idx].Counter.BundleRecordSize(all[idx].Key)
+			key := all[idx]
+			n, ok := m.counters.BundleRecordSize(key)
 			if !ok || n > maxBytes-bytes {
 				if len(selected) == 0 {
 					return nil
@@ -111,14 +118,29 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 				break
 			}
 
-			bytes += n
-			selected = append(selected, all[idx])
+			state, ok := m.counters.Get(key)
+			if !ok {
+				continue
+			}
+
+			actualSize, valid := state.BundleRecordSize(key)
+			if !valid || actualSize > maxBytes-bytes {
+				if len(selected) == 0 {
+					return nil
+				}
+				break
+			}
+
+			bytes += actualSize
+			selected = append(selected, BundleEntry{Key: key, Counter: state})
+			lastSelected = key
 		}
 	}
 	// Advance the cursor past the last selected key so arbitrarily large
 	// stores converge over several bounded rounds (wrap-around scan).
 	if len(selected) > 0 {
-		m.counterCur = selected[len(selected)-1].Key
+		m.counterCur = lastSelected
+		slices.SortFunc(selected, func(a, b BundleEntry) int { return cmp.Compare(a.Key, b.Key) })
 	}
 	return counter.EncodeCounterBundle(selected)
 }

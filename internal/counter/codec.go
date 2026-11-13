@@ -47,11 +47,22 @@ var ErrDecode = errors.New("counter: invalid encoding")
 
 // encodedSize returns the exact buffer need for one side's components.
 func (g GCounter) encodedSize() int {
-	n := 4 // count u32
-	for _, actor := range g.Actors() {
+	n := 4
+	for actor := range g.components {
 		n += 4 + len(actor) + 8
 	}
 	return n
+}
+
+// EncodedSize returns the exact byte size of Encode without sorting actors
+// or allocating. It is intended for transfer-budget selection.
+func (g GCounter) EncodedSize() int {
+	return 4 + 1 + g.encodedSize()
+}
+
+// EncodedSize returns the exact byte size of Encode without allocating.
+func (p PNCounter) EncodedSize() int {
+	return 4 + 1 + p.Pos.encodedSize() + p.Neg.encodedSize()
 }
 
 // Encode serializes g. Empty actor ids or u32-overflowing lengths
@@ -282,9 +293,9 @@ func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 // BundleRecordSize returns the encoded width of one bundle record for
 // key and p.
 func (p PNCounter) BundleRecordSize(key string) (int, bool) {
-	st := p.Encode()
-	if len(st) == 0 || len(key) == 0 || len(key) > math.MaxUint32 || len(st) > math.MaxUint32 {
+	stateSize := p.EncodedSize()
+	if len(key) == 0 || uint64(len(key)) > math.MaxUint32 || uint64(stateSize) > math.MaxUint32 {
 		return 0, false
 	}
-	return 4 + len(key) + 4 + len(st), true
+	return 4 + len(key) + 4 + stateSize, true
 }

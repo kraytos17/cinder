@@ -364,3 +364,31 @@ func (s *Store) SortedLiveCounters() []BundleEntry {
 	slices.SortFunc(out, func(a, b BundleEntry) int { return cmp.Compare(a.Key, b.Key) })
 	return out
 }
+
+// SortedLiveCounterKeys returns a point-in-time key list without cloning CRDT
+// actor maps. Call Get for states selected for transfer.
+func (s *Store) SortedLiveCounterKeys() []string {
+	keys := make([]string, 0, s.Size())
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.RLock()
+		for key := range sh.index {
+			keys = append(keys, key)
+		}
+		sh.mu.RUnlock()
+	}
+
+	slices.Sort(keys)
+	return keys
+}
+
+// BundleRecordSize reports the encoded bundle record size without cloning
+// actor maps or sorting actors. It returns false if key has no state.
+func (s *Store) BundleRecordSize(key string) (int, bool) {
+	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
+	sh.mu.RLock()
+	state, ok := sh.index[key]
+	size, valid := state.BundleRecordSize(key)
+	sh.mu.RUnlock()
+	return size, ok && valid
+}

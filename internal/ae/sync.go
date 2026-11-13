@@ -101,17 +101,18 @@ func (m *Manager) CollectRows(buckets []uint32) [][]MetaRow {
 	}
 
 	perBucket := make([][]MetaRow, m.numBuckets)
-	m.store.ForEach(func(key string, e store.Entry) {
+	for _, item := range m.store.MetadataSnapshot() {
+		key, e := item.Key, item.Entry
 		b := BucketFor(key, m.numBuckets)
 		if b >= m.numBuckets || !wanted[b] {
-			return
+			continue
 		}
 
 		perBucket[b] = append(perBucket[b], MetaRow{
 			Bucket: b, Tombstone: e.Tombstone, KeyHash: KeyHash(key),
 			Version: e.Version, Writer: e.WriterNodeHash,
 		})
-	})
+	}
 	for _, vec := range perBucket {
 		slices.SortFunc(vec, func(a, b MetaRow) int { return cmp.Compare(a.KeyHash, b.KeyHash) })
 	}
@@ -126,42 +127,61 @@ const metaRowBytes = 4 + 8 + 8 + 8 + 1
 // the covered set. The first bucket may exceed maxBytes so that a bucket
 // larger than the budget can still make progress.
 func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []uint32) {
-	perBucket := m.CollectRows(bucketIDs)
-	wanted := make([]bool, m.numBuckets)
-	for _, id := range bucketIDs {
-		if id < m.numBuckets {
-			wanted[id] = true
+	requested := make([]bool, m.numBuckets)
+	for _, b := range bucketIDs {
+		if b < m.numBuckets {
+			requested[b] = true
 		}
 	}
 
+	wanted := make([]bool, m.numBuckets)
 	var rows []MetaRow
-	var covered []uint32
-	bytes := 8 // outer row-count + covered-count u32s
-	for b := range m.numBuckets {
-		if !wanted[b] {
+	rowCounts := make([]int, m.numBuckets)
+	for _, item := range m.store.MetadataSnapshot() {
+		b := BucketFor(item.Key, m.numBuckets)
+		if b >= m.numBuckets || !requested[b] {
 			continue
 		}
 
-		vec := perBucket[b]
+		e := item.Entry
+		rows = append(rows, MetaRow{Bucket: b, Tombstone: e.Tombstone, KeyHash: KeyHash(item.Key), Version: e.Version, Writer: e.WriterNodeHash})
+		rowCounts[b]++
+	}
+	slices.SortFunc(rows, func(a, b MetaRow) int {
+		return cmp.Or(cmp.Compare(a.Bucket, b.Bucket), cmp.Compare(a.KeyHash, b.KeyHash))
+	})
+
+	var covered []uint32
+	bytes := 8 // outer row-count + covered-count u32s
+	for b := range m.numBuckets {
+		if !requested[b] {
+			continue
+		}
 		if bytes+4 > maxBytes && len(covered) > 0 {
 			break
 		}
 
 		bytes += 4
 		covered = append(covered, b)
-		need := len(vec) * metaRowBytes
+		wanted[b] = true
+		need := rowCounts[b] * metaRowBytes
 		if bytes+need > maxBytes && len(covered) > 1 {
 			covered = covered[:len(covered)-1]
+			wanted[b] = false
 			break
 		}
 
 		bytes += need
-		rows = append(rows, vec...)
 		if bytes > maxBytes {
 			break
 		}
 	}
-	return EncodeMetaRows(rows), covered
+
+	rowEnd := 0
+	for _, b := range covered {
+		rowEnd += rowCounts[b]
+	}
+	return EncodeMetaRows(rows[:rowEnd]), covered
 }
 
 // HavePair sorts keys by identity hash for deterministic output.
@@ -204,11 +224,11 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 			coveredSet[b] = true
 		}
 	}
-
-	m.store.ForEach(func(key string, e store.Entry) {
+	for _, item := range m.store.MetadataSnapshot() {
+		key, e := item.Key, item.Entry
 		b := BucketFor(key, m.numBuckets)
 		if b >= m.numBuckets || !wanted[b] {
-			return
+			continue
 		}
 
 		h := KeyHash(key)
@@ -217,7 +237,7 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 			if coverAll || coveredSet[b] {
 				diff.Have = append(diff.Have, HavePair{Hash: h, Key: key})
 			}
-			return
+			continue
 		}
 
 		remote := row.Stamp()
@@ -228,7 +248,7 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 			diff.Have = append(diff.Have, HavePair{Hash: h, Key: key})
 		}
 		delete(byHash, h)
-	})
+	}
 	for h, row := range byHash {
 		if row.Bucket < m.numBuckets && (coverAll || coveredSet[row.Bucket]) {
 			diff.Need = append(diff.Need, h)
