@@ -118,16 +118,28 @@ state or incarnation change fires the table's change callbacks, which notify:
 callback that rebuilds their own peer slice, keeping peer selection current
 without periodic full scans.
 
-**Graceful leave** — on shutdown, the server:
+**Graceful leave** — on shutdown, the server performs an ordered teardown
+bounded by a deadline (default 10 s; `cinderd --shutdown-timeout-ms`
+configures it, `Server.ShutdownContext` accepts an explicit budget):
 
-1. Broadcasts Dead first: `gossip.Leave()` marks self `Dead` (bumping the
+1. Closes the listener (stops admission) but keeps serving accepted
+   connections.
+2. Broadcasts Dead first: `gossip.Leave()` marks self `Dead` (bumping the
    incarnation so the rumor overrides stale Alive entries) and sends the
    full membership view (self included, as `Dead`) to every known peer.
-2. Stops timers (gossip, probe, rebalance, replay, eviction, quarantine, compact)
-   and closes the listener and connections.
+3. Drains in-flight requests (`wg.Wait`); on deadline expiry, force-closes
+   connections so shutdown cannot hang.
+4. Stops background loops (gossip, probe, anti-entropy, hint replay,
+   snapshot compaction) and rebalance timers.
+5. Takes a best-effort final snapshot, closes the peer pool, then
+   syncs/closes the WAL (the fsync is the durability guarantee; the
+   snapshot only avoids replay work on restart).
 
 This lets peers learn the node is `Dead` from the explicit broadcast, rather
 than waiting for their own probes to time out and suspect-mark it.
+`cinderd` shuts down edge listeners first (metrics HTTP, gRPC) under the
+same deadline, then the TCP server, so new external traffic stops before
+draining begins.
 
 ## Consistent Hash Ring
 
@@ -599,6 +611,7 @@ gossip starts.
 | `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
 | `--eviction-policy` | `lru` | Eviction policy: `lru` or `lfu` |
 | `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
+| `--shutdown-timeout-ms` | `10000` | Graceful shutdown deadline in milliseconds (`0` = force-close immediately; after expiry, connections are force-closed and the stage that timed out is logged) |
 
 Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2
 uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2 accepted on

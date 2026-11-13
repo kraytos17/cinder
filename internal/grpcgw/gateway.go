@@ -337,3 +337,30 @@ func (g *Gateway) Stop() {
 		srv.Stop()
 	}
 }
+
+// Shutdown gracefully stops accepting RPCs and waits for in-flight handlers.
+// When ctx expires, Stop force-cancels remaining calls and the method returns
+// the context error. No-op before Serve.
+func (g *Gateway) Shutdown(ctx context.Context) error {
+	g.mu.Lock()
+	srv := g.srv
+	g.mu.Unlock()
+	if srv == nil {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		srv.GracefulStop()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		srv.Stop()
+		<-done
+		return ctx.Err()
+	}
+}

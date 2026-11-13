@@ -18,13 +18,13 @@ import (
 )
 
 // runGossipLoop ticks membership gossip until stopBg closes.
-func (s *Server) runGossipLoop(wg *sync.WaitGroup, gossip *cluster.GossipManager) {
+func (s *Server) runGossipLoop(wg *sync.WaitGroup, gossip *cluster.GossipManager, stop <-chan struct{}) {
 	defer wg.Done()
 	t := time.NewTimer(s.currentGossipInterval())
 	defer t.Stop()
 	for {
 		select {
-		case <-s.stopBg:
+		case <-stop:
 			return
 		case <-t.C:
 		}
@@ -35,13 +35,13 @@ func (s *Server) runGossipLoop(wg *sync.WaitGroup, gossip *cluster.GossipManager
 }
 
 // runProbeLoop ticks the failure detector until stopBg closes.
-func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector) {
+func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector, stop <-chan struct{}) {
 	defer wg.Done()
 	t := time.NewTimer(s.currentProbeInterval())
 	defer t.Stop()
 	for {
 		select {
-		case <-s.stopBg:
+		case <-stop:
 			return
 		case <-t.C:
 		}
@@ -53,12 +53,12 @@ func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector) {
 
 // runAELoop runs anti-entropy and counter repair on the same interval.
 // Managers with no eligible partner treat a round as a no-op.
-func (s *Server) runAELoop(mgr *ae.Manager) {
+func (s *Server) runAELoop(mgr *ae.Manager, stop <-chan struct{}) {
 	t := time.NewTimer(s.currentAEInterval())
 	defer t.Stop()
 	for {
 		select {
-		case <-s.stopBg:
+		case <-stop:
 			return
 		case <-t.C:
 		}
@@ -74,13 +74,13 @@ func (s *Server) runAELoop(mgr *ae.Manager) {
 // all-failed round up to the max. The loop runs under Serve's WaitGroup
 // and ReplayHints is synchronous, so shutdown drains the in-flight batch
 // before returning. Failed sends stay queued for a later round.
-func (s *Server) runReplayLoop(replMgr *repl.Manager) {
+func (s *Server) runReplayLoop(replMgr *repl.Manager, stop <-chan struct{}) {
 	t := time.NewTimer(s.currentReplayInterval())
 	defer t.Stop()
 	var fails int
 	for {
 		select {
-		case <-s.stopBg:
+		case <-stop:
 			return
 		case <-t.C:
 		}
@@ -120,12 +120,12 @@ func replayBackoff(baseDelay, maxDelay time.Duration, fails int) time.Duration {
 }
 
 // runCompactLoop ticks snapshot compaction on its fixed cadence.
-func (s *Server) runCompactLoop(pm *persist.Manager) {
+func (s *Server) runCompactLoop(pm *persist.Manager, stop <-chan struct{}) {
 	t := time.NewTimer(compactTickInterval)
 	defer t.Stop()
 	for {
 		select {
-		case <-s.stopBg:
+		case <-stop:
 			return
 		case <-t.C:
 		}

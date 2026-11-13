@@ -231,58 +231,73 @@ func (s *Server) handle(c net.Conn) {
 			return
 		}
 
-		dec, err := protocol.DecodeRequest(header[:], payload)
-		var res protocol.Response
-		if err != nil {
-			// Decode failures answer InvalidArgument without trace echo.
-			s.met.DecodeFailures.Add(1)
-			if e := s.log().Debug(); e != nil {
-				e.Int("bytes", protocol.FrameHeaderSize+len(payload)).Msg("decode failure")
-			}
-			res = protocol.Response{Status: protocol.StatusInvalidArgument}
-		} else {
-			dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
-			res = s.dispatch(dec.Req, dec.AuthToken)
-			res.TraceID = dec.Req.TraceID
-			res.SpanID = dec.Req.SpanID
-		}
+		// A fully-received frame counts as in-flight until its response
+		// is on the wire, so graceful shutdown waits for real work but
+		// never for idle connections blocked in the read above. A false
+		// return keeps the loop (and the connection) alive; true
+		// terminates it, preserving the pre-closure control flow where
+		// every inner return exited handle.
+		terminate := func() bool {
+			s.active.Add(1)
+			defer s.active.Add(-1)
 
-		out, err := protocol.EncodeResponseInto(res, encodeBuf)
-		if err != nil {
-			s.met.WriteFailures.Add(1)
-			return
-		}
-		if cap(out) > maxReusePayload {
-			encodeBuf = nil
-		} else {
-			encodeBuf = out[:0]
-		}
-
-		if err := c.SetWriteDeadline(time.Now().Add(s.currentWriteTimeout())); err != nil {
-			s.met.WriteFailures.Add(1)
-			return
-		}
-		if err := writeAll(c, out); err != nil {
-			// A write deadline means the peer stopped reading: count a
-			// slow-consumer drop, not a generic write failure. Other
-			// write errors (resets, closed sockets) stay failures.
-			if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
-				s.met.SlowConsumerDrops.Add(1)
+			dec, err := protocol.DecodeRequest(header[:], payload)
+			var res protocol.Response
+			if err != nil {
+				// Decode failures answer InvalidArgument without trace echo.
+				s.met.DecodeFailures.Add(1)
 				if e := s.log().Debug(); e != nil {
-					e.Int("bytes", len(out)).Msg("slow consumer dropped")
+					e.Int("bytes", protocol.FrameHeaderSize+len(payload)).Msg("decode failure")
 				}
-				return
+				res = protocol.Response{Status: protocol.StatusInvalidArgument}
+			} else {
+				dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
+				res = s.dispatch(dec.Req, dec.AuthToken)
+				res.TraceID = dec.Req.TraceID
+				res.SpanID = dec.Req.SpanID
 			}
 
-			s.met.WriteFailures.Add(1)
+			out, err := protocol.EncodeResponseInto(res, encodeBuf)
+			if err != nil {
+				s.met.WriteFailures.Add(1)
+				return true
+			}
+			if cap(out) > maxReusePayload {
+				encodeBuf = nil
+			} else {
+				encodeBuf = out[:0]
+			}
+
+			if err := c.SetWriteDeadline(time.Now().Add(s.currentWriteTimeout())); err != nil {
+				s.met.WriteFailures.Add(1)
+				return true
+			}
+			if err := writeAll(c, out); err != nil {
+				// A write deadline means the peer stopped reading: count a
+				// slow-consumer drop, not a generic write failure. Other
+				// write errors (resets, closed sockets) stay failures.
+				if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+					s.met.SlowConsumerDrops.Add(1)
+					if e := s.log().Debug(); e != nil {
+						e.Int("bytes", len(out)).Msg("slow consumer dropped")
+					}
+					return true
+				}
+
+				s.met.WriteFailures.Add(1)
+				return true
+			}
+			if dec.Req.Opcode == protocol.OpAdminShutdown {
+				// Shut down only after the OK is on the wire: ShutdownContext
+				// closes this connection, so firing it from dispatch raced
+				// the response and surfaced as EOF.
+				// (Decode failures can never match: opcode zero is invalid.)
+				go s.Shutdown()
+			}
+			return false
+		}()
+		if terminate {
 			return
-		}
-		if dec.Req.Opcode == protocol.OpAdminShutdown {
-			// Shut down only after the OK is on the wire: Shutdown
-			// closes this connection via closeAll, so firing it from
-			// dispatch raced the response and surfaced as EOF.
-			// (Decode failures can never match: opcode zero is invalid.)
-			go s.Shutdown()
 		}
 	}
 }

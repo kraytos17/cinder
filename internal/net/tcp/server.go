@@ -4,6 +4,7 @@
 package tcp
 
 import (
+	"context"
 	"crypto/tls"
 	"net"
 	"sync"
@@ -33,6 +34,9 @@ const (
 	// maxConnections caps concurrent clients; beyond it new sockets are
 	// rejected instead of buffering unbounded descriptors.
 	maxConnections = 10_000
+	// defaultShutdownTimeout bounds the convenience Shutdown method. Daemons
+	// pass their configured context deadline to ShutdownContext directly.
+	defaultShutdownTimeout = 10 * time.Second
 	// idleTimeout closes connections with no completed request/response.
 	// It bounds reads only; writes get their own shorter budget below so
 	// one slow reader cannot park a handler for the full idle window.
@@ -107,7 +111,15 @@ type Server struct {
 	sem      chan struct{}
 	shut     atomic.Bool
 	wg       sync.WaitGroup
-	trace    atomic.Uint64
+	// active counts frames received but not yet answered. Shutdown drains
+	// these (real work) but never waits out idle connections blocked in
+	// read, which are closed outright.
+	active atomic.Int64
+	bgMu   sync.Mutex
+	bgWG   *sync.WaitGroup
+	bgOnce sync.Once
+	bgStop chan struct{}
+	trace  atomic.Uint64
 
 	ringMu sync.RWMutex
 	ring   *hashring.Ring
@@ -127,7 +139,6 @@ type Server struct {
 	pool              *client.Pool
 	clusterConfigured bool
 	clusterStarted    bool
-	stopBg            chan struct{}
 
 	gossipInterval     time.Duration
 	probeInterval      time.Duration
@@ -213,7 +224,6 @@ func NewServer(cfg ServerConfig) *Server {
 		clock:          clock,
 		conns:          make(map[net.Conn]struct{}),
 		sem:            make(chan struct{}, maxConnections),
-		stopBg:         make(chan struct{}),
 		gossipInterval: time.Second,
 		probeInterval:  time.Second,
 		suspectTimeout: 3 * time.Second,
@@ -287,25 +297,34 @@ func (s *Server) Serve(l net.Listener) error {
 	s.persistMu.RUnlock()
 
 	var bgWG sync.WaitGroup
+	stopBg := make(chan struct{})
 	if gossip != nil && fd != nil {
 		bgWG.Add(2)
-		go s.runGossipLoop(&bgWG, gossip)
-		go s.runProbeLoop(&bgWG, fd)
+		go s.runGossipLoop(&bgWG, gossip, stopBg)
+		go s.runProbeLoop(&bgWG, fd, stopBg)
 	}
 	if mgr != nil {
-		bgWG.Go(func() { s.runAELoop(mgr) })
+		bgWG.Go(func() { s.runAELoop(mgr, stopBg) })
 	}
 	if replMgr != nil {
-		bgWG.Go(func() { s.runReplayLoop(replMgr) })
+		bgWG.Go(func() { s.runReplayLoop(replMgr, stopBg) })
 	}
 	if pm != nil {
-		bgWG.Go(func() { s.runCompactLoop(pm) })
+		bgWG.Go(func() { s.runCompactLoop(pm, stopBg) })
 	}
 
+	s.bgMu.Lock()
+	s.bgWG = &bgWG
+	s.bgStop = stopBg
+	s.bgMu.Unlock()
 	defer func() {
-		close(s.stopBg)
-		bgWG.Wait()
+		s.stopBackgroundLoops()
+		s.bgMu.Lock()
+		s.bgWG = nil
+		s.bgStop = nil
+		s.bgMu.Unlock()
 	}()
+
 	for {
 		c, err := l.Accept()
 		if err != nil {
@@ -330,12 +349,36 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 }
 
-// Shutdown stops accepting, broadcasts a leave (best-effort Dead
-// self-rumor so peers don't suspect during teardown), and closes all
-// connections.
+// Shutdown stops accepting, broadcasts a leave, drains active requests,
+// then stops background workers and syncs persistence. It is bounded by the
+// default timeout; embedders that need another budget may call ShutdownContext.
 func (s *Server) Shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), defaultShutdownTimeout)
+	defer cancel()
+	if err := s.ShutdownContext(ctx); err != nil {
+		s.log().Warn().Err(err).Msg("server shutdown did not drain before deadline")
+	}
+}
+
+// ShutdownContext performs an ordered graceful shutdown bounded by ctx
+// (must be non-nil; use Shutdown for the default deadline):
+// close the listener first, broadcast leave, wait for in-flight handlers,
+// stop background loops, then sync/close the WAL. When ctx expires, active
+// connections are force-closed so shutdown cannot hang indefinitely. Each
+// stage that overruns the deadline is logged by the caller via the returned
+// context error; force-close still runs so shutdown stays bounded.
+func (s *Server) ShutdownContext(ctx context.Context) error {
 	if s.shut.Swap(true) {
-		return
+		return nil
+	}
+
+	// Stop admission before leave and request draining. This closes the
+	// listener but intentionally leaves current client connections open.
+	s.mu.Lock()
+	l := s.listener
+	s.mu.Unlock()
+	if l != nil {
+		l.Close()
 	}
 
 	s.ringMu.RLock()
@@ -345,15 +388,58 @@ func (s *Server) Shutdown() {
 		gossip.Leave()
 	}
 
+	s.stopRebalanceTimers()
+	// Drain genuinely in-flight requests within the deadline; idle
+	// connections blocked in read are not waited on — they are closed
+	// below, which unblocks their handlers immediately.
+	for s.active.Load() > 0 {
+		if ctx.Err() != nil {
+			s.log().Warn().Err(ctx.Err()).Msg("shutdown: requests still in flight at deadline, force-closing connections")
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	s.closeConnections()
+	// Handlers now observe closed sockets and exit; this only blocks on
+	// dispatch work that outlives its connection (bounded by RPC timeouts).
+	s.wg.Wait()
+	s.stopBackgroundLoops()
+	// Final snapshot is best-effort and only when budget remains: WAL sync
+	// in Close below is the durability guarantee, compaction merely avoids
+	// replay work on restart.
 	s.persistMu.RLock()
 	pm := s.persist
 	s.persistMu.RUnlock()
-	if pm != nil {
-		pm.Close()
+	if pm != nil && ctx.Err() == nil {
+		s.bestEffortSnapshot(pm)
 	}
 
-	s.stopRebalanceTimers()
-	s.closeAll()
+	// Pools hold dialed peer connections; close after handlers and loops
+	// are done so in-flight replication fan-out can finish first.
+	s.ringMu.Lock()
+	pool := s.pool
+	s.ringMu.Unlock()
+	if pool != nil {
+		pool.Close()
+	}
+	if pm != nil {
+		if err := pm.Close(); err != nil {
+			return err
+		}
+	}
+	return ctx.Err()
+}
+
+// bestEffortSnapshot compacts once so restart replays less WAL. Errors are
+// logged, never fatal: Close below still fsyncs the WAL.
+func (s *Server) bestEffortSnapshot(pm *persist.Manager) {
+	if pm == nil {
+		return
+	}
+	if err := pm.Compact(); err != nil {
+		s.log().Warn().Err(err).Msg("shutdown: final snapshot failed")
+	}
 }
 
 // Kill is a crash simulation: it closes the listener and connections
@@ -372,19 +458,39 @@ func (s *Server) Kill() {
 func (s *Server) closeAll() {
 	s.mu.Lock()
 	l := s.listener
+	s.mu.Unlock()
+	if l != nil {
+		l.Close()
+	}
+
+	s.closeConnections()
+	s.wg.Wait()
+}
+
+func (s *Server) closeConnections() {
+	s.mu.Lock()
 	conns := make([]net.Conn, 0, len(s.conns))
 	for c := range s.conns {
 		conns = append(conns, c)
 	}
 
 	s.mu.Unlock()
-	if l != nil {
-		l.Close()
-	}
 	for _, c := range conns {
 		c.Close()
 	}
-	s.wg.Wait()
+}
+
+func (s *Server) stopBackgroundLoops() {
+	s.bgMu.Lock()
+	stop, bgWG := s.bgStop, s.bgWG
+	if stop != nil {
+		s.bgOnce.Do(func() { close(stop) })
+	}
+
+	s.bgMu.Unlock()
+	if bgWG != nil {
+		bgWG.Wait()
+	}
 }
 
 func (s *Server) done(c net.Conn) {

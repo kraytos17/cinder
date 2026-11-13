@@ -92,6 +92,7 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "negative quarantine", args: []string{"--quarantine-interval-ms", "-5"}, want: "--quarantine-interval-ms must be >= 0"},
 		{name: "negative rpc timeout", args: []string{"--rpc-timeout-ms", "-1"}, want: "--rpc-timeout-ms must be >= 0"},
 		{name: "negative fetch budget", args: []string{"--anti-entropy-fetch-bytes", "-1"}, want: "--anti-entropy-fetch-bytes must be >= 0"},
+		{name: "negative shutdown timeout", args: []string{"--shutdown-timeout-ms", "-1"}, want: "--shutdown-timeout-ms must be >= 0"},
 		{name: "negative ae interval", args: []string{"--anti-entropy-interval-ms", "-1"}, want: "--anti-entropy-interval-ms must be >= 0"},
 		{name: "grpc collides with data port", args: []string{"--port", "7000", "--grpc-port", "7000"}, want: "--grpc-port must not equal --port"},
 		{name: "metrics collides with data port", args: []string{"--port", "7000", "--metrics-port", "7000"}, want: "--metrics-port must not equal --port"},
