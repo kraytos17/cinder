@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -191,6 +192,230 @@ func TestRecoverRejectsCorruptWALRecord(t *testing.T) {
 	if err := m.Recover(); err == nil {
 		t.Fatal("recovery accepted a checksum-corrupt WAL record")
 	}
+}
+
+func wireCounters(t *testing.T, cs *counter.Store, m *Manager) {
+	t.Helper()
+	cs.SetPersistence(func(key string, state counter.PNCounter, remove bool) error {
+		return m.OnCounterWrite(key, state, remove)
+	})
+}
+
+func TestCounterStateRecoversFromWAL(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	wireCounters(t, cs, m)
+	if err := cs.Increment("total", "node1", 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Decrement("total", "node2", 4); err != nil {
+		t.Fatal(err)
+	}
+	remote, err := counter.DecodePNCounter(counter.PNCounter{Pos: mustGCounter(t, "node3", 7)}.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Merge("total", remote); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := counter.NewStore(1 << 20)
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	got, ok := recovered.Get("total")
+	var want counter.PNCounter
+	_ = want.Increment("node1", 9)
+	_ = want.Increment("node3", 7)
+	_ = want.Decrement("node2", 4)
+	if !ok || !got.Equal(want) {
+		t.Fatalf("recovered counter = %+v, present=%v", got, ok)
+	}
+}
+
+func TestCounterRemoveRecoversFromWAL(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	wireCounters(t, cs, m)
+	if err := cs.Increment("removed", "node1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := cs.RemoveWithError("removed"); err != nil || !removed {
+		t.Fatalf("remove = %v, %v", removed, err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := counter.NewStore(1 << 20)
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	if _, ok := recovered.Get("removed"); ok {
+		t.Fatal("removed counter was recovered")
+	}
+}
+
+func TestCounterRecoveryMergesRatherThanOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	initial := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(initial)
+	mustRecover(t, m)
+	wireCounters(t, initial, m)
+	if err := initial.Increment("k", "node-a", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a pre-populated store receiving recovery. Its newer local
+	// component must survive replay from the disk image.
+	recovered := counter.NewStore(1 << 20)
+	if err := recovered.Increment("k", "node-b", 5); err != nil {
+		t.Fatal(err)
+	}
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	got, ok := recovered.Get("k")
+	if !ok || got.Pos.Component("node-a") != 2 || got.Pos.Component("node-b") != 5 {
+		t.Fatalf("merge recovery lost component: %+v", got)
+	}
+}
+
+func TestCounterDurableAppendRecoversAfterResponseLoss(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	if err := m.SetFsyncPolicy(FsyncAlways, 0); err != nil {
+		t.Fatal(err)
+	}
+	wireCounters(t, cs, m)
+	if err := cs.Increment("uncertain", "node-a", 7); err != nil {
+		t.Fatal(err)
+	}
+	// Model a lost response: the durable mutation landed, but the caller
+	// cannot tell whether it succeeded. Do not gracefully close before
+	// restart; the explicit always policy already synced the record.
+	if err := m.wal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	m.wal = nil
+
+	recovered := counter.NewStore(1 << 20)
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	state, ok := recovered.Get("uncertain")
+	if !ok || state.Value() != 7 {
+		t.Fatalf("recovered uncertain write = %+v, present=%v", state, ok)
+	}
+	// Replaying the same full state is idempotent; uncertain retries cannot
+	// double-apply a delta because the WAL contains state, not increments.
+	if err := recovered.Merge("uncertain", state); err != nil {
+		t.Fatal(err)
+	}
+	state2, _ := recovered.Get("uncertain")
+	if !state2.Equal(state) {
+		t.Fatalf("idempotent replay changed state: before=%+v after=%+v", state, state2)
+	}
+}
+
+func TestCounterStateRecoversFromSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	wireCounters(t, cs, m)
+	if err := cs.Increment("snap", "node1", 12); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := counter.NewStore(1 << 20)
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	got, ok := recovered.Get("snap")
+	if !ok || got.Value() != 12 {
+		t.Fatalf("snapshot counter = %+v, present=%v", got, ok)
+	}
+}
+
+func TestCounterSnapshotWithNoCounters(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	if err := m.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := counter.NewStore(1 << 20)
+	m2 := NewManager(dir, testStore(t), nil)
+	m2.SetCounterStore(recovered)
+	mustRecover(t, m2)
+	defer m2.Close()
+	if got := recovered.Size(); got != 0 {
+		t.Fatalf("recovered counter keys=%d, want 0", got)
+	}
+}
+
+func TestCounterBytesTriggerCompactionBudget(t *testing.T) {
+	dir := t.TempDir()
+	cs := counter.NewStore(1 << 20)
+	m := NewManager(dir, testStore(t), nil)
+	m.SetCounterStore(cs)
+	mustRecover(t, m)
+	m.SetSnapshotInterval(0)
+	m.SetMaxWALBytes(1)
+	wireCounters(t, cs, m)
+	if err := cs.Increment("large-counter-key", "node-with-long-actor-name", 1); err != nil {
+		t.Fatal(err)
+	}
+	if !m.MaybeCompact() {
+		t.Fatal("counter WAL data did not trigger compaction budget")
+	}
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustGCounter(t *testing.T, actor string, value uint64) counter.GCounter {
+	t.Helper()
+	var g counter.GCounter
+	if err := g.Increment(actor, value); err != nil {
+		t.Fatal(err)
+	}
+	return g
 }
 
 func TestCompactRotates(t *testing.T) {

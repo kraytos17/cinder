@@ -6,11 +6,13 @@ package persist
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/expiry"
 
 	"github.com/zeebo/xxh3"
@@ -18,7 +20,7 @@ import (
 
 const (
 	walMagic   = 0x57414C30 // "WAL0"
-	walVersion = 2
+	walVersion = 3
 
 	snapMagic   = 0x43534E50 // "CSNP"
 	snapVersion = 2
@@ -34,6 +36,10 @@ const (
 	OpSet Op = 1
 	// OpDel hard-erases a key on replay.
 	OpDel Op = 2
+	// OpCounterState replaces/merges one complete encoded CRDT counter state.
+	OpCounterState Op = 3
+	// OpCounterRemove removes one local counter key on recovery.
+	OpCounterRemove Op = 4
 )
 
 // Entry is one WAL record. Tombstoned Sets replay as versioned deletes;
@@ -48,14 +54,19 @@ type Entry struct {
 	// still (u64 ms, u8 flag), converted by the codec helpers here.
 	Expiry    expiry.Expiry
 	Tombstone bool
+	Counter   []byte
 }
 
 // recordSize validates one record's bounds and returns its staged size.
 func (e Entry) recordSize() (int, error) {
-	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
+	valueLen := len(e.Value)
+	if e.Op == OpCounterState {
+		valueLen = len(e.Counter)
+	}
+	if uint64(len(e.Key)) > maxU32 || uint64(valueLen) > maxU32 {
 		return 0, errTooLarge
 	}
-	return 1 + 4 + len(e.Key) + 4 + len(e.Value) + 8 + 8 + 8 + 1 + 1 + 8, nil
+	return 1 + 4 + len(e.Key) + 4 + valueLen + 8 + 8 + 8 + 1 + 1 + 8, nil
 }
 
 // appendTo serializes one v2 record plus its XXH3 checksum onto buf.
@@ -65,8 +76,13 @@ func (e Entry) appendTo(out []byte) []byte {
 	out = codec.Append(out, binary.LittleEndian, uint8(e.Op))
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
 	out = append(out, e.Key...)
-	out = codec.AppendLen(out, binary.LittleEndian, len(e.Value))
-	out = append(out, e.Value...)
+	value := e.Value
+	if e.Op == OpCounterState {
+		value = e.Counter
+	}
+
+	out = codec.AppendLen(out, binary.LittleEndian, len(value))
+	out = append(out, value...)
 	out = codec.Append(out, binary.LittleEndian, e.Version)
 	out = codec.Append(out, binary.LittleEndian, e.Writer)
 	out = codec.Append(out, binary.LittleEndian, uint64(e.Expiry.UnixMilli()))
@@ -141,6 +157,7 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 	}
 
 	needHeader := false
+	var existingVersion uint32
 	if fi.Size() == 0 {
 		needHeader = true
 	} else {
@@ -153,7 +170,8 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 
 		n, _ := rf.ReadAt(hdr, 0)
 		rf.Close()
-		if n < 8 || binary.LittleEndian.Uint32(hdr[:4]) != walMagic || !validWalVersion(binary.LittleEndian.Uint32(hdr[4:])) {
+		existingVersion = binary.LittleEndian.Uint32(hdr[4:])
+		if n < 8 || binary.LittleEndian.Uint32(hdr[:4]) != walMagic || !validWalVersion(existingVersion) {
 			needHeader = true // garbage file: start fresh
 			f.Close()
 			f, err = os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
@@ -162,8 +180,45 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 			}
 		}
 	}
+	if !needHeader && existingVersion == 1 {
+		// V1 records lack the tombstone byte, so changing only the header
+		// would reinterpret every old record. Rewrite them into v3 framing
+		// before enabling future counter-state appends.
+		if err := f.Close(); err != nil {
+			return nil, err
+		}
+		if err := upgradeWALV1(path); err != nil {
+			return nil, err
+		}
+
+		existingVersion = walVersion
+		f, err = os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if needHeader {
 		if err := writeHeader(f); err != nil {
+			f.Close()
+			return nil, err
+		}
+	} else if existingVersion < walVersion {
+		// Existing records retain their v1/v2 interpretation; upgrade the
+		// file header before any new v3-only counter record can be appended.
+		hf, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+
+		var version [4]byte
+		binary.LittleEndian.PutUint32(version[:], walVersion)
+		if _, err := hf.WriteAt(version[:], 4); err != nil {
+			hf.Close()
+			f.Close()
+			return nil, err
+		}
+		if err := hf.Close(); err != nil {
 			f.Close()
 			return nil, err
 		}
@@ -177,7 +232,44 @@ func OpenWriter(path string, truncate bool) (*Writer, error) {
 	return &Writer{f: f, size: size}, nil
 }
 
-func validWalVersion(v uint32) bool { return v == 1 || v == 2 }
+func upgradeWALV1(path string) error {
+	r, err := OpenReader(path)
+	if err != nil {
+		return err
+	}
+
+	var entries []Entry
+	for r.HasMore() {
+		e, ok := r.Next()
+		if !ok {
+			if r.Corrupted() {
+				return fmt.Errorf("persist: corrupt v1 WAL %s", path)
+			}
+			break
+		}
+		entries = append(entries, e)
+	}
+
+	tmp := path + ".v3.tmp"
+	w, err := OpenWriter(tmp, true)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if err := w.Append(entry); err != nil {
+			w.Close()
+			os.Remove(tmp)
+			return err
+		}
+	}
+	if err := w.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+func validWalVersion(v uint32) bool { return v == 1 || v == 2 || v == 3 }
 
 func writeHeader(f *os.File) error {
 	var hdr [8]byte
@@ -278,6 +370,8 @@ const (
 	FormatV1 Format = 1
 	// FormatV2 is the current layout: checksums plus tombstone byte.
 	FormatV2 Format = 2
+	// FormatV3 adds counter record opcodes; record framing is unchanged.
+	FormatV3 Format = 3
 )
 
 // Reader replays one WAL file from a whole-file image. next() yields
@@ -320,6 +414,9 @@ func OpenReader(path string) (*Reader, error) {
 	case 2:
 		r.format = FormatV2
 		r.pos = 8
+	case 3:
+		r.format = FormatV3
+		r.pos = 8
 	default:
 		// Unknown version: fall through to legacy decoding from 0.
 	}
@@ -346,7 +443,7 @@ func (r *Reader) Next() (Entry, bool) {
 	if !ok {
 		return zero, false // clean EOF
 	}
-	if op != uint8(OpSet) && op != uint8(OpDel) {
+	if op != uint8(OpSet) && op != uint8(OpDel) && (r.format < FormatV3 || (op != uint8(OpCounterState) && op != uint8(OpCounterRemove))) {
 		r.corrupted = true
 		r.pos = c.Pos()
 		return zero, false
@@ -393,7 +490,7 @@ func (r *Reader) Next() (Entry, bool) {
 	}
 
 	var tomb uint8
-	if r.format == FormatV2 {
+	if r.format >= FormatV2 {
 		tomb, ok = c.U8()
 		if !ok {
 			return zero, false
@@ -420,14 +517,29 @@ func (r *Reader) Next() (Entry, bool) {
 		Op: Op(op), Key: append([]byte(nil), key...), Value: append([]byte(nil), val...),
 		Version: ver, Writer: writer, Tombstone: tomb != 0,
 	}
+	if e.Op == OpCounterState {
+		e.Counter = append([]byte(nil), val...)
+		e.Value = nil
+	}
 	if hasTTL != 0 {
-		// At, not FromUnixMilli: a set flag with ms=0 still means an
-		// (already elapsed) deadline, matching the old bool+instant
-		// handling of corrupt records.
 		e.Expiry = expiry.At(time.UnixMilli(int64(expires)).UTC())
 	}
 
 	r.pos = c.Pos()
 	r.commit = uint64(c.Pos())
 	return e, true
+}
+
+// CounterEntry constructs a WAL record containing a full CRDT state or
+// removal. The encoded state uses the existing strict CRDC representation.
+func CounterEntry(key string, state counter.PNCounter, remove bool) (Entry, error) {
+	if remove {
+		return Entry{Op: OpCounterRemove, Key: []byte(key)}, nil
+	}
+
+	encoded := state.Encode()
+	if len(encoded) == 0 {
+		return Entry{}, fmt.Errorf("persist: invalid empty counter state")
+	}
+	return Entry{Op: OpCounterState, Key: []byte(key), Counter: encoded}, nil
 }

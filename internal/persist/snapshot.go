@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/expiry"
 )
 
@@ -15,7 +18,8 @@ import (
 // TTL deadline, LFU frequency, and tombstone marker. Framing is the
 // frozen CSNP layout v2 (klen u32, key, vlen u32, value, version u64,
 // writer u64, expires_ms u64, has_ttl u8, freq u64, tombstone u8); V1
-// omits the tombstone byte and V3 compressed blocks are rejected.
+// omits the tombstone byte; V3 compressed blocks are rejected and V4
+// carries the counter bundle alongside the KV rows.
 type SnapEntry struct {
 	Key     []byte
 	Value   []byte
@@ -32,6 +36,7 @@ type SnapEntry struct {
 type SnapData struct {
 	NextVersion uint64
 	Entries     []SnapEntry
+	Counters    []counter.BundleEntry
 }
 
 func (e SnapEntry) encode() ([]byte, error) {
@@ -68,6 +73,13 @@ type SnapWriter struct {
 	path string
 }
 
+// WriteWithCounters publishes a snapshot containing both LWW entries and
+// counter CRDT state. The legacy Write method keeps producing snapshots with
+// an empty counter section.
+func (w *SnapWriter) WriteWithCounters(nextVersion uint64, entries []SnapEntry, counters []counter.BundleEntry) error {
+	return w.writeV4(nextVersion, entries, counters)
+}
+
 // NewSnapWriter returns a writer for path.
 func NewSnapWriter(path string) *SnapWriter { return &SnapWriter{path: path} }
 
@@ -95,6 +107,40 @@ func (w *SnapWriter) Write(nextVersion uint64, entries []SnapEntry) error {
 	return os.Rename(tmp, w.path)
 }
 
+func (w *SnapWriter) writeV4(nextVersion uint64, entries []SnapEntry, counters []counter.BundleEntry) error {
+	var body []byte
+	for _, e := range entries {
+		encoded, err := e.encode()
+		if err != nil {
+			return err
+		}
+		body = append(body, encoded...)
+	}
+
+	counters = slices.Clone(counters)
+	slices.SortFunc(counters, func(a, b counter.BundleEntry) int { return strings.Compare(a.Key, b.Key) })
+	encodedCounters := counter.EncodeCounterBundle(counters)
+	if encodedCounters == nil && len(counters) != 0 {
+		return fmt.Errorf("persist: invalid counter snapshot state")
+	}
+	if len(counters) == 0 {
+		encodedCounters = []byte{0x43, 0x41, 0x45, 0x31, 0, 0, 0, 0} // "CAE1", count=0
+	}
+
+	body = append(body, encodedCounters...)
+	hdr := make([]byte, 0, 24)
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
+	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapV4))
+	hdr = codec.Append(hdr, binary.LittleEndian, nextVersion)
+	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
+	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(encodedCounters))
+	tmp := w.path + ".tmp"
+	if err := os.WriteFile(tmp, append(hdr, body...), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, w.path)
+}
+
 // snapFormat enumerates accepted snapshot layouts.
 type snapFormat uint32
 
@@ -102,6 +148,7 @@ const (
 	snapV1 snapFormat = 1
 	snapV2 snapFormat = 2
 	snapV3 snapFormat = 3
+	snapV4 snapFormat = 4
 )
 
 var errUnsupportedSnapshot = errors.New("persist: compressed (v3) snapshots unsupported")
@@ -127,6 +174,10 @@ func (r *SnapReader) ReadAll() (SnapData, error) {
 	}
 
 	data.NextVersion = next
+	data.Counters, err = r.ReadCounters()
+	if err != nil {
+		return SnapData{}, err
+	}
 	return data, nil
 }
 
@@ -138,6 +189,16 @@ func (r *SnapReader) ReadStream(fn func(SnapEntry) bool) (uint64, error) {
 		return 0, err
 	}
 	return decodeSnapshot(raw, fn)
+}
+
+// ReadCounters decodes the optional v3 counter section. Older snapshots
+// return no counters.
+func (r *SnapReader) ReadCounters() ([]counter.BundleEntry, error) {
+	raw, err := os.ReadFile(r.path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSnapshotCounters(raw)
 }
 
 // decodeSnapshot is the byte-level ReadStream core (file I/O split out so
@@ -158,24 +219,99 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 		format = snapV2
 	case 3:
 		return 0, errUnsupportedSnapshot
+	case 4:
+		format = snapV4
 	default:
 		return 0, fmt.Errorf("persist: unsupported snapshot version %d", v)
 	}
 
 	nextVersion := binary.LittleEndian.Uint64(raw[8:16])
 	count := binary.LittleEndian.Uint32(raw[16:20])
+	counterOffset := uint32(0)
+	if format == snapV4 {
+		if len(raw) < 24 {
+			return 0, fmt.Errorf("persist: truncated v3 snapshot header")
+		}
+		counterOffset = binary.LittleEndian.Uint32(raw[20:24])
+	}
+
 	c := codec.NewReader(binary.LittleEndian, raw)
-	c.SetPos(20)
+	if format == snapV4 {
+		c.SetPos(24)
+	} else {
+		c.SetPos(20)
+	}
+
+	stopped := false
 	for i := range count {
 		e, ok := decodeSnapEntry(&c, format)
 		if !ok {
 			return 0, fmt.Errorf("persist: truncated snapshot entry %d", i)
 		}
 		if !fn(e) {
+			stopped = true
 			break
 		}
 	}
+	if format == snapV4 && !stopped {
+		counterStart := c.Pos()
+		counterEnd := counterStart + int(counterOffset)
+		if counterEnd > len(raw) {
+			return 0, fmt.Errorf("persist: truncated counter snapshot section")
+		}
+
+		bundle := raw[counterStart:counterEnd]
+		if len(bundle) < 8 || binary.BigEndian.Uint32(bundle[:4]) != counter.MagicCAE1 {
+			return 0, fmt.Errorf("persist: invalid counter snapshot magic")
+		}
+
+		count := binary.BigEndian.Uint32(bundle[4:8])
+		if count == 0 && len(bundle) == 8 {
+			// Empty counter bundle is valid for a counter-enabled node.
+		} else if _, err := counter.DecodeCounterBundle(bundle); err != nil {
+			return 0, fmt.Errorf("persist: invalid counter snapshot section: %w", err)
+		}
+		c.SetPos(counterEnd)
+	}
+	if !stopped && c.Remaining() != 0 {
+		return 0, fmt.Errorf("persist: trailing snapshot bytes")
+	}
 	return nextVersion, nil
+}
+
+func decodeSnapshotCounters(raw []byte) ([]counter.BundleEntry, error) {
+	if len(raw) < 20 || binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
+		return nil, fmt.Errorf("persist: invalid snapshot header")
+	}
+
+	version := binary.LittleEndian.Uint32(raw[4:8])
+	if version != uint32(snapV4) {
+		return nil, nil
+	}
+	if len(raw) < 24 {
+		return nil, fmt.Errorf("persist: truncated v3 snapshot header")
+	}
+
+	kvCount := binary.LittleEndian.Uint32(raw[16:20])
+	counterSize := binary.LittleEndian.Uint32(raw[20:24])
+	c := codec.NewReader(binary.LittleEndian, raw)
+	c.SetPos(24)
+	for range kvCount {
+		if _, ok := decodeSnapEntry(&c, snapV4); !ok {
+			return nil, fmt.Errorf("persist: truncated v3 snapshot KV section")
+		}
+	}
+
+	end := c.Pos() + int(counterSize)
+	if end > len(raw) {
+		return nil, fmt.Errorf("persist: truncated counter snapshot section")
+	}
+
+	bundle := raw[c.Pos():end]
+	if len(bundle) == 8 && binary.BigEndian.Uint32(bundle[:4]) == counter.MagicCAE1 && binary.BigEndian.Uint32(bundle[4:8]) == 0 {
+		return nil, nil
+	}
+	return counter.DecodeCounterBundle(bundle)
 }
 
 func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {

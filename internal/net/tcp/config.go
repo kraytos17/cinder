@@ -8,6 +8,7 @@ import (
 
 	"github.com/kraytos17/cinder/internal/ae"
 	"github.com/kraytos17/cinder/internal/client"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
@@ -137,12 +138,16 @@ func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 // logs itself. Call before Serve.
 func (s *Server) ConfigurePersistence(dir string) error {
 	m := persist.NewManager(dir, s.store, nil)
+	m.SetCounterStore(s.counters)
 	if err := m.Recover(); err != nil {
 		return err
 	}
 
 	s.store.SetPersistence(func(key string, e store.Entry, hardDelete bool) error {
 		return m.OnWrite(key, e, hardDelete)
+	})
+	s.counters.SetPersistence(func(key string, state counter.PNCounter, remove bool) error {
+		return m.OnCounterWrite(key, state, remove)
 	})
 
 	m.SetLogger(s.log())

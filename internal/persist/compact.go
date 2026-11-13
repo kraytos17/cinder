@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/kraytos17/cinder/internal/counter"
 )
 
 func (m *Manager) MaybeCompact() bool {
@@ -20,8 +22,19 @@ func (m *Manager) MaybeCompact() bool {
 		entries = m.wal.Entries()
 	}
 
+	counterStore := m.counters
 	now := m.clock()
 	m.mu.Unlock()
+	if counterStore != nil && size >= 0 {
+		counterBytes := counterStore.SizeBytes()
+		maxInt64 := uint64(1<<63 - 1)
+		if counterBytes > maxInt64-uint64(size) {
+			size = int64(maxInt64)
+		} else {
+			size += int64(counterBytes)
+		}
+	}
+
 	due := interval > 0 && !now.Before(last.Add(interval))
 	if !due && maxBytes > 0 && size >= 0 && uint64(size) >= maxBytes {
 		due = true
@@ -49,7 +62,26 @@ func (m *Manager) MaybeCompact() bool {
 // Compact writes a snapshot, publishes its name in CURRENT, starts a fresh
 // active WAL, deletes sealed segments, and keeps the newest two snapshots.
 func (m *Manager) Compact() error {
+	var counterStore *counter.Store
+	if err := m.store.WithPersistenceBarrier(func() error {
+		m.mu.Lock()
+		counterStore = m.counters
+		m.mu.Unlock()
+		if counterStore != nil {
+			return counterStore.WithPersistenceBarrier(m.compactLocked)
+		}
+		return m.compactLocked()
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) compactLocked() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	live := m.store.LiveEntries()
+	counterStore := m.counters
 
 	var nextVersion uint64
 	snaps := make([]SnapEntry, 0, len(live))
@@ -70,15 +102,25 @@ func (m *Manager) Compact() error {
 
 	name := fmt.Sprintf("%s%d%s", snapshotPre, m.clock().UnixNano(), snapshotSuf)
 	path := filepath.Join(m.dir, name)
-	if err := NewSnapWriter(path).Write(nextVersion, snaps); err != nil {
+	var counters []counter.BundleEntry
+	if counterStore != nil {
+		counters = counterStore.SortedLiveCounters()
+	}
+
+	writer := NewSnapWriter(path)
+	var err error
+	if counterStore != nil {
+		err = writer.WriteWithCounters(nextVersion, snaps, counters)
+	} else {
+		err = writer.Write(nextVersion, snaps)
+	}
+
+	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0o644); err != nil {
 		return err
 	}
-
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.wal != nil {
 		m.wal.Sync()
 		m.wal.Close()

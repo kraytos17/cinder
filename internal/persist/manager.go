@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/store"
 
@@ -29,9 +30,10 @@ var nopLogger = log.Nop()
 // Its directory contains wal.log, sealed wal_<seq>.log segments,
 // snapshot_<nanos>.dat files, and a CURRENT snapshot pointer.
 type Manager struct {
-	dir   string
-	store *store.Store
-	clock func() time.Time
+	dir      string
+	store    *store.Store
+	counters *counter.Store
+	clock    func() time.Time
 
 	mu     sync.Mutex
 	logger atomic.Pointer[zerolog.Logger]
@@ -162,12 +164,6 @@ func (m *Manager) log() *zerolog.Logger {
 }
 
 func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.wal == nil {
-		return nil
-	}
-
 	rec := Entry{Key: []byte(key)}
 	if hardDelete {
 		rec.Op = OpDel
@@ -182,6 +178,32 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
 		rec.Expiry = e.Expiry
 	}
 
+	return m.appendRecord(key, rec)
+}
+
+// SetCounterStore associates the independent CRDT counter store for snapshot
+// compaction. Call after recovery and before installing its persistence hook.
+func (m *Manager) SetCounterStore(counters *counter.Store) {
+	m.mu.Lock()
+	m.counters = counters
+	m.mu.Unlock()
+}
+
+// OnCounterWrite appends a full encoded counter state or local removal.
+func (m *Manager) OnCounterWrite(key string, state counter.PNCounter, remove bool) error {
+	rec, err := CounterEntry(key, state, remove)
+	if err != nil {
+		return err
+	}
+	return m.appendRecord(key, rec)
+}
+
+func (m *Manager) appendRecord(key string, rec Entry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal == nil {
+		return nil
+	}
 	if err := m.wal.Append(rec); err != nil {
 		m.log().Error().Err(err).Str("key", key).Msg("WAL append failed after in-memory mutation")
 		return err

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -64,7 +65,19 @@ func (m *Manager) Recover() error {
 		if err != nil {
 			return err
 		}
+
 		m.store.RestoreVersion(next)
+		if m.counters != nil {
+			states, err := r.ReadCounters()
+			if err != nil {
+				return err
+			}
+			for _, state := range states {
+				if err := m.counters.Merge(state.Key, state.Counter); err != nil {
+					return fmt.Errorf("persist: recover counter %q from snapshot: %w", state.Key, err)
+				}
+			}
+		}
 	}
 	for _, path := range m.walFiles() {
 		st, err := os.Stat(path)
@@ -95,6 +108,26 @@ func (m *Manager) Recover() error {
 				// would delete successfully migrated data on the next
 				// anti-entropy round.
 				m.store.Remove(string(e.Key))
+				continue
+			}
+			if e.Op == OpCounterRemove {
+				if m.counters != nil {
+					m.counters.Remove(string(e.Key))
+				}
+				continue
+			}
+			if e.Op == OpCounterState {
+				if m.counters == nil {
+					continue
+				}
+
+				state, err := counter.DecodePNCounter(e.Counter)
+				if err != nil {
+					return fmt.Errorf("persist: invalid counter WAL record for %q: %w", e.Key, err)
+				}
+				if err := m.counters.Merge(string(e.Key), state); err != nil {
+					return fmt.Errorf("persist: recover counter %q from WAL: %w", e.Key, err)
+				}
 				continue
 			}
 			if ve, ok := e.toStore(now); ok {

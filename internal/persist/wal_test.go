@@ -3,11 +3,15 @@ package persist
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/zeebo/xxh3"
+
 	"github.com/kraytos17/cinder/internal/codec"
+	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/expiry"
 )
 
@@ -99,6 +103,174 @@ func TestWALCppInterop(t *testing.T) {
 			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
+	}
+}
+
+func TestWALV2CounterFreeRecordsRemainReadable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), walFileName)
+	w, err := OpenWriter(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Entry{Op: OpSet, Key: []byte("legacy"), Value: []byte("v"), Version: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary.LittleEndian.PutUint32(raw[4:8], 2)
+	// The record encoding is byte-identical in v2 and v3; only the header
+	// marks the writer generation for this compatibility fixture.
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, ok := r.Next()
+	if !ok || e.Op != OpSet || string(e.Key) != "legacy" || string(e.Value) != "v" || r.Corrupted() {
+		t.Fatalf("v2 record = %+v, ok=%v corrupt=%v", e, ok, r.Corrupted())
+	}
+	w2, err := OpenWriter(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state counter.PNCounter
+	_ = state.Increment("node-a", 4)
+	entry, err := CounterEntry("counter", state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Append(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := w2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r2, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := r2.Next()
+	if !ok || first.Op != OpSet {
+		t.Fatalf("legacy record after upgrade = %+v, ok=%v", first, ok)
+	}
+	second, ok := r2.Next()
+	if !ok || second.Op != OpCounterState || r2.Corrupted() {
+		t.Fatalf("v3 counter record after upgrade = %+v, ok=%v corrupt=%v", second, ok, r2.Corrupted())
+	}
+}
+
+func TestWALV1UpgradePreservesExistingRecordsBeforeCounterAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), walFileName)
+	entry := Entry{Op: OpSet, Key: []byte("v1"), Value: []byte("old"), Version: 5}
+	encoded, err := entry.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// V1 has checksums but omits the tombstone byte. Remove that byte from
+	// the v2 encoding and recalculate the checksum under the v1 layout.
+	withoutTomb := append([]byte(nil), encoded[:len(encoded)-9]...)
+	withoutTomb = append(withoutTomb, encoded[len(encoded)-8:]...)
+	start := 0
+	checksumAt := len(withoutTomb) - 8
+	binary.LittleEndian.PutUint64(withoutTomb[checksumAt:], xxh3.Hash(withoutTomb[start:checksumAt]))
+	image := make([]byte, 8, 8+len(withoutTomb))
+	binary.LittleEndian.PutUint32(image[:4], walMagic)
+	binary.LittleEndian.PutUint32(image[4:8], 1)
+	image = append(image, withoutTomb...)
+	if err := os.WriteFile(path, image, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w, err := OpenWriter(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state counter.PNCounter
+	_ = state.Increment("node-a", 1)
+	counterEntry, err := CounterEntry("c", state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(counterEntry); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, ok := r.Next()
+	if !ok || first.Op != OpSet || string(first.Key) != "v1" || string(first.Value) != "old" {
+		t.Fatalf("upgraded v1 record = %+v, ok=%v", first, ok)
+	}
+	second, ok := r.Next()
+	if !ok || second.Op != OpCounterState || r.Corrupted() {
+		t.Fatalf("appended counter = %+v, ok=%v corrupt=%v", second, ok, r.Corrupted())
+	}
+}
+
+func TestWALV3CounterStateRoundTrip(t *testing.T) {
+	var state counter.PNCounter
+	if err := state.Increment("node-a", 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Decrement("node-b", 2); err != nil {
+		t.Fatal(err)
+	}
+	e, err := CounterEntry("counter-key", state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), walFileName)
+	w, err := OpenWriter(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(e); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := r.Next()
+	if !ok || r.Corrupted() || got.Op != OpCounterState || string(got.Key) != "counter-key" {
+		t.Fatalf("decoded record = %+v, ok=%v corrupt=%v", got, ok, r.Corrupted())
+	}
+	decoded, err := counter.DecodePNCounter(got.Counter)
+	if err != nil || !decoded.Equal(state) {
+		t.Fatalf("decoded counter=%+v err=%v", decoded, err)
+	}
+}
+
+func TestCounterRecordGoldenBytes(t *testing.T) {
+	var state counter.PNCounter
+	if err := state.Increment("a", 1); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := CounterEntry("k", state, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := entry.encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantHex = "03010000006b1a00000043524443020000000100000001610000000000000001000000000000000000000000000000000000000000000000000000000000deb1c00306ed4253"
+	if got := fmt.Sprintf("%x", encoded); got != wantHex {
+		t.Fatalf("counter WAL v3 bytes = %s, want %s", got, wantHex)
 	}
 }
 
@@ -275,6 +447,28 @@ func TestSnapshotRoundTrip(t *testing.T) {
 			a.Expiry.UnixMilli() != b.Expiry.UnixMilli() || a.Tombstone != b.Tombstone || a.Freq != b.Freq {
 			t.Fatalf("entry %d mismatch:\n got %+v\nwant %+v", i, b, a)
 		}
+	}
+}
+
+func TestSnapshotV4CounterRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "snapshot.dat")
+	var state counter.PNCounter
+	if err := state.Increment("node-a", 8); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Decrement("node-b", 3); err != nil {
+		t.Fatal(err)
+	}
+	counters := []counter.BundleEntry{{Key: "total", Counter: state}}
+	if err := NewSnapWriter(path).WriteWithCounters(11, nil, counters); err != nil {
+		t.Fatal(err)
+	}
+	got, err := NewSnapReader(path).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextVersion != 11 || len(got.Entries) != 0 || len(got.Counters) != 1 || got.Counters[0].Key != "total" || !got.Counters[0].Counter.Equal(state) {
+		t.Fatalf("snapshot data = %+v", got)
 	}
 }
 

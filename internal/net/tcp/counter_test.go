@@ -70,6 +70,57 @@ func TestCounterMergeApplies(t *testing.T) {
 	}
 }
 
+func TestCounterPersistenceAcrossServerRestart(t *testing.T) {
+	dir := t.TempDir()
+	start := func() (*tcp.Server, string) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: "persist-node", Port: netport.Port(l.Addr().(*net.TCPAddr).Port), Store: store.NewLRUStore(1<<20, nil)})
+		if err := srv.ConfigurePersistence(dir); err != nil {
+			t.Fatal(err)
+		}
+		go srv.Serve(l)
+		t.Cleanup(srv.Shutdown)
+		return srv, l.Addr().String()
+	}
+
+	srv, addr := start()
+	c, err := client.Dial(addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []protocol.Request{
+		{Opcode: protocol.OpCounterAdjust, Key: []byte("count"), CounterDelta: 11},
+		{Opcode: protocol.OpCounterAdjust, Key: []byte("count"), CounterDelta: 4, CounterDecrement: true},
+	} {
+		res, err := c.Do(req)
+		if err != nil || res.Status != protocol.StatusOK {
+			t.Fatalf("counter write: %+v %v", res, err)
+		}
+	}
+	c.Close()
+	if err := srv.Compact(); err != nil {
+		t.Fatal(err)
+	}
+	srv.Shutdown()
+
+	_, addr = start()
+	c, err = client.Dial(addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	res, err := c.Do(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte("count")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := counterValue(t, res); got != 7 {
+		t.Fatalf("counter after restart = %d, want 7", got)
+	}
+}
+
 func TestCounterOwnership(t *testing.T) {
 	c := newTestCluster(t, []string{"n1", "n2"}, 2, 0)
 	defer func() {

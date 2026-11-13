@@ -95,10 +95,11 @@ store directly).
 ## Durability and operations
 
 - **Persistence** — append-only WAL (`WAL0` magic, XXH3-64 per-record
-  checksums) plus periodic snapshots (`CSNP` magic, format v2, atomic
-  write-to-temp + rename). Readers accept WAL Legacy/V1/V2 and snapshots
-  V1/V2; writers emit WAL v2 and snapshots v2 uncompressed (v3 zstd blocks
-  are rejected). Recovery loads the latest snapshot (via `CURRENT`, with
+  checksums) plus periodic snapshots (`CSNP` magic, format v2 for KV-only
+  state and v4 with counters, atomic write-to-temp + rename). Readers accept
+  WAL Legacy/V1/V2/V3 and snapshots V1/V2/V4; writers emit WAL v3 (v2
+  records remain byte-identical) and snapshots v2 or v4 (v3 zstd blocks are
+  rejected). Recovery loads the latest snapshot (via `CURRENT`, with
   scan fallback) and replays sealed + active segments, truncating torn
   tails; `Compact` snapshots and truncates to a fresh WAL — on demand
   (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s),

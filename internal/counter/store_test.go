@@ -77,6 +77,54 @@ func TestStoreRemoveLocalOnly(t *testing.T) {
 	}
 }
 
+func TestStorePersistenceHooksPersistFullMergedStateAndRemoval(t *testing.T) {
+	s := NewStore(1 << 20)
+	var lastKey string
+	var last PNCounter
+	var removed bool
+	calls := 0
+	s.SetPersistence(func(key string, state PNCounter, remove bool) error {
+		calls++
+		lastKey, last, removed = key, state, remove
+		return nil
+	})
+	if err := s.Increment("k", "node-a", 2); err != nil {
+		t.Fatal(err)
+	}
+	var remote PNCounter
+	if err := remote.Increment("node-b", 3); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Merge("k", remote); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || lastKey != "k" || removed || last.Pos.Component("node-a") != 2 || last.Pos.Component("node-b") != 3 {
+		t.Fatalf("hook calls=%d key=%q state=%+v remove=%v", calls, lastKey, last, removed)
+	}
+	if ok, err := s.RemoveWithError("k"); err != nil || !ok {
+		t.Fatalf("remove=%v err=%v", ok, err)
+	}
+	if calls != 3 || !removed || lastKey != "k" {
+		t.Fatalf("remove hook calls=%d key=%q remove=%v", calls, lastKey, removed)
+	}
+}
+
+func TestRemoveWithErrorReturnsPersistenceFailure(t *testing.T) {
+	s := NewStore(1 << 20)
+	if err := s.Increment("k", "node-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	wantErr := errors.New("remove WAL failed")
+	s.SetPersistence(func(string, PNCounter, bool) error { return wantErr })
+	removed, err := s.RemoveWithError("k")
+	if !removed || !errors.Is(err, wantErr) {
+		t.Fatalf("RemoveWithError = %v, %v", removed, err)
+	}
+	if _, ok := s.Get("k"); ok {
+		t.Fatal("failed persistence removal unexpectedly restored in-memory counter")
+	}
+}
+
 func TestStoreCapacityNoEvict(t *testing.T) {
 	// Tiny budget: one small counter fits, growth past the shard slice
 	// fails with ErrCapacityExceeded instead of evicting a neighbor.

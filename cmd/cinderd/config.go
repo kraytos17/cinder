@@ -52,6 +52,7 @@ type daemonConfig struct {
 	configFile           string
 	ShutdownTimeoutMs    int    `json:"shutdown-timeout-ms"`
 	FsyncPolicy          string `json:"fsync"`
+	nodeIDExplicit       bool   `json:"-"`
 }
 
 func defaultDaemonConfig() daemonConfig {
@@ -132,6 +133,7 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	}
 	if cmd.IsSet("node-id") {
 		cfg.NodeID = cmd.String("node-id")
+		cfg.nodeIDExplicit = true
 	}
 	if cmd.IsSet("capacity") {
 		cfg.Capacity = cmd.Uint64("capacity")
@@ -255,6 +257,13 @@ func overlayConfigFile(base daemonConfig, path string) (daemonConfig, error) {
 	decoded := base
 	if err := json.Unmarshal(data, &decoded, json.RejectUnknownMembers(true)); err != nil {
 		return base, fmt.Errorf("invalid --config file: %w", err)
+	}
+
+	var keys map[string]any
+	if err := json.Unmarshal(data, &keys); err == nil {
+		if _, ok := keys["node-id"]; ok {
+			decoded.nodeIDExplicit = true
+		}
 	}
 	return decoded, nil
 }

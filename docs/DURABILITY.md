@@ -74,6 +74,24 @@ kernel page cache or physical-device write reordering.
 | Checksum/structural corruption | Recovery should fail; never regard a checksum mismatch as a clean torn tail. |
 | Snapshot/compaction | Atomic rename is used, but file and directory fsync are absent; power-loss durability is not guaranteed. |
 
+## Counter state
+
+When persistence is enabled, counter mutations append full CRDT state (or a
+local remove marker) using WAL v3 record kinds. Recovery merges full state
+component-wise, so WAL replay is idempotent and cannot lower a component.
+Snapshots use the v4 container with the existing KV rows plus a counter bundle;
+v1/v2 KV-only snapshots remain readable, while the older compressed v3
+snapshot format remains unsupported. The WAL reader still accepts legacy, v1,
+and v2 files; an old WAL header is upgraded before v3 records are appended.
+
+Counter actor IDs are node IDs and must be stable across restarts. `cinderd`
+requires an explicitly supplied `--node-id` whenever persistence or peers are
+configured; do not reuse one node ID for two live processes. Counter state is
+included in byte-based compaction pressure in addition to active WAL bytes.
+Counter `Remove` is a local-only operation (not a replicated delete); a
+persisted local removal is replayed locally, but a later peer merge can still
+resurrect the counter as documented by `internal/counter`.
+
 ## Follow-up before promising stronger durability
 
 1. Make snapshot publication durable: fsync the temporary snapshot, rename it,

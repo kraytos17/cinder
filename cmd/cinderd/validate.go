@@ -94,5 +94,8 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 	if cfg.FsyncPolicy != "" && cfg.FsyncPolicy != "none" && !cfg.EnablePersistence {
 		errs = append(errs, errors.New("--fsync requires --enable-persistence"))
 	}
+	if ((cfg.EnablePersistence && cfg.DataDir != "") || len(peerList) > 0) && !cfg.nodeIDExplicit {
+		errs = append(errs, errors.New("--node-id must be explicitly set when persistence or peers are enabled"))
+	}
 	return out, errs
 }

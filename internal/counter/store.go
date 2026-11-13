@@ -15,8 +15,8 @@
 //   - No tombstones: Remove erases locally, and a merge from a peer that
 //     still holds the key resurrects it. Remove is an operator-local
 //     escape hatch, not a replicated delete.
-//   - Counter state is not in the LWW WAL/snapshot or LWW digest;
-//     replication and repair merge these states explicitly.
+//   - Counter state is persisted independently from the LWW snapshot and
+//     participates in explicit replication and repair.
 package counter
 
 import (
@@ -69,11 +69,19 @@ type shard struct {
 	current uint64
 }
 
+// PersistHook observes a complete post-mutation counter state. remove=true
+// records a local removal. It runs under the shard lock and must not call
+// back into the counter store.
+type PersistHook func(key string, state PNCounter, remove bool) error
+
 // Store is a sharded counter map. Keys stripe over shards (one per
 // 64 KiB, clamped to [1,16]); reads copy out.
 type Store struct {
-	capacity atomic.Uint64
-	shards   []shard
+	capacity    atomic.Uint64
+	shards      []shard
+	persistMu   sync.RWMutex
+	persistHook PersistHook
+	persistGate sync.RWMutex
 }
 
 // NewStore returns a store with the given byte budget.
@@ -95,6 +103,31 @@ func (s *Store) CapacityBytes() uint64 { return s.capacity.Load() }
 // new slice only reject growth until removals bring them back under.
 func (s *Store) SetCapacity(n uint64) { s.capacity.Store(n) }
 
+// SetPersistence installs or removes the durable mutation hook.
+func (s *Store) SetPersistence(fn PersistHook) {
+	s.persistMu.Lock()
+	s.persistHook = fn
+	s.persistMu.Unlock()
+}
+
+// WithPersistenceBarrier prevents mutations from crossing a persistence
+// snapshot/WAL cutover. Mutations already in progress complete first.
+func (s *Store) WithPersistenceBarrier(fn func() error) error {
+	s.persistGate.Lock()
+	defer s.persistGate.Unlock()
+	return fn()
+}
+
+func (s *Store) persist(key string, state PNCounter, remove bool) error {
+	s.persistMu.RLock()
+	fn := s.persistHook
+	s.persistMu.RUnlock()
+	if fn == nil {
+		return nil
+	}
+	return fn(key, state.Clone(), remove)
+}
+
 func (s *Store) shardCapacity() uint64 {
 	return s.capacity.Load() / uint64(len(s.shards))
 }
@@ -108,6 +141,8 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 		return ErrInvalidActor
 	}
 
+	s.persistGate.RLock()
+	defer s.persistGate.RUnlock()
 	// Actors are node IDs (bounded vocabulary, unlike user keys), so
 	// canonicalizing converges every counter's component map on one
 	// shared backing per actor. The Merge path needs no equivalent:
@@ -154,7 +189,7 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 
 		sh.current += growth
 		sh.index[key] = it
-		return nil
+		return s.persist(key, it, false)
 	}
 
 	var fresh PNCounter
@@ -180,7 +215,7 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 
 	sh.current += need
 	sh.index[key] = fresh
-	return nil
+	return s.persist(key, fresh, false)
 }
 
 // Increment adds delta to key's counter, attributed to actor.
@@ -201,12 +236,18 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 		return nil
 	}
 
+	s.persistGate.RLock()
+	defer s.persistGate.RUnlock()
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if it, ok := sh.index[key]; ok {
 		merged := it.Clone()
 		merged.Merge(remote)
+		if merged.Equal(it) {
+			return nil
+		}
+
 		oldSize, newSize := it.BillableSize(key), merged.BillableSize(key)
 		// Merge only adds components, so the size never shrinks.
 		growth := newSize - oldSize
@@ -217,7 +258,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 
 		sh.current += growth
 		sh.index[key] = merged
-		return nil
+		return s.persist(key, merged, false)
 	}
 
 	need := remote.BillableSize(key)
@@ -228,7 +269,7 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 
 	sh.current += need
 	sh.index[key] = remote.Clone()
-	return nil
+	return s.persist(key, remote, false)
 }
 
 // Value returns the current value, or false when absent. Counters have
@@ -259,17 +300,27 @@ func (s *Store) Get(key string) (PNCounter, bool) {
 // Remove erases locally, returning whether anything was removed. A merge
 // from a peer that still holds the key resurrects it (no tombstones).
 func (s *Store) Remove(key string) bool {
+	removed, _ := s.RemoveWithError(key)
+	return removed
+}
+
+// RemoveWithError removes local state and persists the removal. The in-memory
+// removal is not rolled back if persistence fails.
+func (s *Store) RemoveWithError(key string) (bool, error) {
+	s.persistGate.RLock()
+	defer s.persistGate.RUnlock()
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	it, ok := sh.index[key]
 	if !ok {
-		return false
+		return false, nil
 	}
 
+	removed := it.Clone()
 	sh.current -= it.BillableSize(key)
 	delete(sh.index, key)
-	return true
+	return true, s.persist(key, removed, true)
 }
 
 // Size returns the key count.

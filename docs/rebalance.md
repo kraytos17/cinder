@@ -601,6 +601,7 @@ gossip starts.
 | `--client-shared-secret` | (empty) | Client auth secret (or `CINDER_CLIENT_SECRET`); client/admin opcodes and the gRPC bearer require it; needs `--tls` |
 | `--enable-persistence` | `false` | Enable WAL + snapshots |
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
+| `--node-id` | `node1` | Stable node/CRDT actor identity; explicitly required with persistence or peers, and must remain stable across restarts |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
 | `--fsync` | `none` | WAL sync policy: `none` (append only), `always` (sync before write acknowledgement), or `interval:<ms>` (periodic sync, also while idle); requires persistence |
 | `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
@@ -614,9 +615,10 @@ gossip starts.
 | `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
 | `--shutdown-timeout-ms` | `10000` | Graceful shutdown deadline in milliseconds (`0` = force-close immediately; after expiry, connections are force-closed and the stage that timed out is logged) |
 
-Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2
-uncompressed only (v3 rejected); WAL v2 only (Legacy/V1/V2 accepted on
-read); compaction on demand via `cinder-admin compact` only.
+Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2 for
+KV-only state and v4 when counters are persisted (compressed v3 rejected);
+WAL v3 writer with Legacy/V1/V2 readers; compaction on demand via
+`cinder-admin compact` only.
 
 Deliberately unported C++ flags: `-C,--config` (no YAML by design;
 `config-reload` is accepted and answers OK), `--listen-fd` /

@@ -85,6 +85,8 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "secret requires TLS for grpc", args: []string{"--grpc-port", "9000", "--client-shared-secret", "s"}, want: "requires --tls"},
 		{name: "invalid replica count", args: []string{"--replication-factor", "33"}, want: "replication-factor"},
 		{name: "persistence needs directory", args: []string{"--enable-persistence"}, want: "--data-dir is required"},
+		{name: "persistence requires explicit node id", args: []string{"--enable-persistence", "--data-dir", "/tmp/cinder"}, want: "--node-id must be explicitly set"},
+		{name: "peers require explicit node id", args: []string{"--peers", "n2@127.0.0.1:7001"}, want: "--node-id must be explicitly set"},
 		{name: "invalid consistency at RF=1", args: []string{"--consistency", "linearizable"}, want: "--consistency must be async|quorum"},
 		{name: "invalid consistency at RF=2", args: []string{"--replication-factor", "2", "--consistency", "bogus"}, want: "--consistency must be async|quorum"},
 		{name: "negative snapshot interval", args: []string{"--snapshot-interval-s", "-1"}, want: "--snapshot-interval-s must be >= 0"},

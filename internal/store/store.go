@@ -123,6 +123,7 @@ type Store struct {
 
 	persistMu   sync.RWMutex
 	persistHook PersistHook
+	persistGate sync.RWMutex
 }
 
 type mutationSink struct {
@@ -251,6 +252,14 @@ func (s *Store) SetPersistence(fn PersistHook) {
 	s.persistHook = fn
 }
 
+// WithPersistenceBarrier prevents mutations from crossing a persistence
+// snapshot/WAL cutover. Mutations already in progress complete first.
+func (s *Store) WithPersistenceBarrier(fn func() error) error {
+	s.persistGate.Lock()
+	defer s.persistGate.Unlock()
+	return fn()
+}
+
 func (s *Store) persistPut(key string, e Entry) error {
 	s.persistMu.RLock()
 	fn := s.persistHook
@@ -338,6 +347,8 @@ func (s *Store) PutVersioned(key string, e Entry) error {
 }
 
 func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
+	s.persistGate.RLock()
+	defer s.persistGate.RUnlock()
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
@@ -469,6 +480,8 @@ func (s *Store) GetVersioned(key string) (Entry, bool) {
 // Remove hard-erases key, returning false when absent. Unlike
 // RemoveVersioned it leaves no tombstone behind.
 func (s *Store) Remove(key string) bool {
+	s.persistGate.RLock()
+	defer s.persistGate.RUnlock()
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
