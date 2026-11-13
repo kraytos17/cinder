@@ -143,8 +143,15 @@ func (g *GossipManager) rebuildLocked() {
 }
 
 // EncodeView renders "id@host:port:state:incarnation" entries joined by ';'.
+// The output bytes are the frozen wire format (see TestInteropGossipWithCpp);
+// optimizations here must not change a single byte.
 func EncodeView(view []NodeInfo) string {
 	var b strings.Builder
+	if len(view) > 0 {
+		b.Grow(len(view) * 64)
+	}
+
+	var numbuf [20]byte
 	for i, m := range view {
 		if i > 0 {
 			b.WriteByte(';')
@@ -154,11 +161,11 @@ func EncodeView(view []NodeInfo) string {
 		b.WriteByte('@')
 		b.WriteString(m.Host)
 		b.WriteByte(':')
-		b.WriteString(m.Port.String())
+		b.Write(strconv.AppendUint(numbuf[:0], uint64(m.Port), 10))
 		b.WriteByte(':')
 		b.WriteString(m.State.String())
 		b.WriteByte(':')
-		b.WriteString(strconv.FormatUint(m.Incarnation, 10))
+		b.Write(strconv.AppendUint(numbuf[:0], m.Incarnation, 10))
 	}
 	return b.String()
 }

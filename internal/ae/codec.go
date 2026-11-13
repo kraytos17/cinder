@@ -127,10 +127,10 @@ type IBLTDiff struct {
 
 func EncodeDigest(digest []uint64) []byte {
 	out := make([]byte, 0, 8+8*len(digest))
-	out = codec.Append(out, binary.LittleEndian, MagicDigest)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicDigest)
 	out = codec.AppendLen(out, binary.LittleEndian, len(digest))
 	for _, h := range digest {
-		out = codec.Append(out, binary.LittleEndian, h)
+		out = codec.AppendU64(out, binary.LittleEndian, h)
 	}
 	return out
 }
@@ -176,8 +176,8 @@ func (d Digest) Fold() Digest {
 
 		var mat []byte
 		for b := begin; b < end; b++ {
-			mat = codec.Append(mat, binary.LittleEndian, uint32(b))
-			mat = codec.Append(mat, binary.LittleEndian, d[b])
+			mat = codec.AppendU32(mat, binary.LittleEndian, uint32(b))
+			mat = codec.AppendU64(mat, binary.LittleEndian, d[b])
 		}
 		out = append(out, xxh3.Hash(mat))
 	}
@@ -187,10 +187,10 @@ func (d Digest) Fold() Digest {
 // Encode serializes an AEM3 group digest.
 func (d Digest) Encode() []byte {
 	out := make([]byte, 0, 8+8*len(d))
-	out = codec.Append(out, binary.LittleEndian, MagicGroupDigest)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicGroupDigest)
 	out = codec.AppendLen(out, binary.LittleEndian, len(d))
 	for _, h := range d {
-		out = codec.Append(out, binary.LittleEndian, h)
+		out = codec.AppendU64(out, binary.LittleEndian, h)
 	}
 	return out
 }
@@ -222,17 +222,17 @@ func DecodeGroupDigest(data []byte, expectedGroups int) (Digest, bool) {
 // Encode serializes an AEB5 request.
 func (r Refinement) Encode() []byte {
 	out := make([]byte, 0, 12+12*len(r.BucketHashes))
-	out = codec.Append(out, binary.LittleEndian, MagicRefinement)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicRefinement)
 	if r.ForceMeta {
-		out = codec.Append(out, binary.LittleEndian, uint32(1))
+		out = codec.AppendU32(out, binary.LittleEndian, uint32(1))
 	} else {
-		out = codec.Append(out, binary.LittleEndian, uint32(0))
+		out = codec.AppendU32(out, binary.LittleEndian, uint32(0))
 	}
 
 	out = codec.AppendLen(out, binary.LittleEndian, len(r.BucketHashes))
 	for _, bh := range r.BucketHashes {
-		out = codec.Append(out, binary.LittleEndian, bh.Bucket)
-		out = codec.Append(out, binary.LittleEndian, bh.Hash)
+		out = codec.AppendU32(out, binary.LittleEndian, bh.Bucket)
+		out = codec.AppendU64(out, binary.LittleEndian, bh.Hash)
 	}
 	return out
 }
@@ -279,14 +279,14 @@ func EncodeMetaRows(rows []MetaRow) []byte {
 	out := make([]byte, 0, 4+len(rows)*29)
 	out = codec.AppendLen(out, binary.LittleEndian, len(rows))
 	for _, r := range rows {
-		out = codec.Append(out, binary.LittleEndian, r.Bucket)
-		out = codec.Append(out, binary.LittleEndian, r.KeyHash)
-		out = codec.Append(out, binary.LittleEndian, r.Version)
-		out = codec.Append(out, binary.LittleEndian, r.Writer)
+		out = codec.AppendU32(out, binary.LittleEndian, r.Bucket)
+		out = codec.AppendU64(out, binary.LittleEndian, r.KeyHash)
+		out = codec.AppendU64(out, binary.LittleEndian, r.Version)
+		out = codec.AppendU64(out, binary.LittleEndian, r.Writer)
 		if r.Tombstone {
-			out = codec.Append(out, binary.LittleEndian, uint8(1))
+			out = codec.AppendU8(out, 1)
 		} else {
-			out = codec.Append(out, binary.LittleEndian, uint8(0))
+			out = codec.AppendU8(out, 0)
 		}
 	}
 	return out
@@ -336,28 +336,28 @@ func (r DigestResponse) Encode() []byte {
 	}
 
 	out := make([]byte, 0, 16+8*len(r.GroupHashes)+12*len(r.BucketHashes)+4*len(r.Covered)+4+len(rows)+4+sketchSize)
-	out = codec.Append(out, binary.LittleEndian, MagicResponse)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicResponse)
 	out = codec.AppendLen(out, binary.LittleEndian, len(r.GroupHashes))
 	for _, h := range r.GroupHashes {
-		out = codec.Append(out, binary.LittleEndian, h)
+		out = codec.AppendU64(out, binary.LittleEndian, h)
 	}
 
 	out = codec.AppendLen(out, binary.LittleEndian, len(r.BucketHashes))
 	for _, bh := range r.BucketHashes {
-		out = codec.Append(out, binary.LittleEndian, bh.Bucket)
-		out = codec.Append(out, binary.LittleEndian, bh.Hash)
+		out = codec.AppendU32(out, binary.LittleEndian, bh.Bucket)
+		out = codec.AppendU64(out, binary.LittleEndian, bh.Hash)
 	}
 
 	out = codec.AppendLen(out, binary.LittleEndian, len(r.Covered))
 	for _, b := range r.Covered {
-		out = codec.Append(out, binary.LittleEndian, b)
+		out = codec.AppendU32(out, binary.LittleEndian, b)
 	}
 
 	out = codec.AppendLen(out, binary.LittleEndian, len(rows))
 	out = append(out, rows...)
 	out = codec.AppendLen(out, binary.LittleEndian, len(r.Sketches))
 	for _, s := range r.Sketches {
-		out = codec.Append(out, binary.LittleEndian, s.Bucket)
+		out = codec.AppendU32(out, binary.LittleEndian, s.Bucket)
 		out = codec.AppendLen(out, binary.LittleEndian, len(s.Blob))
 		out = append(out, s.Blob...)
 	}
@@ -507,13 +507,13 @@ func (msg SyncMessage) Encode() ([]byte, error) {
 	}
 
 	out := make([]byte, 0, size)
-	out = codec.Append(out, binary.LittleEndian, MagicSync)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicSync)
 	out = codec.AppendLen(out, binary.LittleEndian, len(msg.Entries))
 	for _, it := range msg.Entries {
 		out = codec.AppendLen(out, binary.LittleEndian, len(it.Key))
 		out = append(out, it.Key...)
-		out = codec.Append(out, binary.LittleEndian, it.Entry.Version)
-		out = codec.Append(out, binary.LittleEndian, it.Entry.WriterNodeHash)
+		out = codec.AppendU64(out, binary.LittleEndian, it.Entry.Version)
+		out = codec.AppendU64(out, binary.LittleEndian, it.Entry.WriterNodeHash)
 
 		var flags uint8
 		if !it.Entry.Expiry.IsNone() {
@@ -523,9 +523,9 @@ func (msg SyncMessage) Encode() ([]byte, error) {
 			flags |= 2
 		}
 
-		out = codec.Append(out, binary.LittleEndian, flags)
+		out = codec.AppendU8(out, flags)
 		if !it.Entry.Expiry.IsNone() {
-			out = codec.Append(out, binary.LittleEndian, uint64(it.Entry.Expiry.UnixMilli()))
+			out = codec.AppendU64(out, binary.LittleEndian, uint64(it.Entry.Expiry.UnixMilli()))
 		}
 
 		out = codec.AppendLen(out, binary.LittleEndian, len(it.Entry.Value))
@@ -534,7 +534,7 @@ func (msg SyncMessage) Encode() ([]byte, error) {
 
 	out = codec.AppendLen(out, binary.LittleEndian, len(msg.Needs))
 	for _, h := range msg.Needs {
-		out = codec.Append(out, binary.LittleEndian, h)
+		out = codec.AppendU64(out, binary.LittleEndian, h)
 	}
 	return out, nil
 }
@@ -706,15 +706,15 @@ func EncodeIBLT(cells []IBLTCell) []byte {
 	}
 
 	out := make([]byte, 0, 8+len(cells)*IBLTCelBytes)
-	out = codec.Append(out, binary.LittleEndian, MagicIBLT)
+	out = codec.AppendU32(out, binary.LittleEndian, MagicIBLT)
 	out = codec.AppendLen(out, binary.LittleEndian, len(cells))
 	for _, c := range cells {
-		out = codec.Append(out, binary.LittleEndian, uint64(c.Count))
-		out = codec.Append(out, binary.LittleEndian, c.KeyXOR)
-		out = codec.Append(out, binary.LittleEndian, c.VersionXOR)
-		out = codec.Append(out, binary.LittleEndian, c.WriterXOR)
-		out = codec.Append(out, binary.LittleEndian, c.TombstoneXOR)
-		out = codec.Append(out, binary.LittleEndian, c.ChecksumXOR)
+		out = codec.AppendU64(out, binary.LittleEndian, uint64(c.Count))
+		out = codec.AppendU64(out, binary.LittleEndian, c.KeyXOR)
+		out = codec.AppendU64(out, binary.LittleEndian, c.VersionXOR)
+		out = codec.AppendU64(out, binary.LittleEndian, c.WriterXOR)
+		out = codec.AppendU64(out, binary.LittleEndian, c.TombstoneXOR)
+		out = codec.AppendU64(out, binary.LittleEndian, c.ChecksumXOR)
 	}
 	return out
 }

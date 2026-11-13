@@ -4,6 +4,7 @@
 package cluster
 
 import (
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -141,8 +142,14 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 		}
 
 		fresh := rumor
+		// Detach stored identity from the decoded view buffer: DecodeView
+		// substrings share the whole message string, so storing them
+		// directly would pin it for the member's lifetime. Steady-state
+		// rumors never take this path.
+		fresh.ID = strings.Clone(fresh.ID)
+		fresh.Host = strings.Clone(fresh.Host)
 		fresh.JoinedAt = t.clock()
-		t.nodes[rumor.ID] = &fresh
+		t.nodes[fresh.ID] = &fresh
 		t.mu.Unlock()
 		t.fire()
 		return
@@ -180,7 +187,7 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 			// Address ownership follows the incarnation: a restart's new
 			// address supersedes the old one only with a newer stamp.
 			if rumor.Host != "" && local.Host != rumor.Host {
-				local.Host = rumor.Host
+				local.Host = strings.Clone(rumor.Host)
 				changed = true
 			}
 			if rumor.Port != 0 && local.Port != rumor.Port {

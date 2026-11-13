@@ -12,9 +12,10 @@ import (
 )
 
 // stubServer answers every request with StatusOK. One connection at a
-// time is enough: the client under test is sequential.
-func stubServer(t *testing.T, l net.Listener) {
-	t.Helper()
+// time is enough: the client under test is sequential. Takes testing.TB
+// so benchmarks reuse it too.
+func stubServer(tb testing.TB, l net.Listener) {
+	tb.Helper()
 	go func() {
 		for {
 			c, err := l.Accept()

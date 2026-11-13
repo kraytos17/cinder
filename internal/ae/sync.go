@@ -128,13 +128,15 @@ const metaRowBytes = 4 + 8 + 8 + 8 + 1
 // larger than the budget can still make progress.
 func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []uint32) {
 	requested := make([]bool, m.numBuckets)
+	var unique []uint32
 	for _, b := range bucketIDs {
-		if b < m.numBuckets {
+		if b < m.numBuckets && !requested[b] {
 			requested[b] = true
+			unique = append(unique, b)
 		}
 	}
 
-	wanted := make([]bool, m.numBuckets)
+	slices.Sort(unique)
 	var rows []MetaRow
 	rowCounts := make([]int, m.numBuckets)
 	m.store.ForEachMetadata(func(key string, e store.Entry) {
@@ -152,21 +154,16 @@ func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []u
 
 	var covered []uint32
 	bytes := 8 // outer row-count + covered-count u32s
-	for b := range m.numBuckets {
-		if !requested[b] {
-			continue
-		}
+	for _, b := range unique {
 		if bytes+4 > maxBytes && len(covered) > 0 {
 			break
 		}
 
 		bytes += 4
 		covered = append(covered, b)
-		wanted[b] = true
 		need := rowCounts[b] * metaRowBytes
 		if bytes+need > maxBytes && len(covered) > 1 {
 			covered = covered[:len(covered)-1]
-			wanted[b] = false
 			break
 		}
 

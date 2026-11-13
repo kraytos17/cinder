@@ -31,13 +31,7 @@ func Append[T Uint](b []byte, order binary.ByteOrder, v T) []byte {
 	case uint8:
 		return putU8(b, w)
 	case uint16:
-		var tmp [2]byte
-		if order == binary.LittleEndian {
-			tmp[0], tmp[1] = byte(w), byte(w>>8)
-		} else {
-			tmp[0], tmp[1] = byte(w>>8), byte(w)
-		}
-		return append(b, tmp[:]...)
+		return putU16(b, order, w)
 	case uint32:
 		return putU32(b, order, w)
 	case uint64:
@@ -46,29 +40,41 @@ func Append[T Uint](b []byte, order binary.ByteOrder, v T) []byte {
 	panic("codec: unreachable width")
 }
 
-// putU8/putU32/putU64 are the concrete, allocation-free appends. Writer
-// methods route here (never through Append) so per-RPC framing stays at
-// the old zero-scratch profile. Bytes are assembled manually rather than
-// via order.PutUintXX on a scratch array: the scratch escapes through
-// the interface call (measured: 1 alloc per append), while shifting
-// never leaves the stack. Only LittleEndian/BigEndian exist, so the
-// branch is exhaustive.
+func AppendU8(b []byte, v uint8) []byte { return putU8(b, v) }
+
+func AppendU16(b []byte, order binary.ByteOrder, v uint16) []byte {
+	return putU16(b, order, v)
+}
+
+func AppendU32(b []byte, order binary.ByteOrder, v uint32) []byte {
+	return putU32(b, order, v)
+}
+
+func AppendU64(b []byte, order binary.ByteOrder, v uint64) []byte {
+	return putU64(b, order, v)
+}
+
 func putU8(b []byte, v uint8) []byte { return append(b, v) }
+
+func putU16(b []byte, order binary.ByteOrder, v uint16) []byte {
+	if order == binary.LittleEndian {
+		return binary.LittleEndian.AppendUint16(b, v)
+	}
+	return binary.BigEndian.AppendUint16(b, v)
+}
 
 func putU32(b []byte, order binary.ByteOrder, v uint32) []byte {
 	if order == binary.LittleEndian {
-		return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+		return binary.LittleEndian.AppendUint32(b, v)
 	}
-	return append(b, byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	return binary.BigEndian.AppendUint32(b, v)
 }
 
 func putU64(b []byte, order binary.ByteOrder, v uint64) []byte {
 	if order == binary.LittleEndian {
-		return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24),
-			byte(v>>32), byte(v>>40), byte(v>>48), byte(v>>56))
+		return binary.LittleEndian.AppendUint64(b, v)
 	}
-	return append(b, byte(v>>56), byte(v>>48), byte(v>>40), byte(v>>32),
-		byte(v>>24), byte(v>>16), byte(v>>8), byte(v))
+	return binary.BigEndian.AppendUint64(b, v)
 }
 
 // AppendLen writes n as a u32 length prefix — the universal "len +
