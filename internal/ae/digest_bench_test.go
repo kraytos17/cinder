@@ -112,6 +112,28 @@ func BenchmarkAECollectMetadata10K(b *testing.B) {
 	}
 }
 
+// BenchmarkAECollectMetadataScale measures full-snapshot metadata collection
+// across dataset size and requested-bucket selectivity.
+func BenchmarkAECollectMetadataScale(b *testing.B) {
+	for _, keyCount := range []int{10_000, 100_000} {
+		st := benchmarkAEStore(b, keyCount)
+		m := &Manager{store: st, numBuckets: 256}
+		for _, bucketCount := range []int{1, 16, 256} {
+			b.Run(fmt.Sprintf("keys=%d/buckets=%d", keyCount, bucketCount), func(b *testing.B) {
+				buckets := make([]uint32, bucketCount)
+				for i := range buckets {
+					buckets[i] = uint32(i * 256 / bucketCount)
+				}
+				b.ReportAllocs()
+				for b.Loop() {
+					benchAEMetadata, benchAECovered = m.CollectMetadata(buckets, MaxMetaBytes)
+				}
+				b.ReportMetric(float64(len(benchAEMetadata)), "wire-B/op")
+			})
+		}
+	}
+}
+
 func BenchmarkAEDiffRows10K(b *testing.B) {
 	st := benchmarkAEStore(b, 10_000)
 	m := &Manager{store: st, numBuckets: 256}

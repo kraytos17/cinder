@@ -651,3 +651,23 @@ func (s *Store) MetadataSnapshot() []EntryMeta {
 	}
 	return out
 }
+
+// ForEachMetadata visits present-entry identity metadata shard-by-shard,
+// without cloning values or allocating a whole-store snapshot. The callback
+// must not call back into this store because the current shard is locked.
+func (s *Store) ForEachMetadata(fn func(key string, entry Entry)) {
+	now := s.clock.Now()
+	for i := range s.shards {
+		sh := &s.shards[i]
+		sh.mu.Lock()
+		for key, idx := range sh.index {
+			e := sh.nodes[idx].entry
+			if e.Expired(now) {
+				continue
+			}
+
+			fn(key, Entry{Version: e.Version, WriterNodeHash: e.WriterNodeHash, Expiry: e.Expiry, Tombstone: e.Tombstone})
+		}
+		sh.mu.Unlock()
+	}
+}

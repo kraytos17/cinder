@@ -137,16 +137,15 @@ func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []u
 	wanted := make([]bool, m.numBuckets)
 	var rows []MetaRow
 	rowCounts := make([]int, m.numBuckets)
-	for _, item := range m.store.MetadataSnapshot() {
-		b := BucketFor(item.Key, m.numBuckets)
+	m.store.ForEachMetadata(func(key string, e store.Entry) {
+		b := BucketFor(key, m.numBuckets)
 		if b >= m.numBuckets || !requested[b] {
-			continue
+			return
 		}
 
-		e := item.Entry
-		rows = append(rows, MetaRow{Bucket: b, Tombstone: e.Tombstone, KeyHash: KeyHash(item.Key), Version: e.Version, Writer: e.WriterNodeHash})
+		rows = append(rows, MetaRow{Bucket: b, Tombstone: e.Tombstone, KeyHash: KeyHash(key), Version: e.Version, Writer: e.WriterNodeHash})
 		rowCounts[b]++
-	}
+	})
 	slices.SortFunc(rows, func(a, b MetaRow) int {
 		return cmp.Or(cmp.Compare(a.Bucket, b.Bucket), cmp.Compare(a.KeyHash, b.KeyHash))
 	})
