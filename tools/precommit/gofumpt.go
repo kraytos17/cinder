@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"go/format"
 	"strings"
+
+	"mvdan.cc/gofumpt/format"
 )
 
-func checkGoFormat(ctx context.Context, repo repository, paths []string) error {
+const (
+	gofumptLangVersion = "go1.27"
+	gofumptModulePath  = "github.com/kraytos17/cinder"
+)
+
+func checkGoFumpt(ctx context.Context, repo repository, paths []string) error {
 	var failures []string
 	for _, path := range paths {
 		select {
@@ -23,7 +29,7 @@ func checkGoFormat(ctx context.Context, repo repository, paths []string) error {
 			continue
 		}
 
-		needsFormat, formatErr := goBlobNeedsFormat(staged)
+		needsFormat, formatErr := goBlobNeedsGofumpt(staged)
 		if formatErr != nil {
 			failures = append(failures, fmt.Sprintf("format staged Go file %q: %v", path, formatErr))
 			continue
@@ -32,7 +38,7 @@ func checkGoFormat(ctx context.Context, repo repository, paths []string) error {
 			continue
 		}
 
-		failure := fmt.Sprintf("%s is not gofmt-formatted; run gofmt -w %q and re-stage", path, path)
+		failure := fmt.Sprintf("%s is not gofumpt-formatted; run gofumpt -w %q (or just lint-fix) and re-stage", path, path)
 		unstaged, err := hasUnstagedChanges(ctx, repo.root, path)
 		if err != nil {
 			failures = append(failures, err.Error())
@@ -46,12 +52,16 @@ func checkGoFormat(ctx context.Context, repo repository, paths []string) error {
 	if len(failures) == 0 {
 		return nil
 	}
-	return fmt.Errorf("gofmt check:\n  %s", strings.Join(failures, "\n  "))
+	return fmt.Errorf("gofumpt check:\n  %s", strings.Join(failures, "\n  "))
 }
 
-// goBlobNeedsFormat reports whether src differs from gofmt output.
-func goBlobNeedsFormat(src []byte) (bool, error) {
-	formatted, err := format.Source(src)
+// goBlobNeedsGofumpt reports whether src differs from gofumpt output.
+// gofumpt is a strict superset of gofmt, matching the CI lint gate.
+func goBlobNeedsGofumpt(src []byte) (bool, error) {
+	formatted, err := format.Source(src, format.Options{
+		LangVersion: gofumptLangVersion,
+		ModulePath:  gofumptModulePath,
+	})
 	if err != nil {
 		return false, err
 	}

@@ -46,7 +46,7 @@ func run(ctx context.Context) error {
 			checkJustfile = true
 		}
 	}
-	if err := checkGoFormat(ctx, repo, goFiles); err != nil {
+	if err := checkGoFumpt(ctx, repo, goFiles); err != nil {
 		failures = append(failures, err.Error())
 	}
 	if err := checkYAML(ctx, repo, yamlFiles); err != nil {

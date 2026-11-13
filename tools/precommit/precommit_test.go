@@ -7,9 +7,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestGoBlobNeedsFormat(t *testing.T) {
+func TestGoBlobNeedsGofumpt(t *testing.T) {
 	formatted := []byte("package foo\n\nfunc Foo() {}\n")
-	needsFormat, err := goBlobNeedsFormat(formatted)
+	needsFormat, err := goBlobNeedsGofumpt(formatted)
 	if err != nil {
 		t.Fatalf("formatted source returned error: %v", err)
 	}
@@ -18,14 +18,24 @@ func TestGoBlobNeedsFormat(t *testing.T) {
 	}
 
 	unformatted := []byte("package foo\nfunc Foo(  ){} \n")
-	needsFormat, err = goBlobNeedsFormat(unformatted)
+	needsFormat, err = goBlobNeedsGofumpt(unformatted)
 	if err != nil {
 		t.Fatalf("unformatted source returned error: %v", err)
 	}
 	if !needsFormat {
 		t.Fatal("unformatted source reported as formatted")
 	}
-	if _, err := goBlobNeedsFormat([]byte("package foo\nfunc (\n")); err == nil {
+	// gofumpt-only: gofmt accepts a leading empty line in a block,
+	// gofumpt does not.
+	gofmtClean := []byte("package foo\n\nfunc Foo() {\n\n}\n")
+	needsFormat, err = goBlobNeedsGofumpt(gofmtClean)
+	if err != nil {
+		t.Fatalf("gofmt-clean source returned error: %v", err)
+	}
+	if !needsFormat {
+		t.Fatal("gofmt-clean but gofumpt-dirty source reported as formatted")
+	}
+	if _, err := goBlobNeedsGofumpt([]byte("package foo\nfunc (\n")); err == nil {
 		t.Fatal("syntax error did not return an error")
 	}
 }
