@@ -89,6 +89,9 @@ func (m *Manager) Recover() error {
 		if err != nil {
 			return err
 		}
+		if err := r.HeaderError(); err != nil {
+			return fmt.Errorf("persist: %s at offset %d: %w", path, r.ErrorOffset(), err)
+		}
 		for r.HasMore() {
 			e, ok := r.Next()
 			if !ok {

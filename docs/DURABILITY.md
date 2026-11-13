@@ -61,6 +61,27 @@ and refusal of corrupt records are covered by
 ordinary process behavior; they do not emulate loss of the
 kernel page cache or physical-device write reordering.
 
+Startup uses a fail-closed corruption policy: a checksum mismatch, malformed
+record, unsupported WAL header, or invalid snapshot aborts recovery. The only
+automatic repair is truncation of an incomplete final WAL record to the last
+valid record boundary. Mid-file repair/quarantine is deliberately not
+implemented; preserve a copy of the data directory and investigate before
+attempting manual repair.
+
+`cinderd --verify-data-dir <dir>` runs the offline read-only verifier. It
+reports recognized snapshot/WAL files, formats, KV/counter record counts,
+valid WAL bytes, corruption file offsets, and recoverable torn tails. It exits
+1 for corruption or unsupported formats; torn tails are warnings and do not
+modify the directory. It can be used before restart or against a copied
+directory while the daemon remains stopped. For example:
+
+```sh
+cinderd --verify-data-dir /var/lib/cinder
+```
+
+Verification is diagnostic, not repair. Normal startup still truncates a
+torn WAL tail to its valid prefix; the verifier never does.
+
 ## Current guarantee summary
 
 | Event / response | Current guarantee |

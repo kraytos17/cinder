@@ -53,6 +53,7 @@ type daemonConfig struct {
 	ShutdownTimeoutMs    int    `json:"shutdown-timeout-ms"`
 	FsyncPolicy          string `json:"fsync"`
 	nodeIDExplicit       bool   `json:"-"`
+	VerifyDataDir        string `json:"-"`
 }
 
 func defaultDaemonConfig() daemonConfig {
@@ -96,6 +97,7 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.StringFlag{Name: "client-shared-secret", Value: cfg.ClientSecret, Usage: "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)"},
 		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.EnablePersistence, Usage: "enable WAL + snapshots"},
 		&cli.StringFlag{Name: "data-dir", Value: cfg.DataDir, Usage: "persistence directory (required with --enable-persistence)"},
+		&cli.StringFlag{Name: "verify-data-dir", Value: cfg.VerifyDataDir, Usage: "offline-verify persistence files in a directory and exit (read-only)"},
 		&cli.IntFlag{Name: "snapshot-interval-s", Value: cfg.SnapshotIntervalS, Usage: "seconds between automatic snapshots (0 = disabled)"},
 		&cli.StringFlag{Name: "fsync", Value: cfg.FsyncPolicy, Usage: "WAL sync policy: none|always|interval:<ms> (default none)"},
 		&cli.Uint64Flag{Name: "max-wal-bytes", Value: cfg.MaxWALBytes, Usage: "active WAL bytes before out-of-cycle compact (0 = disabled)"},
@@ -203,6 +205,9 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	}
 	if cmd.IsSet("data-dir") {
 		cfg.DataDir = cmd.String("data-dir")
+	}
+	if cmd.IsSet("verify-data-dir") {
+		cfg.VerifyDataDir = cmd.String("verify-data-dir")
 	}
 	if cmd.IsSet("snapshot-interval-s") {
 		cfg.SnapshotIntervalS = cmd.Int("snapshot-interval-s")

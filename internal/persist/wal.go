@@ -379,11 +379,14 @@ const (
 // invalidity (bad op, bad tombstone byte, checksum mismatch). ValidSize is
 // the end offset of the last fully decoded record for torn-tail truncation.
 type Reader struct {
-	data      []byte
-	pos       int
-	commit    uint64
-	format    Format
-	corrupted bool
+	data         []byte
+	pos          int
+	commit       uint64
+	format       Format
+	corrupted    bool
+	errorAt      int64
+	headerErr    error
+	headerOffset int64
 }
 
 // OpenReader slurps path once; a missing file reads as empty.
@@ -405,7 +408,9 @@ func OpenReader(path string) (*Reader, error) {
 		return r, nil // legacy format: decode from 0, no checksums
 	}
 	if len(data) < 8 {
-		return r, nil // torn header: nothing to decode
+		r.headerErr = errors.New("truncated WAL header")
+		r.headerOffset = int64(len(data))
+		return r, nil
 	}
 	switch v := binary.LittleEndian.Uint32(data[4:8]); v {
 	case 1:
@@ -418,7 +423,8 @@ func OpenReader(path string) (*Reader, error) {
 		r.format = FormatV3
 		r.pos = 8
 	default:
-		// Unknown version: fall through to legacy decoding from 0.
+		r.headerErr = fmt.Errorf("unsupported WAL version %d", v)
+		r.headerOffset = 4
 	}
 	return r, nil
 }
@@ -431,6 +437,21 @@ func (r *Reader) ValidSize() uint64 { return r.commit }
 
 // Corrupted reports structural invalidity seen by Next.
 func (r *Reader) Corrupted() bool { return r.corrupted }
+
+// ErrorOffset returns the byte offset where Next detected structural WAL
+// corruption, or -1 when no structural corruption has been observed.
+func (r *Reader) ErrorOffset() int64 {
+	if r.headerErr != nil {
+		return r.headerOffset
+	}
+	if !r.corrupted {
+		return -1
+	}
+	return r.errorAt
+}
+
+// HeaderError reports a malformed or unsupported WAL header.
+func (r *Reader) HeaderError() error { return r.headerErr }
 
 // Next decodes one record. Truncation (torn crash tail) stops cleanly
 // without setting Corrupted; semantic invalidity sets it.
@@ -445,6 +466,7 @@ func (r *Reader) Next() (Entry, bool) {
 	}
 	if op != uint8(OpSet) && op != uint8(OpDel) && (r.format < FormatV3 || (op != uint8(OpCounterState) && op != uint8(OpCounterRemove))) {
 		r.corrupted = true
+		r.errorAt = int64(start)
 		r.pos = c.Pos()
 		return zero, false
 	}
@@ -497,6 +519,7 @@ func (r *Reader) Next() (Entry, bool) {
 		}
 		if tomb > 1 {
 			r.corrupted = true
+			r.errorAt = int64(start)
 			r.pos = c.Pos()
 			return zero, false
 		}
@@ -508,6 +531,7 @@ func (r *Reader) Next() (Entry, bool) {
 		}
 		if xxh3.Hash(r.data[start:c.Pos()-8]) != sum {
 			r.corrupted = true
+			r.errorAt = int64(start)
 			r.pos = c.Pos()
 			return zero, false
 		}

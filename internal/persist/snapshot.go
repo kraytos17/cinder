@@ -205,10 +205,10 @@ func (r *SnapReader) ReadCounters() ([]counter.BundleEntry, error) {
 // fuzz can feed arbitrary images without temp files per input).
 func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	if len(raw) < 20 {
-		return 0, fmt.Errorf("persist: truncated snapshot header")
+		return 0, fmt.Errorf("persist: truncated snapshot header at offset %d", len(raw))
 	}
 	if binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
-		return 0, fmt.Errorf("persist: invalid snapshot magic")
+		return 0, fmt.Errorf("persist: invalid snapshot magic at offset 0")
 	}
 
 	var format snapFormat
@@ -222,7 +222,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	case 4:
 		format = snapV4
 	default:
-		return 0, fmt.Errorf("persist: unsupported snapshot version %d", v)
+		return 0, fmt.Errorf("persist: unsupported snapshot version %d at offset 4", v)
 	}
 
 	nextVersion := binary.LittleEndian.Uint64(raw[8:16])
@@ -230,7 +230,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	counterOffset := uint32(0)
 	if format == snapV4 {
 		if len(raw) < 24 {
-			return 0, fmt.Errorf("persist: truncated v3 snapshot header")
+			return 0, fmt.Errorf("persist: truncated v4 snapshot header at offset %d", len(raw))
 		}
 		counterOffset = binary.LittleEndian.Uint32(raw[20:24])
 	}
@@ -246,7 +246,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	for i := range count {
 		e, ok := decodeSnapEntry(&c, format)
 		if !ok {
-			return 0, fmt.Errorf("persist: truncated snapshot entry %d", i)
+			return 0, fmt.Errorf("persist: truncated snapshot entry %d at offset %d", i, c.Pos())
 		}
 		if !fn(e) {
 			stopped = true
@@ -257,24 +257,24 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 		counterStart := c.Pos()
 		counterEnd := counterStart + int(counterOffset)
 		if counterEnd > len(raw) {
-			return 0, fmt.Errorf("persist: truncated counter snapshot section")
+			return 0, fmt.Errorf("persist: truncated counter snapshot section at offset %d", counterStart)
 		}
 
 		bundle := raw[counterStart:counterEnd]
 		if len(bundle) < 8 || binary.BigEndian.Uint32(bundle[:4]) != counter.MagicCAE1 {
-			return 0, fmt.Errorf("persist: invalid counter snapshot magic")
+			return 0, fmt.Errorf("persist: invalid counter snapshot magic at offset %d", counterStart)
 		}
 
 		count := binary.BigEndian.Uint32(bundle[4:8])
 		if count == 0 && len(bundle) == 8 {
 			// Empty counter bundle is valid for a counter-enabled node.
 		} else if _, err := counter.DecodeCounterBundle(bundle); err != nil {
-			return 0, fmt.Errorf("persist: invalid counter snapshot section: %w", err)
+			return 0, fmt.Errorf("persist: invalid counter snapshot section at offset %d: %w", counterStart, err)
 		}
 		c.SetPos(counterEnd)
 	}
 	if !stopped && c.Remaining() != 0 {
-		return 0, fmt.Errorf("persist: trailing snapshot bytes")
+		return 0, fmt.Errorf("persist: trailing snapshot bytes at offset %d", c.Pos())
 	}
 	return nextVersion, nil
 }

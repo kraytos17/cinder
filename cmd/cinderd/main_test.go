@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/urfave/cli/v3"
+
+	"github.com/kraytos17/cinder/internal/persist"
 )
 
 func TestCinderdHelpAndVersion(t *testing.T) {
@@ -85,6 +87,7 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "secret requires TLS for grpc", args: []string{"--grpc-port", "9000", "--client-shared-secret", "s"}, want: "requires --tls"},
 		{name: "invalid replica count", args: []string{"--replication-factor", "33"}, want: "replication-factor"},
 		{name: "persistence needs directory", args: []string{"--enable-persistence"}, want: "--data-dir is required"},
+		{name: "verify cannot combine with normal flags", args: []string{"--verify-data-dir", "/tmp/cinder", "--enable-persistence"}, want: "--verify-data-dir cannot be combined"},
 		{name: "persistence requires explicit node id", args: []string{"--enable-persistence", "--data-dir", "/tmp/cinder"}, want: "--node-id must be explicitly set"},
 		{name: "peers require explicit node id", args: []string{"--peers", "n2@127.0.0.1:7001"}, want: "--node-id must be explicitly set"},
 		{name: "invalid consistency at RF=1", args: []string{"--consistency", "linearizable"}, want: "--consistency must be async|quorum"},
@@ -113,6 +116,55 @@ func TestCinderdFlagValidation(t *testing.T) {
 				t.Fatalf("stderr=%q, want containing %q", stderr.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestVerifyDataDirCommand(t *testing.T) {
+	dir := t.TempDir()
+	var out, errOut strings.Builder
+	if code := run([]string{"--verify-data-dir", dir}, &out, &errOut); code != 0 {
+		t.Fatalf("valid empty dir exit=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "files: 0") {
+		t.Fatalf("verify output = %q", out.String())
+	}
+}
+
+func TestVerifyDataDirCommandFailsOnCorruption(t *testing.T) {
+	dir := t.TempDir()
+	wal := filepath.Join(dir, "wal.log")
+	w, err := persist.OpenWriter(wal, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(persist.Entry{Op: persist.OpSet, Key: []byte("k"), Value: []byte("v")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(wal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 1
+	if err := os.WriteFile(wal, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut strings.Builder
+	if code := run([]string{"--verify-data-dir", dir}, &out, &errOut); code != 1 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q, want 1", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "offset 8") {
+		t.Fatalf("stderr=%q, want precise corrupt offset", errOut.String())
+	}
+}
+
+func TestVerifyDataDirRejectsCombinedDaemonFlags(t *testing.T) {
+	var out, errOut strings.Builder
+	code := run([]string{"--verify-data-dir", t.TempDir(), "--data-dir", t.TempDir()}, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "cannot be combined") {
+		t.Fatalf("exit=%d stderr=%q, want usage error", code, errOut.String())
 	}
 }
 
