@@ -251,6 +251,7 @@ func (s *Server) handle(c net.Conn) {
 				}
 				res = protocol.Response{Status: protocol.StatusInvalidArgument}
 			} else {
+				dec.Req.AuthenticatedNode = s.authenticatedNode(dec.AuthToken, dec.Req.Opcode)
 				dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
 				res = s.dispatch(dec.Req, dec.AuthToken)
 				if dec.Req.Opcode == protocol.OpSet && res.Status == protocol.StatusInternalError {
@@ -304,6 +305,41 @@ func (s *Server) handle(c net.Conn) {
 			return
 		}
 	}
+}
+
+func (s *Server) authenticatedNode(token []byte, opcode protocol.Opcode) string {
+	if classifyOpcode(opcode) != classReplication {
+		return ""
+	}
+
+	s.authMu.RLock()
+	secret := s.sharedSecret
+	s.authMu.RUnlock()
+	if secret == "" || len(token) != protocol.AuthTokenLen {
+		return ""
+	}
+
+	now := s.clock.Now()
+	if auth.VerifyNodeToken(secret, s.nodeID, token, now) {
+		return s.nodeID
+	}
+
+	s.ringMu.RLock()
+	table := s.table
+	s.ringMu.RUnlock()
+	if table == nil {
+		return ""
+	}
+
+	var sender string
+	table.MatchAliveID(s.nodeID, func(id string) bool {
+		if auth.VerifyNodeToken(secret, id, token, now) {
+			sender = id
+			return true
+		}
+		return false
+	})
+	return sender
 }
 
 func writeAll(c net.Conn, b []byte) error {

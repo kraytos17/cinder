@@ -214,6 +214,9 @@ type Request struct {
 	CounterDecrement bool
 	TraceID          uint64
 	SpanID           uint64
+	// AuthenticatedNode is populated by the TCP server after validating a
+	// node token. It is local metadata and is never encoded on the wire.
+	AuthenticatedNode string
 }
 
 // DecodedRequest pairs a request with its transport credential. The auth

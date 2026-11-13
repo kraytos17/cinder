@@ -445,6 +445,25 @@ func TestVersionedTombstoneGCExpires(t *testing.T) {
 	}
 }
 
+func TestDefaultTombstoneGCGraceIsTwentyFourHours(t *testing.T) {
+	clock := NewManualClock(time.Unix(10_000, 0))
+	s := NewLRUStore(1024, clock)
+	if got := s.TombstoneGCInterval(); got != 24*time.Hour {
+		t.Fatalf("default grace=%v, want 24h", got)
+	}
+	if err := s.RemoveVersioned("k", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(24*time.Hour - time.Second)
+	if n := s.EvictExpired(); n != 0 {
+		t.Fatalf("tombstone evicted before default grace: %d", n)
+	}
+	clock.Advance(time.Second)
+	if n := s.EvictExpired(); n != 1 {
+		t.Fatalf("tombstone evicted after grace=%d, want 1", n)
+	}
+}
+
 func TestVersionedEvictionSparesTombstones(t *testing.T) {
 	clock := NewManualClock(time.Now())
 	s := NewLRUStore(512, clock)

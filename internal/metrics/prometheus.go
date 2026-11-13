@@ -103,6 +103,7 @@ func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	counter("replication_anti_entropy_iblt_fallbacks_total", c.AEIBLTFallback.Load())
 	counter("replication_counter_anti_entropy_rounds_total", c.CounterAERounds.Load())
 	counter("replication_counter_anti_entropy_keys_repaired_total", c.CounterAERepaired.Load())
+	counter("tombstone_resurrection_blocked_total", c.TombstoneResurrectionBlocked.Load())
 
 	counter("cluster_gossip_rounds_total", c.GossipRounds.Load())
 	counter("cluster_probe_sent_total", c.ProbeSent.Load())

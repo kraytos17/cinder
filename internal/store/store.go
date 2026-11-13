@@ -22,6 +22,10 @@ import (
 // shard's capacity, even if it would fit the aggregate store capacity.
 var ErrCapacityExceeded = errors.New("store: value exceeds capacity")
 
+// DefaultTombstoneGCInterval is the default delete-marker retention window.
+// Replicas offline beyond this horizon must bootstrap before anti-entropy.
+const DefaultTombstoneGCInterval = 24 * time.Hour
+
 // Policy selects the capacity-eviction discipline. It is fixed at
 // construction: shards are sized from capacity alone, but victim choice,
 // access bookkeeping, and per-node accounting differ per policy.
@@ -147,7 +151,7 @@ func newStore(capacityBytes uint64, clock Clock, policy Policy) *Store {
 	s := &Store{clock: clock, policy: policy, shards: make([]shard, n), nodeOverhead: overhead}
 	s.capacity.Store(capacityBytes)
 	s.nextVer.Store(uint64(clock.Now().UnixNano()))
-	s.tombstone.Store(int64(5 * time.Minute))
+	s.tombstone.Store(int64(DefaultTombstoneGCInterval))
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.head = noLink
@@ -289,6 +293,11 @@ func (s *Store) RestoreVersion(v uint64) {
 // TTL wheel reaps it.
 func (s *Store) SetTombstoneGCInterval(d time.Duration) {
 	s.tombstone.Store(int64(d))
+}
+
+// TombstoneGCInterval returns the configured tombstone retention window.
+func (s *Store) TombstoneGCInterval() time.Duration {
+	return time.Duration(s.tombstone.Load())
 }
 
 // SetCapacity changes capacity at runtime; the shard count stays fixed and

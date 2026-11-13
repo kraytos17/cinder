@@ -94,6 +94,7 @@ type Server struct {
 	// peers. It is independent from the local listener's bind address.
 	advertiseHost string
 	clock         store.Clock
+	clockNow      func() time.Time
 	// counters holds CRDT counter state separately from the LWW cache. Its
 	// initial capacity is one quarter of the LWW store's capacity.
 	counters *counter.Store
@@ -195,6 +196,7 @@ type ServerConfig struct {
 	VNodes        int
 	Store         *store.Store
 	Clock         store.Clock
+	ClockNow      func() time.Time
 }
 
 // NewServer returns a server configured with cfg. The counter store is
@@ -203,6 +205,11 @@ func NewServer(cfg ServerConfig) *Server {
 	clock := cfg.Clock
 	if clock == nil {
 		clock = store.SystemClock{}
+	}
+
+	clockNow := cfg.ClockNow
+	if clockNow == nil {
+		clockNow = time.Now
 	}
 
 	vnodes := cfg.VNodes
@@ -222,6 +229,7 @@ func NewServer(cfg ServerConfig) *Server {
 		advertiseHost:  cfg.AdvertiseHost,
 		vnodes:         vnodes,
 		clock:          clock,
+		clockNow:       clockNow,
 		conns:          make(map[net.Conn]struct{}),
 		sem:            make(chan struct{}, maxConnections),
 		gossipInterval: time.Second,

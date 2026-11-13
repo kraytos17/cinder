@@ -124,8 +124,9 @@ type Collector struct {
 	AEIBLTFallback   atomic.Uint64
 	// Counter AE repair shares the AE round/repair counters above only
 	// when the LWW round runs; dedicated counter-round outcomes:
-	CounterAERounds   atomic.Uint64
-	CounterAERepaired atomic.Uint64
+	CounterAERounds              atomic.Uint64
+	CounterAERepaired            atomic.Uint64
+	TombstoneResurrectionBlocked atomic.Uint64
 
 	GossipRounds  atomic.Uint64
 	ProbeSent     atomic.Uint64

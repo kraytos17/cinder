@@ -423,9 +423,11 @@ Tombstones are exempt from capacity eviction (evicting a live marker would
 resurrect the key on the next anti-entropy round) and are reaped by the TTL
 wheel at their GC deadline, which rides the existing expiry machinery: the
 primary's absolute deadline converges across replicas like a TTL. The grace
-period (`tombstone_gc_ms`, default 5 min) must exceed the worst-case
-partition healing time — hint TTL plus several anti-entropy rounds. Premature
-GC resurrects the key from any replica that missed the delete.
+period (`tombstone_gc_ms`, default 24 h) should exceed the maximum supported
+replica outage. A peer returning after its membership entry has been refreshed
+for longer than this grace is fenced from anti-entropy and must be wiped and
+rebootstrapped before it can exchange state. Prematurely lowering the grace or
+rejoining a node that exceeded it risks resurrection; see `docs/OPERATIONS.md`.
 
 Dotted version vectors were considered for delete-vs-concurrent-write
 causality and deferred: LWW over `(version, writer)` already orders delete
@@ -610,7 +612,7 @@ gossip starts.
 | `--gossip-rpc-timeout-ms` | `0` | Gossip/probe RPC deadline (`0` = `min(--ping-interval-ms, 1000)`; cannot exceed ping interval or suspect timeout) |
 | `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget in bytes |
 | `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
-| `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 5 min) |
+| `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 24 h); replicas offline longer must bootstrap before AE |
 | `--eviction-policy` | `lru` | Eviction policy: `lru` or `lfu` |
 | `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
 | `--shutdown-timeout-ms` | `10000` | Graceful shutdown deadline in milliseconds (`0` = force-close immediately; after expiry, connections are force-closed and the stage that timed out is logged) |

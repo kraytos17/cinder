@@ -105,7 +105,7 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.IntFlag{Name: "rpc-timeout-ms", Value: cfg.RPCTimeoutMs, Usage: "replication and anti-entropy RPC deadline in milliseconds (0 = no timeout)"},
 		&cli.IntFlag{Name: "anti-entropy-fetch-bytes", Value: cfg.AEFetchBytes, Usage: "per-round anti-entropy repair fetch budget in bytes"},
 		&cli.Uint64Flag{Name: "max-hint-bytes", Value: cfg.MaxHintBytes, Usage: "hinted-handoff byte budget (0 = default 64MiB)"},
-		&cli.IntFlag{Name: "tombstone-gc-ms", Value: cfg.TombstoneGCMS, Usage: "delete-marker GC grace in milliseconds (0 = default 5min)"},
+		&cli.IntFlag{Name: "tombstone-gc-ms", Value: cfg.TombstoneGCMS, Usage: "delete-marker GC grace in milliseconds (0 = default 24h)"},
 		&cli.IntFlag{Name: "shutdown-timeout-ms", Value: 10000, Usage: "graceful shutdown deadline in milliseconds"},
 		&cli.StringFlag{Name: "eviction-policy", Value: cfg.EvictionPolicy, Usage: "eviction policy: lru|lfu"},
 		&cli.StringFlag{Name: "log-level", Value: cfg.LogLevel, Usage: "log level: trace|debug|info|warn|error"},

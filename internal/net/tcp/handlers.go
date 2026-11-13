@@ -130,6 +130,10 @@ func (s *Server) handleAntiEntropy(req protocol.Request) protocol.Response {
 		// Anti-entropy is not configured on this server.
 		return protocol.Response{Status: protocol.StatusOK}
 	}
+	if req.AuthenticatedNode != "" && s.aePeerRequiresBootstrap(req.AuthenticatedNode) {
+		s.met.TombstoneResurrectionBlocked.Add(1)
+		return protocol.Response{Status: protocol.StatusNotReady}
+	}
 	if req.Opcode == protocol.OpAntiEntropyDigest {
 		if string(req.Key) == ae.RefinementKey {
 			st, val := mgr.OnBucketRefinement(req.Value)
@@ -142,6 +146,21 @@ func (s *Server) handleAntiEntropy(req protocol.Request) protocol.Response {
 
 	st, val := mgr.OnSyncRequest(req.Value)
 	return protocol.Response{Status: st, Value: val, HasValue: val != nil}
+}
+
+func (s *Server) aePeerRequiresBootstrap(peer string) bool {
+	s.ringMu.RLock()
+	table := s.table
+	s.ringMu.RUnlock()
+	if table == nil {
+		return false
+	}
+
+	info, ok := table.Get(peer)
+	if !ok || info.JoinedAt.IsZero() {
+		return false
+	}
+	return s.store.TombstoneGCInterval() > 0 && s.clockNow().Sub(info.JoinedAt) > s.store.TombstoneGCInterval()
 }
 
 // handleCounterAntiEntropy serves one CRDT repair round against a replica

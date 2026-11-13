@@ -135,13 +135,16 @@ func runDaemon(parent context.Context, cfg daemonConfig, stderr io.Writer, onRel
 	case store.LFUPolicy:
 		st = store.NewLFUStore(cfg.Capacity, nil)
 	}
+
+	tombstoneGC := store.DefaultTombstoneGCInterval
 	if cfg.TombstoneGCMS > 0 {
-		st.SetTombstoneGCInterval(time.Duration(cfg.TombstoneGCMS) * time.Millisecond)
+		tombstoneGC = time.Duration(cfg.TombstoneGCMS) * time.Millisecond
 	}
 
+	st.SetTombstoneGCInterval(tombstoneGC)
 	srv := tcp.NewServer(tcp.ServerConfig{NodeID: cfg.NodeID, Port: netport.Port(cfg.Port), AdvertiseHost: selfHost, Store: st})
 	srv.SetLogger(&logger)
-	logger.Info().Str("node", cfg.NodeID).Str("bind", cfg.BindHost).Str("advertise_host", selfHost).Int("port", cfg.Port).Msg("starting")
+	logger.Info().Str("node", cfg.NodeID).Str("bind", cfg.BindHost).Str("advertise_host", selfHost).Int("port", cfg.Port).Dur("tombstone_gc", tombstoneGC).Msg("starting")
 	srv.SetGossipRPCTimeout(gossipTimeout)
 	if err := srv.ConfigureCluster(peerList); err != nil {
 		return daemonUsageError(fmt.Errorf("cluster: %w", err))
