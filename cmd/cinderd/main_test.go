@@ -94,6 +94,8 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "negative fetch budget", args: []string{"--anti-entropy-fetch-bytes", "-1"}, want: "--anti-entropy-fetch-bytes must be >= 0"},
 		{name: "negative shutdown timeout", args: []string{"--shutdown-timeout-ms", "-1"}, want: "--shutdown-timeout-ms must be >= 0"},
 		{name: "negative ae interval", args: []string{"--anti-entropy-interval-ms", "-1"}, want: "--anti-entropy-interval-ms must be >= 0"},
+		{name: "invalid fsync policy", args: []string{"--enable-persistence", "--data-dir", "/tmp/cinder", "--fsync", "sometimes"}, want: "--fsync must be none, always, or interval:<ms>"},
+		{name: "fsync requires persistence", args: []string{"--fsync", "always"}, want: "--fsync requires --enable-persistence"},
 		{name: "grpc collides with data port", args: []string{"--port", "7000", "--grpc-port", "7000"}, want: "--grpc-port must not equal --port"},
 		{name: "metrics collides with data port", args: []string{"--port", "7000", "--metrics-port", "7000"}, want: "--metrics-port must not equal --port"},
 		{name: "grpc collides with metrics port", args: []string{"--grpc-port", "9000", "--metrics-port", "9000"}, want: "--grpc-port must not equal --metrics-port"},

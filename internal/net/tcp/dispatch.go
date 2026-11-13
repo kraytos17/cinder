@@ -253,6 +253,10 @@ func (s *Server) handle(c net.Conn) {
 			} else {
 				dec.Req.TraceID, dec.Req.SpanID = s.mintTrace(dec.Req.TraceID, dec.Req.SpanID)
 				res = s.dispatch(dec.Req, dec.AuthToken)
+				if dec.Req.Opcode == protocol.OpSet && res.Status == protocol.StatusInternalError {
+					s.log().Error().Str("key", string(dec.Req.Key)).Msg("write may be in memory but persistence failed")
+				}
+
 				res.TraceID = dec.Req.TraceID
 				res.SpanID = dec.Req.SpanID
 			}

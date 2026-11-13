@@ -602,6 +602,7 @@ gossip starts.
 | `--enable-persistence` | `false` | Enable WAL + snapshots |
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
+| `--fsync` | `none` | WAL sync policy: `none` (append only), `always` (sync before write acknowledgement), or `interval:<ms>` (periodic sync, also while idle); requires persistence |
 | `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
 | `--max-wal-entries` | `10000` | Active WAL records before out-of-cycle compact (`0` = disabled) |
 | `--rpc-timeout-ms` | `5000` | Per-RPC deadline for replication and anti-entropy (`0` = no timeout) |
@@ -621,7 +622,7 @@ Deliberately unported C++ flags: `-C,--config` (no YAML by design;
 `config-reload` is accepted and answers OK), `--listen-fd` /
 `--metrics-listen-fd` (test-harness socket passing; Go tests bind their
 own listeners), `--io-threads` (Go runtime schedules), `--snapshot-compression` (v3 rejected by design),
-`--wal-fsync` (writes already land per-append; `Sync` gates durability),
+`--wal-fsync` (replaced by `--fsync`),
 `--max-wal-segment-bytes` / `--max-sealed-segments` (sealing has no
 size trigger; rotation happens on compact).
 When `--tls` is enabled, the gRPC gateway also uses TLS with

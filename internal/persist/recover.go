@@ -79,10 +79,10 @@ func (m *Manager) Recover() error {
 		for r.HasMore() {
 			e, ok := r.Next()
 			if !ok {
+				if r.Corrupted() {
+					return fmt.Errorf("persist: corrupt WAL %s", path)
+				}
 				break // torn tail: clean crash artifact
-			}
-			if r.Corrupted() {
-				return fmt.Errorf("persist: corrupt WAL %s", path)
 			}
 			if e.Op == OpDel {
 				// Hard-erase, matching the live Remove operation: OpDel records

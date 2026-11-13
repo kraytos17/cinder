@@ -52,6 +52,9 @@ func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
 		if err := srv.ConfigurePersistence(cfg.DataDir); err != nil {
 			return fmt.Errorf("persistence: %w", err)
 		}
+		if err := srv.SetFsyncPolicy(cfg.FsyncPolicy); err != nil {
+			return fmt.Errorf("persistence fsync: %w", err)
+		}
 
 		srv.SetSnapshotInterval(time.Duration(cfg.SnapshotIntervalS) * time.Second)
 		srv.SetMaxWALBytes(cfg.MaxWALBytes)

@@ -3,6 +3,7 @@ package tcp
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/ae"
@@ -140,8 +141,8 @@ func (s *Server) ConfigurePersistence(dir string) error {
 		return err
 	}
 
-	s.store.SetPersistence(func(key string, e store.Entry, hardDelete bool) {
-		m.OnWrite(key, e, hardDelete)
+	s.store.SetPersistence(func(key string, e store.Entry, hardDelete bool) error {
+		return m.OnWrite(key, e, hardDelete)
 	})
 
 	m.SetLogger(s.log())
@@ -149,6 +150,23 @@ func (s *Server) ConfigurePersistence(dir string) error {
 	s.persist = m
 	s.persistMu.Unlock()
 	return nil
+}
+
+// SetFsyncPolicy configures the persistence manager's WAL sync policy.
+// Accepts "none", "always", or "interval:<milliseconds>".
+func (s *Server) SetFsyncPolicy(raw string) error {
+	s.persistMu.RLock()
+	m := s.persist
+	s.persistMu.RUnlock()
+	if m == nil {
+		return fmt.Errorf("persistence is not configured")
+	}
+
+	mode, interval, err := persist.ParseFsyncPolicy(raw)
+	if err != nil {
+		return err
+	}
+	return m.SetFsyncPolicy(mode, interval)
 }
 
 // Compact snapshots and rotates the WAL; wired to ADMIN_COMPACT.

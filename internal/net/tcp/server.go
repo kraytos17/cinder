@@ -311,6 +311,9 @@ func (s *Server) Serve(l net.Listener) error {
 	}
 	if pm != nil {
 		bgWG.Go(func() { s.runCompactLoop(pm, stopBg) })
+		if pm.FsyncInterval() > 0 {
+			bgWG.Go(func() { s.runFsyncLoop(pm, stopBg) })
+		}
 	}
 
 	s.bgMu.Lock()

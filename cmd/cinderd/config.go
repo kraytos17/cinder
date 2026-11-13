@@ -50,7 +50,8 @@ type daemonConfig struct {
 	AEFetchBytes         int    `json:"anti-entropy-fetch-bytes"`
 	TombstoneGCMS        int    `json:"tombstone-gc-ms"`
 	configFile           string
-	ShutdownTimeoutMs    int `json:"shutdown-timeout-ms"`
+	ShutdownTimeoutMs    int    `json:"shutdown-timeout-ms"`
+	FsyncPolicy          string `json:"fsync"`
 }
 
 func defaultDaemonConfig() daemonConfig {
@@ -61,7 +62,7 @@ func defaultDaemonConfig() daemonConfig {
 		AEBuckets: 256, QuarantineIntervalMs: 10000, GRPCBind: "127.0.0.1",
 		MetricsBind: "127.0.0.1", SnapshotIntervalS: 60, MaxWALBytes: 64 << 20,
 		MaxWALEntries: 10000, RPCTimeoutMs: 5000, AEFetchBytes: 1 << 20,
-		EvictionPolicy: "lru", LogLevel: "info", ShutdownTimeoutMs: 10000,
+		EvictionPolicy: "lru", LogLevel: "info", ShutdownTimeoutMs: 10000, FsyncPolicy: "none",
 	}
 }
 
@@ -95,6 +96,7 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.EnablePersistence, Usage: "enable WAL + snapshots"},
 		&cli.StringFlag{Name: "data-dir", Value: cfg.DataDir, Usage: "persistence directory (required with --enable-persistence)"},
 		&cli.IntFlag{Name: "snapshot-interval-s", Value: cfg.SnapshotIntervalS, Usage: "seconds between automatic snapshots (0 = disabled)"},
+		&cli.StringFlag{Name: "fsync", Value: cfg.FsyncPolicy, Usage: "WAL sync policy: none|always|interval:<ms> (default none)"},
 		&cli.Uint64Flag{Name: "max-wal-bytes", Value: cfg.MaxWALBytes, Usage: "active WAL bytes before out-of-cycle compact (0 = disabled)"},
 		&cli.Uint64Flag{Name: "max-wal-entries", Value: cfg.MaxWALEntries, Usage: "active WAL records before out-of-cycle compact (0 = disabled)"},
 		&cli.IntFlag{Name: "rpc-timeout-ms", Value: cfg.RPCTimeoutMs, Usage: "replication and anti-entropy RPC deadline in milliseconds (0 = no timeout)"},
@@ -202,6 +204,9 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	}
 	if cmd.IsSet("snapshot-interval-s") {
 		cfg.SnapshotIntervalS = cmd.Int("snapshot-interval-s")
+	}
+	if cmd.IsSet("fsync") {
+		cfg.FsyncPolicy = cmd.String("fsync")
 	}
 	if cmd.IsSet("max-wal-bytes") {
 		cfg.MaxWALBytes = cmd.Uint64("max-wal-bytes")

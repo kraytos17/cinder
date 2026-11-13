@@ -1,6 +1,7 @@
 package persist
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,7 +42,24 @@ type Manager struct {
 	maxWALBytes      uint64
 	maxWALEntries    uint64
 	lastCompact      time.Time
+	fsyncMode        FsyncMode
+	fsyncInterval    time.Duration
+	dirty            bool
+	syncWAL          func() error
 }
+
+// FsyncMode selects when WAL appends are synced to stable storage.
+type FsyncMode uint8
+
+const (
+	// FsyncNone preserves the historical behavior: append writes are not
+	// synced until explicit Sync, Compact, or Close.
+	FsyncNone FsyncMode = iota
+	// FsyncAlways syncs each successful append before acknowledging it.
+	FsyncAlways
+	// FsyncInterval syncs periodically, independent of append activity.
+	FsyncInterval
+)
 
 // DefaultSnapshotInterval, DefaultMaxWALBytes, and DefaultMaxWALEntries
 // control automatic compaction. Periodic snapshots bound recovery replay;
@@ -95,6 +113,37 @@ func (m *Manager) SetMaxWALEntries(n uint64) {
 	m.maxWALEntries = n
 }
 
+// SetFsyncPolicy configures WAL syncing. Interval mode relies on the server's
+// periodic sync loop; Close always syncs.
+func (m *Manager) SetFsyncPolicy(mode FsyncMode, interval time.Duration) error {
+	if mode > FsyncInterval {
+		return fmt.Errorf("persist: invalid fsync mode %d", mode)
+	}
+	if mode == FsyncInterval && interval <= 0 {
+		return fmt.Errorf("persist: fsync interval must be positive")
+	}
+	if mode != FsyncInterval && interval != 0 {
+		return fmt.Errorf("persist: fsync interval is only valid in interval mode")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fsyncMode = mode
+	m.fsyncInterval = interval
+	return nil
+}
+
+// FsyncInterval returns the configured interval, or zero when periodic sync
+// is disabled.
+func (m *Manager) FsyncInterval() time.Duration {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.fsyncMode != FsyncInterval {
+		return 0
+	}
+	return m.fsyncInterval
+}
+
 // SetLogger installs the operational logger (nil selects Nop).
 func (m *Manager) SetLogger(l *zerolog.Logger) {
 	if l == nil {
@@ -112,11 +161,11 @@ func (m *Manager) log() *zerolog.Logger {
 	return &nopLogger
 }
 
-func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
+func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.wal == nil {
-		return
+		return nil
 	}
 
 	rec := Entry{Key: []byte(key)}
@@ -132,7 +181,23 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) {
 		rec.Tombstone = e.Tombstone
 		rec.Expiry = e.Expiry
 	}
-	m.wal.Append(rec)
+
+	if err := m.wal.Append(rec); err != nil {
+		m.log().Error().Err(err).Str("key", key).Msg("WAL append failed after in-memory mutation")
+		return err
+	}
+	switch m.fsyncMode {
+	case FsyncAlways:
+		if err := m.syncActiveWAL(); err != nil {
+			m.log().Error().Err(err).Str("key", key).Msg("WAL sync failed after in-memory mutation")
+			return err
+		}
+	case FsyncInterval:
+		m.dirty = true
+	case FsyncNone:
+		// Append without syncing; explicit Sync, Compact, or Close flushes.
+	}
+	return nil
 }
 
 // Sync flushes kernel buffers to disk.
@@ -141,6 +206,34 @@ func (m *Manager) Sync() error {
 	defer m.mu.Unlock()
 	if m.wal == nil {
 		return nil
+	}
+	if err := m.syncActiveWAL(); err != nil {
+		return err
+	}
+
+	m.dirty = false
+	return nil
+}
+
+// SyncPeriodic flushes the active WAL. Interval mode syncs periodically even
+// while idle, so its durability window has an explicit upper bound.
+func (m *Manager) SyncPeriodic() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wal == nil {
+		return nil
+	}
+	if err := m.syncActiveWAL(); err != nil {
+		return err
+	}
+
+	m.dirty = false
+	return nil
+}
+
+func (m *Manager) syncActiveWAL() error {
+	if m.syncWAL != nil {
+		return m.syncWAL()
 	}
 	return m.wal.Sync()
 }
@@ -153,7 +246,10 @@ func (m *Manager) Close() error {
 		return nil
 	}
 
-	err := m.wal.Sync()
+	err := m.syncActiveWAL()
+	if err == nil {
+		m.dirty = false
+	}
 	if cerr := m.wal.Close(); err == nil {
 		err = cerr
 	}

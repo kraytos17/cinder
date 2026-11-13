@@ -1,6 +1,7 @@
 package persist
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,8 +17,8 @@ func testStore(t *testing.T) *store.Store {
 
 func wire(t *testing.T, st *store.Store, m *Manager) {
 	t.Helper()
-	st.SetPersistence(func(key string, e store.Entry, hardDelete bool) {
-		m.OnWrite(key, e, hardDelete)
+	st.SetPersistence(func(key string, e store.Entry, hardDelete bool) error {
+		return m.OnWrite(key, e, hardDelete)
 	})
 }
 
@@ -96,6 +97,99 @@ func TestRecoverSkipsExpired(t *testing.T) {
 	mustRecover(t, m2)
 	if st2.Size() != 0 {
 		t.Fatalf("expired entry resurrected, size = %d", st2.Size())
+	}
+}
+
+func TestRecoverTruncatesEveryTornTailOffset(t *testing.T) {
+	first, err := (Entry{Op: OpSet, Key: []byte("kept"), Value: []byte("v1"), Version: 1}).encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := (Entry{Op: OpSet, Key: []byte("torn"), Value: []byte("v2"), Version: 2}).encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseDir := t.TempDir()
+	basePath := filepath.Join(baseDir, walFileName)
+	w, err := OpenWriter(basePath, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Entry{Op: OpSet, Key: []byte("kept"), Value: []byte("v1"), Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Entry{Op: OpSet, Key: []byte("torn"), Value: []byte("v2"), Version: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(basePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validPrefix := uint64(8 + len(first))
+
+	// Every prefix ending within the final record (including exactly at its
+	// start) must recover the complete prefix and truncate to its watermark.
+	for cut := len(image) - len(last); cut < len(image); cut++ {
+		t.Run(fmt.Sprintf("cut-%d", cut), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, walFileName)
+			if err := os.WriteFile(path, image[:cut], 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			st := testStore(t)
+			m := NewManager(dir, st, nil)
+			if err := m.Recover(); err != nil {
+				t.Fatalf("recover torn tail: %v", err)
+			}
+			if got, ok := st.Get("kept"); !ok || string(got) != "v1" {
+				t.Fatalf("complete prefix lost: value=%q present=%v", got, ok)
+			}
+			if _, ok := st.Get("torn"); ok {
+				t.Fatal("partial final record was replayed")
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := uint64(info.Size()); got != validPrefix {
+				t.Fatalf("recovered WAL size=%d, want valid prefix %d", got, validPrefix)
+			}
+			if err := m.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRecoverRejectsCorruptWALRecord(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, walFileName)
+	w, err := OpenWriter(path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Append(Entry{Op: OpSet, Key: []byte("key"), Value: []byte("value"), Version: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	image[len(image)-1] ^= 0xff
+	if err := os.WriteFile(path, image, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(dir, testStore(t), nil)
+	if err := m.Recover(); err == nil {
+		t.Fatal("recovery accepted a checksum-corrupt WAL record")
 	}
 }
 

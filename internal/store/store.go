@@ -237,11 +237,12 @@ func (s *Store) emit(key string, versionAndTTL, writer uint64) {
 
 // PersistHook observes every accepted write and every hard remove for
 // the WAL. It runs under the shard lock, so it must be leaf-only: never
-// call back into the store, never block. hardDelete replays as a hard
+// call back into the store. A configured synchronous durability policy may
+// block here while appending/syncing. hardDelete replays as a hard
 // remove; accepted writes replay as versioned applies (tombstones
 // included). Expiry and capacity evictions are NOT reported: absolute
 // expiries re-skip and capacity re-evicts deterministically on replay.
-type PersistHook func(key string, e Entry, hardDelete bool)
+type PersistHook func(key string, e Entry, hardDelete bool) error
 
 // SetPersistence registers the WAL hook (nil unregisters).
 func (s *Store) SetPersistence(fn PersistHook) {
@@ -250,13 +251,14 @@ func (s *Store) SetPersistence(fn PersistHook) {
 	s.persistHook = fn
 }
 
-func (s *Store) persistPut(key string, e Entry) {
+func (s *Store) persistPut(key string, e Entry) error {
 	s.persistMu.RLock()
 	fn := s.persistHook
 	s.persistMu.RUnlock()
 	if fn != nil {
-		fn(key, e, false)
+		return fn(key, e, false)
 	}
+	return nil
 }
 
 func (s *Store) persistDel(key string, e Entry) {
@@ -369,7 +371,10 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 		s.emit(key, oldPacked, oldWriter)
 		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 		s.updateWheel(sh, fresh, at)
-		s.persistPut(key, r.entry)
+		if err := s.persistPut(key, r.entry); err != nil {
+			return err
+		}
+
 		s.bumpWrite(e.Tombstone, true)
 		return nil
 	}
@@ -402,7 +407,10 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	r := &sh.nodes[sh.index[key]]
 	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 	s.updateWheel(sh, sh.index[key], at)
-	s.persistPut(key, r.entry)
+	if err := s.persistPut(key, r.entry); err != nil {
+		return err
+	}
+
 	s.bumpWrite(e.Tombstone, false)
 	return nil
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/log"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 )
@@ -73,7 +74,6 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 	_, err = log.ParseLevel(cfg.LogLevel)
 	fail(err)
 	fail(validateNonNegativeIntervals(cfg.AEIntervalMs, cfg.QuarantineIntervalMs, cfg.SnapshotIntervalS, cfg.RPCTimeoutMs, cfg.AEFetchBytes))
-
 	fail(validateCapacity(cfg.Capacity))
 	fail(validateListenerPortCollisions(cfg.Port, cfg.GRPCPort, cfg.MetricsPort))
 	if _, err := repl.ParseMode(cfg.Consistency); err != nil {
@@ -87,6 +87,12 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 	}
 	if cfg.ShutdownTimeoutMs < 0 {
 		errs = append(errs, errors.New("--shutdown-timeout-ms must be >= 0"))
+	}
+	if _, _, err := persist.ParseFsyncPolicy(cfg.FsyncPolicy); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.FsyncPolicy != "" && cfg.FsyncPolicy != "none" && !cfg.EnablePersistence {
+		errs = append(errs, errors.New("--fsync requires --enable-persistence"))
 	}
 	return out, errs
 }
