@@ -160,12 +160,15 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 		}
 
 		off += ln
-		if h, ok, del := decodeJournalRecord(payload, nowMs); ok {
+		if record, ok := decodeJournalRecord(payload, nowMs); ok {
 			decoded++
-			if del == nil {
-				q.Push(h)
+			if record.discard {
+				continue
+			}
+			if record.del == nil {
+				q.Push(record.hint)
 			} else {
-				q.RemoveMatch(del.target, del.key, del.version)
+				q.RemoveMatch(record.del.target, record.del.key, record.del.version)
 			}
 		} else {
 			break // structurally invalid: truncate
@@ -191,107 +194,116 @@ type journalDel struct {
 	version uint64
 }
 
-func decodeJournalRecord(payload []byte, nowMs uint64) (repl.Hint, bool, *journalDel) {
+type decodedJournalRecord struct {
+	hint    repl.Hint
+	del     *journalDel
+	discard bool
+}
+
+func decodeJournalRecord(payload []byte, nowMs uint64) (decodedJournalRecord, bool) {
 	c := codec.NewReader(binary.LittleEndian, payload)
 	op, ok := c.U8()
 	if !ok {
-		return repl.Hint{}, false, nil
+		return decodedJournalRecord{}, false
 	}
 	if op == journalOpAdd {
 		exp, ok := c.U64()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		tlen, ok := c.U32()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		tb, ok := c.Bytes(int(tlen))
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		klen, ok := c.U32()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		kb, ok := c.Bytes(int(klen))
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		vlen, ok := c.U32()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		vb, ok := c.Bytes(int(vlen))
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		ver, ok := c.U64()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		writer, ok := c.U64()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		var entryExp uint64
 		var tomb uint8
 		if c.Remaining() > 0 {
 			if entryExp, ok = c.U64(); !ok {
-				return repl.Hint{}, false, nil
+				return decodedJournalRecord{}, false
 			}
 			if tomb, ok = c.U8(); !ok || tomb > 1 || c.Remaining() != 0 {
-				return repl.Hint{}, false, nil
+				return decodedJournalRecord{}, false
 			}
 		} else {
 			// Legacy records (pre-tombstone): live writes.
 			tomb = 0
 		}
 		if exp <= nowMs {
-			return repl.Hint{}, true, nil // expired: skip, not corrupt
+			return decodedJournalRecord{discard: true}, true // expired: skip, not corrupt
+		}
+		if entryExp != 0 && entryExp <= nowMs {
+			return decodedJournalRecord{discard: true}, true // underlying value expired during outage
 		}
 
 		req := protocol.Request{Opcode: protocol.OpReplicate, Key: append([]byte(nil), kb...), Value: append([]byte(nil), vb...), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
 		req.ExpiresAt = expiry.FromUnixMilli(int64(entryExp))
-		return repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.Now().Add(hintTTL))}, true, nil
+		return decodedJournalRecord{hint: repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.Now().Add(hintTTL))}}, true
 	}
 	if op == journalOpDel {
 		tlen, ok := c.U32()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		tb, ok := c.Bytes(int(tlen))
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		klen, ok := c.U32()
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		kb, ok := c.Bytes(int(klen))
 		if !ok {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
 
 		ver, ok := c.U64()
 		if !ok || c.Remaining() != 0 {
-			return repl.Hint{}, false, nil
+			return decodedJournalRecord{}, false
 		}
-		return repl.Hint{}, true, &journalDel{target: string(tb), key: string(kb), version: ver}
+		return decodedJournalRecord{del: &journalDel{target: string(tb), key: string(kb), version: ver}}, true
 	}
-	return repl.Hint{}, false, nil
+	return decodedJournalRecord{}, false
 }
 
 func encodeJournalAddPayload(target string, req protocol.Request, sysExpiryMs uint64) []byte {

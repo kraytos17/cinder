@@ -147,6 +147,40 @@ func TestJournalExpiryAndLegacy(t *testing.T) {
 	}
 }
 
+func TestJournalDropsExpiredEntryTTLOnRecovery(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hints.log")
+	q := repl.NewHintQueue()
+	j, _, err := OpenJournal(path, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	h := testHint("n2", "expired", "v", 5, 1)
+	h.Req.ExpiresAt = expiry.At(time.UnixMilli(1))
+	// Keep the journal-level expiry in the future so this specifically tests
+	// the entry TTL, not the hint retry TTL.
+	j.mu.Lock()
+	_, err = j.f.Write(encodeJournalAdd("n2", h.Req, uint64(time.Now().Add(time.Hour).UnixMilli())))
+	if err == nil {
+		j.records++
+	}
+	j.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered := repl.NewHintQueue()
+	j2, n, err := OpenJournal(path, recovered)
+	if err != nil || n != 0 || recovered.Len() != 0 {
+		t.Fatalf("recovered expired hint: queued=%d err=%v", n, err)
+	}
+	j2.Close()
+}
+
 func TestJournalCompactDropsDels(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "hints.log")

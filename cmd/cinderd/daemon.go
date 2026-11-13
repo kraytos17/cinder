@@ -98,6 +98,9 @@ func configureReplication(srv *tcp.Server, st *store.Store, cfg daemonConfig, pe
 		return daemonUsageError(fmt.Errorf("replication configuration: %w", err))
 	}
 	if cfg.EnablePersistence {
+		// Hint state is only crash-durable when the WAL/snapshot directory is
+		// configured; without persistence the replication manager intentionally
+		// keeps an in-memory-only bounded hint queue.
 		j, _, err := ae.OpenJournal(filepath.Join(cfg.DataDir, "hints.log"), mgr.HintQueue())
 		if err != nil {
 			return daemonUsageError(fmt.Errorf("hint journal: %w", err))

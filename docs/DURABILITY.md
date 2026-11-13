@@ -113,6 +113,13 @@ Counter `Remove` is a local-only operation (not a replicated delete); a
 persisted local removal is replayed locally, but a later peer merge can still
 resurrect the counter as documented by `internal/counter`.
 
+Hinted handoff uses `<data-dir>/hints.log` only when both persistence and
+replication (`--replication-factor > 1`) are configured. With persistence off,
+the bounded in-memory queue retries while the process lives, but queued hints
+are lost on process crash. Journal recovery drops both hints whose journal
+retry TTL elapsed and hints whose underlying entry TTL elapsed while the
+target was unavailable.
+
 ## Follow-up before promising stronger durability
 
 1. Make snapshot publication durable: fsync the temporary snapshot, rename it,

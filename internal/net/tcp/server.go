@@ -426,6 +426,15 @@ func (s *Server) ShutdownContext(ctx context.Context) error {
 	if pool != nil {
 		pool.Close()
 	}
+
+	s.replMu.RLock()
+	replMgr := s.repl
+	s.replMu.RUnlock()
+	if replMgr != nil {
+		if err := replMgr.CloseHintJournal(); err != nil {
+			s.log().Error().Err(err).Msg("hint journal close failed")
+		}
+	}
 	if pm != nil {
 		if err := pm.Close(); err != nil {
 			return err

@@ -42,9 +42,22 @@ type HintJournal interface {
 	Compact(q *HintQueue) error
 }
 
+type closableHintJournal interface {
+	Close() error
+}
+
 // SetHintJournal enables durable hints (nil disables).
 func (m *Manager) SetHintJournal(j HintJournal) {
 	m.journal = j
+}
+
+// CloseHintJournal syncs and closes the optional durable hint journal. It is
+// safe to call repeatedly and is a no-op when journaling is disabled.
+func (m *Manager) CloseHintJournal() error {
+	if j, ok := m.journal.(closableHintJournal); ok {
+		return j.Close()
+	}
+	return nil
 }
 
 // SetMetrics wires the observability collector (nil disables).

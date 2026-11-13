@@ -23,7 +23,7 @@ func TestShutdownContextDrainsAndRestarts(t *testing.T) {
 	}
 	const n = 50
 	for i := range n {
-		res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(fmt.Sprintf("k-%02d", i)), Value: []byte(fmt.Sprintf("v-%02d", i))})
+		res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: fmt.Appendf(nil, "k-%02d", i), Value: fmt.Appendf(nil, "v-%02d", i)})
 		if err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set k-%02d: %+v %v", i, res, err)
 		}
@@ -43,7 +43,7 @@ func TestShutdownContextDrainsAndRestarts(t *testing.T) {
 	}
 	defer c2.Close()
 	for i := range n {
-		res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(fmt.Sprintf("k-%02d", i))})
+		res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: fmt.Appendf(nil, "k-%02d", i)})
 		if err != nil || res.Status != protocol.StatusOK || string(res.Value) != fmt.Sprintf("v-%02d", i) {
 			t.Fatalf("k-%02d after restart: %+v %v", i, res, err)
 		}
