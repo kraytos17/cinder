@@ -126,6 +126,60 @@ func BenchmarkApplyRumor(b *testing.B) {
 	}
 }
 
+// BenchmarkApplyRumors compares sequential single-rumor notifications with
+// one batched notification for a view containing multiple changed members.
+// The observer does representative snapshot work like the server's rebuild
+// callbacks, so this includes the repeated whole-table cost being removed.
+func BenchmarkApplyRumors(b *testing.B) {
+	for _, members := range []int{10, 50, 200} {
+		for _, changed := range []int{1, 10, 100} {
+			if changed > members {
+				continue
+			}
+			for _, batched := range []bool{false, true} {
+				name := "sequential"
+				if batched {
+					name = "batch"
+				}
+				b.Run(fmt.Sprintf("members=%d/changed=%d/%s", members, changed, name), func(b *testing.B) {
+					t := NewMembershipTable("self", time.Now)
+					seed := make([]NodeInfo, members-1)
+					for i := range seed {
+						seed[i] = NodeInfo{ID: fmt.Sprintf("node-%04d", i), State: Alive}
+					}
+					t.Seed(seed)
+					// Model a consumer rebuilding its view after each notification.
+					t.OnChange(func() {
+						for _, member := range t.Snapshot() {
+							_ = member.ID
+						}
+					})
+					rumors := make([]NodeInfo, changed)
+					for i := range rumors {
+						rumors[i] = NodeInfo{ID: fmt.Sprintf("node-%04d", i), State: Alive}
+					}
+					var incarnation uint64
+					b.ReportAllocs()
+					b.ResetTimer()
+					for b.Loop() {
+						incarnation++
+						for i := range rumors {
+							rumors[i].Incarnation = incarnation
+						}
+						if batched {
+							t.ApplyRumors(rumors)
+						} else {
+							for _, rumor := range rumors {
+								t.ApplyRumor(rumor)
+							}
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
 // BenchmarkGossipTick measures Tick end-to-end (peer pick, Snapshot,
 // EncodeView, Send) with an in-memory transport.
 func BenchmarkGossipTick(b *testing.B) {
@@ -157,5 +211,21 @@ func BenchmarkFailureTick(b *testing.B) {
 				fd.Tick()
 			}
 		})
+	}
+}
+
+// BenchmarkFailureTickDead is the same sweep with 10 of 50 peers dead:
+// dead entries must be skipped without per-tick table lookups.
+func BenchmarkFailureTickDead(b *testing.B) {
+	t := benchSeedTable(b, "self", 50)
+	for i := range 10 {
+		t.MarkDead(fmt.Sprintf("node-%04d", i))
+	}
+	s := &benchSender{}
+	fd := NewFailureDetector(time.Now, s, t, "self", 100*time.Millisecond)
+	fd.Start()
+	b.ReportAllocs()
+	for b.Loop() {
+		fd.Tick()
 	}
 }

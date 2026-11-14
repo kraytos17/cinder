@@ -154,6 +154,33 @@ func TestLateJoinerLearnsClusterViaGossip(t *testing.T) {
 	}
 }
 
+func TestHandleMessageCoalescesMembershipNotifications(t *testing.T) {
+	tb := NewMembershipTable("self", time.Now)
+	tr := testkit.NewScript()
+	g := NewGossipManager(time.Now, tr, tb, "self", time.Second)
+	g.Start()
+	changes := 0
+	tb.OnChange(func() { changes++ })
+
+	view := EncodeView([]NodeInfo{
+		{ID: "n2", Host: "h2", Port: 2, State: Alive, Incarnation: 1},
+		{ID: "n3", Host: "h3", Port: 3, State: Alive, Incarnation: 1},
+		{ID: "n4", Host: "h4", Port: 4, State: Alive, Incarnation: 1},
+	})
+	g.HandleMessage("peer", []byte(view))
+	if changes != 1 {
+		t.Fatalf("changed gossip view fired %d observer notifications, want 1", changes)
+	}
+	if got := len(g.peers); got != 3 {
+		t.Fatalf("gossip peer list has %d peers, want all 3 applied before notification", got)
+	}
+
+	g.HandleMessage("peer", []byte(view))
+	if changes != 1 {
+		t.Fatalf("replayed unchanged view fired %d notifications, want still 1", changes)
+	}
+}
+
 // The same rumor-learned peer, probed down immediately: two failed
 // probes suspect it (failure threshold, not instant).
 func TestLateJoinerGoesDownImmediately(t *testing.T) {

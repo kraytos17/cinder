@@ -134,11 +134,42 @@ func (t *MembershipTable) SetSelfAddress(host string, port netport.Port) {
 // adopted only from Alive rumors; equal-stamp no-ops fire no callbacks.
 func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 	t.mu.Lock()
+	changed := t.applyRumorLocked(rumor)
+	t.mu.Unlock()
+	if changed {
+		t.fire()
+	}
+}
+
+// ApplyRumors merges rumors in order under one table lock, preserving the
+// same per-rumor rules as ApplyRumor. Observers are notified once after the
+// batch if any rumor changed the table, so a single gossip view causes one
+// observer rebuild rather than one rebuild per changed member.
+func (t *MembershipTable) ApplyRumors(rumors []NodeInfo) {
+	if len(rumors) == 0 {
+		return
+	}
+
+	t.mu.Lock()
+	changed := false
+	for _, rumor := range rumors {
+		changed = t.applyRumorLocked(rumor) || changed
+	}
+
+	t.mu.Unlock()
+	if changed {
+		t.fire()
+	}
+}
+
+// applyRumorLocked merges one rumor. Caller holds t.mu. It deliberately
+// processes exactly one rumor at a time so repeated IDs in a batch observe
+// every earlier update in the same message.
+func (t *MembershipTable) applyRumorLocked(rumor NodeInfo) bool {
 	local, ok := t.nodes[rumor.ID]
 	if !ok {
 		if rumor.State != Alive {
-			t.mu.Unlock()
-			return
+			return false
 		}
 
 		fresh := rumor
@@ -150,17 +181,13 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 		fresh.Host = strings.Clone(fresh.Host)
 		fresh.JoinedAt = t.clock()
 		t.nodes[fresh.ID] = &fresh
-		t.mu.Unlock()
-		t.fire()
-		return
+		return true
 	}
 	if rumor.Incarnation < local.Incarnation {
-		t.mu.Unlock()
-		return
+		return false
 	}
 	if rumor.Incarnation == local.Incarnation && rumor.State == local.State {
-		t.mu.Unlock()
-		return
+		return false
 	}
 
 	var changed bool
@@ -196,11 +223,7 @@ func (t *MembershipTable) ApplyRumor(rumor NodeInfo) {
 			}
 		}
 	}
-
-	t.mu.Unlock()
-	if changed {
-		t.fire()
-	}
+	return changed
 }
 
 func nextIncarnation(inc uint64) uint64 {
@@ -423,8 +446,9 @@ func (t *MembershipTable) IsQuarantined(id string, now time.Time, quarantine tim
 	return now.Sub(n.JoinedAt) < quarantine
 }
 
-// OnChange registers a callback fired (without the table lock) on every
-// membership change, so observers may safely re-enter the table.
+// OnChange registers a callback fired (without the table lock) after a
+// mutation operation changes membership, so observers may safely re-enter
+// the table. ApplyRumors coalesces all changes in its batch into one callback.
 func (t *MembershipTable) OnChange(cb func()) {
 	t.mu.Lock()
 	defer t.mu.Unlock()

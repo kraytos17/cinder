@@ -137,6 +137,78 @@ func TestApplyRumorEqualStampNoChange(t *testing.T) {
 	}
 }
 
+func TestApplyRumorsPreservesOrderAndCoalescesCallbacks(t *testing.T) {
+	clk, _ := testClock()
+	newTable := func() *MembershipTable {
+		tb := NewMembershipTable("n1", clk)
+		tb.Seed([]NodeInfo{
+			{ID: "n2", Host: "old-host", Port: 2},
+			{ID: "n3", Host: "host-3", Port: 3},
+		})
+		return tb
+	}
+
+	rumors := []NodeInfo{
+		// Newer address update, followed by a stale rumor for the same ID.
+		{ID: "n2", Host: "new-host", Port: 22, State: Alive, Incarnation: 2},
+		{ID: "n2", Host: "stale-host", Port: 222, State: Dead, Incarnation: 1},
+		// Unknown non-alive rows are ignored; a later Alive row adopts it,
+		// and the next rumor updates the adopted member in this same batch.
+		{ID: "ghost", State: Suspect, Incarnation: 8},
+		{ID: "ghost", Host: "ghost-host", Port: 8, State: Alive, Incarnation: 1},
+		{ID: "ghost", State: Suspect, Incarnation: 2},
+		// Self accusations refute in sequence, so the later higher rumor
+		// must advance the local incarnation again.
+		{ID: "n1", State: Dead, Incarnation: 10},
+		{ID: "n1", State: Suspect, Incarnation: 20},
+	}
+
+	sequential := newTable()
+	sequentialChanges := 0
+	sequential.OnChange(func() { sequentialChanges++ })
+	for _, rumor := range rumors {
+		sequential.ApplyRumor(rumor)
+	}
+
+	batched := newTable()
+	batchedChanges := 0
+	callbackSawFinalState := false
+	batched.OnChange(func() {
+		batchedChanges++
+		got, ok := batched.Get("n1")
+		callbackSawFinalState = ok && got.State == Alive && got.Incarnation == 21
+	})
+	batched.ApplyRumors(rumors)
+
+	if sequential.ExpectedSize() != batched.ExpectedSize() {
+		t.Fatalf("sizes differ: sequential=%d batched=%d", sequential.ExpectedSize(), batched.ExpectedSize())
+	}
+	for _, want := range sequential.Snapshot() {
+		got, ok := batched.Get(want.ID)
+		if !ok || got != want {
+			t.Errorf("member %q differs: sequential=%+v batched=%+v (present=%v)", want.ID, want, got, ok)
+		}
+	}
+	if sequentialChanges != 5 {
+		t.Fatalf("sequential callbacks = %d, want 5 changed rumors", sequentialChanges)
+	}
+	if batchedChanges != 1 {
+		t.Fatalf("batched callbacks = %d, want one callback for changed view", batchedChanges)
+	}
+	if !callbackSawFinalState {
+		t.Fatal("callback did not observe the complete final batch state")
+	}
+
+	batched.ApplyRumors([]NodeInfo{
+		{ID: "n2", State: Alive, Incarnation: 2},     // equal stamp: no change
+		{ID: "ghost", State: Alive, Incarnation: 1},  // stale: no change
+		{ID: "unknown", State: Dead, Incarnation: 1}, // unknown non-alive: no adoption
+	})
+	if batchedChanges != 1 {
+		t.Fatalf("no-op batch callbacks = %d, want still 1", batchedChanges)
+	}
+}
+
 func TestSelfRumorRefuted(t *testing.T) {
 	clk, _ := testClock()
 	tb := NewMembershipTable("n1", clk)

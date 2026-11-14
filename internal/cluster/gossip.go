@@ -107,9 +107,7 @@ func (g *GossipManager) HandleMessage(from string, value []byte) {
 	if e := g.log().Debug(); e != nil {
 		e.Str("from", from).Int("bytes", len(value)).Msg("gossip received")
 	}
-	for _, rumor := range DecodeView(string(value)) {
-		g.table.ApplyRumor(rumor)
-	}
+	g.table.ApplyRumors(DecodeView(string(value)))
 }
 
 // Leave bumps self to Dead (overriding stale Alive rumors) and broadcasts

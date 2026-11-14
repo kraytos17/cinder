@@ -97,21 +97,26 @@ func (f *FailureDetector) suspectTimeout() time.Duration {
 }
 
 // Tick sweeps timed-out probes, escalates stale suspects, then probes the
-// next eligible peer (not self, no pending probe, not dead).
+// next eligible peer (not self, no pending probe, not dead). Dead peers
+// are excluded at rebuild time, so the pick loop needs no table lookup:
+// every candidate is a known non-dead member. A peer that dies between
+// rebuild and pick may take one wasted probe; MarkSuspect is a no-op on
+// Dead and revival arrives via gossip (which rebuilds the peer list).
 func (f *FailureDetector) Tick() {
 	now := f.clock()
+	timeout := f.suspectTimeout()
 
 	var timedOut, dead []string
 	var target string
 	f.mu.Lock()
 	for peer, st := range f.state {
-		if st.pending && now.Sub(st.sentAt) > f.suspectTimeout() {
+		if st.pending && now.Sub(st.sentAt) > timeout {
 			st.pending = false
 			timedOut = append(timedOut, peer)
 		}
 	}
 
-	dead = f.escalateLocked(now)
+	dead = f.escalateLocked(now, timeout)
 	if len(f.peers) > 0 {
 		for range f.peers {
 			peer := f.peers[f.next%len(f.peers)]
@@ -120,9 +125,6 @@ func (f *FailureDetector) Tick() {
 				continue
 			}
 			if st, ok := f.state[peer]; ok && st.pending {
-				continue
-			}
-			if info, ok := f.table.Get(peer); ok && info.State == Dead {
 				continue
 			}
 
@@ -200,7 +202,7 @@ func (f *FailureDetector) onProbeResult(peer string, acked bool) {
 // escalateLocked returns suspects older than the timeout for Dead marking
 // and clears their local streak. Caller holds mu; table mutations happen
 // outside the lock.
-func (f *FailureDetector) escalateLocked(now time.Time) []string {
+func (f *FailureDetector) escalateLocked(now time.Time, timeout time.Duration) []string {
 	var dead []string
 	for peer, st := range f.state {
 		if !st.suspected {
@@ -211,7 +213,7 @@ func (f *FailureDetector) escalateLocked(now time.Time) []string {
 		if !ok || info.State != Suspect {
 			continue
 		}
-		if now.Sub(st.since) > f.suspectTimeout() {
+		if now.Sub(st.since) > timeout {
 			dead = append(dead, peer)
 		}
 	}
@@ -229,7 +231,10 @@ func (f *FailureDetector) escalateLocked(now time.Time) []string {
 func (f *FailureDetector) rebuildLocked() {
 	f.peers = f.peers[:0]
 	for _, m := range f.table.Snapshot() {
-		if m.ID != f.self {
+		// Dead peers are never probed (MarkSuspect is a no-op on Dead and
+		// revival arrives via gossip, which rebuilds this list), so keep
+		// them out of the rotation instead of skipping them per tick.
+		if m.ID != f.self && m.State != Dead {
 			f.peers = append(f.peers, m.ID)
 		}
 	}
