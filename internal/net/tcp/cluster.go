@@ -162,6 +162,30 @@ type Peer struct {
 	Port netport.Port
 }
 
+// peersToStringsLocked renders membership peers as id@host:port strings.
+// Caller must hold ringMu (read or write). It prefers the live membership
+// table so restarts and gossip-driven address changes are reflected;
+// otherwise it falls back to the configured seed peers.
+func (s *Server) peersToStringsLocked() []string {
+	if s.table != nil {
+		snap := s.table.Snapshot()
+		out := make([]string, 0, len(snap))
+		for _, m := range snap {
+			if m.ID == s.nodeID {
+				continue
+			}
+			out = append(out, m.ID+"@"+m.Host+":"+m.Port.String())
+		}
+		return out
+	}
+
+	out := make([]string, 0, len(s.peers))
+	for _, p := range s.peers {
+		out = append(out, p.ID+"@"+p.Host+":"+p.Port.String())
+	}
+	return out
+}
+
 // ParsePeers parses comma-separated "id@host:port" entries. Empty input
 // yields no peers.
 func ParsePeers(s string) ([]Peer, error) {

@@ -22,7 +22,12 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 	}
 
 	version := m.local.MintVersion()
-	e := store.Entry{Value: append([]byte(nil), value...), Version: version, WriterNodeHash: m.writer}
+	// One copy serves both the local commit and the fan-out request:
+	// PutVersioned clones into the store before returning, so sharing
+	// the backing array between e.Value and req.Value is safe. The
+	// encoder copies into frames and the hint queue retains req.
+	valueCopy := append([]byte(nil), value...)
+	e := store.Entry{Value: valueCopy, Version: version, WriterNodeHash: m.writer}
 	if ttl > 0 {
 		// At, not After: matches store admission (zero is handled by
 		// the caller passing none).
@@ -33,7 +38,7 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 	}
 
 	req := protocol.Request{
-		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), value...),
+		Opcode: protocol.OpReplicate, Key: []byte(key), Value: valueCopy,
 		Version: version, WriterNodeHash: m.writer,
 		TraceID: traceID, SpanID: spanID,
 	}

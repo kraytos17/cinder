@@ -172,6 +172,34 @@ func TestAdminClusterStandaloneUsesConfiguredAdvertiseAddress(t *testing.T) {
 	}
 }
 
+func TestAdminInfoReflectsConfiguredReplication(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	defer srv.Shutdown()
+	if err := srv.ConfigureCluster(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureRebalance(2, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureReplication(2, repl.Quorum, nil); err != nil {
+		t.Fatal(err)
+	}
+	res := srv.Dispatch(protocol.Request{Opcode: protocol.OpAdminInfo})
+	if res.Status != protocol.StatusOK {
+		t.Fatalf("status = %v", res.Status)
+	}
+	var got struct {
+		ReplicaFactor int    `json:"replica_factor"`
+		Consistency   string `json:"consistency"`
+	}
+	if err := json.Unmarshal(res.Value, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.ReplicaFactor != 2 || got.Consistency != "quorum" {
+		t.Fatalf("admin info = %+v, want rf=2 quorum", got)
+	}
+}
+
 func TestConfigureRebalanceRejectsInvalidConfig(t *testing.T) {
 	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
 	if err := srv.ConfigureRebalance(0, 0); !errors.Is(err, hashring.ErrInvalidReplicaCount) {

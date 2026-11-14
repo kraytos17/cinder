@@ -58,6 +58,8 @@ func TestReloadValidationLeavesStateUntouched(t *testing.T) {
 		{LogLevel: "info", Capacity: 0},
 		{LogLevel: "info", Capacity: 1 << 20, TLSCertFile: "/nonexistent/cert.pem"},
 		{LogLevel: "info", Capacity: 1 << 20, TLSCertFile: "only-cert-no-key"},
+		{LogLevel: "info", Capacity: 1 << 20, PingIntervalMs: 500, SuspectTimeoutMs: 500},
+		{LogLevel: "info", Capacity: 1 << 20, PingIntervalMs: 500, SuspectTimeoutMs: 200},
 	} {
 		if _, err := srv.Reload(rc); err == nil {
 			t.Fatalf("Reload(%+v) succeeded, want error", rc)

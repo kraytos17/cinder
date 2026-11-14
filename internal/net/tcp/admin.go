@@ -66,11 +66,52 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 	case protocol.OpAdminInfo:
 		curBytes, curEntries := s.store.Stats()
 		_, port := s.advertisedAddress()
+		_, rf, mode := s.replication()
+		if rf < 1 {
+			rf = 1
+		}
+
+		s.persistMu.RLock()
+		persistEnabled := s.persist != nil
+		s.persistMu.RUnlock()
+		s.tlsMu.RLock()
+
+		tlsEnabled := s.tlsCfg != nil
+		s.tlsMu.RUnlock()
+		s.authMu.RLock()
+
+		shared, clientSecret := s.sharedSecret, s.clientSharedSecret
+		s.authMu.RUnlock()
+		s.ringMu.RLock()
+
+		peers := append([]string(nil), s.peersToStringsLocked()...)
+		s.ringMu.RUnlock()
+		s.aeMu.RLock()
+
+		aeMgr := s.ae
+		s.aeMu.RUnlock()
+
+		var aeBuckets int
+		var aeFetchBytes, aeRehashMs int64
+		if aeMgr != nil {
+			aeBuckets = int(aeMgr.Buckets())
+			aeFetchBytes = int64(aeMgr.FetchBytes())
+			aeRehashMs = aeMgr.RehashInterval().Milliseconds()
+		}
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminInfo{
 			NodeID: s.nodeID, Port: int(port), CapacityBytes: s.store.Capacity(),
 			CurrentBytes: curBytes, CurrentEntries: curEntries,
-			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: 1, Consistency: "async",
-			LogLevel: "info", Peers: []string{},
+			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: rf, Consistency: mode.String(),
+			PersistenceEnabled:      persistEnabled,
+			AntiEntropyIntervalMs:   s.currentAEInterval().Milliseconds(),
+			AntiEntropyBuckets:      aeBuckets,
+			AntiEntropyFetchBytes:   aeFetchBytes,
+			AntiEntropyFullRehashMs: aeRehashMs,
+			TLSEnabled:              tlsEnabled,
+			AuthEnabled:             shared != "" || clientSecret != "",
+			ClientAuthEnabled:       clientSecret != "",
+			LogLevel:                s.log().GetLevel().String(),
+			Peers:                   peers,
 		})}
 	case protocol.OpAdminCluster:
 		s.ringMu.RLock()

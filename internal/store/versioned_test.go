@@ -487,6 +487,21 @@ func TestVersionedEvictionSparesTombstones(t *testing.T) {
 	}
 }
 
+func TestPutDoesNotRetainCallerBuffer(t *testing.T) {
+	s := NewLRUStore(1<<20, nil)
+	buf := []byte("caller-owned")
+	if err := s.Put("k", buf); err != nil {
+		t.Fatal(err)
+	}
+	for i := range buf {
+		buf[i] = 'x'
+	}
+	got, ok := s.Get("k")
+	if !ok || string(got) != "caller-owned" {
+		t.Fatalf("store retained caller buffer: %q, %v", got, ok)
+	}
+}
+
 func TestVersionedHardRemoveErases(t *testing.T) {
 	s := NewLRUStore(1024, nil)
 	if err := s.PutVersioned("k", makeVersioned("v", 5, 10)); err != nil {

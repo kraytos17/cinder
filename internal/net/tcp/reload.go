@@ -90,6 +90,9 @@ func (s *Server) Reload(rc ReloadableConfig) ([]string, error) {
 	if rc.Capacity == 0 {
 		return nil, fmt.Errorf("capacity must be positive")
 	}
+	if rc.PingIntervalMs > 0 && rc.SuspectTimeoutMs > 0 && rc.SuspectTimeoutMs <= rc.PingIntervalMs {
+		return nil, fmt.Errorf("suspect_timeout_ms must be greater than ping_interval_ms")
+	}
 	if (rc.TLSCertFile != "") != (rc.TLSKeyFile != "") {
 		return nil, fmt.Errorf("tls_cert and tls_key must be given together")
 	}

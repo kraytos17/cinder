@@ -327,6 +327,15 @@ func TestDecodeCounterValidation(t *testing.T) {
 	}
 }
 
+func TestEncodeTTLTooLarge(t *testing.T) {
+	// u32 milliseconds caps at ~49.7 days; larger TTLs must fail instead
+	// of truncating on the wire.
+	req := Request{Opcode: OpSet, Key: []byte("k"), Value: []byte("v"), TTL: (time.Duration(1<<32) * time.Millisecond)}
+	if _, err := EncodeRequest(req, nil); err == nil {
+		t.Fatal("expected ttl too large error")
+	}
+}
+
 func TestEncodeAuthTokenLength(t *testing.T) {
 	req := Request{Opcode: OpGet, Key: []byte("k")}
 	if _, err := EncodeRequest(req, bytes.Repeat([]byte{1}, 31)); err == nil {

@@ -285,8 +285,20 @@ func EncodeRequest(req Request, authToken []byte) ([]byte, error) {
 	return EncodeRequestInto(req, authToken, nil)
 }
 
+// maxTTLms bounds relative TTLs to the u32 wire field (~49.7 days).
+// Larger durations would silently truncate on encode.
+const maxTTLms = int64(1<<32 - 1)
+
 // EncodeRequestInto is EncodeRequest reusing buf's capacity across calls.
 func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error) {
+	var ttlMs int64
+	if req.TTL > 0 {
+		ttlMs = req.TTL.Milliseconds()
+		if ttlMs > maxTTLms {
+			return nil, errInvalid("ttl too large")
+		}
+	}
+
 	var acc payloadAcc
 	acc.ok = true
 	acc.add(4)
@@ -357,7 +369,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 
 	w.U8(uint8(flags))
 	if req.TTL > 0 {
-		w.U32(uint32(req.TTL.Milliseconds()))
+		w.U32(uint32(ttlMs))
 	}
 	if !req.ExpiresAt.IsNone() {
 		w.U64(uint64(req.ExpiresAt.UnixMilli()))

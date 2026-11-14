@@ -136,7 +136,9 @@ func (s *Server) runCompactLoop(pm *persist.Manager, stop <-chan struct{}) {
 }
 
 // runFsyncLoop periodically flushes the active WAL when interval policy is
-// selected. Errors are logged; a later tick retries the flush.
+// selected. The interval is re-read after every tick so runtime policy
+// changes apply without restart; switching away from interval mode stops
+// the loop. Errors are logged; a later tick retries the flush.
 func (s *Server) runFsyncLoop(pm *persist.Manager, stop <-chan struct{}) {
 	d := pm.FsyncInterval()
 	if d <= 0 {
@@ -153,6 +155,9 @@ func (s *Server) runFsyncLoop(pm *persist.Manager, stop <-chan struct{}) {
 		}
 		if err := pm.SyncPeriodic(); err != nil {
 			s.log().Error().Err(err).Msg("periodic WAL sync failed")
+		}
+		if d = pm.FsyncInterval(); d <= 0 {
+			return
 		}
 		t.Reset(d)
 	}

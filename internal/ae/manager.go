@@ -146,6 +146,17 @@ func (m *Manager) SetHintJournal(j *Journal) {
 	m.journal = j
 }
 
+// Buckets reports the configured digest bucket count.
+func (m *Manager) Buckets() uint32 { return m.numBuckets }
+
+// FetchBytes reports the configured per-round repair byte budget.
+func (m *Manager) FetchBytes() int { return m.fetchBytes }
+
+// RehashInterval reports the wall-clock full-rehash backstop.
+func (m *Manager) RehashInterval() time.Duration {
+	return time.Duration(m.rehashInterval.Load())
+}
+
 // SetMetrics wires the observability collector (nil disables).
 func (m *Manager) SetMetrics(c *metrics.Collector) {
 	m.met.Store(c)

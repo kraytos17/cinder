@@ -342,6 +342,9 @@ func (s *Server) Serve(l net.Listener) error {
 			if s.shut.Load() {
 				return nil
 			}
+
+			// Avoid hot-spinning on transient accept failures (FD pressure).
+			time.Sleep(5 * time.Millisecond)
 			continue
 		}
 		select {
@@ -464,14 +467,18 @@ func (s *Server) bestEffortSnapshot(pm *persist.Manager) {
 
 // Kill is a crash simulation: it closes the listener and connections
 // without a leave broadcast, so peers keep routing to this node until
-// failure detection marks it dead. Tests use it to exercise hints and
-// quorum fail-closed paths deterministically.
+// failure detection marks it dead. It also stops background loops so the
+// crashed node stops gossiping, probing, and replicating, like a dead
+// process. Tests use it to exercise hints and quorum fail-closed paths
+// deterministically. A Server cannot Serve again after Kill or Shutdown:
+// shut blocks re-Serve.
 func (s *Server) Kill() {
 	if s.shut.Swap(true) {
 		return
 	}
 
 	s.stopRebalanceTimers()
+	s.stopBackgroundLoops()
 	s.closeAll()
 }
 

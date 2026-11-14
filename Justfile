@@ -52,6 +52,8 @@ lint:
 
 # Auto-fix what the linters can fix safely.
 lint-fix:
+    go fix ./...
+    go vet ./...
     go tool golangci-lint fmt
     go tool golangci-lint run --fix ./... || true
 

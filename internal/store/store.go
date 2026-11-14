@@ -326,8 +326,11 @@ func (s *Store) shardCap() uint64 {
 }
 
 // Put stores value under key with a fresh minted version and no TTL.
+// The value is copied before the store retains it, so the caller may
+// reuse the buffer after Put returns. putVersionedAt clones on every
+// retain path, which is what makes the single copy here sufficient.
 func (s *Store) Put(key string, value []byte) error {
-	e := Entry{Value: append([]byte(nil), value...), Version: s.MintVersion()}
+	e := Entry{Value: value, Version: s.MintVersion()}
 	return s.PutVersioned(key, e)
 }
 
@@ -337,7 +340,7 @@ func (s *Store) Put(key string, value []byte) error {
 func (s *Store) PutWithTTL(key string, value []byte, ttl time.Duration) error {
 	now := s.clock.Now()
 	e := Entry{
-		Value:   append([]byte(nil), value...),
+		Value:   value,
 		Version: s.MintVersion(),
 		// At (not After): zero TTL is an immediately elapsed deadline.
 		Expiry: expiry.At(now.Add(ttl)),
