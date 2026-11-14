@@ -1,8 +1,35 @@
 package counter
 
 import (
+	"encoding/binary"
 	"testing"
+
+	"github.com/kraytos17/cinder/internal/codec"
 )
+
+// sideEntry is one verbatim (actor, count) record in a framed PNCounter
+// body: unlike Encode it permits the non-canonical shapes the decoder
+// must reject (zero counts, duplicate actors).
+type sideEntry struct {
+	actor string
+	val   uint64
+}
+
+// rawSide frames a PNCounter body with the given Pos components verbatim
+// (empty Neg), bypassing Encode so seeds can carry non-canonical records.
+func rawSide(pos []sideEntry) []byte {
+	buf := make([]byte, 0, 32)
+	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
+	buf = append(buf, KindPNCounter)
+	buf = codec.AppendLen(buf, binary.BigEndian, len(pos))
+	for _, e := range pos {
+		buf = codec.AppendLen(buf, binary.BigEndian, len(e.actor))
+		buf = append(buf, e.actor...)
+		buf = codec.Append(buf, binary.BigEndian, e.val)
+	}
+	buf = codec.AppendLen(buf, binary.BigEndian, 0) // empty Neg
+	return buf
+}
 
 // FuzzCounterCodec feeds arbitrary bytes to the CRDC/CAE1 decoders. Each
 // must never panic; every accepted body must re-encode to bytes that
@@ -20,6 +47,11 @@ func FuzzCounterCodec(f *testing.F) {
 		p.Encode(),
 		EncodeCounterBundle([]BundleEntry{{Key: "k", Counter: p}}),
 		EncodeCounterBundle(nil),
+		// Non-canonical records must decode as corrupt: a zero-count
+		// component and a duplicated actor can never come from Encode,
+		// so accepting either would break the fixed point.
+		rawSide([]sideEntry{{"a", 0}}),
+		rawSide([]sideEntry{{"a", 1}, {"a", 1}}),
 	}
 	for _, s := range seeds {
 		f.Add(s)

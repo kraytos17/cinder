@@ -193,9 +193,22 @@ func (g *GCounter) decodeFrom(r *codec.Reader) bool {
 		if !ok {
 			return false
 		}
+		// Canonical form only: the encoder emits each actor exactly once
+		// from a map that can never hold zero counts (zero-delta
+		// increments are no-ops, merges take maxima), so a zero count or
+		// a repeated actor is corrupt, not a second update. Accepting
+		// either would decode to a state that re-encodes differently,
+		// breaking the fixed point every codec in this repo guarantees.
+		key := string(actor)
+		if val == 0 {
+			return false
+		}
+		if _, dup := g.components[key]; dup {
+			return false
+		}
 		// Increment-from-empty reconstructs the component exactly
 		// (0 + value always fits) and reuses the empty-actor guard.
-		if err := g.Increment(string(actor), val); err != nil {
+		if err := g.Increment(key, val); err != nil {
 			return false
 		}
 	}
