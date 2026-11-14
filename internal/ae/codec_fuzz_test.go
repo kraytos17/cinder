@@ -6,51 +6,65 @@ import (
 	"github.com/kraytos17/cinder/internal/store"
 )
 
-// FuzzAECodecs feeds arbitrary bytes to every anti-entropy decoder. Each
-// must never panic; every accepted blob must re-encode to bytes that
-// decode to the same value (canonical fixed points).
-func FuzzAECodecs(f *testing.F) {
-	for _, s := range aeCodecSeeds() {
-		f.Add(s.tag, s.data)
-	}
-	f.Fuzz(func(t *testing.T, tag uint8, data []byte) {
-		switch tag % 6 {
-		case 0:
-			digestFuzz(t, data)
-		case 1:
-			refinementFuzz(t, data)
-		case 2:
-			metaFuzz(t, data)
-		case 3:
-			syncFuzz(t, data)
-		case 4:
-			ibltFuzz(t, data)
-		default:
-			groupFuzz(t, data)
-		}
+// Each decoder below gets its own target (rather than one multiplexed
+// target) so every codec receives the full time budget, corpora evolve
+// independently, and failures attribute to exactly one codec. The one
+// exception is FuzzIBLTDifference (iblt_fuzz_test.go), which fuzzes the
+// structured peel property instead of raw blobs.
+// FuzzAEDigest feeds arbitrary bytes to the group-digest decoder.
+func FuzzAEDigest(f *testing.F) {
+	f.Add(Digest{1, 2, 3}.Encode())
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		digestFuzz(t, data)
 	})
 }
 
-type codecSeed struct {
-	tag  uint8
-	data []byte
+// FuzzAERefinement feeds arbitrary bytes to the refinement decoder.
+func FuzzAERefinement(f *testing.F) {
+	f.Add(Refinement{BucketHashes: []BucketHash{{Bucket: 1, Hash: 9}}, ForceMeta: true}.Encode())
+	f.Add([]byte{0x00})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		refinementFuzz(t, data)
+	})
 }
 
-func aeCodecSeeds() []codecSeed {
-	return []codecSeed{
-		{0, Digest{1, 2, 3}.Encode()},
-		{0, []byte{}},
-		{1, Refinement{BucketHashes: []BucketHash{{Bucket: 1, Hash: 9}}, ForceMeta: true}.Encode()},
-		{1, []byte{0x00}},
-		{2, EncodeMetaRows([]MetaRow{{Bucket: 1, KeyHash: 7, Version: 2, Writer: 3, Tombstone: true}})},
-		{2, []byte{}},
-		{3, mustEncodeSync(SyncMessage{Entries: []SyncItem{{Key: "k", Entry: store.Entry{Value: []byte("v"), Version: 1}}}, Needs: []uint64{42}})},
-		{3, []byte{}},
-		{4, EncodeIBLT(BuildIBLT([]IBLTItem{{KeyHash: 1, Version: 2, Writer: 3}}, IBLTCells))},
-		{4, []byte{}},
-		{5, Digest{5}.Fold().Encode()},
-		{5, []byte{0xFF, 0xFF}},
-	}
+// FuzzAEMetaRows feeds arbitrary bytes to the metadata-row decoder.
+func FuzzAEMetaRows(f *testing.F) {
+	f.Add(EncodeMetaRows([]MetaRow{{Bucket: 1, KeyHash: 7, Version: 2, Writer: 3, Tombstone: true}}))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		metaFuzz(t, data)
+	})
+}
+
+// FuzzAESync feeds arbitrary bytes to the sync-message decoder.
+func FuzzAESync(f *testing.F) {
+	f.Add(mustEncodeSync(SyncMessage{Entries: []SyncItem{{Key: "k", Entry: store.Entry{Value: []byte("v"), Version: 1}}}, Needs: []uint64{42}}))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		syncFuzz(t, data)
+	})
+}
+
+// FuzzAEIBLT feeds arbitrary bytes to the sketch decoder. The property is
+// no-panic plus peel termination; exact symmetric differences are covered
+// by FuzzIBLTDifference with structured item sets.
+func FuzzAEIBLT(f *testing.F) {
+	f.Add(EncodeIBLT(BuildIBLT([]IBLTItem{{KeyHash: 1, Version: 2, Writer: 3}}, IBLTCells)))
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		ibltFuzz(t, data)
+	})
+}
+
+// FuzzAEGroupDigest feeds arbitrary bytes to the grouped-digest decoder.
+func FuzzAEGroupDigest(f *testing.F) {
+	f.Add(Digest{5}.Fold().Encode())
+	f.Add([]byte{0xFF, 0xFF})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		groupFuzz(t, data)
+	})
 }
 
 func mustEncodeSync(m SyncMessage) []byte {

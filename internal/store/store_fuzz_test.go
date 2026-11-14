@@ -54,6 +54,7 @@ func FuzzStoreSequence(f *testing.F) {
 			return v
 		}
 		ops := 1 + int(data[0])%64
+		var lastMinted uint64
 		for range ops {
 			ob := next(1)
 			if len(ob) == 0 {
@@ -61,7 +62,7 @@ func FuzzStoreSequence(f *testing.F) {
 			}
 			key := keys[int(ob[0])%len(keys)]
 			arg := next(8)
-			switch ob[0] % 7 {
+			switch ob[0] % 10 {
 			case 0: // Put, occasionally oversized for the reject path.
 				val := make([]byte, int(u64(arg)%300))
 				for j := range val {
@@ -125,6 +126,47 @@ func FuzzStoreSequence(f *testing.F) {
 			case 5: // Advance the clock to fire TTLs and GC.
 				clk.Advance(time.Duration(u64(arg)%10_000) * time.Millisecond)
 				st.EvictExpired()
+			case 6: // RestoreVersion only ever raises the Lamport floor:
+				// minted versions must not decrease afterwards.
+				st.RestoreVersion(u64(arg))
+				if m := st.MintVersion(); m < lastMinted {
+					t.Fatalf("minted version decreased: %d -> %d", lastMinted, m)
+				} else {
+					lastMinted = m
+				}
+			case 7: // RestoreFreq only ever raises LFU frequency (and is
+				// a no-op under LRU or for absent keys).
+				before := st.EntryFreq(key)
+				st.RestoreFreq(key, u64(arg)%16)
+				if after := st.EntryFreq(key); after < before {
+					t.Fatalf("frequency decreased on %q: %d -> %d", key, before, after)
+				}
+			case 8: // Snapshot views agree with each other: LiveEntries
+				// and MetadataSnapshot apply the same expiry/tombstone
+				// filter, and ForEach visits exactly the live set.
+				live := st.LiveEntries()
+				meta := st.MetadataSnapshot()
+				if len(live) != len(meta) {
+					t.Fatalf("live/metadata count diverged: %d vs %d", len(live), len(meta))
+				}
+				seen := make(map[string]struct{}, len(live))
+				for _, p := range live {
+					seen[p.Key] = struct{}{}
+				}
+				for _, m := range meta {
+					if _, ok := seen[m.Key]; !ok {
+						t.Fatalf("metadata key %q missing from live entries", m.Key)
+					}
+					delete(seen, m.Key)
+				}
+				if len(seen) != 0 {
+					t.Fatalf("live keys missing from metadata snapshot: %d", len(seen))
+				}
+				count := 0
+				st.ForEach(func(string, Entry) { count++ })
+				if count != len(live) {
+					t.Fatalf("foreach visited %d, live set holds %d", count, len(live))
+				}
 			default: // Capacity change never evicts.
 				before := st.Size()
 				st.SetCapacity(1 + u64(arg)%8192)

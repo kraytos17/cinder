@@ -50,6 +50,6 @@ From the repo root: `just build`, `just test`, `just test-race`, `just vet`,
 `just lint`, `just lint-fix`, `just vuln`, `just fuzz`, `just proto-check`,
 and `just bench`. `just verify` is the local pre-push gate (format, vet,
 lint, race tests). GitHub Actions additionally checks vulnerability
-findings, module exactness, generated proto freshness, and runs the eight
+findings, module exactness, generated proto freshness, and runs the seventeen
 20-second fuzz targets concurrently. The Go build/module caches are managed
 by `actions/setup-go`.

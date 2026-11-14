@@ -140,8 +140,38 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 	}
 
 	nowMs := uint64(time.Now().UnixMilli())
+	ops, off := decodeJournalImage(data, nowMs)
+	for _, record := range ops {
+		if record.discard {
+			continue
+		}
+		if record.del == nil {
+			q.Push(record.hint)
+		} else {
+			q.RemoveMatch(record.del.target, record.del.key, record.del.version)
+		}
+	}
+	if off < len(data) {
+		if err := os.Truncate(j.path, int64(off)); err != nil {
+			return 0, err
+		}
+	}
+
+	j.records = uint64(len(ops))
+	// Append at the end: recovery read via a separate descriptor.
+	if _, err := j.f.Seek(0, io.SeekEnd); err != nil {
+		return 0, err
+	}
+	return q.Len(), nil
+}
+
+// decodeJournalImage is the byte-level recover core (file I/O split out so
+// fuzz can feed arbitrary images without temp files per input, mirroring
+// decodeSnapshot). It returns the records decoded before the first invalid
+// frame and the valid prefix length for torn-tail truncation. nowMs anchors
+// expiry decisions so decoding is deterministic for a fixed clock.
+func decodeJournalImage(data []byte, nowMs uint64) (ops []decodedJournalRecord, valid int) {
 	off := 0
-	decoded := 0
 	for off < len(data) {
 		if len(data)-off < 12 {
 			break // torn length: truncate
@@ -160,32 +190,13 @@ func (j *Journal) recover(q *repl.HintQueue) (int, error) {
 		}
 
 		off += ln
-		if record, ok := decodeJournalRecord(payload, nowMs); ok {
-			decoded++
-			if record.discard {
-				continue
-			}
-			if record.del == nil {
-				q.Push(record.hint)
-			} else {
-				q.RemoveMatch(record.del.target, record.del.key, record.del.version)
-			}
-		} else {
+		record, ok := decodeJournalRecord(payload, nowMs)
+		if !ok {
 			break // structurally invalid: truncate
 		}
+		ops = append(ops, record)
 	}
-	if off < len(data) {
-		if err := os.Truncate(j.path, int64(off)); err != nil {
-			return 0, err
-		}
-	}
-
-	j.records = uint64(decoded)
-	// Append at the end: recovery read via a separate descriptor.
-	if _, err := j.f.Seek(0, io.SeekEnd); err != nil {
-		return 0, err
-	}
-	return q.Len(), nil
+	return ops, off
 }
 
 type journalDel struct {
@@ -274,7 +285,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (decodedJournalRecord, bo
 
 		req := protocol.Request{Opcode: protocol.OpReplicate, Key: append([]byte(nil), kb...), Value: append([]byte(nil), vb...), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
 		req.ExpiresAt = expiry.FromUnixMilli(int64(entryExp))
-		return decodedJournalRecord{hint: repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.Now().Add(hintTTL))}}, true
+		return decodedJournalRecord{hint: repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.UnixMilli(int64(nowMs)).Add(hintTTL))}}, true
 	}
 	if op == journalOpDel {
 		tlen, ok := c.U32()

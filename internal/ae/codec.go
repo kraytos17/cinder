@@ -771,6 +771,12 @@ func DecodeIBLT(data []byte) []IBLTCell {
 // DifferenceIBLT subtracts local from remote and peels pure cells,
 // returning the symmetric difference or false when peeling stalls or
 // the configured peel budget is exhausted.
+//
+// Callers must not supply duplicate items: identical rows cancel in every
+// XOR-folded field (including the checksum) while their counts add, so a
+// duplicated pair is invisible to peeling and the sketch becomes
+// ambiguous — more than one item multiset can explain the same cells,
+// and peeling may then converge on a consistent-but-wrong decomposition.
 func DifferenceIBLT(remote, local []IBLTCell) (IBLTDiff, bool) {
 	var zero IBLTDiff
 	if len(remote) != len(local) || len(remote) < IBLTCellsMin || len(remote) > IBLTCellsMax {

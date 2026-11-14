@@ -83,11 +83,37 @@ cover:
 cover-html: cover
     go tool cover -html=cover.out
 
-# Run all fuzz targets sequentially for local use; CI runs them concurrently
-# via fuzz-one so each target keeps the same time budget with less wall time.
+# Run all fuzz targets sequentially for local use. Add new targets to the
+# list below AND to the fuzz job matrix in .github/workflows/go.yml, which
+# fans out over the same set so each target keeps the same time budget
+# with less wall time.
 [positional-arguments]
 fuzz *args:
-    go test -run=NONE -fuzz=FuzzDecodeRequest -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzDecodeResponse -fuzztime=20s ./internal/net/protocol/ "$@" && go test -run=NONE -fuzz=FuzzGossipView -fuzztime=20s ./internal/cluster/ "$@" && go test -run=NONE -fuzz=FuzzWALReader -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzSnapshot -fuzztime=20s ./internal/persist/ "$@" && go test -run=NONE -fuzz=FuzzAECodecs -fuzztime=20s ./internal/ae/ "$@" && go test -run=NONE -fuzz=FuzzStoreSequence -fuzztime=20s ./internal/store/ "$@" && go test -run=NONE -fuzz=FuzzCounterCodec -fuzztime=20s ./internal/counter/ "$@"
+    #!/bin/sh
+    set -e
+    for entry in \
+      "FuzzDecodeRequest:internal/net/protocol" \
+      "FuzzDecodeResponse:internal/net/protocol" \
+      "FuzzGossipView:internal/cluster" \
+      "FuzzWALReader:internal/persist" \
+      "FuzzWALCounterStateRecord:internal/persist" \
+      "FuzzSnapshot:internal/persist" \
+      "FuzzJournalImage:internal/ae" \
+      "FuzzIBLTDifference:internal/ae" \
+      "FuzzAEDigest:internal/ae" \
+      "FuzzAERefinement:internal/ae" \
+      "FuzzAEMetaRows:internal/ae" \
+      "FuzzAESync:internal/ae" \
+      "FuzzAEIBLT:internal/ae" \
+      "FuzzAEGroupDigest:internal/ae" \
+      "FuzzStoreSequence:internal/store" \
+      "FuzzCounterStore:internal/counter" \
+      "FuzzCounterCodec:internal/counter" \
+      ; do
+      target="${entry%%:*}"
+      pkg="${entry##*:}"
+      go test -run=NONE -fuzz="$target" -fuzztime=20s "./$pkg/" "$@"
+    done
 
 # Benchmarks (quick smoke by default; pass -benchtime for publishable
 # numbers, e.g. `just bench -benchtime=1s`). -benchmem always on:

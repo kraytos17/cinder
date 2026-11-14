@@ -336,6 +336,22 @@ func TestEncodeTTLTooLarge(t *testing.T) {
 	}
 }
 
+func TestEncodeOversizedPayloadRejected(t *testing.T) {
+	// The frame budget is MaxPayloadSize: larger payloads must fail
+	// instead of truncating on the wire. Each case allocates ~64 MiB
+	// once; the encoder must fail during size accounting, before use.
+	big := make([]byte, MaxPayloadSize)
+	if _, err := EncodeRequest(Request{Opcode: OpSet, Key: []byte("k"), Value: big}, nil); err == nil {
+		t.Fatal("expected oversized value error")
+	}
+	if _, err := EncodeRequest(Request{Opcode: OpSet, Key: big, Value: []byte("v")}, nil); err == nil {
+		t.Fatal("expected oversized key error")
+	}
+	if _, err := EncodeResponse(Response{Status: StatusOK, HasValue: true, Value: big}); err == nil {
+		t.Fatal("expected oversized response value error")
+	}
+}
+
 func TestEncodeTTLUpperU32HalfRoundTrips(t *testing.T) {
 	// Regression test: the u32 wire field spans ~49.7 days, so TTLs above
 	// 2^31-1 ms (~24.8 days) are legitimate and must survive a

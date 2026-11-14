@@ -52,22 +52,46 @@ jobs:
       - name: Race tests (including fuzz seed corpus)
         run: just test-race
 
-      - name: Fuzz targets (20s each, parallel)
+  fuzz:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: FuzzDecodeRequest, package: internal/net/protocol }
+          - { target: FuzzDecodeResponse, package: internal/net/protocol }
+          - { target: FuzzGossipView, package: internal/cluster }
+          - { target: FuzzWALReader, package: internal/persist }
+          - { target: FuzzWALCounterStateRecord, package: internal/persist }
+          - { target: FuzzSnapshot, package: internal/persist }
+          - { target: FuzzJournalImage, package: internal/ae }
+          - { target: FuzzIBLTDifference, package: internal/ae }
+          - { target: FuzzAEDigest, package: internal/ae }
+          - { target: FuzzAERefinement, package: internal/ae }
+          - { target: FuzzAEMetaRows, package: internal/ae }
+          - { target: FuzzAESync, package: internal/ae }
+          - { target: FuzzAEIBLT, package: internal/ae }
+          - { target: FuzzAEGroupDigest, package: internal/ae }
+          - { target: FuzzStoreSequence, package: internal/store }
+          - { target: FuzzCounterStore, package: internal/counter }
+          - { target: FuzzCounterCodec, package: internal/counter }
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+        with:
+          just-version: "1"
+
+      - name: Fuzz ${{ matrix.target }}
         env:
           GOMAXPROCS: "1"
-        run: |
-          set -euo pipefail
-          pids=()
-          just fuzz-one FuzzDecodeRequest internal/net/protocol & pids+=("$!")
-          just fuzz-one FuzzDecodeResponse internal/net/protocol & pids+=("$!")
-          just fuzz-one FuzzGossipView internal/cluster & pids+=("$!")
-          just fuzz-one FuzzWALReader internal/persist & pids+=("$!")
-          just fuzz-one FuzzSnapshot internal/persist & pids+=("$!")
-          just fuzz-one FuzzAECodecs internal/ae & pids+=("$!")
-          just fuzz-one FuzzStoreSequence internal/store & pids+=("$!")
-          just fuzz-one FuzzCounterCodec internal/counter & pids+=("$!")
-          result=0
-          for pid in "${pids[@]}"; do
-            if ! wait "$pid"; then result=1; fi
-          done
-          exit "$result"
+        run: just fuzz-one ${{ matrix.target }} ${{ matrix.package }}
