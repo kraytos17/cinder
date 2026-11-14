@@ -92,8 +92,15 @@ func New(vnodes int, loadFactor float64) (*Ring, error) {
 	return r, nil
 }
 
-func hashVnode(node string, index int) uint64 {
-	return xxh3.HashString(node + "-" + strconv.Itoa(index))
+func hashVnode(hasher *xxh3.Hasher, node string, index int) uint64 {
+	hasher.Reset()
+	hasher.WriteString(node)
+	hasher.WriteString("-")
+
+	var indexBuf [20]byte
+	indexBytes := strconv.AppendInt(indexBuf[:0], int64(index), 10)
+	hasher.Write(indexBytes)
+	return hasher.Sum64()
 }
 
 func hashKey(key string) uint64 {
@@ -128,8 +135,10 @@ func (r *Ring) AddNode(id string) {
 		phys := uint16(len(snap.nodes))
 		snap.nodes = append(snap.nodes, id)
 		snap.loads = append(snap.loads, &atomic.Uint64{})
+
+		var hasher xxh3.Hasher
 		for i := range r.vnodes {
-			snap.hashes = append(snap.hashes, hashVnode(id, i))
+			snap.hashes = append(snap.hashes, hashVnode(&hasher, id, i))
 			snap.nodeIx = append(snap.nodeIx, phys)
 		}
 
@@ -198,7 +207,7 @@ func (r *Ring) RemoveNode(id string) {
 // and load cells; genuinely new ids append in first-occurrence input
 // order; duplicates collapse. An identical set is a no-op.
 func (r *Ring) SetNodes(ids []string) error {
-	dedup := ids[:0:0]
+	dedup := make([]string, 0, len(ids))
 	seen := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		if _, ok := seen[id]; ok {
@@ -216,13 +225,17 @@ func (r *Ring) SetNodes(ids []string) error {
 	defer r.mu.Unlock()
 	for {
 		old := r.snap.Load()
-		if sameSet(old.nodes, dedup) {
+		if sameSet(old.nodes, seen) {
 			return nil
 		}
 
 		snap := &snapshot{}
+		oldIndex := make(map[string]int, len(old.nodes))
+		for i, id := range old.nodes {
+			oldIndex[id] = i
+		}
 		for _, id := range dedup {
-			if idx := slices.Index(old.nodes, id); idx >= 0 {
+			if idx, ok := oldIndex[id]; ok {
 				snap.nodes = append(snap.nodes, id)
 				snap.loads = append(snap.loads, old.loads[idx])
 			} else {
@@ -230,9 +243,11 @@ func (r *Ring) SetNodes(ids []string) error {
 				snap.loads = append(snap.loads, &atomic.Uint64{})
 			}
 		}
+
+		var hasher xxh3.Hasher
 		for pi, id := range snap.nodes {
 			for i := range r.vnodes {
-				snap.hashes = append(snap.hashes, hashVnode(id, i))
+				snap.hashes = append(snap.hashes, hashVnode(&hasher, id, i))
 				snap.nodeIx = append(snap.nodeIx, uint16(pi))
 			}
 		}
@@ -245,12 +260,12 @@ func (r *Ring) SetNodes(ids []string) error {
 	}
 }
 
-func sameSet(a, b []string) bool {
+func sameSet(a []string, b map[string]struct{}) bool {
 	if len(a) != len(b) {
 		return false
 	}
 	for _, x := range a {
-		if !slices.Contains(b, x) {
+		if _, ok := b[x]; !ok {
 			return false
 		}
 	}
@@ -308,7 +323,7 @@ func (r *Ring) GetNodes(key string, n ReplicaCount) ([]string, error) {
 	}
 
 	var seen [MaxReplicas]uint16
-	var out []string
+	out := make([]string, 0, min(int(n), len(snap.nodes)))
 	cur := start
 	for len(out) < int(n) {
 		ix := snap.nodeIx[cur]
@@ -316,6 +331,9 @@ func (r *Ring) GetNodes(key string, n ReplicaCount) ([]string, error) {
 		if !dup {
 			seen[len(out)] = ix
 			out = append(out, snap.nodes[ix])
+			if len(out) == len(snap.nodes) {
+				break
+			}
 		}
 
 		cur++

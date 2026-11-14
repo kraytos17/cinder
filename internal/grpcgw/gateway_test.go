@@ -494,7 +494,7 @@ func tlsClientConfig(t testing.TB, caPath string) credentials.TransportCredentia
 
 // startTLSGateway serves the gateway over TLS. An empty secret leaves
 // bearer authentication disabled; TLS alone does not enable it.
-func startTLSGateway(t *testing.T, secret string) gen.CinderCacheServiceClient {
+func startTLSGateway(t testing.TB, secret string) gen.CinderCacheServiceClient {
 	t.Helper()
 	fx := fixturesDir(t)
 	tl, err := net.Listen("tcp", "127.0.0.1:0")

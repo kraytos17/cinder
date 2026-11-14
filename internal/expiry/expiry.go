@@ -1,9 +1,6 @@
 // Package expiry is the single time-to-live representation shared by
 // the store entry, the wire request/response, the WAL/snapshot records,
-// and hinted handoff. It replaces the four HasTTL/HasExpiresAt +
-// time/duration/ms quadruples, whose bool and instant could desync
-// (a copied instant without its flag never expires, or expires at the
-// zero time).
+// and hinted handoff.
 //
 // The zero value means no expiry. Absolute instants ride in UTC;
 // conversions to wire milliseconds saturate at zero for none.
