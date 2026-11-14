@@ -12,7 +12,7 @@ import (
 
 func (e Entry) toStore(now time.Time) (store.Entry, bool) {
 	out := store.Entry{
-		Value: append([]byte(nil), e.Value...), Version: e.Version,
+		Value: e.Value, Version: e.Version,
 		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
 	}
 	if !out.Expired(now) {
@@ -23,7 +23,7 @@ func (e Entry) toStore(now time.Time) (store.Entry, bool) {
 
 func (e SnapEntry) toStore(now time.Time) (store.Entry, bool) {
 	out := store.Entry{
-		Value: append([]byte(nil), e.Value...), Version: e.Version,
+		Value: e.Value, Version: e.Version,
 		WriterNodeHash: e.Writer, Expiry: e.Expiry, Tombstone: e.Tombstone,
 	}
 	if !out.Expired(now) {
@@ -51,8 +51,12 @@ func (m *Manager) Recover() error {
 	m.mu.Unlock()
 	now := m.clock()
 	if snap := m.latestSnapshot(); snap != "" {
-		r := NewSnapReader(snap)
-		next, err := r.ReadStream(func(e SnapEntry) bool {
+		raw, err := os.ReadFile(snap)
+		if err != nil {
+			return err
+		}
+
+		next, counters, err := decodeSnapshotCollect(raw, func(e SnapEntry) bool {
 			ve, ok := e.toStore(now)
 			if !ok {
 				return true // skip expired, don't resurrect
@@ -68,11 +72,7 @@ func (m *Manager) Recover() error {
 
 		m.store.RestoreVersion(next)
 		if m.counters != nil {
-			states, err := r.ReadCounters()
-			if err != nil {
-				return err
-			}
-			for _, state := range states {
+			for _, state := range counters {
 				if err := m.counters.Merge(state.Key, state.Counter); err != nil {
 					return fmt.Errorf("persist: recover counter %q from snapshot: %w", state.Key, err)
 				}

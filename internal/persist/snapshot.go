@@ -1,10 +1,12 @@
 package persist
 
 import (
+	"bufio"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -45,6 +47,16 @@ func (e SnapEntry) encode() ([]byte, error) {
 	}
 
 	out := make([]byte, 0, 4+len(e.Key)+4+len(e.Value)+8+8+8+1+8+1)
+	return e.appendInto(out)
+}
+
+// appendInto serializes one row onto out without an intermediate buffer.
+// It lets snapshot streaming reuse a scratch slice across entries.
+func (e SnapEntry) appendInto(out []byte) ([]byte, error) {
+	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
+		return nil, errTooLarge
+	}
+
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Key))
 	out = append(out, e.Key...)
 	out = codec.AppendLen(out, binary.LittleEndian, len(e.Value))
@@ -84,39 +96,20 @@ func (w *SnapWriter) WriteWithCounters(nextVersion uint64, entries []SnapEntry, 
 func NewSnapWriter(path string) *SnapWriter { return &SnapWriter{path: path} }
 
 // Write serializes nextVersion + entries as v2 uncompressed and publishes
-// atomically via rename.
+// atomically via rename. Entries stream through a buffered writer so peak
+// memory stays O(buffer) instead of O(snapshot); the tmp file is synced
+// before rename and the directory is synced after, so a published snapshot
+// survives a crash (not just a clean shutdown).
 func (w *SnapWriter) Write(nextVersion uint64, entries []SnapEntry) error {
-	var body []byte
-	for _, e := range entries {
-		buf, err := e.encode()
-		if err != nil {
-			return err
-		}
-		body = append(body, buf...)
-	}
-
 	hdr := make([]byte, 0, 20)
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapVersion))
 	hdr = codec.Append(hdr, binary.LittleEndian, nextVersion)
 	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
-	tmp := w.path + ".tmp"
-	if err := os.WriteFile(tmp, append(hdr, body...), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, w.path)
+	return w.stream(hdr, entries, nil)
 }
 
 func (w *SnapWriter) writeV4(nextVersion uint64, entries []SnapEntry, counters []counter.BundleEntry) error {
-	var body []byte
-	for _, e := range entries {
-		encoded, err := e.encode()
-		if err != nil {
-			return err
-		}
-		body = append(body, encoded...)
-	}
-
 	counters = slices.Clone(counters)
 	slices.SortFunc(counters, func(a, b counter.BundleEntry) int { return strings.Compare(a.Key, b.Key) })
 	encodedCounters := counter.EncodeCounterBundle(counters)
@@ -127,18 +120,83 @@ func (w *SnapWriter) writeV4(nextVersion uint64, entries []SnapEntry, counters [
 		encodedCounters = []byte{0x43, 0x41, 0x45, 0x31, 0, 0, 0, 0} // "CAE1", count=0
 	}
 
-	body = append(body, encodedCounters...)
 	hdr := make([]byte, 0, 24)
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapMagic))
 	hdr = codec.Append(hdr, binary.LittleEndian, uint32(snapV4))
 	hdr = codec.Append(hdr, binary.LittleEndian, nextVersion)
 	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(entries))
 	hdr = codec.AppendLen(hdr, binary.LittleEndian, len(encodedCounters))
+	return w.stream(hdr, entries, encodedCounters)
+}
+
+// stream writes hdr, then every entry, then the optional counter trailer,
+// to a tmp file with a single buffered writer. One scratch slice is reused
+// across entries so per-entry allocation is a single grow of the encoded
+// row, not a throwaway buffer plus a body append.
+func (w *SnapWriter) stream(hdr []byte, entries []SnapEntry, trailer []byte) error {
 	tmp := w.path + ".tmp"
-	if err := os.WriteFile(tmp, append(hdr, body...), 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, w.path)
+
+	bw := bufio.NewWriterSize(f, 1<<20)
+	var scratch []byte
+	failed := true
+	defer func() {
+		if failed {
+			f.Close()
+			os.Remove(tmp)
+		}
+	}()
+
+	if _, err := bw.Write(hdr); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		scratch, err = e.appendInto(scratch[:0])
+		if err != nil {
+			return err
+		}
+		if _, err := bw.Write(scratch); err != nil {
+			return err
+		}
+	}
+	if len(trailer) != 0 {
+		if _, err := bw.Write(trailer); err != nil {
+			return err
+		}
+	}
+	if err := bw.Flush(); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, w.path); err != nil {
+		return err
+	}
+
+	failed = false
+	return fsyncDir(filepath.Dir(w.path))
+}
+
+// fsyncDir persists directory entries (new files, renames, unlinks) so a
+// just-published snapshot or CURRENT pointer survives a crash. Best-effort
+// on platforms where opening a directory is unsupported: callers treat a
+// nil return as durable and log a non-nil one without failing the publish.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+
+	defer d.Close()
+	return d.Sync()
 }
 
 // snapFormat enumerates accepted snapshot layouts.
@@ -162,10 +220,22 @@ type SnapReader struct {
 // NewSnapReader returns a reader for path.
 func NewSnapReader(path string) *SnapReader { return &SnapReader{path: path} }
 
-// ReadAll decodes the whole snapshot.
+// ReadAll decodes the whole snapshot with a single file read and a single
+// decode pass over the KV section.
 func (r *SnapReader) ReadAll() (SnapData, error) {
+	raw, err := os.ReadFile(r.path)
+	if err != nil {
+		return SnapData{}, err
+	}
+	return decodeSnapshotAll(raw)
+}
+
+// decodeSnapshotAll is the single-pass ReadAll core: entries stream once,
+// then the v4 counter bundle decodes from the same cursor without
+// re-walking KV rows.
+func decodeSnapshotAll(raw []byte) (SnapData, error) {
 	var data SnapData
-	next, err := r.ReadStream(func(e SnapEntry) bool {
+	next, counters, err := decodeSnapshotCollect(raw, func(e SnapEntry) bool {
 		data.Entries = append(data.Entries, e)
 		return true
 	})
@@ -174,41 +244,20 @@ func (r *SnapReader) ReadAll() (SnapData, error) {
 	}
 
 	data.NextVersion = next
-	data.Counters, err = r.ReadCounters()
-	if err != nil {
-		return SnapData{}, err
-	}
+	data.Counters = counters
 	return data, nil
 }
 
-// ReadStream invokes fn per entry without accumulating. Returning false
-// stops early. The returned version is the header's next_version.
-func (r *SnapReader) ReadStream(fn func(SnapEntry) bool) (uint64, error) {
-	raw, err := os.ReadFile(r.path)
-	if err != nil {
-		return 0, err
-	}
-	return decodeSnapshot(raw, fn)
-}
-
-// ReadCounters decodes the optional v3 counter section. Older snapshots
-// return no counters.
-func (r *SnapReader) ReadCounters() ([]counter.BundleEntry, error) {
-	raw, err := os.ReadFile(r.path)
-	if err != nil {
-		return nil, err
-	}
-	return decodeSnapshotCounters(raw)
-}
-
-// decodeSnapshot is the byte-level ReadStream core (file I/O split out so
-// fuzz can feed arbitrary images without temp files per input).
-func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
+// decodeSnapshotCollect decodes headers + KV rows via fn, then decodes (but
+// does not re-walk) the v4 counter bundle from the same cursor. It is the
+// shared core for decodeSnapshot (streaming, counter-validating) and
+// decodeSnapshotAll (collecting + returning counters).
+func decodeSnapshotCollect(raw []byte, fn func(SnapEntry) bool) (uint64, []counter.BundleEntry, error) {
 	if len(raw) < 20 {
-		return 0, fmt.Errorf("persist: truncated snapshot header at offset %d", len(raw))
+		return 0, nil, fmt.Errorf("persist: truncated snapshot header at offset %d", len(raw))
 	}
 	if binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
-		return 0, fmt.Errorf("persist: invalid snapshot magic at offset 0")
+		return 0, nil, fmt.Errorf("persist: invalid snapshot magic at offset 0")
 	}
 
 	var format snapFormat
@@ -218,11 +267,11 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	case 2:
 		format = snapV2
 	case 3:
-		return 0, errUnsupportedSnapshot
+		return 0, nil, errUnsupportedSnapshot
 	case 4:
 		format = snapV4
 	default:
-		return 0, fmt.Errorf("persist: unsupported snapshot version %d at offset 4", v)
+		return 0, nil, fmt.Errorf("persist: unsupported snapshot version %d at offset 4", v)
 	}
 
 	nextVersion := binary.LittleEndian.Uint64(raw[8:16])
@@ -230,7 +279,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	counterOffset := uint32(0)
 	if format == snapV4 {
 		if len(raw) < 24 {
-			return 0, fmt.Errorf("persist: truncated v4 snapshot header at offset %d", len(raw))
+			return 0, nil, fmt.Errorf("persist: truncated v4 snapshot header at offset %d", len(raw))
 		}
 		counterOffset = binary.LittleEndian.Uint32(raw[20:24])
 	}
@@ -246,37 +295,71 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 	for i := range count {
 		e, ok := decodeSnapEntry(&c, format)
 		if !ok {
-			return 0, fmt.Errorf("persist: truncated snapshot entry %d at offset %d", i, c.Pos())
+			return 0, nil, fmt.Errorf("persist: truncated snapshot entry %d at offset %d", i, c.Pos())
 		}
 		if !fn(e) {
 			stopped = true
 			break
 		}
 	}
+
+	var counters []counter.BundleEntry
 	if format == snapV4 && !stopped {
 		counterStart := c.Pos()
 		counterEnd := counterStart + int(counterOffset)
 		if counterEnd > len(raw) {
-			return 0, fmt.Errorf("persist: truncated counter snapshot section at offset %d", counterStart)
+			return 0, nil, fmt.Errorf("persist: truncated counter snapshot section at offset %d", counterStart)
 		}
 
 		bundle := raw[counterStart:counterEnd]
 		if len(bundle) < 8 || binary.BigEndian.Uint32(bundle[:4]) != counter.MagicCAE1 {
-			return 0, fmt.Errorf("persist: invalid counter snapshot magic at offset %d", counterStart)
+			return 0, nil, fmt.Errorf("persist: invalid counter snapshot magic at offset %d", counterStart)
 		}
 
-		count := binary.BigEndian.Uint32(bundle[4:8])
-		if count == 0 && len(bundle) == 8 {
+		bcount := binary.BigEndian.Uint32(bundle[4:8])
+		if bcount == 0 && len(bundle) == 8 {
 			// Empty counter bundle is valid for a counter-enabled node.
-		} else if _, err := counter.DecodeCounterBundle(bundle); err != nil {
-			return 0, fmt.Errorf("persist: invalid counter snapshot section at offset %d: %w", counterStart, err)
+		} else {
+			decoded, err := counter.DecodeCounterBundle(bundle)
+			if err != nil {
+				return 0, nil, fmt.Errorf("persist: invalid counter snapshot section at offset %d: %w", counterStart, err)
+			}
+			counters = decoded
 		}
 		c.SetPos(counterEnd)
 	}
 	if !stopped && c.Remaining() != 0 {
-		return 0, fmt.Errorf("persist: trailing snapshot bytes at offset %d", c.Pos())
+		return 0, nil, fmt.Errorf("persist: trailing snapshot bytes at offset %d", c.Pos())
 	}
-	return nextVersion, nil
+	return nextVersion, counters, nil
+}
+
+// ReadStream invokes fn per entry without accumulating. Returning false
+// stops early. The returned version is the header's next_version.
+func (r *SnapReader) ReadStream(fn func(SnapEntry) bool) (uint64, error) {
+	raw, err := os.ReadFile(r.path)
+	if err != nil {
+		return 0, err
+	}
+	return decodeSnapshot(raw, fn)
+}
+
+// ReadCounters decodes the optional v4 counter section. Older snapshots
+// return no counters. It re-reads the file for callers that only need
+// counters; ReadAll and recovery use the single-pass collect path.
+func (r *SnapReader) ReadCounters() ([]counter.BundleEntry, error) {
+	raw, err := os.ReadFile(r.path)
+	if err != nil {
+		return nil, err
+	}
+	return decodeSnapshotCounters(raw)
+}
+
+// decodeSnapshot is the byte-level ReadStream core (file I/O split out so
+// fuzz can feed arbitrary images without temp files per input).
+func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
+	next, _, err := decodeSnapshotCollect(raw, fn)
+	return next, err
 }
 
 func decodeSnapshotCounters(raw []byte) ([]counter.BundleEntry, error) {
@@ -369,8 +452,9 @@ func decodeSnapEntry(c *codec.Reader, format snapFormat) (SnapEntry, bool) {
 		}
 	}
 
-	e.Key = append([]byte(nil), key...)
-	e.Value = append([]byte(nil), val...)
+	kCopy, vCopy := clonePair(key, val)
+	e.Key = kCopy
+	e.Value = vCopy
 	e.Version, e.Writer = ver, writer
 	if hasTTL != 0 {
 		// At, not FromUnixMilli: a set flag with ms=0 still means an

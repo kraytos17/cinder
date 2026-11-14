@@ -164,6 +164,16 @@ func (m *Manager) log() *zerolog.Logger {
 }
 
 func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
+	// Fast path: persistence disabled is the default. Check under a brief
+	// lock before copying the value so no-persistence mutations stay
+	// allocation-free.
+	m.mu.Lock()
+	disabled := m.wal == nil
+	m.mu.Unlock()
+	if disabled {
+		return nil
+	}
+
 	rec := Entry{Key: []byte(key)}
 	if hardDelete {
 		rec.Op = OpDel
@@ -177,7 +187,6 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
 		rec.Tombstone = e.Tombstone
 		rec.Expiry = e.Expiry
 	}
-
 	return m.appendRecord(key, rec)
 }
 
@@ -237,12 +246,14 @@ func (m *Manager) Sync() error {
 	return nil
 }
 
-// SyncPeriodic flushes the active WAL. Interval mode syncs periodically even
-// while idle, so its durability window has an explicit upper bound.
+// SyncPeriodic flushes the active WAL when dirty. Interval mode no longer
+// syncs while idle: with no appends since the last sync there is nothing
+// new to bound, so skipping avoids a wakeup syscall per tick. Use Sync for
+// an unconditional flush.
 func (m *Manager) SyncPeriodic() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.wal == nil {
+	if m.wal == nil || !m.dirty {
 		return nil
 	}
 	if err := m.syncActiveWAL(); err != nil {

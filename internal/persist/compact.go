@@ -12,6 +12,28 @@ import (
 	"github.com/kraytos17/cinder/internal/counter"
 )
 
+// writeFileSynced writes data to path, syncs the file, and syncs dir so
+// the new directory entry (or overwrite) is durable. Used for the CURRENT
+// pointer, where a torn write would misdirect the next recovery.
+func writeFileSynced(path string, data []byte, dir string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return fsyncDir(dir)
+}
+
 func (m *Manager) MaybeCompact() bool {
 	m.mu.Lock()
 	interval, maxBytes, maxEntries, last := m.snapshotInterval, m.maxWALBytes, m.maxWALEntries, m.lastCompact
@@ -90,8 +112,11 @@ func (m *Manager) compactLocked() error {
 			nextVersion = p.Entry.Version + 1
 		}
 
+		// Ownership move: LiveEntries already returns Clones, so a second
+		// value copy here would double memcpy on every compacted entry.
+		// Key still converts string->[]byte (one alloc, required).
 		se := SnapEntry{
-			Key: []byte(p.Key), Value: append([]byte(nil), p.Entry.Value...),
+			Key: []byte(p.Key), Value: p.Entry.Value,
 			Version: p.Entry.Version, Writer: p.Entry.WriterNodeHash, Tombstone: p.Entry.Tombstone,
 			Freq: p.Freq,
 		}
@@ -118,7 +143,11 @@ func (m *Manager) compactLocked() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(m.dir, currentFile), []byte(name), 0o644); err != nil {
+	// Durable publication: the snapshot file is already synced before
+	// rename by SnapWriter.stream; sync the CURRENT pointer file and the
+	// directory so a crash cannot leave a renamed snapshot unreferenced or
+	// a CURRENT pointing at a missing file.
+	if err := writeFileSynced(filepath.Join(m.dir, currentFile), []byte(name), m.dir); err != nil {
 		return err
 	}
 	if m.wal != nil {

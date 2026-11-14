@@ -112,6 +112,26 @@ func (e Entry) encode() ([]byte, error) {
 
 var errTooLarge = errors.New("persist: WAL entry too large")
 
+// clonePair copies key and value with a single allocation. The two halves
+// share one backing block but are capped with full slice expressions, so
+// appends to either half reallocate instead of clobbering the other.
+// Recovery and snapshot replay treat decoded rows as immutable and the
+// store clones on retain, so sharing is safe.
+func clonePair(key, val []byte) (k, v []byte) {
+	if len(key)+len(val) == 0 {
+		// Preserve non-nil empty slices: callers distinguish empty from
+		// absent (e.g. empty value vs no value) in a few paths.
+		return append([]byte(nil), key...), append([]byte(nil), val...)
+	}
+
+	buf := make([]byte, 0, len(key)+len(val))
+	buf = append(buf, key...)
+	buf = append(buf, val...)
+	k = buf[:len(key):len(key)]
+	v = buf[len(key) : len(key)+len(val) : len(key)+len(val)]
+	return k, v
+}
+
 // Writer appends checksummed v2 records. Open with Truncate for a fresh
 // log or Append to resume across restarts (missing/empty file gets a fresh
 // header; a present-but-invalid header truncates to a fresh log).
@@ -126,6 +146,11 @@ type Writer struct {
 	// still bounds recovery replay, and the count converges after the
 	// next compact rotates to a fresh file.
 	entries uint64
+	// scratch stages one encoded record (Append) or batch (AppendBatch)
+	// under mu, so steady-state appends reuse the buffer instead of
+	// allocating a frame per call. It grows to the largest record seen
+	// and stays there — bounded by the max record size, one per writer.
+	scratch []byte
 }
 
 // OpenWriter opens path for records. Truncate starts fresh; Append resumes.
@@ -281,15 +306,26 @@ func writeHeader(f *os.File) error {
 
 // Append encodes one record and writes it to the append-only WAL. Call
 // Sync when the caller requires the data to be flushed for crash durability.
+// The encode stages into a writer-owned scratch buffer under mu, so
+// steady-state appends allocate nothing for the frame itself; the caller's
+// Entry slices are still copied into the frame (required — the caller may
+// reuse them after Append returns).
 func (w *Writer) Append(e Entry) error {
-	buf, err := e.encode()
+	size, err := e.recordSize()
 	if err != nil {
 		return err
 	}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if cap(w.scratch) < size {
+		w.scratch = make([]byte, 0, size)
+	}
+	buf := e.appendTo(w.scratch[:0])
 	n, err := w.f.Write(buf)
+	// Keep the staging capacity for the next record without pinning the
+	// just-written bytes: reset length, retain backing array.
+	w.scratch = buf[:0]
 	w.size += int64(n)
 	if err == nil {
 		w.entries++
@@ -316,6 +352,10 @@ func (w *Writer) AppendBatch(es []Entry) (int, error) {
 		total += size
 	}
 
+	// Stage outside mu so concurrent single Appends are not blocked during
+	// the batch encode; the single staging alloc per batch is negligible
+	// (1/512 records) and avoids growing the writer's steady-state scratch
+	// to the largest batch size.
 	out := make([]byte, 0, total)
 	for _, e := range es {
 		out = e.appendTo(out)
@@ -537,12 +577,15 @@ func (r *Reader) Next() (Entry, bool) {
 		}
 	}
 
+	kCopy, vCopy := clonePair(key, val)
 	e := Entry{
-		Op: Op(op), Key: append([]byte(nil), key...), Value: append([]byte(nil), val...),
+		Op: Op(op), Key: kCopy, Value: vCopy,
 		Version: ver, Writer: writer, Tombstone: tomb != 0,
 	}
 	if e.Op == OpCounterState {
-		e.Counter = append([]byte(nil), val...)
+		// Counter payload reuses the value half of the combined block;
+		// Value stays nil so counter records never double-retain.
+		e.Counter = e.Value
 		e.Value = nil
 	}
 	if hasTTL != 0 {
