@@ -287,8 +287,10 @@ func EncodeRequest(req Request, authToken []byte) ([]byte, error) {
 }
 
 // maxTTLms bounds relative TTLs to the u32 wire field (~49.7 days).
-// Larger durations would silently truncate on encode.
-const maxTTLms = int64(math.MaxInt32)
+// Larger durations would silently truncate on encode. Note this is the
+// *unsigned* 32-bit max: MaxInt32 would wrongly reject the upper half
+// of the wire range that the decoder accepts.
+const maxTTLms = int64(math.MaxUint32)
 
 // EncodeRequestInto is EncodeRequest reusing buf's capacity across calls.
 func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error) {

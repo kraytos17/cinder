@@ -336,6 +336,26 @@ func TestEncodeTTLTooLarge(t *testing.T) {
 	}
 }
 
+func TestEncodeTTLUpperU32HalfRoundTrips(t *testing.T) {
+	// Regression test: the u32 wire field spans ~49.7 days, so TTLs above
+	// 2^31-1 ms (~24.8 days) are legitimate and must survive a
+	// decode-encode round trip. A MaxInt32 bound here wrongly rejected
+	// the upper half of the wire range (found by FuzzDecodeRequest).
+	for _, ttl := range []time.Duration{
+		30 * 24 * time.Hour,
+		time.Duration(math.MaxUint32) * time.Millisecond,
+	} {
+		req := Request{Opcode: OpSet, Key: []byte("k"), Value: []byte("v"), TTL: ttl}
+		frame, err := EncodeRequest(req, nil)
+		if err != nil {
+			t.Fatalf("encode TTL %v: %v", ttl, err)
+		}
+		if _, err := DecodeRequest(splitTestFrame(frame)); err != nil {
+			t.Fatalf("decode TTL %v: %v", ttl, err)
+		}
+	}
+}
+
 func TestEncodeAuthTokenLength(t *testing.T) {
 	req := Request{Opcode: OpGet, Key: []byte("k")}
 	if _, err := EncodeRequest(req, bytes.Repeat([]byte{1}, 31)); err == nil {
