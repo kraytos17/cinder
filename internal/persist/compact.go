@@ -3,6 +3,7 @@ package persist
 import (
 	"cmp"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -49,7 +50,7 @@ func (m *Manager) MaybeCompact() bool {
 	m.mu.Unlock()
 	if counterStore != nil && size >= 0 {
 		counterBytes := counterStore.SizeBytes()
-		maxInt64 := uint64(1<<63 - 1)
+		maxInt64 := uint64(math.MaxInt64)
 		if counterBytes > maxInt64-uint64(size) {
 			size = int64(maxInt64)
 		} else {
@@ -228,7 +229,7 @@ func (m *Manager) walFiles() []string {
 	}
 
 	slices.SortFunc(segs, func(a, b seg) int { return cmp.Compare(a.seq, b.seq) })
-	var out []string
+	out := make([]string, 0, len(segs)+1)
 	for _, s := range segs {
 		out = append(out, s.path)
 	}

@@ -1,6 +1,7 @@
 package repl
 
 import (
+	"bytes"
 	"slices"
 	"strconv"
 	"strings"
@@ -15,6 +16,13 @@ import (
 // Read performs a local read or a quorum read, depending on the replica set
 // and requested quorum. Concurrent quorum reads for the same key and R
 // share one in-flight fan-out.
+//
+// Availability-first (best-effort quorum): transport failures are ignored
+// and NotFound votes do not count as acks, but once the fan-out is drained
+// the LWW winner is served even when fewer than R acks arrived. A degraded
+// read therefore returns the best available copy and flags repair instead
+// of failing with ErrQuorum; only a total miss (no votes anywhere) yields
+// ErrNotFound.
 func (m *Manager) Read(key string, replicas []string, r hashring.ReplicaCount, traceID, spanID uint64) (store.Entry, error) {
 	if r < 1 || r > hashring.MaxReplicas {
 		return store.Entry{}, ErrInvalidReplicaCount
@@ -62,10 +70,16 @@ func (m *Manager) readCoalesced(key string, replicas []string, r hashring.Replic
 // replicas' answer to another. Order-insensitive (sorted); length-prefixed
 // so arbitrary key bytes cannot collide with set members.
 func flightKey(key string, replicas []string, r hashring.ReplicaCount) string {
-	set := append([]string(nil), replicas...)
+	set := slices.Clone(replicas)
 	slices.Sort(set)
 
 	var b strings.Builder
+	n := 32 + len(key)
+	for _, s := range set {
+		n += len(s) + 8
+	}
+
+	b.Grow(n)
 	b.WriteString(strconv.Itoa(int(r)))
 	b.WriteByte(0)
 	b.WriteString(strconv.Itoa(len(key)))
@@ -87,20 +101,29 @@ func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCoun
 	}
 
 	req := protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key), TraceID: traceID, SpanID: spanID}
-	out := m.launch(req, replicas)
-	for rd.pending > 0 && rd.acks < int(r) {
-		res := <-out
-		rd.pending--
-		rd.noteRemote(res.res, res.err)
-	}
-	// Drain stragglers in the background so no send outlives the operation.
-	// Post-decision arrivals are ignored entirely (the reducer already
-	// fired); the loop only drains the channel.
-	go func() {
-		for range rd.pending {
-			<-out
+	if len(replicas) == 1 {
+		// Fast path: one inline Send, no channel or drain goroutine.
+		res, err := m.transport.Send(replicas[0], req)
+		rd.pending = 0
+		rd.noteRemote(res, err)
+	} else {
+		out := m.launch(req, replicas)
+		for rd.pending > 0 && rd.acks < int(r) {
+			res := <-out
+			rd.pending--
+			rd.noteRemote(res.res, res.err)
 		}
-	}()
+		// Drain stragglers in the background so no send outlives the operation.
+		// Post-decision arrivals are ignored entirely (the reducer already
+		// fired); the loop only drains the channel.
+		if rd.pending > 0 {
+			go func() {
+				for range rd.pending {
+					<-out
+				}
+			}()
+		}
+	}
 
 	best, ok := rd.winner()
 	if !ok {
@@ -125,12 +148,20 @@ func (m *Manager) readOnce(key string, replicas []string, r hashring.ReplicaCoun
 // anti-entropy can repair them.
 func (m *Manager) repair(key string, replicas []string, winner store.Entry, traceID, spanID uint64) {
 	req := protocol.Request{
-		Opcode: protocol.OpReplicate, Key: []byte(key), Value: append([]byte(nil), winner.Value...),
+		Opcode: protocol.OpReplicate, Key: []byte(key), Value: bytes.Clone(winner.Value),
 		Version: winner.Version, WriterNodeHash: winner.WriterNodeHash, Tombstone: winner.Tombstone,
 		TraceID: traceID, SpanID: spanID,
 	}
 	if !winner.Expiry.IsNone() {
 		req.ExpiresAt = winner.Expiry
+	}
+	if len(replicas) == 0 {
+		return
+	}
+	if len(replicas) == 1 {
+		// Fast path: one inline best-effort Send, no channel or goroutine.
+		m.transport.Send(replicas[0], req)
+		return
 	}
 
 	out := m.launch(req, replicas)
@@ -156,7 +187,7 @@ type reducer struct {
 
 func (d *reducer) noteLocal(e store.Entry) {
 	d.acks++
-	d.best = e.Clone()
+	d.best = e
 	d.hasBest = true
 }
 

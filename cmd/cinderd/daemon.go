@@ -34,7 +34,7 @@ import (
 func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
 	if cfg.TLS {
 		if cfg.TLSCert == "" || cfg.TLSKey == "" {
-			return fmt.Errorf("--tls requires --tls-cert and --tls-key")
+			return errors.New("--tls requires --tls-cert and --tls-key")
 		}
 		if err := srv.ConfigureTLS(cfg.TLSCert, cfg.TLSKey, cfg.TLSCA); err != nil {
 			return fmt.Errorf("tls: %w", err)
@@ -47,7 +47,7 @@ func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
 	}
 	if cfg.EnablePersistence {
 		if cfg.DataDir == "" {
-			return fmt.Errorf("--data-dir is required with --enable-persistence")
+			return errors.New("--data-dir is required with --enable-persistence")
 		}
 		if err := srv.ConfigurePersistence(cfg.DataDir); err != nil {
 			return fmt.Errorf("persistence: %w", err)

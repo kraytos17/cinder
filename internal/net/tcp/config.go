@@ -3,7 +3,6 @@ package tcp
 import (
 	"crypto/tls"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/ae"
@@ -164,7 +163,7 @@ func (s *Server) SetFsyncPolicy(raw string) error {
 	m := s.persist
 	s.persistMu.RUnlock()
 	if m == nil {
-		return fmt.Errorf("persistence is not configured")
+		return errors.New("persistence is not configured")
 	}
 
 	mode, interval, err := persist.ParseFsyncPolicy(raw)

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -42,7 +43,7 @@ type SnapData struct {
 }
 
 func (e SnapEntry) encode() ([]byte, error) {
-	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
+	if uint64(len(e.Key)) > math.MaxUint32 || uint64(len(e.Value)) > math.MaxUint32 {
 		return nil, errTooLarge
 	}
 
@@ -53,7 +54,7 @@ func (e SnapEntry) encode() ([]byte, error) {
 // appendInto serializes one row onto out without an intermediate buffer.
 // It lets snapshot streaming reuse a scratch slice across entries.
 func (e SnapEntry) appendInto(out []byte) ([]byte, error) {
-	if uint64(len(e.Key)) > maxU32 || uint64(len(e.Value)) > maxU32 {
+	if uint64(len(e.Key)) > math.MaxUint32 || uint64(len(e.Value)) > math.MaxUint32 {
 		return nil, errTooLarge
 	}
 
@@ -114,7 +115,7 @@ func (w *SnapWriter) writeV4(nextVersion uint64, entries []SnapEntry, counters [
 	slices.SortFunc(counters, func(a, b counter.BundleEntry) int { return strings.Compare(a.Key, b.Key) })
 	encodedCounters := counter.EncodeCounterBundle(counters)
 	if encodedCounters == nil && len(counters) != 0 {
-		return fmt.Errorf("persist: invalid counter snapshot state")
+		return errors.New("persist: invalid counter snapshot state")
 	}
 	if len(counters) == 0 {
 		encodedCounters = []byte{0x43, 0x41, 0x45, 0x31, 0, 0, 0, 0} // "CAE1", count=0
@@ -257,7 +258,7 @@ func decodeSnapshotCollect(raw []byte, fn func(SnapEntry) bool) (uint64, []count
 		return 0, nil, fmt.Errorf("persist: truncated snapshot header at offset %d", len(raw))
 	}
 	if binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
-		return 0, nil, fmt.Errorf("persist: invalid snapshot magic at offset 0")
+		return 0, nil, errors.New("persist: invalid snapshot magic at offset 0")
 	}
 
 	var format snapFormat
@@ -364,7 +365,7 @@ func decodeSnapshot(raw []byte, fn func(SnapEntry) bool) (uint64, error) {
 
 func decodeSnapshotCounters(raw []byte) ([]counter.BundleEntry, error) {
 	if len(raw) < 20 || binary.LittleEndian.Uint32(raw[:4]) != snapMagic {
-		return nil, fmt.Errorf("persist: invalid snapshot header")
+		return nil, errors.New("persist: invalid snapshot header")
 	}
 
 	version := binary.LittleEndian.Uint32(raw[4:8])
@@ -372,7 +373,7 @@ func decodeSnapshotCounters(raw []byte) ([]counter.BundleEntry, error) {
 		return nil, nil
 	}
 	if len(raw) < 24 {
-		return nil, fmt.Errorf("persist: truncated v3 snapshot header")
+		return nil, errors.New("persist: truncated v3 snapshot header")
 	}
 
 	kvCount := binary.LittleEndian.Uint32(raw[16:20])
@@ -381,13 +382,13 @@ func decodeSnapshotCounters(raw []byte) ([]counter.BundleEntry, error) {
 	c.SetPos(24)
 	for range kvCount {
 		if _, ok := decodeSnapEntry(&c, snapV4); !ok {
-			return nil, fmt.Errorf("persist: truncated v3 snapshot KV section")
+			return nil, errors.New("persist: truncated v3 snapshot KV section")
 		}
 	}
 
 	end := c.Pos() + int(counterSize)
 	if end > len(raw) {
-		return nil, fmt.Errorf("persist: truncated counter snapshot section")
+		return nil, errors.New("persist: truncated counter snapshot section")
 	}
 
 	bundle := raw[c.Pos():end]

@@ -368,7 +368,7 @@ func (s *Store) SizeBytes() uint64 {
 
 // LiveCounters is a point-in-time copy of every counter.
 func (s *Store) LiveCounters() []BundleEntry {
-	var out []BundleEntry
+	out := make([]BundleEntry, 0, s.Size())
 	for i := range s.shards {
 		s.shards[i].mu.RLock()
 		for k, v := range s.shards[i].index {

@@ -12,6 +12,7 @@ package protocol
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/codec"
@@ -287,7 +288,7 @@ func EncodeRequest(req Request, authToken []byte) ([]byte, error) {
 
 // maxTTLms bounds relative TTLs to the u32 wire field (~49.7 days).
 // Larger durations would silently truncate on encode.
-const maxTTLms = int64(1<<32 - 1)
+const maxTTLms = int64(math.MaxInt32)
 
 // EncodeRequestInto is EncodeRequest reusing buf's capacity across calls.
 func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error) {

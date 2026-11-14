@@ -41,7 +41,7 @@ func (m *Manager) finishSync(local []uint64, partner string, resp DigestResponse
 		}
 	}
 
-	var divergent []uint32
+	divergent := make([]uint32, 0, m.numBuckets)
 	for b := range m.numBuckets {
 		if h, ok := remoteBuckets[b]; ok && h != local[b] {
 			divergent = append(divergent, b)
@@ -128,7 +128,7 @@ const metaRowBytes = 4 + 8 + 8 + 8 + 1
 // larger than the budget can still make progress.
 func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []uint32) {
 	requested := make([]bool, m.numBuckets)
-	var unique []uint32
+	unique := make([]uint32, 0, len(bucketIDs))
 	for _, b := range bucketIDs {
 		if b < m.numBuckets && !requested[b] {
 			requested[b] = true
@@ -152,7 +152,7 @@ func (m *Manager) CollectMetadata(bucketIDs []uint32, maxBytes int) ([]byte, []u
 		return cmp.Or(cmp.Compare(a.Bucket, b.Bucket), cmp.Compare(a.KeyHash, b.KeyHash))
 	})
 
-	var covered []uint32
+	covered := make([]uint32, 0, len(unique))
 	bytes := 8 // outer row-count + covered-count u32s
 	for _, b := range unique {
 		if bytes+4 > maxBytes && len(covered) > 0 {

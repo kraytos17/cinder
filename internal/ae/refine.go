@@ -14,15 +14,15 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 	})
 
 	var reconstructed []MetaRow
-	var reconstructedCovered []uint32
-	sketchHasDiff := map[uint32]bool{}
-	coveredSet := map[uint32]bool{}
+	reconstructedCovered := make([]uint32, 0, len(resp.Covered))
+	sketchHasDiff := make(map[uint32]bool, len(resp.Sketches))
+	coveredSet := make(map[uint32]bool, len(resp.Covered))
 	for _, b := range resp.Covered {
 		coveredSet[b] = true
 		reconstructedCovered = append(reconstructedCovered, b)
 	}
 
-	var failed []uint32
+	failed := make([]uint32, 0, len(resp.Sketches))
 	for _, sk := range resp.Sketches {
 		if sk.Bucket >= m.numBuckets || !coveredSet[sk.Bucket] {
 			failed = append(failed, sk.Bucket)
@@ -35,7 +35,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		remoteSketch := DecodeIBLT(sk.Blob)
 		var localSketch []IBLTCell
 		if ok && len(covered) == 1 {
-			var items []IBLTItem
+			items := make([]IBLTItem, 0, len(localRows))
 			for _, r := range localRows {
 				items = append(items, IBLTItem{KeyHash: r.KeyHash, Version: r.Version, Writer: r.Writer, Tombstone: r.Tombstone})
 			}
@@ -65,7 +65,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 			continue
 		}
 
-		removed := map[uint64]bool{}
+		removed := make(map[uint64]bool, len(diff.LocalOnly))
 		for _, r := range diff.LocalOnly {
 			removed[r.KeyHash] = true
 		}
@@ -90,6 +90,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 	})
 	if len(failed) > 0 {
 		fbReq := Refinement{ForceMeta: true}
+		fbReq.BucketHashes = make([]BucketHash, 0, len(failed))
 		for _, b := range failed {
 			if b < uint32(len(local)) {
 				fbReq.BucketHashes = append(fbReq.BucketHashes, BucketHash{Bucket: b, Hash: local[b]})
@@ -111,7 +112,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 
 		// Merge: keep successfully-sketched rows, replace failed buckets
 		// with explicit fallback rows; covered = survivors + fallback.
-		failedSet := map[uint32]bool{}
+		failedSet := make(map[uint32]bool, len(failed))
 		for _, b := range failed {
 			failedSet[b] = true
 		}
@@ -124,7 +125,7 @@ func (m *Manager) finishRefinement(local []uint64, partner string, resp DigestRe
 		}
 
 		reconstructed = append(reconstructed[:len(kept)], fbResp.Rows...)
-		coveredSet := map[uint32]bool{}
+		coveredSet := make(map[uint32]bool, len(reconstructedCovered)+len(fbResp.Covered))
 		for _, b := range reconstructedCovered {
 			if !failedSet[b] {
 				coveredSet[b] = true

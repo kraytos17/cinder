@@ -2,7 +2,7 @@ package persist
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"path/filepath"
 	"testing"
 	"time"
@@ -24,7 +24,7 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 	for seed := range cases {
 		seed := int64(seed)
 		t.Run(fmt.Sprintf("seed-%03d", seed), func(t *testing.T) {
-			rng := rand.New(rand.NewSource(seed + 20261113))
+			rng := rand.New(rand.NewPCG(uint64(seed+20261113), 0))
 			dir := t.TempDir()
 			cache := store.NewLRUStore(1<<20, nil)
 			counters := counter.NewStore(1 << 20)
@@ -55,9 +55,9 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 			expectedHints := map[string]repl.Hint{}
 
 			for op := range 24 {
-				key := kvKeys[rng.Intn(len(kvKeys))]
+				key := kvKeys[rng.IntN(len(kvKeys))]
 				version := uint64(seed*100 + int64(op) + 1)
-				switch rng.Intn(4) {
+				switch rng.IntN(4) {
 				case 0, 1:
 					value := fmt.Sprintf("value-%d-%d", seed, op)
 					e := store.Entry{Value: []byte(value), Version: version, WriterNodeHash: uint64(seed + 1)}
@@ -85,11 +85,11 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 					expectedKV[key] = got
 				}
 
-				ck := counterKeys[rng.Intn(len(counterKeys))]
-				actor := fmt.Sprintf("actor-%d", rng.Intn(3))
-				amount := uint64(rng.Intn(20) + 1)
+				ck := counterKeys[rng.IntN(len(counterKeys))]
+				actor := fmt.Sprintf("actor-%d", rng.IntN(3))
+				amount := uint64(rng.IntN(20) + 1)
 				var err error
-				if rng.Intn(2) == 0 {
+				if rng.IntN(2) == 0 {
 					err = counters.Increment(ck, actor, amount)
 				} else {
 					err = counters.Decrement(ck, actor, amount)
@@ -97,9 +97,9 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 				if err != nil {
 					t.Fatalf("seed=%d counter mutation %q: %v", seed, ck, err)
 				}
-				if rng.Intn(4) == 0 {
+				if rng.IntN(4) == 0 {
 					var remote counter.PNCounter
-					if err := remote.Increment(fmt.Sprintf("remote-%d", rng.Intn(3)), amount); err != nil {
+					if err := remote.Increment(fmt.Sprintf("remote-%d", rng.IntN(3)), amount); err != nil {
 						t.Fatal(err)
 					}
 					if err := counters.Merge(ck, remote); err != nil {
@@ -109,8 +109,8 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 				state, _ := counters.Get(ck)
 				expectedCounters[ck] = state
 
-				if rng.Intn(5) == 0 {
-					hintKey := fmt.Sprintf("hint-%d-%d", seed, rng.Intn(4))
+				if rng.IntN(5) == 0 {
+					hintKey := fmt.Sprintf("hint-%d-%d", seed, rng.IntN(4))
 					hint := repl.Hint{
 						Target: "peer",
 						Req: protocol.Request{

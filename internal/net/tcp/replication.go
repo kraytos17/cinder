@@ -1,6 +1,7 @@
 package tcp
 
 import (
+	"bytes"
 	"errors"
 
 	"github.com/kraytos17/cinder/internal/counter"
@@ -91,7 +92,7 @@ func (s *Server) applyReplicated(req protocol.Request) protocol.Response {
 	}
 
 	e := store.Entry{
-		Value:          append([]byte(nil), req.Value...),
+		Value:          bytes.Clone(req.Value),
 		Version:        req.Version,
 		WriterNodeHash: req.WriterNodeHash,
 		Tombstone:      req.Tombstone,

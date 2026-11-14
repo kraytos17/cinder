@@ -1,8 +1,10 @@
 package testkit
 
 import (
+	"cmp"
 	"errors"
 	"math/rand/v2"
+	"slices"
 	"sync"
 	"time"
 
@@ -184,15 +186,10 @@ func (f *FaultTransport) deliverLocked() {
 			later = append(later, ev)
 		}
 	}
+
 	// Stable order by deliver_at (insertion order breaks ties, like the
 	// SimBus priority queue).
-	for i := 1; i < len(due); i++ {
-		j := i
-		for j > 0 && due[j].deliverAt < due[j-1].deliverAt {
-			due[j], due[j-1] = due[j-1], due[j]
-			j--
-		}
-	}
+	slices.SortStableFunc(due, func(a, b faultEvent) int { return cmp.Compare(a.deliverAt, b.deliverAt) })
 	if f.reorder {
 		for i := 0; i+1 < len(due); i += 2 {
 			due[i], due[i+1] = due[i+1], due[i]

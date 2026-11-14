@@ -1,6 +1,8 @@
 package persist
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -122,10 +124,10 @@ func (m *Manager) SetFsyncPolicy(mode FsyncMode, interval time.Duration) error {
 		return fmt.Errorf("persist: invalid fsync mode %d", mode)
 	}
 	if mode == FsyncInterval && interval <= 0 {
-		return fmt.Errorf("persist: fsync interval must be positive")
+		return errors.New("persist: fsync interval must be positive")
 	}
 	if mode != FsyncInterval && interval != 0 {
-		return fmt.Errorf("persist: fsync interval is only valid in interval mode")
+		return errors.New("persist: fsync interval is only valid in interval mode")
 	}
 
 	m.mu.Lock()
@@ -181,7 +183,7 @@ func (m *Manager) OnWrite(key string, e store.Entry, hardDelete bool) error {
 		rec.Writer = e.WriterNodeHash
 	} else {
 		rec.Op = OpSet
-		rec.Value = append([]byte(nil), e.Value...)
+		rec.Value = bytes.Clone(e.Value)
 		rec.Version = e.Version
 		rec.Writer = e.WriterNodeHash
 		rec.Tombstone = e.Tombstone

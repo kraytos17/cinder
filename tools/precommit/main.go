@@ -87,7 +87,7 @@ func findRepository(ctx context.Context) (repository, error) {
 
 	root := strings.TrimSpace(string(out))
 	if root == "" {
-		return repository{}, fmt.Errorf("git returned an empty repository root")
+		return repository{}, errors.New("git returned an empty repository root")
 	}
 	return repository{root: root}, nil
 }

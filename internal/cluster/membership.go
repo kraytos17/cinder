@@ -4,6 +4,7 @@
 package cluster
 
 import (
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -227,7 +228,7 @@ func (t *MembershipTable) applyRumorLocked(rumor NodeInfo) bool {
 }
 
 func nextIncarnation(inc uint64) uint64 {
-	if inc == ^uint64(0) {
+	if inc == math.MaxUint64 {
 		return inc
 	}
 	return inc + 1
@@ -421,8 +422,9 @@ func (t *MembershipTable) Snapshot() []NodeInfo {
 
 // AliveIDs returns the ids of Alive members in snapshot order.
 func (t *MembershipTable) AliveIDs() []string {
-	var out []string
-	for _, m := range t.Snapshot() {
+	snap := t.Snapshot()
+	out := make([]string, 0, len(snap))
+	for _, m := range snap {
 		if m.State == Alive {
 			out = append(out, m.ID)
 		}

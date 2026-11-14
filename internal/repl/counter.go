@@ -1,6 +1,8 @@
 package repl
 
 import (
+	"bytes"
+
 	"github.com/kraytos17/cinder/internal/net/protocol"
 )
 
@@ -10,13 +12,13 @@ import (
 // through the LWW path and cannot carry counter state. Anti-entropy repairs
 // missed merges.
 func (m *Manager) ReplicateCounter(key string, encodedState []byte, replicas []string, traceID, spanID uint64) {
-	if len(encodedState) == 0 {
+	if len(encodedState) == 0 || len(replicas) == 0 {
 		return
 	}
 
 	req := protocol.Request{
 		Opcode: protocol.OpCounterMerge, Key: []byte(key),
-		Value:   append([]byte(nil), encodedState...),
+		Value:   bytes.Clone(encodedState),
 		TraceID: traceID, SpanID: spanID,
 	}
 	for _, node := range replicas {

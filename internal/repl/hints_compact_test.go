@@ -26,6 +26,8 @@ func (j *stubJournal) AppendAdd(h Hint) {
 
 func (j *stubJournal) AppendDel(_, _ string, _ uint64) {}
 
+func (j *stubJournal) AppendDels(_ []HintDel) {}
+
 func (j *stubJournal) NeedsCompaction() bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()

@@ -140,6 +140,7 @@ func (s *Server) ownerOf(key string) string {
 // when membership has a reachable address for the owner.
 func (s *Server) redirectTo(owner string) string {
 	var value strings.Builder
+	value.Grow(len("moved to ") + len(owner))
 	value.WriteString("moved to ")
 	value.WriteString(owner)
 	s.ringMu.RLock()

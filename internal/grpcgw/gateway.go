@@ -164,8 +164,7 @@ func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*
 	out := &gen.CounterGetResponse{Status: toProtoStatus(res.Status)}
 	if res.Status == protocol.StatusOK && res.HasValue {
 		if c, err := counter.DecodePNCounter(res.Value); err == nil {
-			v := c.Value()
-			out.Value = &v
+			out.Value = new(c.Value())
 		} else {
 			// Unreachable in practice: the store only holds states this
 			// codec produced. Reported, not hidden, via CORRUPT_DATA.

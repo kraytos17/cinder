@@ -1,8 +1,8 @@
 package repl
 
 import (
+	"bytes"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/expiry"
@@ -26,7 +26,7 @@ func (m *Manager) Write(key string, value []byte, ttl time.Duration, replicas []
 	// PutVersioned clones into the store before returning, so sharing
 	// the backing array between e.Value and req.Value is safe. The
 	// encoder copies into frames and the hint queue retains req.
-	valueCopy := append([]byte(nil), value...)
+	valueCopy := bytes.Clone(value)
 	e := store.Entry{Value: valueCopy, Version: version, WriterNodeHash: m.writer}
 	if ttl > 0 {
 		// At, not After: matches store admission (zero is handled by
@@ -122,13 +122,23 @@ type fanResult struct {
 }
 
 // fanOutAsync sends req to every replica concurrently and returns
-// immediately. Failed sends enqueue hints for later replay.
+// immediately. Failed sends enqueue hints for later replay. The
+// single-replica case (RF=2) uses one background goroutine instead of the
+// channel + sender + drainer trio.
 func (m *Manager) fanOutAsync(key string, req protocol.Request, replicas []string) {
 	if e := m.log().Debug(); e != nil {
 		log.Fields(e, req.TraceID, req.SpanID).
 			Str("key", key).
 			Strs("replicas", replicas).
 			Msg("replicating")
+	}
+	if len(replicas) == 1 {
+		go func() {
+			if _, err := m.transport.Send(replicas[0], req); err != nil {
+				m.enqueueHint(replicas[0], req)
+			}
+		}()
+		return
 	}
 
 	out := m.launch(req, replicas)
@@ -154,6 +164,14 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 		// No replicas: the local ack alone satisfies W == 1.
 		return nil
 	}
+	if len(replicas) == 1 {
+		// Fast path (RF=2): one inline Send, no channel or goroutines.
+		if _, err := m.transport.Send(replicas[0], req); err != nil {
+			m.enqueueHint(replicas[0], req)
+			return ErrQuorum
+		}
+		return nil
+	}
 
 	out := m.launch(req, replicas)
 	acks := 1 // local write
@@ -168,11 +186,15 @@ func (m *Manager) fanOutQuorum(req protocol.Request, replicas []string) error {
 		}
 
 		if acks >= w {
-			go m.drainHints(req, out, pending)
+			if pending > 0 {
+				go m.drainHints(req, out, pending)
+			}
 			return nil
 		}
 		if acks+pending < w {
-			go m.drainHints(req, out, pending)
+			if pending > 0 {
+				go m.drainHints(req, out, pending)
+			}
 			return ErrQuorum
 		}
 	}
@@ -248,27 +270,81 @@ func (m *Manager) ReplayHints() int {
 
 	defer m.replaying.Store(false)
 	batch := m.hints.Snapshot(m.clock.Now(), ReplayBatch)
+	// Bounded workers instead of one goroutine per hint. Chunked
+	// strides keep every hint attempted exactly once with far less
+	// goroutine/channel churn and a smoother pool load. Successes are
+	// collected per worker and applied as one RemoveIDs pass plus one
+	// journal batch: per-success Remove scans would serialize 16 workers
+	// on the queue mutex (256 O(n) scans) and per-success journal writes
+	// would cost a lock+write each.
+	workers := replayWorkers(len(batch))
+	type outcome struct {
+		ids  []uint64
+		dels []HintDel
+	}
 
-	var wg sync.WaitGroup
-	var replayed atomic.Int64
-	for _, h := range batch {
-		wg.Add(1)
-		go func(h Hint) {
-			defer wg.Done()
-			if _, err := m.transport.Send(h.Target, h.Req); err == nil {
-				m.hints.Remove(h.ID)
-				if m.journal != nil {
-					m.journal.AppendDel(h.Target, string(h.Req.Key), h.Req.Version)
-				}
-				replayed.Add(1)
+	won := make([]outcome, workers)
+	if workers > 0 {
+		share := (len(batch) + workers - 1) / workers
+		for w := range won {
+			won[w].ids = make([]uint64, 0, share)
+			if m.journal != nil {
+				won[w].dels = make([]HintDel, 0, share)
 			}
-		}(h)
+		}
+	}
+
+	journaled := m.journal != nil
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := w; i < len(batch); i += workers {
+				h := batch[i]
+				if _, err := m.transport.Send(h.Target, h.Req); err != nil {
+					continue
+				}
+
+				won[w].ids = append(won[w].ids, h.ID)
+				if journaled {
+					won[w].dels = append(won[w].dels, HintDel{
+						Target: h.Target, Key: h.Req.Key, Version: h.Req.Version,
+					})
+				}
+			}
+		}(w)
 	}
 
 	wg.Wait()
-	n := int(replayed.Load())
+	// Presized to the batch: every worker outcome lands here, so this
+	// avoids growth reallocs on every replay round. The dels buffer is
+	// only allocated when a journal exists to receive it.
+	ids := make([]uint64, 0, len(batch))
+	var dels []HintDel
+	if journaled {
+		dels = make([]HintDel, 0, len(batch))
+	}
+	for w := range won {
+		ids = append(ids, won[w].ids...)
+		dels = append(dels, won[w].dels...)
+	}
+
+	m.hints.RemoveIDs(ids)
+	if m.journal != nil {
+		m.journal.AppendDels(dels)
+	}
+
+	n := len(ids)
 	obs.IfPresent(&m.met, func(mt *metrics.Collector) {
 		mt.HintsReplayed.Add(uint64(n))
 	})
 	return n
+}
+
+// replayWorkers bounds replay fan-out: one worker per hint up to the cap,
+// then strided sharing. The cap keeps full-batch replays off the pool's
+// hot path without serializing small batches.
+func replayWorkers(n int) int {
+	return min(max(n, 0), maxReplayWorkers)
 }

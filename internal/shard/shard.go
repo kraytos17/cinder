@@ -17,6 +17,7 @@
 package shard
 
 import (
+	"bytes"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -198,7 +199,7 @@ func makeReplicateRequest(key string, e store.Entry) protocol.Request {
 	req := protocol.Request{
 		Opcode:         protocol.OpReplicate,
 		Key:            []byte(key),
-		Value:          append([]byte(nil), e.Value...),
+		Value:          bytes.Clone(e.Value),
 		Version:        e.Version,
 		WriterNodeHash: e.WriterNodeHash,
 		Tombstone:      e.Tombstone,

@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"crypto/tls"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -171,7 +172,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn == nil {
-		return protocol.Response{}, fmt.Errorf("client: connection closed")
+		return protocol.Response{}, errors.New("client: connection closed")
 	}
 
 	frame, err := protocol.EncodeRequestInto(req, tokenFor(c.secrets, time.Now()), c.encodeBuf)
@@ -198,7 +199,7 @@ func (c *Client) Do(req protocol.Request) (protocol.Response, error) {
 		return protocol.Response{}, c.fail(err)
 	}
 	if header[0] != protocol.Magic || header[1] != protocol.Version {
-		return protocol.Response{}, c.fail(fmt.Errorf("client: bad response header"))
+		return protocol.Response{}, c.fail(errors.New("client: bad response header"))
 	}
 	if header[2] != 0 {
 		return protocol.Response{}, c.fail(fmt.Errorf("client: response opcode %d", header[2]))
@@ -243,7 +244,7 @@ func (c *Client) Raw(frame []byte) ([]byte, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.conn == nil {
-		return nil, fmt.Errorf("client: connection closed")
+		return nil, errors.New("client: connection closed")
 	}
 	if err := c.setDeadline(); err != nil {
 		return nil, c.fail(err)

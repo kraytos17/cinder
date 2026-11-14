@@ -2,8 +2,9 @@ package load
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"math/rand/v2"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -73,7 +74,7 @@ func (c *Config) validate() (Config, error) {
 	out := *c
 	out.Mix = c.Mix.withDefault()
 	if len(out.Nodes) == 0 {
-		return out, fmt.Errorf("load: no target nodes")
+		return out, errors.New("load: no target nodes")
 	}
 	if out.RPCTimeout <= 0 {
 		out.RPCTimeout = 5 * time.Second
@@ -82,16 +83,16 @@ func (c *Config) validate() (Config, error) {
 		out.Workers = 1
 	}
 	if out.TotalOps < 0 {
-		return out, fmt.Errorf("load: negative TotalOps")
+		return out, errors.New("load: negative TotalOps")
 	}
 	if out.KeySpace <= 0 {
 		out.KeySpace = 10000
 	}
 	if out.HotKeys < 0 || out.HotFraction < 0 || out.HotFraction > 1 {
-		return out, fmt.Errorf("load: bad hot-key config")
+		return out, errors.New("load: bad hot-key config")
 	}
 	if out.ValueSize < 0 {
-		return out, fmt.Errorf("load: negative ValueSize")
+		return out, errors.New("load: negative ValueSize")
 	}
 	return out, nil
 }
@@ -211,7 +212,7 @@ func pickOp(rng *rand.Rand, m Mix) opKind {
 // key universe (hot keys collide across workers by design).
 func pickKey(rng *rand.Rand, cfg Config) string {
 	if cfg.HotKeys > 0 && rng.Float64() < cfg.HotFraction {
-		return fmt.Sprintf("hot-%d", rng.IntN(cfg.HotKeys))
+		return "hot-" + strconv.Itoa(rng.IntN(cfg.HotKeys))
 	}
-	return fmt.Sprintf("k-%d", rng.IntN(cfg.KeySpace))
+	return "k-" + strconv.Itoa(rng.IntN(cfg.KeySpace))
 }

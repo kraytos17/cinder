@@ -1,7 +1,8 @@
 package persist
 
 import (
-	"fmt"
+	"errors"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -18,12 +19,12 @@ func ParseFsyncPolicy(raw string) (FsyncMode, time.Duration, error) {
 
 	value, ok := strings.CutPrefix(raw, "interval:")
 	if !ok {
-		return 0, 0, fmt.Errorf("--fsync must be none, always, or interval:<ms>")
+		return 0, 0, errors.New("--fsync must be none, always, or interval:<ms>")
 	}
 
 	ms, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || ms <= 0 || ms > int64(time.Duration(1<<63-1)/time.Millisecond) {
-		return 0, 0, fmt.Errorf("--fsync interval must be a positive number of milliseconds")
+	if err != nil || ms <= 0 || ms > int64(time.Duration(math.MaxInt64)/time.Millisecond) {
+		return 0, 0, errors.New("--fsync interval must be a positive number of milliseconds")
 	}
 	return FsyncInterval, time.Duration(ms) * time.Millisecond, nil
 }

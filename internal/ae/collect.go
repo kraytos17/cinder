@@ -19,10 +19,10 @@ func (m *Manager) collectEntriesForHashes(hashes []uint64) []SyncItem {
 		return nil
 	}
 
-	sorted := append([]uint64(nil), hashes...)
+	sorted := slices.Clone(hashes)
 	slices.Sort(sorted)
 	sorted = slices.Compact(sorted)
-	resolved := map[uint64]string{}
+	resolved := make(map[uint64]string, len(sorted))
 	m.store.ForEach(func(key string, _ store.Entry) {
 		h := KeyHash(key)
 		i, _ := slices.BinarySearch(sorted, h)

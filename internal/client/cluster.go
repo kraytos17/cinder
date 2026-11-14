@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/tls"
+	"math"
 	"math/rand/v2"
 	"slices"
 	"sync"
@@ -138,8 +139,8 @@ func retryBackoff(attempt int, base time.Duration) time.Duration {
 
 	delay := int64(base)
 	for range attempt {
-		if delay > int64(time.Duration(1<<63-1))/2 {
-			return time.Duration(1<<63 - 1)
+		if delay > int64(time.Duration(math.MaxInt64))/2 {
+			return time.Duration(math.MaxInt64)
 		}
 		delay *= 2
 	}
@@ -152,16 +153,13 @@ func jitterBackoff(delay time.Duration) time.Duration {
 	}
 
 	jitter := 0.8 + rand.Float64()*0.4
-	maxDuration := time.Duration(1<<63 - 1)
+	maxDuration := time.Duration(math.MaxInt64)
 	if float64(delay) >= float64(maxDuration)/jitter {
 		return maxDuration
 	}
 
 	d := time.Duration(float64(delay) * jitter)
-	if d < 1 {
-		return time.Nanosecond
-	}
-	return d
+	return max(d, time.Nanosecond)
 }
 
 // sendToOwner routes one request, following redirects within the hop

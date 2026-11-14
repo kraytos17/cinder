@@ -115,7 +115,7 @@ func (g *GossipManager) HandleMessage(from string, value []byte) {
 func (g *GossipManager) Leave() {
 	g.table.MarkDead(g.self)
 	g.mu.Lock()
-	targets := append([]string(nil), g.peers...)
+	targets := slices.Clone(g.peers)
 	g.mu.Unlock()
 	g.log().Info().Msg("leaving cluster")
 	req := protocol.Request{Opcode: protocol.OpGossip, Value: []byte(EncodeView(g.table.Snapshot()))}

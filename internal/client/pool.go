@@ -107,10 +107,15 @@ func (p *Pool) SetTimeout(timeout time.Duration) {
 // shared secret and node id are set; empty disables auth.
 func (p *Pool) SetSecrets(s Secrets) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.secrets = s
-	for id, c := range p.conns {
-		delete(p.conns, id)
+	conns := make([]*Client, 0, len(p.conns))
+	for _, c := range p.conns {
+		conns = append(conns, c)
+	}
+
+	clear(p.conns)
+	p.mu.Unlock()
+	for _, c := range conns {
 		go c.Close()
 	}
 }
@@ -166,12 +171,18 @@ func (p *Pool) connFor(node string) (*Client, error) {
 	return c, nil
 }
 
-// Close drops every pooled connection.
+// Close drops every pooled connection. Closes run outside the mutex so a
+// slow or stuck connection cannot stall concurrent Send/dial paths.
 func (p *Pool) Close() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	for id, c := range p.conns {
-		delete(p.conns, id)
+	conns := make([]*Client, 0, len(p.conns))
+	for _, c := range p.conns {
+		conns = append(conns, c)
+	}
+
+	clear(p.conns)
+	p.mu.Unlock()
+	for _, c := range conns {
 		go c.Close()
 	}
 }

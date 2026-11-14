@@ -110,10 +110,10 @@ func hashKey(key string) uint64 {
 func (r *Ring) cloneForWrite() *snapshot {
 	old := r.snap.Load()
 	out := &snapshot{
-		hashes: append([]uint64(nil), old.hashes...),
-		nodeIx: append([]uint16(nil), old.nodeIx...),
-		nodes:  append([]string(nil), old.nodes...),
-		loads:  append([]*atomic.Uint64(nil), old.loads...),
+		hashes: slices.Clone(old.hashes),
+		nodeIx: slices.Clone(old.nodeIx),
+		nodes:  slices.Clone(old.nodes),
+		loads:  slices.Clone(old.loads),
 	}
 	return out
 }
@@ -179,7 +179,6 @@ func (r *Ring) RemoveNode(id string) {
 		next := uint16(0)
 		for i := range old.nodes {
 			if i == phys {
-				remap[i] = 0
 				continue
 			}
 
@@ -444,7 +443,7 @@ func (r *Ring) LoadFactor() float64 {
 
 // Nodes returns the physical membership in ring order.
 func (r *Ring) Nodes() []string {
-	return append([]string(nil), r.snap.Load().nodes...)
+	return slices.Clone(r.snap.Load().nodes)
 }
 
 // Stats returns live vnode counts, physical membership, load, and the

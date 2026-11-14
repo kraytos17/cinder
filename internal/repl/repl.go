@@ -32,12 +32,14 @@ type Manager struct {
 var nopLogger = log.Nop()
 
 // HintJournal persists hints across restarts. AppendAdd records a queued
-// hint; AppendDel records a successful replay so recovery drops it.
+// hint; AppendDel records a successful replay so recovery drops it;
+// AppendDels batches many deletions under one lock with one write.
 // NeedsCompaction/Compact bound journal size by rewriting it from the
 // current live queue after its record threshold is reached.
 type HintJournal interface {
 	AppendAdd(h Hint)
 	AppendDel(target, key string, version uint64)
+	AppendDels(dels []HintDel)
 	NeedsCompaction() bool
 	Compact(q *HintQueue) error
 }

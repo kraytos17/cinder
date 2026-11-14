@@ -31,6 +31,34 @@ func TestHistogramEmpty(t *testing.T) {
 	}
 }
 
+// bucketOf edge table: 0/1 land in bucket 0, powers of two open their
+// bucket, values just below a power stay in the previous one. This pins
+// the branchless v|1 fold against the old guarded behavior.
+func TestBucketOfEdges(t *testing.T) {
+	cases := []struct {
+		v    uint64
+		want uint
+	}{
+		{0, 0},
+		{1, 0},
+		{2, 1},
+		{3, 1},
+		{4, 2},
+		{5, 2},
+		{7, 2},
+		{8, 3},
+		{1023, 9},
+		{1024, 10},
+		{1 << 63, 63},
+		{1<<64 - 1, 63},
+	}
+	for _, tc := range cases {
+		if got := bucketOf(tc.v); got != tc.want {
+			t.Fatalf("bucketOf(%d) = %d, want %d", tc.v, got, tc.want)
+		}
+	}
+}
+
 func TestHistogramMerge(t *testing.T) {
 	var a, b Histogram
 	for range 3 {

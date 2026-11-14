@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -587,10 +588,14 @@ type EntryPair struct {
 // freely while iterating the result.
 func (s *Store) LiveEntries() []EntryPair {
 	now := s.clock.Now()
-	var out []EntryPair
+	// Per-shard presized parts joined once: the total is unknown without
+	// taking every lock, and Concat sizes the single result exactly.
+	// (totalNum is cumulative inserts, not live count — unusable here.)
+	parts := make([][]EntryPair, 0, len(s.shards))
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
+		part := make([]EntryPair, 0, len(sh.index))
 		if s.policy == LFUPolicy {
 			// Map order is fine: digests XOR-fold (order-independent)
 			// and snapshot recovery is LWW order-independent.
@@ -599,8 +604,7 @@ func (s *Store) LiveEntries() []EntryPair {
 				if e.Expired(now) {
 					continue
 				}
-
-				out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone(), Freq: sh.nodes[idx].freq})
+				part = append(part, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone(), Freq: sh.nodes[idx].freq})
 			}
 		} else {
 			for idx := sh.head; idx != noLink; idx = sh.nodes[idx].lruNext {
@@ -608,12 +612,14 @@ func (s *Store) LiveEntries() []EntryPair {
 				if e.Expired(now) {
 					continue
 				}
-				out = append(out, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone()})
+				part = append(part, EntryPair{Key: sh.nodes[idx].key, Entry: e.Clone()})
 			}
 		}
+
 		sh.mu.Unlock()
+		parts = append(parts, part)
 	}
-	return out
+	return slices.Concat(parts...)
 }
 
 // ForEach visits a point-in-time snapshot, so the visitor may safely call
@@ -636,23 +642,26 @@ type EntryMeta struct {
 // just like LiveEntries.
 func (s *Store) MetadataSnapshot() []EntryMeta {
 	now := s.clock.Now()
-	var out []EntryMeta
+	parts := make([][]EntryMeta, 0, len(s.shards))
 	for i := range s.shards {
 		sh := &s.shards[i]
 		sh.mu.Lock()
+		part := make([]EntryMeta, 0, len(sh.index))
 		for key, idx := range sh.index {
 			e := sh.nodes[idx].entry
 			if e.Expired(now) {
 				continue
 			}
-			out = append(out, EntryMeta{Key: key, Entry: Entry{
+			part = append(part, EntryMeta{Key: key, Entry: Entry{
 				Version: e.Version, WriterNodeHash: e.WriterNodeHash,
 				Expiry: e.Expiry, Tombstone: e.Tombstone,
 			}})
 		}
+
 		sh.mu.Unlock()
+		parts = append(parts, part)
 	}
-	return out
+	return slices.Concat(parts...)
 }
 
 // ForEachMetadata visits present-entry identity metadata shard-by-shard,
@@ -668,7 +677,6 @@ func (s *Store) ForEachMetadata(fn func(key string, entry Entry)) {
 			if e.Expired(now) {
 				continue
 			}
-
 			fn(key, Entry{Version: e.Version, WriterNodeHash: e.WriterNodeHash, Expiry: e.Expiry, Tombstone: e.Tombstone})
 		}
 		sh.mu.Unlock()

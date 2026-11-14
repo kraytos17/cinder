@@ -16,23 +16,15 @@ type Histogram struct {
 
 // bucketOf returns the log2 bucket for v (0 for v < 2).
 func bucketOf(v uint64) uint {
-	if v < 2 {
-		return 0
-	}
-	return uint(bits.Len64(v) - 1)
+	return uint(bits.Len64(v|1) - 1)
 }
 
 // Record adds one sample.
 func (h *Histogram) Record(d int64) {
-	if d < 0 {
-		d = 0
-	}
-
+	d = max(d, 0)
 	h.buckets[bucketOf(uint64(d))]++
 	h.n++
-	if d > h.max {
-		h.max = d
-	}
+	h.max = max(h.max, d)
 }
 
 // Count returns the number of recorded samples.
@@ -52,11 +44,7 @@ func (h *Histogram) Quantile(q float64) int64 {
 		return h.max
 	}
 
-	target := uint64(q * float64(h.n))
-	if target == 0 {
-		target = 1
-	}
-
+	target := max(uint64(q*float64(h.n)), 1)
 	var cm uint64
 	for i, c := range h.buckets {
 		cm += c
@@ -77,7 +65,5 @@ func (h *Histogram) Merge(other *Histogram) {
 	}
 
 	h.n += other.n
-	if other.max > h.max {
-		h.max = other.max
-	}
+	h.max = max(h.max, other.max)
 }

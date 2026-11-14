@@ -340,6 +340,17 @@ func encodeJournalDel(target, key string, version uint64) []byte {
 	return frameJournalRecord(payload)
 }
 
+// encodeJournalDelKey journals a deletion for an already-owned key slice,
+// avoiding the string conversion when the caller holds wire bytes.
+func encodeJournalDelKey(target string, key []byte, version uint64) []byte {
+	payload := make([]byte, 0, 1+4+len(target)+4+len(key)+8)
+	payload = append(payload, journalOpDel)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, target)
+	payload = codec.AppendBlob(payload, binary.LittleEndian, key)
+	payload = codec.Append(payload, binary.LittleEndian, version)
+	return frameJournalRecord(payload)
+}
+
 func frameJournalRecord(payload []byte) []byte {
 	out := make([]byte, 0, 12+len(payload))
 	out = codec.AppendLen(out, binary.LittleEndian, len(payload))
@@ -372,6 +383,29 @@ func (j *Journal) AppendDel(target, key string, version uint64) {
 	}
 	if _, err := j.f.Write(encodeJournalDel(target, key, version)); err == nil {
 		j.records++
+	}
+}
+
+// AppendDels journals many replay deletions under one lock with a single
+// write, replacing N serialized AppendDel lock+encode+write cycles per
+// replay round. Recovery application is identical (one DEL record each).
+func (j *Journal) AppendDels(dels []repl.HintDel) {
+	if len(dels) == 0 {
+		return
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.f == nil {
+		return
+	}
+
+	var buf []byte
+	for _, d := range dels {
+		buf = append(buf, encodeJournalDelKey(d.Target, d.Key, d.Version)...)
+	}
+	if _, err := j.f.Write(buf); err == nil {
+		j.records += uint64(len(dels))
 	}
 }
 

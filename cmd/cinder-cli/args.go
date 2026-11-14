@@ -2,7 +2,7 @@ package main
 
 import (
 	"errors"
-	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -19,9 +19,9 @@ func parseKeyValuePairs(args []string) (keyValuePairs, error) {
 		keys:   make([]string, 0, len(args)/2),
 		values: make([]string, 0, len(args)/2),
 	}
-	for i := 0; i < len(args); i += 2 {
-		out.keys = append(out.keys, args[i])
-		out.values = append(out.values, args[i+1])
+	for kv := range slices.Chunk(args, 2) {
+		out.keys = append(out.keys, kv[0])
+		out.values = append(out.values, kv[1])
 	}
 	return out, nil
 }
@@ -29,13 +29,14 @@ func parseKeyValuePairs(args []string) (keyValuePairs, error) {
 // extractTTL preserves the established `mset KEY VALUE --ttl MS` spelling,
 // since command flags otherwise parse before positional arguments.
 func extractTTL(args []string) ([]string, string, error) {
-	var out []string
+	// Output never exceeds input: presize to skip growth reallocs.
+	out := make([]string, 0, len(args))
 	ttl := ""
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--ttl" {
 			if i+1 >= len(args) {
-				return nil, "", fmt.Errorf("flag --ttl requires an argument")
+				return nil, "", errors.New("flag --ttl requires an argument")
 			}
 
 			ttl = args[i+1]

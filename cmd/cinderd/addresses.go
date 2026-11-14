@@ -1,6 +1,8 @@
 package main
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -44,20 +46,20 @@ func validateListenerHostsWithLookup(bindHost, advertiseHost, metricsHost, grpcH
 func validateCoreFlags(port, aeBuckets, tombstoneMs int) []error {
 	var errs []error
 	if tombstoneMs < 0 {
-		errs = append(errs, fmt.Errorf("--tombstone-gc-ms must be >= 0"))
+		errs = append(errs, errors.New("--tombstone-gc-ms must be >= 0"))
 	}
 	if port < 0 || port > 65535 {
-		errs = append(errs, fmt.Errorf("--port must be between 0 and 65535"))
+		errs = append(errs, errors.New("--port must be between 0 and 65535"))
 	}
 	if aeBuckets <= 0 {
-		errs = append(errs, fmt.Errorf("--anti-entropy-buckets must be positive"))
+		errs = append(errs, errors.New("--anti-entropy-buckets must be positive"))
 	}
 	return errs
 }
 
 func validateAuxPortRange(metricsPort, grpcPort int) error {
 	if metricsPort < 0 || metricsPort > 65535 || grpcPort < 0 || grpcPort > 65535 {
-		return fmt.Errorf("--metrics-port and --grpc-port must be between 0 and 65535")
+		return errors.New("--metrics-port and --grpc-port must be between 0 and 65535")
 	}
 	return nil
 }
@@ -82,82 +84,81 @@ func validateNonNegativeIntervals(aeIntervalMs, quarantineIntervalMs, snapshotIn
 
 func validateCapacity(capacity uint64) error {
 	if capacity == 0 {
-		return fmt.Errorf("--capacity must be positive")
+		return errors.New("--capacity must be positive")
 	}
 	return nil
 }
 
 func validateListenerPortCollisions(port, grpcPort, metricsPort int) error {
 	if grpcPort > 0 && grpcPort == port {
-		return fmt.Errorf("--grpc-port must not equal --port")
+		return errors.New("--grpc-port must not equal --port")
 	}
 	if metricsPort > 0 && metricsPort == port {
-		return fmt.Errorf("--metrics-port must not equal --port")
+		return errors.New("--metrics-port must not equal --port")
 	}
 	if grpcPort > 0 && metricsPort > 0 && grpcPort == metricsPort {
-		return fmt.Errorf("--grpc-port must not equal --metrics-port")
+		return errors.New("--grpc-port must not equal --metrics-port")
 	}
 	return nil
 }
 
 func validateClusterPort(port, peerCount int) error {
 	if port == 0 && peerCount > 0 {
-		return fmt.Errorf("--port 0 cannot be used with --peers; choose a fixed port so it can be advertised before cluster startup")
+		return errors.New("--port 0 cannot be used with --peers; choose a fixed port so it can be advertised before cluster startup")
 	}
 	return nil
 }
 
 func clusterRPCTimeout(probeMs, suspectMs, gossipMs, rpcTimeoutMs int) (time.Duration, error) {
 	if probeMs <= 0 {
-		return 0, fmt.Errorf("--ping-interval-ms must be positive")
+		return 0, errors.New("--ping-interval-ms must be positive")
 	}
 	if suspectMs <= probeMs {
-		return 0, fmt.Errorf("--suspect-timeout-ms must be greater than --ping-interval-ms")
+		return 0, errors.New("--suspect-timeout-ms must be greater than --ping-interval-ms")
 	}
 	if gossipMs <= 0 {
-		return 0, fmt.Errorf("--gossip-interval-ms must be positive")
+		return 0, errors.New("--gossip-interval-ms must be positive")
 	}
 	if rpcTimeoutMs < 0 {
-		return 0, fmt.Errorf("--gossip-rpc-timeout-ms must be >= 0 (0 selects the automatic timeout)")
+		return 0, errors.New("--gossip-rpc-timeout-ms must be >= 0 (0 selects the automatic timeout)")
 	}
 	if rpcTimeoutMs == 0 {
 		rpcTimeoutMs = min(probeMs, 1000)
 	}
 	if rpcTimeoutMs > probeMs {
-		return 0, fmt.Errorf("--gossip-rpc-timeout-ms must not exceed --ping-interval-ms")
+		return 0, errors.New("--gossip-rpc-timeout-ms must not exceed --ping-interval-ms")
 	}
 	if rpcTimeoutMs >= suspectMs {
-		return 0, fmt.Errorf("--gossip-rpc-timeout-ms must be less than --suspect-timeout-ms")
+		return 0, errors.New("--gossip-rpc-timeout-ms must be less than --suspect-timeout-ms")
 	}
 	return time.Duration(rpcTimeoutMs) * time.Millisecond, nil
 }
 
 func validateGRPCTLS(grpcPort int, tlsEnabled bool, clientSecret string) error {
 	if grpcPort > 0 && clientSecret != "" && !tlsEnabled {
-		return fmt.Errorf("--client-shared-secret requires --tls when --grpc-port is enabled")
+		return errors.New("--client-shared-secret requires --tls when --grpc-port is enabled")
 	}
 	return nil
 }
 
 func configuredSecret(flagValue, envName string) string {
-	if flagValue != "" {
-		return flagValue
-	}
-	return os.Getenv(envName)
+	return cmp.Or(flagValue, os.Getenv(envName))
 }
 
 func validateHost(host string, allowWildcard bool, lookup func(string) ([]string, error)) error {
 	if host == "" || strings.TrimSpace(host) != host {
-		return fmt.Errorf("host must be non-empty and contain no surrounding whitespace")
+		return errors.New("host must be non-empty and contain no surrounding whitespace")
 	}
-	if ip := net.ParseIP(strings.Split(host, "%")[0]); ip != nil {
+
+	zone, _, _ := strings.Cut(host, "%")
+	if ip := net.ParseIP(zone); ip != nil {
 		if ip.IsUnspecified() && !allowWildcard {
-			return fmt.Errorf("wildcard address cannot be advertised")
+			return errors.New("wildcard address cannot be advertised")
 		}
 		return nil
 	}
 	if strings.ContainsAny(host, "/[]: ") {
-		return fmt.Errorf("expected an IP address or DNS hostname")
+		return errors.New("expected an IP address or DNS hostname")
 	}
 	if _, err := lookup(host); err != nil {
 		return fmt.Errorf("hostname does not resolve: %w", err)
@@ -166,6 +167,7 @@ func validateHost(host string, allowWildcard bool, lookup func(string) ([]string
 }
 
 func isWildcardHost(host string) bool {
-	ip := net.ParseIP(strings.Split(host, "%")[0])
+	zone, _, _ := strings.Cut(host, "%")
+	ip := net.ParseIP(zone)
 	return ip != nil && ip.IsUnspecified()
 }

@@ -86,3 +86,39 @@ func BenchmarkReplayBatch256(b *testing.B) {
 		m.ReplayHints()
 	}
 }
+
+// BenchmarkReplayBatchSuccess measures a full 256-hint replay where every
+// send succeeds: per-worker outcome collection plus the single RemoveIDs
+// pass and one journal batch (nil journal here), then re-queue for the
+// next round.
+func BenchmarkReplayBatchSuccess(b *testing.B) {
+	ft := testkit.NewStores("n2")
+	m := NewManager(Config{Local: store.NewLRUStore(1<<20, nil), Self: "n1", Clock: nil, Transport: ft})
+	exp := expiry.At(time.Now().Add(time.Hour))
+	// Prebuilt once outside the timer: the re-queue below must measure
+	// queue push, not key formatting.
+	keys := make([][]byte, ReplayBatch)
+	for i := range keys {
+		keys[i] = fmt.Appendf(nil, "k%d", i)
+	}
+	mk := func(i int) Hint {
+		return Hint{
+			Target:    "n2",
+			Req:       protocol.Request{Opcode: protocol.OpReplicate, Key: keys[i], Value: []byte("v"), Version: uint64(i + 1), WriterNodeHash: 1},
+			ExpiresAt: exp,
+		}
+	}
+	for i := range ReplayBatch {
+		m.HintQueue().Push(mk(i))
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if n := m.ReplayHints(); n != ReplayBatch {
+			b.Fatalf("replayed = %d, want %d", n, ReplayBatch)
+		}
+		// Re-queue the same batch: replay drains the queue on success.
+		for i := range ReplayBatch {
+			m.HintQueue().Push(mk(i))
+		}
+	}
+}

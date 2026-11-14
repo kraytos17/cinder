@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -24,8 +25,6 @@ const (
 
 	snapMagic   = 0x43534E50 // "CSNP"
 	snapVersion = 2
-
-	maxU32 = uint64(1<<32 - 1)
 )
 
 // Op identifies the operation recorded in a WAL entry.
@@ -63,7 +62,7 @@ func (e Entry) recordSize() (int, error) {
 	if e.Op == OpCounterState {
 		valueLen = len(e.Counter)
 	}
-	if uint64(len(e.Key)) > maxU32 || uint64(valueLen) > maxU32 {
+	if uint64(len(e.Key)) > math.MaxUint32 || uint64(valueLen) > math.MaxUint32 {
 		return 0, errTooLarge
 	}
 	return 1 + 4 + len(e.Key) + 4 + valueLen + 8 + 8 + 8 + 1 + 1 + 8, nil
@@ -606,7 +605,7 @@ func CounterEntry(key string, state counter.PNCounter, remove bool) (Entry, erro
 
 	encoded := state.Encode()
 	if len(encoded) == 0 {
-		return Entry{}, fmt.Errorf("persist: invalid empty counter state")
+		return Entry{}, errors.New("persist: invalid empty counter state")
 	}
 	return Entry{Op: OpCounterState, Key: []byte(key), Counter: encoded}, nil
 }

@@ -193,7 +193,8 @@ func ParsePeers(s string) ([]Peer, error) {
 		return nil, nil
 	}
 
-	var out []Peer
+	// Upper bound: one comma-separated entry each, plus the final segment.
+	out := make([]Peer, 0, strings.Count(s, ",")+1)
 	for part := range strings.SplitSeq(s, ",") {
 		part = strings.TrimSpace(part)
 		at := strings.LastIndex(part, "@")
@@ -356,9 +357,10 @@ func (s *Server) rebuildRingFromTable() {
 		return
 	}
 
-	var ids []string
 	selfSeen := false
-	for _, m := range table.Snapshot() {
+	snap := table.Snapshot()
+	ids := make([]string, 0, len(snap)+1)
+	for _, m := range snap {
 		if m.ID != s.nodeID && m.Host != "" && pool != nil {
 			// Learn addresses for newly joined peers so replication, AE, and
 			// rebalance can dial them as soon as gossip delivers their address.

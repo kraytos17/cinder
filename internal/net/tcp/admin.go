@@ -67,9 +67,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		curBytes, curEntries := s.store.Stats()
 		_, port := s.advertisedAddress()
 		_, rf, mode := s.replication()
-		if rf < 1 {
-			rf = 1
-		}
+		rf = max(rf, 1)
 
 		s.persistMu.RLock()
 		persistEnabled := s.persist != nil

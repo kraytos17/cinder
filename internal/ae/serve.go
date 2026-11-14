@@ -28,7 +28,7 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 	}
 
 	local := m.digestForRoundOrScan()
-	resp := DigestResponse{GroupHashes: local.Fold()}
+	resp := DigestResponse{GroupHashes: local.Fold(), BucketHashes: make([]BucketHash, 0, len(req.BucketHashes))}
 	requested := map[uint32]bool{}
 	for _, bh := range req.BucketHashes {
 		resp.BucketHashes = append(resp.BucketHashes, BucketHash{Bucket: bh.Bucket, Hash: local[bh.Bucket]})
@@ -38,8 +38,7 @@ func (m *Manager) OnBucketRefinement(value []byte) (protocol.Status, []byte) {
 	}
 
 	slices.SortFunc(resp.BucketHashes, func(a, b BucketHash) int { return cmp.Compare(a.Bucket, b.Bucket) })
-
-	var requestedList []uint32
+	requestedList := make([]uint32, 0, len(requested))
 	for b := range requested {
 		requestedList = append(requestedList, b)
 	}

@@ -33,6 +33,8 @@ var quantileLabels = []struct {
 // the resulting slice. Metric names and labels are a stable monitoring API.
 func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	var sb strings.Builder
+	// Rough exposition size (~30 series near 100 B each).
+	sb.Grow(4 << 10)
 	counter := func(name string, v uint64) {
 		fmt.Fprintf(&sb, "# HELP cinder_%s Total %s\n# TYPE cinder_%s counter\ncinder_%s %d\n", name, name, name, name, v)
 	}

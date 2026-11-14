@@ -2,7 +2,7 @@ package ae
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"testing"
 	"time"
@@ -34,13 +34,13 @@ func TestIncrementalMatchesFullScan(t *testing.T) {
 	defer m.DetachSink()
 
 	m.SetMetrics(metrics.NewCollector())
-	rng := rand.New(rand.NewSource(1))
+	rng := rand.New(rand.NewPCG(1, 0))
 	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h"}
 
 	var ver uint64 = 1
 	for round := range 200 {
-		op := rng.Intn(100)
-		k := keys[rng.Intn(len(keys))]
+		op := rng.IntN(100)
+		k := keys[rng.IntN(len(keys))]
 		switch {
 		case op < 55:
 			ver++
@@ -65,7 +65,7 @@ func TestIncrementalMatchesFullScan(t *testing.T) {
 			// Capacity pressure: big value forces eviction through the
 			// sink-emitting removeNode path.
 			ver++
-			_ = st.Put(fmt.Sprintf("big-%d-%d", round, rng.Intn(4)), make([]byte, 3000))
+			_ = st.Put(fmt.Sprintf("big-%d-%d", round, rng.IntN(4)), make([]byte, 3000))
 		}
 		if round%5 == 0 {
 			got, rehashed := m.digestForRound()

@@ -26,15 +26,13 @@ func (t RedirectTarget) HasAddress() bool {
 // It returns an empty string when value is not a redirect.
 func ParseRedirect(value string) string {
 	const prefix = "moved to "
-	if !strings.HasPrefix(value, prefix) {
+	rest, ok := strings.CutPrefix(value, prefix)
+	if !ok {
 		return ""
 	}
 
-	rest := value[len(prefix):]
-	if at := strings.Index(rest, "@"); at >= 0 {
-		rest = rest[:at]
-	}
-	return rest
+	id, _, _ := strings.Cut(rest, "@")
+	return id
 }
 
 // ParseRedirectTarget parses the redirect form. If its optional address

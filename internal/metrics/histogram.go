@@ -21,10 +21,7 @@ const numBuckets = 40 // 1 ns .. ~2^40 ns (~18 min)
 func (h *Histogram) Record(ns uint64) {
 	idx := 0
 	if ns > 0 {
-		idx = 63 - bits.LeadingZeros64(ns)
-		if idx >= numBuckets {
-			idx = numBuckets - 1
-		}
+		idx = min(63-bits.LeadingZeros64(ns), numBuckets-1)
 	}
 
 	h.buckets[idx].Add(1)

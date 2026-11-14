@@ -338,8 +338,8 @@ func TestHintCoalesceTombstoneTie(t *testing.T) {
 	if q.Push(Hint{Target: "n2", Req: mk(5, 1, false), ExpiresAt: exp}) {
 		t.Fatal("live hint replaced a tied tombstone")
 	}
-	if q.Len() != 1 || !q.items[0].Req.Tombstone {
-		t.Fatalf("tombstone lost: %+v", q.items)
+	if q.Len() != 1 || !q.Snapshot(time.Now(), 1)[0].Req.Tombstone {
+		t.Fatalf("tombstone lost: len=%d", q.Len())
 	}
 
 	q2 := NewHintQueue()
@@ -349,8 +349,8 @@ func TestHintCoalesceTombstoneTie(t *testing.T) {
 	if !q2.Push(Hint{Target: "n2", Req: mk(5, 1, true), ExpiresAt: exp}) {
 		t.Fatal("tombstone must replace tied live hint")
 	}
-	if q2.Len() != 1 || !q2.items[0].Req.Tombstone {
-		t.Fatalf("tombstone did not win: %+v", q2.items)
+	if q2.Len() != 1 || !q2.Snapshot(time.Now(), 1)[0].Req.Tombstone {
+		t.Fatalf("tombstone did not win: len=%d", q2.Len())
 	}
 }
 
