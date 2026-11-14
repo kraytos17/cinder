@@ -42,7 +42,7 @@ func FuzzCounterStore(f *testing.F) {
 			return b
 		}
 		amount := func() uint64 { return 1 + uint64(next())%100 }
-		for range len(data) {
+		for range data {
 			op := next()
 			a, b := int(next())%len(pool), int(next())%len(pool)
 			switch op % 5 {
