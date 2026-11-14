@@ -199,3 +199,52 @@ func TestStoreMergeFailureLeavesResidentUntouched(t *testing.T) {
 		t.Fatalf("Get aliasing mutated store: %d", v)
 	}
 }
+
+func TestStoreMergePreflightsGrowthBeforeUpdatingExistingComponents(t *testing.T) {
+	// The existing positive component fits exactly in the budget. The remote
+	// state also raises that component but adds a new negative component, whose
+	// growth cannot fit. The failed merge must apply neither change.
+	s := NewStore(18) // key "k" + actor "n" + one 16-byte component slot
+	if err := s.Increment("k", "n", 1); err != nil {
+		t.Fatal(err)
+	}
+	var remote PNCounter
+	if err := remote.Increment("n", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Decrement("n", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Merge("k", remote); !errors.Is(err, ErrCapacityExceeded) {
+		t.Fatalf("Merge error = %v, want ErrCapacityExceeded", err)
+	}
+	got, ok := s.Get("k")
+	if !ok || got.Pos.Component("n") != 1 || got.Neg.Component("n") != 0 {
+		t.Fatalf("failed merge partially changed state: %+v, present=%v", got, ok)
+	}
+	if got, want := s.SizeBytes(), uint64(18); got != want {
+		t.Fatalf("SizeBytes = %d, want unchanged %d", got, want)
+	}
+}
+
+func TestStoreMergeAccountsForPositiveAndNegativeComponents(t *testing.T) {
+	// Each side's first actor component is charged independently: key(1) +
+	// actor(1)+slot(16) for P and again for N = 35 bytes.
+	s := NewStore(35)
+	var remote PNCounter
+	if err := remote.Increment("n", 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := remote.Decrement("n", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Merge("k", remote); err != nil {
+		t.Fatalf("Merge at exact capacity: %v", err)
+	}
+	if got, want := s.SizeBytes(), uint64(35); got != want {
+		t.Fatalf("SizeBytes = %d, want %d", got, want)
+	}
+	if got, ok := s.Value("k"); !ok || got != 1 {
+		t.Fatalf("Value = %d, present=%v, want 1", got, ok)
+	}
+}

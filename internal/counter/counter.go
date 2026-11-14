@@ -156,20 +156,53 @@ func (p *PNCounter) Merge(other PNCounter) {
 	p.Neg.Merge(other.Neg)
 }
 
-// Value returns sum(P) - sum(N), clamped to the int64 range.
+// Value returns sum(P) - sum(N), clamped to the int64 range. It accumulates
+// the signed difference before clamping, preserving cancellation even when
+// either unsigned side's mathematical total exceeds uint64.
 func (p PNCounter) Value() int64 {
-	pos, neg := p.Pos.Value(), p.Neg.Value()
+	var total signed128
+	for _, component := range p.Pos.components {
+		total.add(component)
+	}
+	for _, component := range p.Neg.components {
+		total.sub(component)
+	}
+	return total.int64Clamped()
+}
+
+// signed128 is a two's-complement 128-bit accumulator. A Go map cannot hold
+// enough uint64 components for the signed sum to exceed this range.
+type signed128 struct {
+	hi int64
+	lo uint64
+}
+
+func (s *signed128) add(v uint64) {
+	old := s.lo
+	s.lo += v
+	if s.lo < old {
+		s.hi++
+	}
+}
+
+func (s *signed128) sub(v uint64) {
+	old := s.lo
+	s.lo -= v
+	if old < v {
+		s.hi--
+	}
+}
+
+func (s signed128) int64Clamped() int64 {
 	switch {
-	case pos >= neg:
-		if d := pos - neg; d > uint64(math.MaxInt64) {
-			return math.MaxInt64
-		}
-		return int64(pos - neg)
+	case s.hi == 0 && s.lo <= math.MaxInt64:
+		return int64(s.lo)
+	case s.hi == -1 && s.lo >= uint64(1)<<63:
+		return int64(s.lo)
+	case s.hi < 0:
+		return math.MinInt64
 	default:
-		if d := neg - pos; d > uint64(math.MaxInt64) {
-			return math.MinInt64
-		}
-		return -int64(neg - pos)
+		return math.MaxInt64
 	}
 }
 

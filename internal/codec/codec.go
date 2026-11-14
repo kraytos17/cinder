@@ -16,16 +16,10 @@ type Uint interface {
 	~uint8 | ~uint16 | ~uint32 | ~uint64
 }
 
-// Append writes v in order's encoding. One function for every width;
-// the u32-length-prefix chains become Append(b, order, uint32(len(x)))
-// or the Len/Blob helpers below. (Put + a stack scratch, because the
-// ByteOrder interface carries no Append methods — only the concrete
-// endian types do.)
-//
-// Hot-path note: the any-switch boxes v (1 alloc). Per-RPC writers must
-// use Writer.U8/U32/U64, which route to the concrete putters below.
-// Append is for cold paths (snapshots, journal recovery, one-shot
-// encodes) where a scratch alloc is noise next to I/O.
+// Append writes v in order's encoding. Prefer the concrete AppendU* helpers
+// or Writer methods in hot loops to avoid the generic width dispatch. The
+// type switch is retained as a convenient generic API for mixed-width and
+// cold one-shot encodes.
 func Append[T Uint](b []byte, order binary.ByteOrder, v T) []byte {
 	switch w := any(v).(type) {
 	case uint8:
@@ -91,8 +85,8 @@ func AppendBlob[B ~[]byte | ~string](b []byte, order binary.ByteOrder, blob B) [
 }
 
 // Get reads a T from the front of buf, reporting short input instead of
-// panicking like the bare binary.Uint* calls do. Cold paths only: the
-// type switch boxes (1 alloc), like Append.
+// panicking like the bare binary.Uint* calls do. Prefer Reader methods in
+// cursor-based hot loops to avoid repeated width dispatch and slicing.
 func Get[T Uint](order binary.ByteOrder, buf []byte) (T, bool) {
 	var zero T
 	switch any(zero).(type) {

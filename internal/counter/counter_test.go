@@ -2,7 +2,10 @@ package counter
 
 import (
 	"errors"
+	"fmt"
 	"math"
+	"math/big"
+	"math/rand/v2"
 	"testing"
 )
 
@@ -129,4 +132,171 @@ func TestPNCounterClamps(t *testing.T) {
 	if got := n.Value(); got != math.MinInt64 {
 		t.Fatalf("value = %d, want MinInt64", got)
 	}
+}
+
+func TestPNCounterValueSubtractsBeforeClamping(t *testing.T) {
+	tests := []struct {
+		name string
+		pos  []uint64
+		neg  []uint64
+		want int64
+	}{
+		{
+			name: "positive totals exceed uint64 but difference fits",
+			pos:  []uint64{math.MaxUint64, math.MaxUint64},
+			neg:  []uint64{math.MaxUint64},
+			want: math.MaxInt64,
+		},
+		{
+			name: "negative totals exceed uint64 but difference fits",
+			pos:  []uint64{math.MaxUint64},
+			neg:  []uint64{math.MaxUint64, math.MaxUint64},
+			want: math.MinInt64,
+		},
+		{
+			name: "positive cancellation",
+			pos:  []uint64{math.MaxUint64, math.MaxUint64, 17},
+			neg:  []uint64{math.MaxUint64, math.MaxUint64, 10},
+			want: 7,
+		},
+		{
+			name: "negative cancellation",
+			pos:  []uint64{math.MaxUint64, 10},
+			neg:  []uint64{math.MaxUint64, 17},
+			want: -7,
+		},
+		{
+			name: "positive clamp after cancellation",
+			pos:  []uint64{math.MaxUint64, math.MaxUint64},
+			neg:  []uint64{math.MaxUint64, 1},
+			want: math.MaxInt64,
+		},
+		{
+			name: "negative clamp after cancellation",
+			pos:  []uint64{math.MaxUint64, 1},
+			neg:  []uint64{math.MaxUint64, math.MaxUint64},
+			want: math.MinInt64,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var p PNCounter
+			p.Pos.components = make(map[string]uint64, len(tt.pos))
+			p.Neg.components = make(map[string]uint64, len(tt.neg))
+			for i, value := range tt.pos {
+				p.Pos.components[string(rune('a'+i))] = value
+			}
+			for i, value := range tt.neg {
+				p.Neg.components[string(rune('a'+i))] = value
+			}
+			if got := p.Value(); got != tt.want {
+				t.Fatalf("Value() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPNCounterValueMatchesBigIntOracle(t *testing.T) {
+	rng := rand.New(rand.NewPCG(0x43524454, 0x504e434e))
+	for trial := range 1000 {
+		p := PNCounter{
+			Pos: GCounter{components: make(map[string]uint64)},
+			Neg: GCounter{components: make(map[string]uint64)},
+		}
+		for actor := range 1 + rng.IntN(16) {
+			p.Pos.components[string(rune('a'+actor))] = rng.Uint64()
+			p.Neg.components[string(rune('a'+actor))] = rng.Uint64()
+		}
+		if got, want := p.Value(), pnValueOracle(p); got != want {
+			t.Fatalf("trial %d: Value() = %d, oracle = %d; pos=%v neg=%v", trial, got, want, p.Pos.components, p.Neg.components)
+		}
+	}
+}
+
+func TestPNCounterMergeLaws(t *testing.T) {
+	rng := rand.New(rand.NewPCG(0x4d455247, 0x43524454))
+	randomCounter := func() PNCounter {
+		p := PNCounter{
+			Pos: GCounter{components: make(map[string]uint64)},
+			Neg: GCounter{components: make(map[string]uint64)},
+		}
+		for actor := range 1 + rng.IntN(12) {
+			id := fmt.Sprintf("node-%02d", actor)
+			if rng.IntN(2) == 0 {
+				if err := p.Increment(id, uint64(rng.IntN(1000)+1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if rng.IntN(2) == 0 {
+				if err := p.Decrement(id, uint64(rng.IntN(1000)+1)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return p
+	}
+
+	for trial := range 1000 {
+		a, b, c := randomCounter(), randomCounter(), randomCounter()
+
+		ab := a.Clone()
+		ab.Merge(b)
+		ba := b.Clone()
+		ba.Merge(a)
+		if !ab.Equal(ba) {
+			t.Fatalf("trial %d: merge is not commutative", trial)
+		}
+
+		idempotent := a.Clone()
+		idempotent.Merge(a)
+		if !idempotent.Equal(a) {
+			t.Fatalf("trial %d: merge is not idempotent", trial)
+		}
+
+		left := a.Clone()
+		left.Merge(b)
+		left.Merge(c)
+		bc := b.Clone()
+		bc.Merge(c)
+		right := a.Clone()
+		right.Merge(bc)
+		if !left.Equal(right) {
+			t.Fatalf("trial %d: merge is not associative", trial)
+		}
+
+		assertCounterDominates(t, trial, "positive", a.Pos, left.Pos)
+		assertCounterDominates(t, trial, "negative", a.Neg, left.Neg)
+		assertCounterDominates(t, trial, "positive", b.Pos, left.Pos)
+		assertCounterDominates(t, trial, "negative", b.Neg, left.Neg)
+		assertCounterDominates(t, trial, "positive", c.Pos, left.Pos)
+		assertCounterDominates(t, trial, "negative", c.Neg, left.Neg)
+	}
+}
+
+func assertCounterDominates(t *testing.T, trial int, side string, before, after GCounter) {
+	t.Helper()
+	for actor, count := range before.components {
+		if got := after.Component(actor); got < count {
+			t.Fatalf("trial %d: %s component %q decreased from %d to %d", trial, side, actor, count, got)
+		}
+	}
+}
+
+func pnValueOracle(p PNCounter) int64 {
+	pos, neg := new(big.Int), new(big.Int)
+	for _, component := range p.Pos.components {
+		pos.Add(pos, new(big.Int).SetUint64(component))
+	}
+	for _, component := range p.Neg.components {
+		neg.Add(neg, new(big.Int).SetUint64(component))
+	}
+	diff := pos.Sub(pos, neg)
+	maxValue, minValue := big.NewInt(math.MaxInt64), big.NewInt(math.MinInt64)
+	if diff.Cmp(maxValue) > 0 {
+		return math.MaxInt64
+	}
+	if diff.Cmp(minValue) < 0 {
+		return math.MinInt64
+	}
+	return diff.Int64()
 }

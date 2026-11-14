@@ -54,8 +54,8 @@ func addSat(a, b uint64) uint64 {
 // than cached per write.
 func (p PNCounter) BillableSize(key string) uint64 {
 	total := uint64(len(key))
-	for _, side := range []GCounter{p.Pos, p.Neg} {
-		for _, actor := range side.Actors() {
+	for _, side := range [2]GCounter{p.Pos, p.Neg} {
+		for actor := range side.components {
 			total = addSat(total, uint64(len(actor)))
 			total = addSat(total, 2*8)
 		}
@@ -242,23 +242,23 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if it, ok := sh.index[key]; ok {
-		merged := it.Clone()
-		merged.Merge(remote)
-		if merged.Equal(it) {
+		growth, changed := mergeGrowth(it, remote)
+		if !changed {
 			return nil
 		}
 
-		oldSize, newSize := it.BillableSize(key), merged.BillableSize(key)
-		// Merge only adds components, so the size never shrinks.
-		growth := newSize - oldSize
 		sliceCap := s.shardCapacity()
 		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
 			return ErrCapacityExceeded
 		}
 
+		// The growth preflight above guarantees capacity before mutation. Merge
+		// directly into the resident maps instead of cloning the whole state;
+		// merge only raises components and cannot fail after preflight.
+		it.Merge(remote)
 		sh.current += growth
-		sh.index[key] = merged
-		return s.persist(key, merged, false)
+		sh.index[key] = it
+		return s.persist(key, it, false)
 	}
 
 	need := remote.BillableSize(key)
@@ -270,6 +270,27 @@ func (s *Store) Merge(key string, remote PNCounter) error {
 	sh.current += need
 	sh.index[key] = remote.Clone()
 	return s.persist(key, remote, false)
+}
+
+// mergeGrowth reports whether remote raises any resident component and the
+// billable bytes needed for components that are newly introduced. It does not
+// mutate local, allowing Merge to reject over-budget updates atomically.
+func mergeGrowth(local, remote PNCounter) (uint64, bool) {
+	var growth uint64
+	changed := false
+	for _, sides := range [][2]GCounter{{local.Pos, remote.Pos}, {local.Neg, remote.Neg}} {
+		resident, incoming := sides[0].components, sides[1].components
+		for actor, count := range incoming {
+			current := resident[actor]
+			if count > current {
+				changed = true
+				if _, exists := resident[actor]; !exists {
+					growth = addSat(growth, uint64(len(actor))+2*8)
+				}
+			}
+		}
+	}
+	return growth, changed
 }
 
 // Value returns the current value, or false when absent. Counters have
