@@ -1,13 +1,13 @@
 # Cinder Wire Protocol v6
 
 Binary, length-prefixed, request-response protocol over TCP. All multi-byte
-integers on the wire are **big-endian** (network byte order). On-disk formats
-(snapshot, WAL) use native byte order.
+integers on the wire are **big-endian** (network byte order). Persistence
+formats use explicitly encoded little-endian integers.
 
 ## Frame Header
 
-Every message begins with a fixed 7-byte header. Its size is derived at
-compile time via `consteval` and verified with `static_assert`.
+Every message begins with a fixed 7-byte header (`FrameHeaderSize` in the Go
+codec; covered by byte-level tests).
 
 | Offset | Size | Field         | Description |
 |--------|------|---------------|--------------|
@@ -51,31 +51,30 @@ depending on which flags are set.
   `SET`; the server converts it to an absolute expiry using its own clock.
 - **`expires_at_ms`** (`uint64`) — absolute wall-clock expiry (Unix epoch ms).
   Sent by the primary on `REPLICATE`/`HINT` so every replica expires the key
-  at the same instant regardless of delivery delay. Replicas convert it to
-  their local steady-clock basis before storing.
+  at the same instant regardless of delivery delay. Go nodes retain the
+  absolute expiry representation; expiry checks use the node's wall clock.
 
-  Overflow guard: values above `int64_t::max() / 1,000,000` (~9.2 × 10¹² ms,
-  ≈ year 2262) are rejected. This prevents overflow when the value is later
-  converted from `milliseconds` to a nanosecond-resolution `time_point`
-  (a ×1,000,000 multiply).
-- **`trace_id`** / **`span_id`** (`uint64` each) — distributed trace context
-  for end-to-end request correlation. When a client sends `trace_id = 0`, the
-  server generates one; the value is echoed back in the response and propagated
-  to replicas on `REPLICATE`/`HINT`. A receiver that does not understand this
-  flag ignores the trailing 16 bytes (backward-compatible: old nodes treat the
-  extra bytes as part of the value field and reject via `InvalidArgument`,
-  but forward-compatible nodes skip over unknown trailing data).
+  Overflow guard: values above `MaxExpiresAtMs` (`MaxInt64 / 1,000,000`, about
+  9.2 × 10¹² ms) are rejected before conversion to the implementation's
+  nanosecond-resolution time representation.
+- **`trace_id`** / **`span_id`** (`uint64` each) — correlation context, not
+  tracing spans. TCP-server requests missing either ID receive a generated
+  value; the response echoes the resulting context and replication fan-out
+  propagates it. The decoder accepts the optional complete 16-byte trace tail
+  and tolerates a truncated optional tail as described below. Do not use that
+  tolerance as a mixed-version compatibility mechanism.
 - **`auth_token`** (32 bytes) — HMAC-SHA256 authentication token. When
-  `shared_secret` is configured on the server, internal replication opcodes
-  (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*) must include a node token:
+  `--shared-secret` is configured on the server, internal replication opcodes
+  (REPLICATE, HINT, GOSSIP, ANTI_ENTROPY_*, COUNTER_MERGE, and
+  COUNTER_ANTI_ENTROPY) must include a node token:
   `HMAC-SHA256(shared_secret, node_id + ":" + unix_seconds/10)`, truncated
   to 10-second windows for clock-skew tolerance. When `client_shared_secret`
-  is configured, client opcodes (GET, GET_VERSIONED, SET, DEL, PING) and
-  ADMIN_* must instead include a client token:
+  is configured, client opcodes (GET, GET_VERSIONED, SET, DEL, PING,
+  COUNTER_ADJUST, COUNTER_GET) and ADMIN_* must instead include a client token:
   `HMAC-SHA256(client_shared_secret, "cinder-client-v1")`. The wire field
   carries exactly one token; the opcode class selects which secret is
-  verified. When both secrets are empty, the field is omitted and no
-  authentication is performed.
+  verified. When secrets are not configured for an opcode class, the field is
+  omitted and no authentication is performed for that class.
 - **`version`** (`uint64`) — monotonic LWW version. Meaningful on
   `SET`/`REPLICATE`/`HINT`; `0` elsewhere.
 - **`writer_node_hash`** (`uint64`) — stable per-node hash used to break LWW
@@ -114,13 +113,14 @@ the former on writes, replication uses the latter.
 | 13 | `ADMIN_RING` | request: empty; response: `value` = JSON live ring stats (`self`, actual `vnodes_per_node`, live `nodes` with token/load stats, `rf`, `ring_version`, total load, load factor) |
 | 14 | `ADMIN_COMPACT` | request: empty; response: `status` = OK on success |
 | 15 | `ADMIN_CONFIG_RELOAD` | request: empty; response: `status` = OK on success |
-| 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK, then server shuts down gracefully |
+| 16 | `ADMIN_SHUTDOWN` | request: empty; response: `status` = OK; the TCP server starts graceful shutdown after writing the response |
 | 17 | `COUNTER_ADJUST` | client-only, owner-routed; `key`, `counter_delta`, `counter_decrement`; plain `OK` on success (read back with `COUNTER_GET`) |
 | 18 | `COUNTER_MERGE` | internal-only; `key` + serialized PN-Counter state in `value`; receiver merges, never LWW-replaces |
 | 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
 | 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
 
-Admin opcodes (11-16) bypass ring ownership checks and are client-initiated only.
+Admin opcodes (11-16) bypass ring ownership checks. Authentication follows
+the admin rule above.
 `COUNTER_MERGE` and `COUNTER_ANTI_ENTROPY` are internal/authenticated like
 replication; counter adjust/get are client-authenticated and owner-routed.
 Counter state is asynchronously replicated as full PN-Counter snapshots.
@@ -169,7 +169,7 @@ from "absent". Plain `GET` on a tombstone returns `NotFound`.
 | 6 | `InternalError` | Server internal error |
 | 7 | `Timeout` | Operation timed out |
 | 8 | `NotReady` | Node not ready; body may carry `"moved to <node-id>[@<host>:<port>]"` |
-| 9 | `PermissionDenied` | Auth failed — missing or invalid `auth_token` on an internal opcode |
+| 9 | `PermissionDenied` | Auth failed — missing or invalid `auth_token` for the configured opcode class |
 | 10 | `CorruptData` | Persisted data failed validation — bad snapshot magic/version or truncated snapshot entry |
 
 `NotReady` covers two distinct cases: ownership redirects (value field carries
@@ -202,7 +202,7 @@ value                   62 61 72                 "bar"
 
 ```
 Request:
-  C1 05 02 00 00 00 23     header: magic=0xC1, v=5, op=SET, len=35
+  C1 06 02 00 00 00 23     header: magic=0xC1, v=6, op=SET, len=35
   01                        flags: has_ttl=1
   00 00 00 1E              ttl_ms: 30,000
   00 00 00 00 00 00 00 02  version: 2
@@ -213,7 +213,7 @@ Request:
   62 61 72                 value: "bar"
 
 Response:
-  C1 05 00 00 00 00 09     header: magic=0xC1, v=5, op=0, len=9
+  C1 06 00 00 00 00 09     header: magic=0xC1, v=6, op=0, len=9
   00                        status: OK
   00                        flags: no version metadata, no expires_at
   00 00 00 01              has_val: 1
@@ -225,7 +225,7 @@ With trace (flags = 0x05: has_ttl + has_trace), the request gains 16 bytes
 
 ```
 Request:
-  C1 05 02 00 00 00 33     header: magic=0xC1, v=5, op=SET, len=51
+  C1 06 02 00 00 00 33     header: magic=0xC1, v=6, op=SET, len=51
   05                        flags: has_ttl=1, has_trace=1
   00 00 00 1E              ttl_ms: 30,000
   00 00 00 00 00 00 00 02  version: 2
@@ -238,7 +238,7 @@ Request:
   00 00 00 00 00 00 00 0A  span_id: 10
 
 Response:
-  C1 05 00 00 00 00 19     header: magic=0xC1, v=5, op=0, len=25
+  C1 06 00 00 00 00 19     header: magic=0xC1, v=6, op=0, len=25
   00                        status: OK
   04                        flags: has_trace=1
   00 00 00 01              has_val: 1
@@ -257,7 +257,7 @@ With trace + auth (flags = 0x0C: has_trace + has_auth), the request gains
 
 ```
 Request:
-  C1 05 06 00 00 00 57     header: magic=0xC1, v=5, op=REPLICATE, len=87
+  C1 06 06 00 00 00 4F     header: magic=0xC1, v=6, op=REPLICATE, len=79
   0C                        flags: has_trace=1, has_auth=1
   00 00 00 00 00 00 00 02  version: 2
   00 00 00 00 00 00 00 42  writer_node_hash: 66
@@ -283,8 +283,9 @@ When `flags & 0x04` is set, 16 bytes of trace context (`trace_id` + `span_id`,
 both `uint64`) are appended at the end of the payload, after the `value`
 field in requests and after `value` in responses. This placement ensures
 backward compatibility: old nodes validate the fixed-layout prefix and reject
-frames with unknown trailing data, while new nodes extract the optional
-trailing context.
+frames with unknown trailing data. The current v6 decoder recognizes trace
+and auth tails; truncated optional trace/auth tails are tolerated by the
+decoder. This is not a promise that arbitrary unknown trailing data is skipped.
 
 Trace context enables end-to-end request correlation across the client, server,
 and replication layer. The server generates a `trace_id` when one is not
@@ -300,7 +301,8 @@ frames with unknown trailing data.
 
 Authentication is enforced per opcode class (see the `auth_token` field
 description). Internal replication opcodes (REPLICATE, HINT, GOSSIP,
-ANTI_ENTROPY_DIGEST, ANTI_ENTROPY_SYNC) require the node token when
+ANTI_ENTROPY_DIGEST, ANTI_ENTROPY_SYNC, COUNTER_MERGE, and
+COUNTER_ANTI_ENTROPY) require the node token when
 `shared_secret` is configured. Client opcodes (GET, GET_VERSIONED, SET, DEL,
 PING) require the client token when `client_shared_secret` is configured.
 ADMIN_* requires the client token when client auth is enabled, otherwise the
@@ -313,9 +315,10 @@ The node token is computed as:
 node_token = HMAC-SHA256(shared_secret, node_id + ":" + (unix_seconds / 10))
 ```
 
-The timestamp is truncated to 10-second windows so nodes with slight clock
-skew (up to ~30 seconds) can still authenticate. The server checks the
-current window and the two preceding windows.
+The timestamp is truncated to 10-second windows. Verification checks the
+current bucket and prior buckets covering a 30-second look-back plus one
+bucket for boundary rounding; sender and receiver clocks still need to be
+reasonably aligned.
 
 The client token is static and domain-separated:
 ```
@@ -323,43 +326,45 @@ client_token = HMAC-SHA256(client_shared_secret, "cinder-client-v1")
 ```
 
 The raw secret never goes on the wire. The token is replayable by design,
-so the server refuses to enable client auth without a crypto build and TLS
-(`cinderd` startup fails otherwise), and the gRPC gateway serves it only
-over TLS with the same bearer presented as hex in the `authorization`
-metadata (`Bearer <hex>`), verified at every RPC entry point.
+so client auth requires TLS. The gRPC gateway serves client-authenticated
+RPCs only over TLS with the same bearer presented as hex in the
+`authorization` metadata (`Bearer <hex>`), verified at every RPC entry point.
 
 When a secret is empty or not configured, no authentication is performed
 for its opcode class and the `auth_token` field is omitted from those
 requests. Rotation in v1 requires a coordinated restart; there are no
 per-user identities, ACLs, or revocation.
 
-Configuration:
-```yaml
-auth:
-  shared_secret: "my-cluster-secret"          # node auth (empty = disabled)
-  client_shared_secret: "my-client-secret"    # client auth (empty = disabled, requires TLS)
+Configuration uses `cinderd` flags or its strict JSON `--config` file. For
+example:
+```json
+{
+  "shared-secret": "my-cluster-secret",
+  "client-shared-secret": "my-client-secret",
+  "tls": true,
+  "tls-cert": "server.pem",
+  "tls-key": "server-key.pem"
+}
 ```
+Flags override JSON values. Secrets may instead be provided with
+`CINDER_SHARED_SECRET` and `CINDER_CLIENT_SECRET`; the client tools accept
+`--client-secret` or `CINDER_CLIENT_SECRET`.
 
-Or via CLI: `cinderd --shared-secret "my-cluster-secret" --client-shared-secret "my-client-secret"`
-(`cinder-cli`/`cinder-admin` take `--client-secret`, or `CINDER_CLIENT_SECRET`).
-
-A node with `shared_secret` configured will reject any internal request that
-is missing a valid `auth_token` with status code `PermissionDenied` (9).
+A node with `shared_secret` configured rejects protected internal requests
+that lack a valid node `auth_token` with status `PermissionDenied` (9). A
+client secret alone does not authenticate peer traffic.
 
 ### Version Bump
 
-Protocol v6 (introduced in this version) is **not backward-compatible** with
-v5. The version check uses strict equality — a v6 node will reject v5 frames
-and vice versa. All nodes in a cluster must be upgraded simultaneously.
-
 Protocol v6 adds counter opcodes 17–20 and the `COUNTER_ADJUST` suffix fields.
-Nodes running v5 reject v6 frames at the version check. All nodes in a cluster
-must be upgraded simultaneously.
+The frame version is checked for exact equality, so v6 nodes reject v5 frames
+and v5 nodes reject v6 frames. Upgrade cluster nodes together; mixed protocol
+versions cannot exchange frames.
 
 ## Anti-Entropy Payloads
 
 Opcodes 9 and 10 carry custom binary payloads inside the `value` field. All
-integers are little-endian (native byte order; the cluster is homogeneous).
+integers are little-endian, independent of host byte order.
 Every AE payload starts with a schema magic (`uint32`): `0x41454D33`
 ("AEM3", group digest request), `0x41454D32` ("AEM2", legacy full digest —
 accepted on decode for compatibility but no longer sent), `0x41454D53`

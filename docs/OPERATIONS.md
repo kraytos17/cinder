@@ -18,16 +18,26 @@ resurrect a deleted value.
 5. Wait for membership to mark it alive and let normal rebalance/anti-entropy
    repopulate it from current replicas.
 
-The TCP server rejects authenticated anti-entropy syncs from a peer whose
-current membership `JoinedAt` exceeds this local tombstone grace, and increments
-`cinder_tombstone_resurrection_blocked_total`. This is a safety fence, not an
-automatic repair: the peer may continue to serve traffic, but its AE data is
-not trusted. Wipe/bootstrap it as above before relying on it as a replica.
+The TCP server rejects authenticated anti-entropy requests (digest, refinement,
+and sync) from a peer whose
+membership `JoinedAt` is older than this local tombstone grace, and increments
+`cinder_tombstone_resurrection_blocked_total`. The comparison is based on
+membership age, not durable proof of the peer's outage duration. This is a
+safety fence, not an automatic repair: the peer may continue to serve traffic,
+but its AE data is not trusted. Wipe/bootstrap it as above before relying on it
+as a replica.
 
-`JoinedAt` is membership rejoin time, not a durable per-node last-seen record.
-It can be refreshed by membership transitions, so this guard is conservative
-but does not prove the exact duration of every network outage. Keep node IDs
-stable, do not manually force a stale node to `Alive`, and use wipe/bootstrap
-whenever outage duration is uncertain. Set `--tombstone-gc-ms` above the
-maximum supported outage if the deployment requires a longer offline recovery
-window; remember this value must be consistent across all replicas.
+`JoinedAt` is the current membership record's transition-to-Alive time, not a
+durable per-node last-seen record. It is reset when a node is newly discovered
+or marked alive again after suspicion/death. Consequently the fence can reject
+an old membership record, but cannot prove the exact duration of every outage;
+a reset may make an over-age disk appear newly joined. Keep node IDs stable, do
+not manually force a stale node to `Alive`, and use wipe/bootstrap whenever
+outage duration is uncertain. Set `--tombstone-gc-ms` consistently across
+replicas and above the maximum supported outage when that recovery window is
+required. The TCP tombstone fence protects anti-entropy; it does not establish
+that every other service path or client request from an old disk is harmless.
+
+Verification evidence: `internal/net/tcp/tombstone_resurrection_test.go`
+reproduces resurrection after tombstone GC and checks the anti-entropy fence;
+`TestTombstoneGraceDefaultIsTwentyFourHours` pins the default.

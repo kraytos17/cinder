@@ -16,9 +16,8 @@ documented in `protocol.md`.
 > membership/gossip/failure detection, `internal/shard` for rebalance,
 > `internal/repl` for replication and hints, `internal/ae` and
 > `internal/persist` for anti-entropy and durability, `internal/store`
-> for tombstones and TTL). Behavior matches the retired C++ tree; where
-> the Go port deliberately diverges (full-scan digests, uncompressed
-> snapshots only), it is called out inline.
+> for tombstones and TTL). The Go implementation is authoritative for current
+> behavior. Historical C++ differences are called out inline where relevant.
 
 ## Membership State Machine
 
@@ -144,13 +143,18 @@ draining begins.
 ## Consistent Hash Ring
 
 `hashring.Ring` maps keys to nodes using xxHash3 virtual nodes (150 per
-physical node) behind a mutex:
+physical node by default). Production `cinderd` uses `GetNode` for canonical
+primary ownership and `GetNodes` for the ordered distinct owner set used by
+replication, anti-entropy, and rebalance. `GetNodeBounded` is not used for
+production routing because it would route away from that canonical owner.
 
-1. A sorted slice of `(hash, nodeID)` pairs represents the ring.
-2. `SetNodes` rebuilds that slice in place from the alive set; lookups
-   binary-search it.
-3. Rebuilds are cheap and rare (one per membership change), so no
-   lock-free snapshot machinery: the mutex serializes writers and readers.
+1. Parallel sorted hash and physical-node-index slices represent vnode
+   positions; physical IDs and load counters live alongside them.
+2. `SetNodes` builds and sorts a replacement membership snapshot. Writers are
+   serialized; an `atomic.Pointer` publishes the immutable snapshot, so lookups
+   do not take the writer mutex.
+3. Survivors retain their load-counter cells across rebuilds; new IDs receive
+   new cells. Identical membership is a no-op.
 
 **Key lookup** — `GetNodes(key, replica_factor)` returns the ordered list of
 `replica_factor` successors on the ring; the first is the primary, the rest
@@ -195,9 +199,11 @@ are replicas. Nodes not in the alive set are never members, so fewer than
 1. `migrateKey()` sends a `Replicate` request to the whole new set
    (primary plus every other member, concurrently). Only once **every**
    new holder has acked is the local copy dropped via a hard erase —
-   retention is always safe (an extra copy is redundant, never split-brain)
-   while destruction on a stale ack is not. On primary failure the key
-   stays local as a failover copy and the migration-failed callback
+    retention is always safe (an extra copy is redundant, never split-brain)
+    while destruction on a stale ack is not. Hard-erase WAL persistence errors
+    are currently ignored by the store hook; see [`DURABILITY.md`](DURABILITY.md).
+    On primary failure the key stays local as a failover copy and the
+    migration-failed callback
    schedules a 2 s retry; a primary ack with unconfirmed replicas likewise
    retains the copy for the next round (the next rebalance, hint replay,
    or anti-entropy covers the gap independently).
@@ -206,7 +212,7 @@ are replicas. Nodes not in the alive set are never members, so fewer than
 
 `makeReplicateRequest()` builds the `Replicate` (opcode 6) request: key,
 value, `version`, `writer_node_hash`, and `expires_at` when applicable
-(converted to absolute system time for consistent TTL across replicas).
+(the absolute expiry is sent unchanged for consistent TTL across replicas).
 
 **Liveness check** — before any push or migrate send, the shard manager
 checks the membership table; sends to `Suspect` or `Dead` targets are
@@ -444,23 +450,27 @@ commit. Unreachable replicas get hints queued for later replay.
 - Pros: lowest latency, always available.
 - Cons: replicas may briefly lag the primary.
 
-**Quorum** — the local write commits, then fans out to replicas. The client
-sees success only after `W = total / 2 + 1` acknowledgements, where
-`total = replica_factor + 1` (including local). Fewer than `W` acks fails the
-write with `NotReady`. E.g. with 2 replicas (`total = 3`), `W = 2`
-(local + 1 replica).
-- Pros: stronger consistency — reads with `R > 1` always see the latest write.
+**Quorum** — the local write commits, then fans out to the other owners in the
+ring-selected set. The configured replica factor is the total number of
+distinct owners/copies, including the primary. Quorum mode succeeds after
+`W = total / 2 + 1` acknowledgements including the local write; fewer acks
+returns `NotReady`. For RF=2, `total=2`, so both the primary and its one replica
+must ack. Quorum reads request the configured RF and wait for that many
+versioned responses, so this implementation's read path is stricter than a
+separately configurable `R` quorum.
+- Pros: quorum writes require a majority of the configured replica set; read
+  repair can heal stale or missing copies when the read completes.
 - Cons: higher latency; writes fail if too many replicas are down.
 
 ## Persistence
 
 Optional disk persistence via snapshot + write-ahead log (WAL).
 
-**Snapshot format** — magic `0x43534E50` ("CSNP"), format version 2. All
-integers are **native byte order** (little-endian on x86). Versions parse
-into a format enum; readers accept v1/v2 and writers always emit v2, so a
-future v3 would add an enumerator instead of new branches at every use
-site.
+**Snapshot formats** — magic `0x43534E50` ("CSNP"), little-endian fields.
+Writers emit format v2 when no counter store is configured and v4 when a
+counter store is configured. Readers accept v1, v2, and v4; v3 compressed
+snapshots from the retired C++ implementation are rejected. V1/v2 contain
+KV rows only; v4 adds the counter bundle.
 
 | Field              | Size | Description |
 |--------------------|------|--------------|
@@ -477,20 +487,21 @@ site.
 | `writer_node_hash`  | 8    | `uint64` |
 | `expires_at_ms`     | 8    | `uint64`, `0` = no TTL |
 | `has_ttl`           | 1    | `0` or `1` |
-| `freq`              | 8    | access frequency (`0`: the Go store is LRU-only, so this field is always written `0` and ignored on read) |
+| `freq`              | 8    | eviction frequency (used by LFU; `0` for LRU) |
 | `tombstone`         | 1    | `0` or `1` (v2: delete markers survive restarts) |
 
-Writes are atomic: data is written to `path.tmp`, fsync'd, then renamed to
-`path`, followed by a directory fsync.
+Snapshot files are written to a temporary path and renamed into place. The
+current writer does not fsync the snapshot file or containing directory;
+compaction also writes the `CURRENT` pointer without an atomic durable
+publication sequence. Do not treat this rename as a power-loss durability
+guarantee; see [`DURABILITY.md`](DURABILITY.md).
 
-**WAL format** — magic `0x57414C30` ("WAL0"), format version 2. All integers
-are **native byte order** (little-endian on x86). Versions are parsed once
-into `WalFormat` (`Legacy` = pre-magic format with no checksums); readers
-accept every known version and writers always emit current. Each entry records a `Set` or
-`Del` with version metadata, a trailing tombstone byte (v2), and an 8-byte
-XXH3-64 checksum of the entry payload for integrity verification. A batch of
-entries is encoded identically to N sequential appends and landed with a
-single write (group commit). The active log is `wal.log`; sealed
+**WAL format** — magic `0x57414C30` ("WAL0"), little-endian fields. The Go
+writer emits v3; readers accept legacy, v1, v2, and v3. Each record has an
+8-byte XXH3-64 checksum. V3 adds counter-state and counter-remove record kinds;
+KV record layout remains compatible with v2. A batch is encoded identically
+to N sequential appends and landed with a single write (group commit). The
+active log is `wal.log`; sealed
 `wal_<seq>.log` segments (zero-padded, so lexicographic order is chronological)
 are honored on recovery -- e.g. from a previously C++-managed data dir -- but
 the Go writer never seals by size: `Compact` snapshots, deletes sealed
@@ -499,8 +510,8 @@ segments, and truncates to a fresh active log.
 **Recovery** (on startup):
 1. Find the latest snapshot in `data_dir` (via the `CURRENT` pointer file,
    falling back to a lexicographic scan).
-2. Stream it into the store (entries + version counter; the LFU frequency
-   field is ignored).
+2. Stream it into the store (entries + version counter; LFU snapshot
+   frequencies are restored).
 3. Replay sealed segments in sequence order, then the active log, applying
    each entry via LWW; a checksum mismatch aborts, while a
    torn tail (crash mid-append) is truncated so later appends cannot poison
@@ -509,18 +520,16 @@ segments, and truncates to a fresh active log.
 
 The snapshot gives a consistent base; the WAL captures writes since.
 
-**Compaction** — `Compact()` snapshots current store
-state, deletes the now-covered sealed segments, and truncates to a fresh
-active WAL. It runs on demand (`cinder-admin compact`), on a snapshot
-interval (default 60s, `--snapshot-interval-s`), and out-of-cycle once the
-active WAL passes `--max-wal-bytes` (default 64 MiB, `0` disables that
+**Compaction** — `Compact()` snapshots current store and counter state, deletes
+the now-covered sealed segments, and truncates to a fresh active WAL. It runs
+on demand (`cinder-admin compact`), on a snapshot interval (default 60s,
+`--snapshot-interval-s`), or when the active WAL reaches its byte or entry
+limit (defaults 64 MiB and 10,000 records; zero disables the respective
 trigger).
 
-**Snapshot format** — snapshots are versioned (`CSNP` magic + u32 version).
-v1/v2 store entries raw inline (v2 adds the trailing tombstone byte);
-writers emit v2 uncompressed, readers accept v1/v2. v3 (zstd-compressed
-256 KiB blocks in the retired C++ tree) is rejected outright — enabling
-it mid-cluster is not applicable here.
+Snapshot formats are versioned (`CSNP` magic + u32 version): v1/v2 contain
+KV entries (v2 adds tombstones), and v4 contains KV plus persisted counter
+state. The v3 zstd-compressed format from the retired C++ tree is rejected.
 
 ## Edge Cases
 
@@ -556,14 +565,22 @@ both sides of the partition are reconciled by LWW.
 
 ## Configuration Reference
 
-Flags only (`cinderd --help` is authoritative); parsed by urfave/cli v3.
-There is no config file and no hot-reload. `config-reload` is accepted and
-answers OK. Startup validates every flag before serving and reports all
+Flags or strict JSON `--config` (`cinderd --help` lists flags; flags override
+file values), parsed by urfave/cli v3. SIGHUP re-reads the startup config file
+and applies only the reloadable subset. Admin `config-reload` accepts an
+explicit JSON payload for the same reloadable settings; an empty payload is a no-op. The
+`cinder-admin config-reload` command sends an empty payload, so use SIGHUP for
+file-based reloads.
+Startup validates configuration before serving and reports all
 failures at once (exit 2); `--consistency` is always parsed, and at
 replication-factor 1 it is ignored with a warning. Auxiliary listeners must
 not collide with each other or the data port. `cinder-cli` and `cinder-admin` use urfave/cli v3 subcommands;
 their connection flags can appear before the subcommand, as in the existing
 examples. The CLI keeps accepting `--ttl` after set/mset positional arguments.
+
+`ADMIN_SHUTDOWN` writes its `OK` response before asynchronously starting the
+server's default graceful shutdown; the response does not mean the drain and
+WAL close have completed.
 
 The data listener defaults to loopback for compatibility. To accept remote
 connections, set `--bind` to a local interface/address (often `0.0.0.0`) and
@@ -582,7 +599,7 @@ gossip starts.
 | `--advertise-host` | `--bind` (unless wildcard) | Reachable host shared with cluster peers; required when `--bind` is wildcard |
 | `--metrics-bind` | `127.0.0.1` | Metrics and pprof listener host or IP |
 | `--grpc-bind` | `127.0.0.1` | gRPC listener host or IP |
-| `--node-id` | `node1` | Stable node identifier |
+| `--node-id` | `node1` | Stable node identifier; explicitly required with peers or persistence and must remain stable for persisted/counter state |
 | `--capacity` | `67108864` | Per-node store capacity in bytes |
 | `--peers` | (empty) | Cluster members, comma-separated `id@host:port` |
 | `--replication-factor` | `1` | Copies per key (`1` = none) |
@@ -600,30 +617,32 @@ gossip starts.
 | `--tls-cert` / `--tls-key` | (empty) | PEM certificate chain / private key |
 | `--tls-ca` | (empty) | CA for peer verification (chain-only, like asio `verify_peer`) |
 | `--shared-secret` | (empty) | Node auth secret (or `CINDER_SHARED_SECRET`); replication opcodes require a token minted with it |
-| `--client-shared-secret` | (empty) | Client auth secret (or `CINDER_CLIENT_SECRET`); client/admin opcodes and the gRPC bearer require it; needs `--tls` |
+| `--client-shared-secret` | (empty) | Client auth secret (or `CINDER_CLIENT_SECRET`); client/admin opcodes and the gRPC bearer require it; requires `--tls` |
 | `--enable-persistence` | `false` | Enable WAL + snapshots |
 | `--data-dir` | (empty) | Directory for WAL, snapshots, and `hints.log` |
-| `--node-id` | `node1` | Stable node/CRDT actor identity; explicitly required with persistence or peers, and must remain stable across restarts |
 | `--snapshot-interval-s` | `60` | Seconds between automatic snapshots (`0` disables it) |
 | `--fsync` | `none` | WAL sync policy: `none` (append only), `always` (sync before write acknowledgement), or `interval:<ms>` (periodic sync, also while idle); requires persistence |
 | `--max-wal-bytes` | `67108864` | Active WAL bytes before out-of-cycle compact (`0` = disabled) |
 | `--max-wal-entries` | `10000` | Active WAL records before out-of-cycle compact (`0` = disabled) |
 | `--rpc-timeout-ms` | `5000` | Per-RPC deadline for replication and anti-entropy (`0` = no timeout) |
-| `--gossip-rpc-timeout-ms` | `0` | Gossip/probe RPC deadline (`0` = `min(--ping-interval-ms, 1000)`; cannot exceed ping interval or suspect timeout) |
 | `--anti-entropy-fetch-bytes` | `1048576` | Per-round anti-entropy repair fetch budget in bytes |
 | `--max-hint-bytes` | `0` | Hinted-handoff byte budget (`0` = default 64 MiB) |
 | `--tombstone-gc-ms` | `0` | Delete-marker GC grace in milliseconds (`0` = default 24 h); replicas offline longer must bootstrap before AE |
 | `--eviction-policy` | `lru` | Eviction policy: `lru` or `lfu` |
 | `--log-level` | `info` | Log level: `trace\|debug\|info\|warn\|error` (zerolog JSON on stderr; request lines carry `trace_id`/`span_id`) |
 | `--shutdown-timeout-ms` | `10000` | Graceful shutdown deadline in milliseconds (`0` = force-close immediately; after expiry, connections are force-closed and the stage that timed out is logged) |
+| `--config` | (empty) | Strict JSON configuration file; explicitly passed flags override file values |
+| `--verify-data-dir` | (empty) | Offline read-only persistence verifier; exits without starting the daemon |
 
-Fixed (not flags): hint TTL 30 s with 1,024-entry budget; snapshots v2 for
+Fixed (not flags): hint TTL 30 s with a 1,024-entry budget; snapshots v2 for
 KV-only state and v4 when counters are persisted (compressed v3 rejected);
-WAL v3 writer with Legacy/V1/V2 readers; compaction on demand via
-`cinder-admin compact` only.
+WAL v3 writer with Legacy/V1/V2/V3 readers; compaction by `cinder-admin
+compact`, the snapshot interval, active-WAL byte limit, or active-WAL entry
+limit. `config-reload` is implemented; only the documented reloadable subset
+can change without restart.
 
-Deliberately unported C++ flags: `-C,--config` (no YAML by design;
-`config-reload` is accepted and answers OK), `--listen-fd` /
+Deliberately unported C++ flags: `-C` config alias (the Go daemon has JSON
+`--config`), `--listen-fd` /
 `--metrics-listen-fd` (test-harness socket passing; Go tests bind their
 own listeners), `--io-threads` (Go runtime schedules), `--snapshot-compression` (v3 rejected by design),
 `--wal-fsync` (replaced by `--fsync`),

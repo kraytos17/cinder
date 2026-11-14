@@ -6,12 +6,13 @@ re-measure**, one variable at a time, same machine, same build, same flags.
 
 ## Benchmarks (`*_bench_test.go`)
 
-Benchmarks live next to the code they measure (`store`, `hashring`,
-`net/protocol`, `persist`, `repl`, `ae`, `net/tcp`) and run under the
-standard test binary — no separate bench harness:
+Benchmarks live next to the code they measure (`expiry`, `store`, `hashring`,
+`net/protocol`, `persist`, `repl`, `ae`, `net/tcp`, and `grpcgw`) and run under
+the standard test binary — no separate bench harness:
 
 ```bash
-# Quick smoke (100 iterations each, allocations always on):
+# Quick smoke (Go's default benchmark duration/iteration calibration;
+# allocations always on):
 just bench
 
 # Publishable numbers:
@@ -31,10 +32,14 @@ while sharing with nothing, and was removed (Put 2386→685ns, 9→2
 allocs); per-bucket AE digests moved to write-time accumulators
 (scan 1.8ms → 0.5µs copy).
 
-Current families: store put/get/TTL/miss/eviction, ring lookup and
-replica sets, codec encode/decode with MB/s, WAL sequential/batch appends,
-hint push/snapshot, AE full-scan digest + IBLT build/peel, and a loopback
-TCP set/get round-trip (+ parallel variant) in `net/tcp`.
+Current families include expiry value operations; store put/get/TTL/miss,
+eviction, overwrite, and wheel replacement; ring lookup, replica sets,
+membership rebuild/update, and bounded routing; codec encode/decode with MB/s;
+WAL sequential/batch appends; hint push/snapshot; AE digest + IBLT build/peel;
+loopback TCP dispatch/RPC; and gRPC unary, batch, payload-size, TLS, and
+parallel ping workloads. Names and coverage evolve with each package's
+`*_bench_test.go`; use `go test -list '^Benchmark' ./<package>` to inspect the
+current list.
 
 ### Getting trustworthy numbers
 

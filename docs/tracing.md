@@ -1,21 +1,21 @@
 # Tracing
 
-Cinder propagates trace context on the wire but has no in-process tracing
-substrate yet: there are no spans, no subscribers, no exporters, and no
-overhead to budget. What exists:
+Cinder propagates trace context on TCP frames as correlation metadata. It does
+not create tracing spans or provide subscribers/exporters. The TCP server uses
+the IDs in structured request and error logs; they are not a tracing substrate.
+What exists:
 
 - **TCP frames** carry `trace_id` / `span_id` (`uint64` each, appended when
-  the flags say so). The server mints a `trace_id` when the client sends
-  zero, echoes it in the response, and propagates it to replicas on
-  `REPLICATE`/`HINT`. The values are correlation metadata only — nothing
-  reads them locally.
-- **gRPC** ignores request metadata, including the `cinder-trace-id` /
-  `cinder-span-id` keys a tracing peer would send (lowercase, ASCII
-  decimal, first value wins — the contract is reserved for when a
-  substrate lands).
+  the trace flag is set). The TCP server generates IDs for missing/zero
+  values, echoes them in the response, includes them in structured request
+  logs, and propagates them to replicas on `REPLICATE`/`HINT`. They correlate
+  logs but do not identify spans.
+- **gRPC** ignores trace request metadata, including `cinder-trace-id` and
+  `cinder-span-id`; gateway calls do not currently join a client-supplied
+  trace context.
 
-Reserved conventions for that landing (kept stable so a future
-implementation does not need a wire change):
+Possible conventions for a future tracing-substrate design (not current
+behavior or a compatibility promise):
 
 - One root span per operation; nested spans use the live parent, remote
   parents use the explicit context — never ambient state.

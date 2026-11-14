@@ -1,16 +1,15 @@
 # Cinder baseline
 
-Captured 2026-11-12 before starting Phase 2 changes. This records the
-repository and machine baseline; benchmark numbers are comparative, not
-portable performance claims.
+Captured 2026-11-14 from the current repository state. This is a developer
+machine baseline; benchmark numbers are comparative, not portable performance
+claims.
 
 ## Repository and toolchain
 
 - Module: `github.com/kraytos17/cinder`
-- Go directive: 1.27; pinned toolchain: Go 1.27.3
-- Host: Linux/amd64, 11th Gen Intel Core i5-11320H @ 3.20 GHz, 8 logical
-  CPUs, 15.4 GiB RAM
-- Full per-file and per-package Go inventory: [`_filemap.txt`](./_filemap.txt)
+- Go directive: 1.27; pinned toolchain and runtime: Go 1.27.4
+- Host: Linux/amd64, kernel `7.3.3-1-cachyos`, 11th Gen Intel Core
+  i5-11320H @ 3.20 GHz, 8 logical CPUs, 15.4 GiB RAM
 - Benchmark command: `go test ./... -run='^$' -bench=. -benchmem -count=5`
 - Raw benchmark output: [`../bench/baseline.txt`](../bench/baseline.txt)
 - Benchmark host notes: [`../bench/README.md`](../bench/README.md)
@@ -22,52 +21,40 @@ portable performance claims.
 | `go build ./...` | PASS | All packages build. |
 | `go vet ./...` | PASS | No diagnostics. |
 | `go test ./... -count=1` | PASS | All packages pass; interop tests follow their normal skip behavior when external C++ binaries are absent. |
-| `go test ./... -race -count=1` | PASS | All packages pass. |
+| `go test -race ./... -count=1` | PASS | All packages pass. |
 | `go tool golangci-lint run ./...` | PASS | 0 issues. |
-| 8 fuzz targets, 60 seconds each | PASS | All passed with no crashers. Combined: 13,333,706 executions (per-target results below); existing corpus seeds loaded at start. |
-| Benchmarks, `-benchmem -count=5` | PASS | Completed; see raw output. Results are not pinned and have ordinary host variance. |
+| 8 fuzz targets, 60 seconds each | NOT RUN | This refresh did not rerun the fuzz campaigns; see prior capture history in Git if needed. |
+| Benchmarks, `-benchmem -count=5` | PASS | All benchmark packages completed; raw output is in `../bench/baseline.txt`. |
 
 ## Selected benchmark observations
 
-Five-run samples from the raw output (ns/op; B/op; allocs/op):
+Current full five-run samples (ns/op; B/op; allocs/op):
 
 | Benchmark | Observed range |
 |---|---|
-| `BenchmarkStorePut` | 589–592 ns; 572 B; 2 allocs |
-| `BenchmarkStoreGetMiss` | 24–28 ns; 0 B; 0 allocs |
-| `BenchmarkCounterIncrementHotActor` | 100–104 ns; 0 B; 0 allocs |
-| `BenchmarkDigestForRound` | 547–613 ns; 2048 B; 1 alloc |
-| `BenchmarkIBLTBuildPeel` | 28.5–29.5 µs; 43,136 B; 21 allocs |
+| `BenchmarkStorePut` | 552.9–658.5 ns; 571–578 B; 2 allocs |
+| `BenchmarkStoreGetMiss` | 20.28–20.70 ns; 0 B; 0 allocs |
+| `BenchmarkCounterIncrementHotActor` | 132.7–136.3 ns; 0 B; 0 allocs |
+| `BenchmarkDigestForRound` | 472.5–503.7 ns; 2048 B; 1 alloc |
+| `BenchmarkIBLTBuildPeel` | 23.4–30.0 µs; 43,136 B; 21 allocs |
 
-These are initial reference samples only. The benchmark suite contains multiple
-workloads; compare future changes with `benchstat` on the same machine and
-under the same Go version and flags.
+The benchmark suite contains multiple workloads; compare future changes with
+`benchstat` on the same machine and under the same Go version and flags.
 
 ## Fuzz results
 
-Command shape: `GOMAXPROCS=1 go test -run=^$ -fuzz=<target> -fuzztime=60s
-./<package>/`.
-
-| Target | Package | Executions | New interesting inputs | Result |
-|---|---|---:|---:|---|
-| `FuzzDecodeRequest` | `internal/net/protocol` | 3,031,664 | 0 | PASS |
-| `FuzzDecodeResponse` | `internal/net/protocol` | 3,138,830 | 0 | PASS |
-| `FuzzGossipView` | `internal/cluster` | 1,295,189 | 4 | PASS |
-| `FuzzWALReader` | `internal/persist` | 581,621 | 0 | PASS |
-| `FuzzSnapshot` | `internal/persist` | 71,323 | 1 | PASS |
-| `FuzzAECodecs` | `internal/ae` | 12,097 | 0 | PASS |
-| `FuzzStoreSequence` | `internal/store` | 1,540,213 | 10 | PASS |
-| `FuzzCounterCodec` | `internal/counter` | 3,662,769 | 1 | PASS |
-
-Total executions: 13,333,706. No failing inputs or crashers were reported.
-The WAL reader, snapshot, and AE codec fuzzers reported zero executions for
-part of their allotted wall time while still exiting successfully; this is
-recorded as observed, not interpreted as evidence of a failure. Interesting
-inputs were retained by Go's fuzz cache/corpus mechanisms; none reproduced as
-failures.
+Fuzz campaigns were not run as part of this 2026-11-14 refresh. The previous
+2026-11-12 capture recorded 8 targets × 60 seconds and 13,333,706 executions;
+that historical result is not a current gate result. Run the repository's
+`just fuzz` recipe (20 seconds per target) or the CI workflow for a fresh
+fuzz status.
 
 ## Known interpretation limits
 
 - The race and unit suites establish a green starting point; they do not prove
   the distributed invariants listed in [`INVARIANTS.md`](./INVARIANTS.md).
 - The benchmark host is a developer machine, not designated reference hardware.
+- Benchmark results are from this developer host, not designated reference
+  hardware; ordinary CPU-frequency, thermal, and background-load variation
+  applies. The prior capture's non-default GOGC/GOMEMLIMIT observations are not
+  repeated in this baseline.

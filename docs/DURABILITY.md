@@ -20,8 +20,12 @@ controls when the WAL is synced:
   idle. A crash may lose recent appends from the interval window. Shutdown
   also syncs the WAL.
 
-Hard-removal persistence errors cannot currently be returned because
-`Store.Remove` exposes only a boolean result.
+Hard removal is persisted after the in-memory entry is erased. The current
+`Store.Remove` API exposes only a boolean and its persistence hook ignores
+append errors, so callers cannot observe a hard-remove WAL failure; the entry
+may be absent in memory but reappear after recovery. Normal client `DEL` uses a
+versioned tombstone path instead; hard removal is used for internal cleanup,
+including completed migration.
 
 `Manager.Sync` explicitly flushes the active WAL. Graceful `Manager.Close`
 syncs and closes it, so a graceful daemon shutdown attempts to flush all WAL
@@ -93,7 +97,7 @@ torn WAL tail to its valid prefix; the verifier never does.
 | `Kill` / process crash | No fsync is performed by the simulated kill path. Unsynced records may or may not survive depending on the OS/filesystem. |
 | Torn WAL tail | Complete prefix is replayed; incomplete suffix is truncated on recovery. |
 | Checksum/structural corruption | Recovery should fail; never regard a checksum mismatch as a clean torn tail. |
-| Snapshot/compaction | Atomic rename is used, but file and directory fsync are absent; power-loss durability is not guaranteed. |
+| Snapshot/compaction | Temporary files are renamed into place, but snapshot, `CURRENT`, and directory fsync ordering is absent; power-loss durability is not guaranteed. Compaction ignores pre-rotation WAL sync/close errors. |
 
 ## Counter state
 
@@ -102,8 +106,8 @@ local remove marker) using WAL v3 record kinds. Recovery merges full state
 component-wise, so WAL replay is idempotent and cannot lower a component.
 Snapshots use the v4 container with the existing KV rows plus a counter bundle;
 v1/v2 KV-only snapshots remain readable, while the older compressed v3
-snapshot format remains unsupported. The WAL reader still accepts legacy, v1,
-and v2 files; an old WAL header is upgraded before v3 records are appended.
+snapshot format remains unsupported. The WAL reader accepts legacy, v1, v2,
+and v3 files; an old WAL header is upgraded before v3 records are appended.
 
 Counter actor IDs are node IDs and must be stable across restarts. `cinderd`
 requires an explicitly supplied `--node-id` whenever persistence or peers are
@@ -126,7 +130,7 @@ target was unavailable.
    fsync the directory, publish `CURRENT` atomically and durably, and only then
    discard older WAL files.
 2. Propagate hard-remove persistence failures (the current `Remove` API only
-   returns a boolean).
+   returns a boolean, and the hook error is ignored).
 3. Add process-crash tests for policy behavior and power-loss-oriented tests
    using injectable file/sync operations; `SIGKILL` alone cannot prove that
    unsynced page-cache data was lost.

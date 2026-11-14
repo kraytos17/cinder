@@ -7,18 +7,19 @@ membership, failure detection, and rebalancing in `rebalance.md`.
 
 A `cinderd` process hosts one `tcp.Server`, which assembles the store, hash
 ring, replication, transport, and cluster subsystems. Three tools ship
-alongside it (all flags, no config file):
+alongside it:
 
-- `cinderd` — the server (`--port`, `--node-id`, `--peers`, `--replication-factor`,
-  `--consistency`, `--tls*`, `--grpc-port`, `--enable-persistence --data-dir`, …).
+- `cinderd` — the server (flags or a strict JSON `--config` file; flags
+  override file values). `cinderd --help` lists the current flags.
 - `cinder-cli` — `get`/`set`/`del`/`ping`/`get-versioned`/`mget`/`mset` plus
   `info`/`cluster`/`ring` over the binary protocol.
 - `cinder-admin` — operational tooling (`info`, `cluster`, `ring`, `compact`,
   `config-reload`, `shutdown`).
 
-`client.Cluster` + `client.Pool` offer the same access in-process, with
-ring routing, redirect following (up to 4 hops, visited-set bounded), and
-quorum fan-out with read repair.
+`client.Cluster` + `client.Pool` offer client-side ring routing, redirect
+following (up to 4 hops, visited-set bounded), and retries. Quorum replication
+and read repair are performed by server-side `repl.Manager`, not by
+`client.Cluster`.
 
 ## Request path
 
@@ -29,31 +30,35 @@ client ──TCP frame (v6)──▶ tcp.Server ──▶ dispatch ──▶ sto
           └── redirect/error ────┘                └─ not owned → `moved to <node>@<host>:<port>` redirect
 ```
 
-Frames are length-prefixed with a validated 7-byte header
-(big-endian fields, 20 opcodes, 64 MiB max). The server handles one
-request-response exchange at a time per connection (strictly sequential,
-mutex-guarded on the client); the pool holds one persistent connection per
-node, dialed lazily with per-RPC deadlines, and drops the connection on
-transport failure so the next send redials. Inter-node traffic (gossip,
-probes, replication, anti-entropy, rebalance, hints) rides the same pool,
-flipped to TLS as a whole when the server is.
+Frames are length-prefixed with a 7-byte header (big-endian fields, protocol
+v6, 20 request opcodes, 64 MiB maximum frame size). The server handles one
+request-response exchange at a time per connection; clients serialize access
+to each pooled connection. The pool holds one persistent connection per node,
+dials lazily with per-RPC deadlines, and drops the connection on transport
+failure so the next send redials. Inter-node traffic (gossip, probes,
+replication, anti-entropy, rebalance, and hints) uses the peer pool, configured
+with TLS when server TLS is enabled.
 
-CRDT counter opcodes (17–20) decode but answer `NotSupported`: there is no
-counter store yet. Everything else dispatches identically over TCP and the
-gRPC gateway (`internal/grpcgw` maps each RPC onto the same handlers, with
-`Delete` bypassing the ownership check and `GetVersioned` reading the local
-store directly).
+Counter opcodes (17–20) are implemented: `internal/counter` stores sharded
+PN-counter state, replication merges complete states, and anti-entropy sends
+bounded counter batches. Counters are persisted in WAL v3 records and snapshot
+v4 bundles when persistence is enabled. The gRPC gateway exposes cache,
+counter, and admin RPCs, but some bulk/versioned methods use direct local-store
+operations rather than the TCP handler path. In particular, gRPC `Delete`
+uses `DeleteNoRedirect`, `GetVersioned` reads the local store, and `MultiGet`
+and `MultiSet` run per-item locally; they do not provide the same routing or
+replication semantics as the single-key TCP methods.
 
 ## Storage
 
-- **Eviction store** — sharded (`store.Store`, one shard per 64 KiB
-  capacity slice, clamped to 16), per-entry versions, TTL wheel and
+- **Eviction store** — sharded (`store.Store`, one shard per 64 KiB of
+  configured capacity, clamped to 16), per-entry versions, TTL wheel and
   tombstones. `--eviction-policy=lru` uses O(1) recency lists;
   `--eviction-policy=lfu` uses per-shard frequency buckets (read/write
   counts, minimum-frequency victim, least-recently-incremented tie-break).
-  LFU charges the larger 136-byte node in capacity accounting and
-  preserves frequencies across snapshots; WAL replay rebuilds them from
-  subsequent accesses (WAL records do not carry policy state).
+  LFU charges the larger 136-byte node in capacity accounting and snapshots
+  preserve frequencies. WAL records do not carry frequency state, so accesses
+  since the last snapshot are not reconstructed by WAL recovery.
 - **TTL wheel** — 256-slot wheel for near-term expiries plus a min-heap for
   long TTLs; tombstone GC rides the same machinery.
 - **Reads/writes** go through `Get`/`Put` (live views) and
@@ -65,8 +70,11 @@ store directly).
 ## Distribution
 
 - **Consistent hash ring** — xxHash3 with 150 virtual nodes per physical
-  node, mutex-guarded and rebuilt in place from the alive set on every
-  membership change (no lock-free snapshot: rebuilds are cheap and rare).
+  node by default. Writers serialize membership changes and publish immutable
+  snapshots through an atomic pointer; lookups binary-search the snapshot
+  without taking the writer mutex. `GetNodes` walks clockwise for distinct
+  replica owners. The bounded-load helper and load counters are not used by
+  production routing. See `rebalance.md` for the membership and placement path.
 - **Replication** — primary-driven, `async` (acknowledge after local write,
   fan out best-effort) or `quorum` (`W = total/2 + 1`, fails closed as
   `NotReady`). Versions are monotonic Lamport stamps; ties break on
@@ -75,13 +83,14 @@ store directly).
 - **Read repair** — quorum reads compare replica versions and write the
   winner back to stale replicas (plus a local self-heal).
 - **Hinted handoff** — writes to unreachable replicas queue bounded, TTL
-  (30s) hints (1024 entries and 64 MiB estimated bytes, drop-oldest,
-  LWW-coalesced per target+key); replayed FIFO when the replica returns, and
+  (30s) hints (1,024 entries and 64 MiB estimated bytes by default,
+  drop-oldest, LWW-coalesced per target+key); replayed FIFO when the replica
+  returns, and
   journaled to `<data_dir>/hints.log` when persistence is on (torn tail
   truncated on open).
 - **Membership** — SWIM-style Ping → Suspect → Dead with incarnation-guarded
   gossip and automatic ring rebuild. `Leave()` broadcasts Dead first to avoid
-  false suspicion.
+  false suspicion. See `rebalance.md` for the state machine and failure timing.
 - **Rebalance** — two-phase (enumerate a `LiveEntries` snapshot, then send —
   nothing is ever sent while holding store state) with a quarantine window
   for crash-looping nodes; 200 ms debounce on ring rebuild, self-retrying
@@ -96,14 +105,15 @@ store directly).
 
 - **Persistence** — append-only WAL (`WAL0` magic, XXH3-64 per-record
   checksums) plus periodic snapshots (`CSNP` magic, format v2 for KV-only
-  state and v4 with counters, atomic write-to-temp + rename). Readers accept
-  WAL Legacy/V1/V2/V3 and snapshots V1/V2/V4; writers emit WAL v3 (v2
-  records remain byte-identical) and snapshots v2 or v4 (v3 zstd blocks are
+  state and v4 with counters; snapshot publication uses temp + rename but is
+  not power-loss durable). Readers accept WAL Legacy/V1/V2/V3 and snapshots
+  V1/V2/V4; writers emit WAL v3 and snapshots v2 or v4 (v3 zstd blocks are
   rejected). Recovery loads the latest snapshot (via `CURRENT`, with
   scan fallback) and replays sealed + active segments, truncating torn
   tails; `Compact` snapshots and truncates to a fresh WAL — on demand
-  (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s),
-  or once the active WAL passes `--max-wal-bytes` (default 64 MiB).
+  (`cinder-admin compact`), every `--snapshot-interval-s` (default 60s), or
+  when active WAL byte/record limits are reached (64 MiB / 10,000 records by
+  default).
 - **Observability** — metrics + logs, no tracing: `internal/metrics`
   records per-opcode counters with log2-bucketed latency histograms plus
   store/replication/AE/cluster/rebalance/connection counters, exposed as
@@ -116,11 +126,17 @@ store directly).
   opcodes, which postdate it). Admin JSON (`info`/`cluster`/`ring`, same
   payloads over TCP and gRPC) stays the introspection surface; benchmarks
   are the performance story (`just bench`, `-benchmem` always on).
-- **Configuration** — flags only (`cinderd --help` is authoritative);
-  `config-reload` is accepted and answers OK. No YAML, no hot-reload.
+- **Configuration** — flags or strict JSON `--config` (flags override file
+  values); secrets can fall back to `CINDER_SHARED_SECRET` and
+  `CINDER_CLIENT_SECRET`. SIGHUP re-reads the startup JSON file and applies its
+  reloadable subset; the admin `config-reload` opcode applies an explicit
+  reload payload. Neither
+  path reloads every startup setting; listener addresses, peers, node ID,
+  replication factor, persistence directory, and other fixed settings require
+  restart.
 - **TLS** — opt-in (`--tls --tls-cert --tls-key [--tls-ca]`, TLS 1.2+);
   peer verification is chain-only like asio `verify_peer`.
-- **gRPC gateway** — opt-in (`--grpc-port`); plaintext by default, TLS with
-  the server certificate when a client secret is configured (refuses to
-  serve authenticated plaintext, like C++).
-  same handler semantics as TCP (see above).
+- **gRPC gateway** — opt-in (`--grpc-port`). It uses TLS when `--tls` is
+  enabled; client-secret authentication requires TLS. Without TLS or a client
+  secret it can serve plaintext. Its RPC surface is not uniformly equivalent
+  to TCP routing; see the request-path caveat above.
