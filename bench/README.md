@@ -1,6 +1,6 @@
 # Benchmark baseline
 
-Baseline refreshed 2026-11-14 with:
+Baseline refreshed 2026-11-15 with:
 
 ```sh
 go test ./... -run='^$' -bench=. -benchmem -count=5

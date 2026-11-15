@@ -5,8 +5,6 @@ import (
 	"maps"
 	"slices"
 	"strings"
-
-	"github.com/kraytos17/cinder/internal/store"
 )
 
 type hashKeyPair struct {
@@ -23,15 +21,15 @@ func (m *Manager) collectEntriesForHashes(hashes []uint64) []SyncItem {
 	slices.Sort(sorted)
 	sorted = slices.Compact(sorted)
 	resolved := make(map[uint64]string, len(sorted))
-	m.store.ForEach(func(key string, _ store.Entry) {
-		h := KeyHash(key)
+	for _, item := range m.store.MetadataSnapshot() {
+		h := KeyHash(item.Key)
 		i, _ := slices.BinarySearch(sorted, h)
 		if i < len(sorted) && sorted[i] == h {
 			if _, ok := resolved[h]; !ok {
-				resolved[h] = key
+				resolved[h] = item.Key
 			}
 		}
-	})
+	}
 
 	keys := slices.SortedFunc(maps.Values(resolved), func(a, b string) int {
 		return cmp.Or(cmp.Compare(KeyHash(a), KeyHash(b)), strings.Compare(a, b))

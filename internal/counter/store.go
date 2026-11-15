@@ -414,19 +414,23 @@ func (s *Store) BundleRecordSize(key string) (int, bool) {
 	return size, ok && valid
 }
 
-// Encode returns a canonical copy of one counter's CRDC encoding while
-// holding the shard read lock. It avoids cloning both actor maps through
-// Get when a caller only needs serialized state.
-func (s *Store) Encode(key string) ([]byte, bool) {
+// AppendEncoded appends the canonical CRDC encoding of key's counter to
+// buf while holding the shard read lock, letting callers batch many
+// counters into one buffer instead of one allocation each. It reports
+// false and leaves buf untouched when the key has no (or no valid) state.
+func (s *Store) AppendEncoded(key string, buf []byte) ([]byte, bool) {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), counterSeed)]
 	sh.mu.RLock()
 	state, ok := sh.index[key]
 	if !ok {
 		sh.mu.RUnlock()
-		return nil, false
+		return buf, false
 	}
 
-	encoded := state.Encode()
+	out := state.AppendTo(buf)
 	sh.mu.RUnlock()
-	return encoded, len(encoded) > 0
+	if len(out) <= len(buf) {
+		return buf, false
+	}
+	return out, true
 }

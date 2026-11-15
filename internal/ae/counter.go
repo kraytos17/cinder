@@ -1,7 +1,6 @@
 package ae
 
 import (
-	"cmp"
 	"slices"
 
 	"github.com/kraytos17/cinder/internal/counter"
@@ -103,7 +102,7 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 		}
 	}
 
-	selected := make([]counter.EncodedBundleEntry, 0, min(len(all), 1024))
+	selected := make([]string, 0, min(len(all), 1024))
 	lastSelected := ""
 	bytes := 8 // magic + count u32s
 	if len(all) > 0 {
@@ -118,21 +117,8 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 				break
 			}
 
-			encoded, ok := m.counters.Encode(key)
-			if !ok {
-				continue
-			}
-
-			actualSize := 4 + len(key) + 4 + len(encoded)
-			if actualSize > maxBytes-bytes {
-				if len(selected) == 0 {
-					return nil
-				}
-				break
-			}
-
-			bytes += actualSize
-			selected = append(selected, counter.EncodedBundleEntry{Key: key, State: encoded})
+			bytes += n
+			selected = append(selected, key)
 			lastSelected = key
 		}
 	}
@@ -140,9 +126,39 @@ func (m *Manager) EncodeCounterBatch(maxBytes int) []byte {
 	// stores converge over several bounded rounds (wrap-around scan).
 	if len(selected) > 0 {
 		m.counterCur = lastSelected
-		slices.SortFunc(selected, func(a, b counter.EncodedBundleEntry) int { return cmp.Compare(a.Key, b.Key) })
+		slices.Sort(selected)
 	}
-	return counter.EncodeEncodedCounterBundle(selected)
+
+	// Encode straight into one scratch buffer instead of one buffer per
+	// counter: no per-counter allocation, and the final bundle assembly
+	// keeps using the validated EncodeEncodedCounterBundle path on
+	// sub-slices of the scratch. A concurrent mutation between the size
+	// estimate and the encode can only shrink the accepted set: over
+	// budget records are dropped and the cursor already advanced past
+	// only accepted keys.
+	scratch := make([]byte, 0, bytes)
+	entries := make([]counter.EncodedBundleEntry, 0, len(selected))
+	accepted := 8
+	for _, key := range selected {
+		mark := len(scratch)
+		var ok bool
+		scratch, ok = m.counters.AppendEncoded(key, scratch)
+		if !ok {
+			continue
+		}
+
+		actual := 4 + len(key) + 4 + (len(scratch) - mark)
+		if actual > maxBytes-accepted {
+			if len(entries) == 0 {
+				return nil
+			}
+			break
+		}
+
+		accepted += actual
+		entries = append(entries, counter.EncodedBundleEntry{Key: key, State: scratch[mark:]})
+	}
+	return counter.EncodeEncodedCounterBundle(entries)
 }
 
 // OnCounterAntiEntropy merges a bounded remote batch and returns a bounded

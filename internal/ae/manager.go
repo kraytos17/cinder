@@ -74,7 +74,7 @@ type CounterStore interface {
 	SortedLiveCounters() []BundleEntry
 	SortedLiveCounterKeys() []string
 	BundleRecordSize(key string) (int, bool)
-	Encode(key string) ([]byte, bool)
+	AppendEncoded(key string, buf []byte) ([]byte, bool)
 	Merge(key string, remote PNCounter) error
 	Size() int
 	CapacityBytes() uint64
@@ -187,10 +187,11 @@ func (m *Manager) ComputeDigest() Digest {
 	if m.store == nil {
 		return digest
 	}
-
-	m.store.ForEach(func(key string, e store.Entry) {
-		digest[BucketFor(key, m.numBuckets)] ^= EntryHash(key, e.VersionAndTTL(), e.WriterNodeHash)
-	})
+	// MetadataSnapshot carries the same identity the digest folds (key,
+	// version+TTL, writer) without cloning resident values.
+	for _, item := range m.store.MetadataSnapshot() {
+		digest[BucketFor(item.Key, m.numBuckets)] ^= EntryHash(item.Key, item.Entry.VersionAndTTL(), item.Entry.WriterNodeHash)
+	}
 	return digest
 }
 
@@ -409,17 +410,17 @@ func (m *Manager) PickPartner(replicaFactor hashring.ReplicaCount) (string, bool
 
 func (m *Manager) refreshPartnersLocked(replicaFactor hashring.ReplicaCount) {
 	seen := map[string]bool{}
-	m.store.ForEach(func(key string, _ store.Entry) {
-		nodes, err := m.ring.GetNodes(key, replicaFactor)
+	for _, item := range m.store.MetadataSnapshot() {
+		nodes, err := m.ring.GetNodes(item.Key, replicaFactor)
 		if err != nil {
-			return
+			continue
 		}
 		for _, n := range nodes {
 			if n != m.self {
 				seen[n] = true
 			}
 		}
-	})
+	}
 
 	// Counter-only keys do not appear in the LWW scan. Include them so a
 	// cluster using only CRDT counters still runs the repair exchange.

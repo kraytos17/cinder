@@ -83,6 +83,20 @@ func (g GCounter) Encode() []byte {
 	return buf
 }
 
+func (p PNCounter) AppendTo(buf []byte) []byte {
+	if len(p.Pos.components) > math.MaxUint32 || len(p.Neg.components) > math.MaxUint32 {
+		return nil
+	}
+
+	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
+	buf = append(buf, KindPNCounter)
+	buf = p.Pos.appendTo(buf)
+	if buf == nil {
+		return nil
+	}
+	return p.Neg.appendTo(buf)
+}
+
 // Encode serializes p: the GCounter body for P, then for N (each
 // with its own count; no second magic/kind).
 func (p PNCounter) Encode() []byte {
@@ -91,28 +105,31 @@ func (p PNCounter) Encode() []byte {
 	}
 
 	need := 4 + 1 + p.Pos.encodedSize() + p.Neg.encodedSize()
-	buf := make([]byte, 0, need)
-	buf = codec.Append(buf, binary.BigEndian, MagicCRDC)
-	buf = append(buf, KindPNCounter)
-	buf = p.Pos.appendTo(buf)
-	if buf == nil {
-		return nil
-	}
-
-	buf = p.Neg.appendTo(buf)
-	if buf == nil {
-		return nil
-	}
-	return buf
+	return p.AppendTo(make([]byte, 0, need))
 }
 
 func (g GCounter) appendTo(buf []byte) []byte {
-	actors := g.Actors()
-	if len(actors) > math.MaxUint32 {
+	n := len(g.components)
+	if n > math.MaxUint32 {
 		return nil
 	}
 
-	buf = codec.AppendLen(buf, binary.BigEndian, len(actors))
+	buf = codec.AppendLen(buf, binary.BigEndian, n)
+	if n == 1 {
+		// Single actor is trivially sorted: skip the Actors slice.
+		for actor, count := range g.components {
+			if actor == "" || len(actor) > math.MaxUint32 {
+				return nil
+			}
+
+			buf = codec.AppendLen(buf, binary.BigEndian, len(actor))
+			buf = append(buf, actor...)
+			buf = codec.Append(buf, binary.BigEndian, count)
+		}
+		return buf
+	}
+
+	actors := g.Actors()
 	for _, actor := range actors {
 		if actor == "" || len(actor) > math.MaxUint32 {
 			return nil
