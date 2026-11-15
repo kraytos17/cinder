@@ -21,8 +21,7 @@ func TestVersionedNewerWins(t *testing.T) {
 	if err := s.PutVersioned("k", makeVersioned("v2", 2, 10)); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.GetVersioned("k")
-	if !ok || string(e.Value) != "v2" || e.Version != 2 {
+	if e, ok := s.GetVersioned("k"); !ok || string(e.Value) != "v2" || e.Version != 2 {
 		t.Fatalf("got %+v, %v", e, ok)
 	}
 }
@@ -35,8 +34,7 @@ func TestVersionedStaleIgnored(t *testing.T) {
 	if err := s.PutVersioned("k", makeVersioned("v1", 1, 10)); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.GetVersioned("k")
-	if !ok || string(e.Value) != "v2" {
+	if e, ok := s.GetVersioned("k"); !ok || string(e.Value) != "v2" {
 		t.Fatalf("got %+v, %v", e, ok)
 	}
 }
@@ -310,8 +308,7 @@ func TestVersionedNonTTLOverwriteClearsWheel(t *testing.T) {
 	if s.Size() != 1 {
 		t.Fatalf("size = %d", s.Size())
 	}
-	got, ok := s.Get("a")
-	if !ok || string(got) != "2" {
+	if got, ok := s.Get("a"); !ok || string(got) != "2" {
 		t.Fatalf("got %q, %v", got, ok)
 	}
 }
@@ -328,8 +325,7 @@ func TestVersionedRemovePlantsTombstone(t *testing.T) {
 	if _, ok := s.Get("k"); ok {
 		t.Fatal("live reads must hide the delete")
 	}
-	tomb, ok := s.GetVersioned("k")
-	if !ok || !tomb.Tombstone || tomb.Version != 7 || tomb.WriterNodeHash != 11 {
+	if tomb, ok := s.GetVersioned("k"); !ok || !tomb.Tombstone || tomb.Version != 7 || tomb.WriterNodeHash != 11 {
 		t.Fatalf("got %+v, %v", tomb, ok)
 	}
 }
@@ -342,8 +338,7 @@ func TestVersionedStaleDeleteLoses(t *testing.T) {
 	if err := s.RemoveVersioned("k", 3, 99); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.GetVersioned("k")
-	if !ok || e.Tombstone || string(e.Value) != "v" {
+	if e, ok := s.GetVersioned("k"); !ok || e.Tombstone || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, ok)
 	}
 	if _, ok := s.Get("k"); !ok {
@@ -365,8 +360,7 @@ func TestVersionedPutAfterDeleteResurrects(t *testing.T) {
 	if err := s.PutVersioned("k", makeVersioned("v2", 9, 10)); err != nil {
 		t.Fatal(err)
 	}
-	e, ok := s.GetVersioned("k")
-	if !ok || e.Tombstone || string(e.Value) != "v2" {
+	if e, ok := s.GetVersioned("k"); !ok || e.Tombstone || string(e.Value) != "v2" {
 		t.Fatalf("got %+v, %v", e, ok)
 	}
 }
@@ -379,8 +373,7 @@ func TestVersionedDeleteMissingPlantsTombstone(t *testing.T) {
 	if _, ok := s.Get("ghost"); ok {
 		t.Fatal("ghost must read missing")
 	}
-	tomb, ok := s.GetVersioned("ghost")
-	if !ok || !tomb.Tombstone || tomb.Version != 4 {
+	if tomb, ok := s.GetVersioned("ghost"); !ok || !tomb.Tombstone || tomb.Version != 4 {
 		t.Fatalf("got %+v, %v", tomb, ok)
 	}
 }
@@ -393,8 +386,7 @@ func TestVersionedTombstoneWinsTies(t *testing.T) {
 	if err := s.RemoveVersioned("k", 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	tomb, ok := s.GetVersioned("k")
-	if !ok || !tomb.Tombstone {
+	if tomb, ok := s.GetVersioned("k"); !ok || !tomb.Tombstone {
 		t.Fatalf("got %+v, %v", tomb, ok)
 	}
 	if err := s.PutVersioned("j", makeVersioned("live", 1, 0)); err != nil {
@@ -407,8 +399,7 @@ func TestVersionedTombstoneWinsTies(t *testing.T) {
 	if err := s.PutVersioned("j", liveTie); err != nil {
 		t.Fatal(err)
 	}
-	kept, ok := s.GetVersioned("j")
-	if !ok || !kept.Tombstone {
+	if kept, ok := s.GetVersioned("j"); !ok || !kept.Tombstone {
 		t.Fatalf("tied live write must not clear the marker: %+v, %v", kept, ok)
 	}
 }
@@ -481,8 +472,7 @@ func TestVersionedEvictionSparesTombstones(t *testing.T) {
 		e := Entry{Value: bytes.Repeat([]byte{byte('x' + i%26)}, 64), Version: uint64(i) + 10, WriterNodeHash: 1}
 		_ = s.PutVersioned(fmt.Sprintf("pressure-%d", i), e)
 	}
-	tomb, ok := s.GetVersioned("doomed")
-	if !ok || !tomb.Tombstone {
+	if tomb, ok := s.GetVersioned("doomed"); !ok || !tomb.Tombstone {
 		t.Fatalf("tombstone evicted under pressure: %+v, %v", tomb, ok)
 	}
 }
@@ -496,8 +486,7 @@ func TestPutDoesNotRetainCallerBuffer(t *testing.T) {
 	for i := range buf {
 		buf[i] = 'x'
 	}
-	got, ok := s.Get("k")
-	if !ok || string(got) != "caller-owned" {
+	if got, ok := s.Get("k"); !ok || string(got) != "caller-owned" {
 		t.Fatalf("store retained caller buffer: %q, %v", got, ok)
 	}
 }

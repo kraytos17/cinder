@@ -169,8 +169,7 @@ func TestGetNodesReplicaCount(t *testing.T) {
 	r.AddNode("node2")
 	r.AddNode("node3")
 	for i := range 100 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2)
-		if err != nil || len(nodes) != 2 || nodes[0] == nodes[1] {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2); err != nil || len(nodes) != 2 || nodes[0] == nodes[1] {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
@@ -178,8 +177,7 @@ func TestGetNodesReplicaCount(t *testing.T) {
 
 func TestNewReplicaCount(t *testing.T) {
 	for _, n := range []int{1, MaxReplicas} {
-		got, err := NewReplicaCount(n)
-		if err != nil || int(got) != n {
+		if got, err := NewReplicaCount(n); err != nil || int(got) != n {
 			t.Errorf("NewReplicaCount(%d) = %d, %v", n, got, err)
 		}
 	}
@@ -194,8 +192,7 @@ func TestGetNodesNotExceedingAlive(t *testing.T) {
 	r := mustRing(t, 50, 0)
 	r.AddNode("node1")
 	for i := range 100 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 3)
-		if err != nil || len(nodes) != 1 {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 3); err != nil || len(nodes) != 1 {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
@@ -228,8 +225,7 @@ func TestGetNodesAllDistinct(t *testing.T) {
 	r.AddNode("node2")
 	r.AddNode("node3")
 	for i := range 200 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 3)
-		if err != nil || len(nodes) != 3 || nodes[0] == nodes[1] || nodes[0] == nodes[2] || nodes[1] == nodes[2] {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 3); err != nil || len(nodes) != 3 || nodes[0] == nodes[1] || nodes[0] == nodes[2] || nodes[1] == nodes[2] {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
@@ -240,8 +236,7 @@ func TestGetNodesReplicaCountExceedsAlive(t *testing.T) {
 	r.AddNode("node1")
 	r.AddNode("node2")
 	for i := range 200 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 8)
-		if err != nil || len(nodes) > 2 {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 8); err != nil || len(nodes) > 2 {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
@@ -253,16 +248,14 @@ func TestAddNodeIdempotent(t *testing.T) {
 	r.AddNode("node1")
 	r.AddNode("node2")
 	for i := range 200 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2)
-		if err != nil || len(nodes) != 2 || nodes[0] == nodes[1] {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2); err != nil || len(nodes) != 2 || nodes[0] == nodes[1] {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
 	r.RemoveNode("node2")
 	r.AddNode("node2")
 	for i := range 200 {
-		nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2)
-		if err != nil || len(nodes) != 2 {
+		if nodes, err := r.GetNodes(fmt.Sprintf("key%d", i), 2); err != nil || len(nodes) != 2 {
 			t.Fatalf("got %v, %v", nodes, err)
 		}
 	}
@@ -344,8 +337,7 @@ func TestGetNodesStopsOnceEveryPhysicalNodeIsFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := range 100 {
-		got, err := r.GetNodes(fmt.Sprintf("key-%d", i), MaxReplicas)
-		if err != nil || len(got) != 3 {
+		if got, err := r.GetNodes(fmt.Sprintf("key-%d", i), MaxReplicas); err != nil || len(got) != 3 {
 			t.Fatalf("GetNodes() = %v, %v; want all three physical owners", got, err)
 		}
 	}

@@ -169,8 +169,7 @@ func TestFsyncPolicyCrashRecovery(t *testing.T) {
 				t.Fatalf("restart recovery: %v", err)
 			}
 			defer restart.Close()
-			value, ok := recovered.Get("acknowledged")
-			if ok != tc.wantRecovered || (ok && string(value) != "value") {
+			if value, ok := recovered.Get("acknowledged"); ok != tc.wantRecovered || (ok && string(value) != "value") {
 				t.Fatalf("recovered value=%q present=%v, want present=%v", value, ok, tc.wantRecovered)
 			}
 		})

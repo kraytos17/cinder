@@ -58,9 +58,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return cli.Exit("", 2)
 		},
 	}
-
-	err := root.Run(context.Background(), append([]string{"cinder-admin"}, args...))
-	if err != nil {
+	if err := root.Run(context.Background(), append([]string{"cinder-admin"}, args...)); err != nil {
 		if ec, ok := errors.AsType[cli.ExitCoder](err); ok {
 			return ec.ExitCode()
 		}

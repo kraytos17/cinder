@@ -193,8 +193,7 @@ func BenchmarkStoreGetHit(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := range b.N {
-		v, ok := s.Get(keys[i%resident])
-		if !ok || len(v) != 256 {
+		if v, ok := s.Get(keys[i%resident]); !ok || len(v) != 256 {
 			b.Fatal("miss")
 		}
 	}

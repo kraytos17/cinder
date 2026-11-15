@@ -90,8 +90,7 @@ func TestSimCrashSnapshotRecovery(t *testing.T) {
 	}
 	// Pin the snapshot path: recovery must load a snapshot, not just the
 	// WAL (pure WAL replay is covered by TestSimCrashWALTailRecovery).
-	snaps, err := filepath.Glob(filepath.Join(dirs["n3"], "snapshot_*.dat"))
-	if err != nil || len(snaps) == 0 {
+	if snaps, err := filepath.Glob(filepath.Join(dirs["n3"], "snapshot_*.dat")); err != nil || len(snaps) == 0 {
 		t.Fatalf("no snapshot in n3 dir after compact: %v %v", snaps, err)
 	}
 	c.RestartNode("n3")
@@ -111,8 +110,7 @@ func TestSimCrashSnapshotRecovery(t *testing.T) {
 	if ost != protocol.StatusOK {
 		t.Fatalf("counter after restart: %d", uint8(ost))
 	}
-	oc, err := counter.DecodePNCounter(oe)
-	if err != nil || oc.Value() != 7 {
+	if oc, err := counter.DecodePNCounter(oe); err != nil || oc.Value() != 7 {
 		t.Fatalf("counter = %v, err %v; want 7", oc, err)
 	}
 }

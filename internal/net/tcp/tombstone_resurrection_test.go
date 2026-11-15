@@ -88,8 +88,7 @@ func TestTombstoneResurrectionReproducedAfterGC(t *testing.T) {
 	if err := primary.PutVersioned("k", staleReplicaEntry(t, staleReplica, "k")); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := primary.Get("k")
-	if !ok || string(got) != "old" {
+	if got, ok := primary.Get("k"); !ok || string(got) != "old" {
 		t.Fatalf("resurrection reproduction failed: value=%q present=%v", got, ok)
 	}
 }

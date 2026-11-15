@@ -50,8 +50,7 @@ func TestValidateBindHost(t *testing.T) {
 		host    string
 		wantErr bool
 	}{{"127.0.0.1", false}, {"::", false}, {"cache.example.test", false}, {"bad host", true}, {"", true}} {
-		err := validateHost(tc.host, true, lookup)
-		if (err != nil) != tc.wantErr {
+		if err := validateHost(tc.host, true, lookup); (err != nil) != tc.wantErr {
 			t.Errorf("validateHost(%q) error = %v, wantErr=%v", tc.host, err, tc.wantErr)
 		}
 	}
@@ -92,8 +91,7 @@ func TestValidateClusterPort(t *testing.T) {
 		{name: "ephemeral cluster refused", port: 0, peers: 1, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateClusterPort(tc.port, tc.peers)
-			if (err != nil) != tc.wantError {
+			if err := validateClusterPort(tc.port, tc.peers); (err != nil) != tc.wantError {
 				t.Fatalf("validateClusterPort() error = %v, wantError=%v", err, tc.wantError)
 			}
 		})

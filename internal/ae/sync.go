@@ -260,8 +260,7 @@ func (m *Manager) DiffRows(rows []MetaRow, divergent, covered []uint32) Diff {
 func (m *Manager) ApplySync(msg SyncMessage) int {
 	applied := 0
 	for _, item := range msg.Entries {
-		e, ok := m.store.GetVersioned(item.Key)
-		if !ok || store.LWWWinsOver(
+		if e, ok := m.store.GetVersioned(item.Key); !ok || store.LWWWinsOver(
 			item.Entry.Stamp(),
 			e.Stamp()) {
 			applied++

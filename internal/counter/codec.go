@@ -146,13 +146,10 @@ func (g GCounter) appendTo(buf []byte) []byte {
 func DecodeGCounter(data []byte) (GCounter, error) {
 	var g GCounter
 	r := codec.NewReader(binary.BigEndian, data)
-	magic, ok := r.U32()
-	if !ok || magic != MagicCRDC {
+	if magic, ok := r.U32(); !ok || magic != MagicCRDC {
 		return g, ErrDecode
 	}
-
-	kind, ok := r.U8()
-	if !ok || kind != KindGCounter {
+	if kind, ok := r.U8(); !ok || kind != KindGCounter {
 		return g, ErrDecode
 	}
 	if !g.decodeFrom(&r) {
@@ -169,13 +166,10 @@ func DecodeGCounter(data []byte) (GCounter, error) {
 func DecodePNCounter(data []byte) (PNCounter, error) {
 	var p PNCounter
 	r := codec.NewReader(binary.BigEndian, data)
-	magic, ok := r.U32()
-	if !ok || magic != MagicCRDC {
+	if magic, ok := r.U32(); !ok || magic != MagicCRDC {
 		return p, ErrDecode
 	}
-
-	kind, ok := r.U8()
-	if !ok || kind != KindPNCounter {
+	if kind, ok := r.U8(); !ok || kind != KindPNCounter {
 		return p, ErrDecode
 	}
 
@@ -289,8 +283,7 @@ func EncodeEncodedCounterBundle(entries []EncodedBundleEntry) []byte {
 // keys and no trailing garbage.
 func DecodeCounterBundle(data []byte) ([]BundleEntry, error) {
 	r := codec.NewReader(binary.BigEndian, data)
-	magic, ok := r.U32()
-	if !ok || magic != MagicCAE1 {
+	if magic, ok := r.U32(); !ok || magic != MagicCAE1 {
 		return nil, ErrDecode
 	}
 

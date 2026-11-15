@@ -238,8 +238,7 @@ func TestSimQuorumFailureStillRepairsStaleReplica(t *testing.T) {
 	m := simManager(local, mc, inner)
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
-	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
-	if err != nil || string(e.Value) != "new" {
+	if e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0); err != nil || string(e.Value) != "new" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 	if got := c.ReadRepairs.Load(); got != 1 {
@@ -256,8 +255,7 @@ func TestSimQuorumFailureNotFoundStillRepairs(t *testing.T) {
 	m := simManager(local, mc, inner)
 	c := metrics.NewCollector()
 	m.SetMetrics(c)
-	e, err := m.Read("k", []string{"n2"}, 2, 0, 0)
-	if err != nil || string(e.Value) != "v" {
+	if e, err := m.Read("k", []string{"n2"}, 2, 0, 0); err != nil || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 	waitFor(t, "notfound repair", func() bool {

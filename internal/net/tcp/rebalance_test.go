@@ -56,8 +56,7 @@ func writeToOwner(t *testing.T, c *testCluster, key, val string) {
 		t.Fatal(err)
 	}
 	defer d.Close()
-	res, err := d.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(val)})
-	if err != nil || res.Status != protocol.StatusOK {
+	if res, err := d.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(val)}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("set %q on %s: %+v %v", key, owner, res, err)
 	}
 }

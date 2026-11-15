@@ -150,8 +150,7 @@ func TestThreeLoopbackAddressesAppearInAdminCluster(t *testing.T) {
 	for {
 		ready := true
 		for i, srv := range servers {
-			self, ok := srv.Table().Self()
-			if !ok || self.Host != hosts[i] || self.Port != ports[i] {
+			if self, ok := srv.Table().Self(); !ok || self.Host != hosts[i] || self.Port != ports[i] {
 				ready = false
 				break
 			}
@@ -241,8 +240,7 @@ func TestRestartedNodeAddressSupersedesStaleRumor(t *testing.T) {
 		t.Fatal("old node has no self membership")
 	}
 	peer.Table().ApplyRumor(oldSelf)
-	knownOld, ok := peer.Table().Get("node")
-	if !ok || knownOld.Host != "127.0.0.2" || knownOld.Port != oldPort || knownOld.Incarnation != oldSelf.Incarnation {
+	if knownOld, ok := peer.Table().Get("node"); !ok || knownOld.Host != "127.0.0.2" || knownOld.Port != oldPort || knownOld.Incarnation != oldSelf.Incarnation {
 		t.Fatalf("peer did not capture old address/incarnation before restart: %+v", knownOld)
 	}
 	if err := oldListener.Close(); err != nil {

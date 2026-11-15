@@ -28,8 +28,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 
 func TestParseMode(t *testing.T) {
 	for input, want := range map[string]Mode{"async": Async, "quorum": Quorum} {
-		got, err := ParseMode(input)
-		if err != nil || got != want {
+		if got, err := ParseMode(input); err != nil || got != want {
 			t.Errorf("ParseMode(%q) = %v, %v; want %v", input, got, err, want)
 		}
 	}
@@ -153,8 +152,7 @@ func TestDeleteQuorum(t *testing.T) {
 	// background, so convergence assertions poll.
 	waitFor(t, "tombstone everywhere", func() bool {
 		for _, st := range []*store.Store{m.Local(), ft.Stores["n2"], ft.Stores["n3"]} {
-			e, ok := st.GetVersioned("k")
-			if !ok || !e.Tombstone {
+			if e, ok := st.GetVersioned("k"); !ok || !e.Tombstone {
 				return false
 			}
 			if _, ok := st.Get("k"); ok {
@@ -170,8 +168,7 @@ func TestReadLocalOnly(t *testing.T) {
 	if err := m.Local().Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	e, err := m.Read("k", nil, 1, 0, 0)
-	if err != nil || string(e.Value) != "v" {
+	if e, err := m.Read("k", nil, 1, 0, 0); err != nil || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 	if _, err := m.Read("missing", nil, 1, 0, 0); !errors.Is(err, ErrNotFound) {
@@ -191,8 +188,7 @@ func TestReadQuorumLWWAndRepair(t *testing.T) {
 	}
 	putVer(m.Local(), "old", 1, 1)
 	putVer(ft.Stores["n2"], "new", 5, 2)
-	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
-	if err != nil || string(e.Value) != "new" || e.Version != 5 {
+	if e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0); err != nil || string(e.Value) != "new" || e.Version != 5 {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 	// Local healed.
@@ -225,8 +221,7 @@ func TestReadIgnoresTransportFailure(t *testing.T) {
 	if err := ft.Stores["n2"].Put("k", []byte("v")); err != nil {
 		t.Fatal(err)
 	}
-	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
-	if err != nil || string(e.Value) != "v" {
+	if e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0); err != nil || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 }
@@ -373,8 +368,7 @@ func TestReadDoesNotWaitForStragglers(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0)
-	if err != nil || string(e.Value) != "v" {
+	if e, err := m.Read("k", []string{"n2", "n3"}, 2, 0, 0); err != nil || string(e.Value) != "v" {
 		t.Fatalf("got %+v, %v", e, err)
 	}
 	if st.responded.Load() {

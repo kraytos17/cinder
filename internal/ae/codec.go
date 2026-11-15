@@ -138,8 +138,7 @@ func EncodeDigest(digest []uint64) []byte {
 // DecodeDigest parses an AEM2 blob with exact size validation.
 func DecodeDigest(data []byte, expected int) ([]uint64, bool) {
 	c := codec.NewReader(binary.LittleEndian, data)
-	magic, ok := c.U32()
-	if !ok || magic != MagicDigest {
+	if magic, ok := c.U32(); !ok || magic != MagicDigest {
 		return nil, false
 	}
 
@@ -198,8 +197,7 @@ func (d Digest) Encode() []byte {
 // DecodeGroupDigest parses an AEM3 blob with exact size validation.
 func DecodeGroupDigest(data []byte, expectedGroups int) (Digest, bool) {
 	c := codec.NewReader(binary.LittleEndian, data)
-	magic, ok := c.U32()
-	if !ok || magic != MagicGroupDigest {
+	if magic, ok := c.U32(); !ok || magic != MagicGroupDigest {
 		return nil, false
 	}
 
@@ -242,8 +240,7 @@ func (r Refinement) Encode() []byte {
 func DecodeRefinement(data []byte, maxBucket uint32) (Refinement, bool) {
 	var out Refinement
 	c := codec.NewReader(binary.LittleEndian, data)
-	magic, ok := c.U32()
-	if !ok || magic != MagicRefinement {
+	if magic, ok := c.U32(); !ok || magic != MagicRefinement {
 		return out, false
 	}
 
@@ -369,8 +366,7 @@ func (r DigestResponse) Encode() []byte {
 func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 	var out DigestResponse
 	c := codec.NewReader(binary.LittleEndian, data)
-	magic, ok := c.U32()
-	if !ok || magic != MagicResponse {
+	if magic, ok := c.U32(); !ok || magic != MagicResponse {
 		return out, false
 	}
 
@@ -545,8 +541,7 @@ var errTooLarge = errors.New("ae: payload too large")
 func DecodeSync(data []byte) (SyncMessage, bool) {
 	var msg SyncMessage
 	c := codec.NewReader(binary.LittleEndian, data)
-	magic, ok := c.U32()
-	if !ok || magic != MagicSync {
+	if magic, ok := c.U32(); !ok || magic != MagicSync {
 		return msg, false
 	}
 

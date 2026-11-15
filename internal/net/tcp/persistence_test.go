@@ -44,8 +44,7 @@ func TestServerRestartRecovers(t *testing.T) {
 	}
 	set := func(key, val string) {
 		t.Helper()
-		res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(val)})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(val)}); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set %q: %+v %v", key, res, err)
 		}
 	}
@@ -79,8 +78,7 @@ func TestServerRestartRecovers(t *testing.T) {
 	if res.Status != protocol.StatusNotFound {
 		t.Fatalf("deleted key resurrected: %+v", res)
 	}
-	ver, err := c2.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte("a")})
-	if err != nil || ver.Status != protocol.StatusOK || !ver.Tombstone {
+	if ver, err := c2.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte("a")}); err != nil || ver.Status != protocol.StatusOK || !ver.Tombstone {
 		t.Fatalf("tombstone lost across restart: %+v %v", ver, err)
 	}
 }
@@ -94,13 +92,11 @@ func TestServerCompactAndRecover(t *testing.T) {
 	}
 	for i := range 20 {
 		key := string(rune('a'+i%26)) + string(rune('0'+i/26))
-		res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte("v")})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte("v")}); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set %q: %+v %v", key, res, err)
 		}
 	}
-	res, err := c.Do(protocol.Request{Opcode: protocol.OpAdminCompact})
-	if err != nil || res.Status != protocol.StatusOK {
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpAdminCompact}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("compact: %+v %v", res, err)
 	}
 	c.Close()
@@ -114,8 +110,7 @@ func TestServerCompactAndRecover(t *testing.T) {
 	defer c2.Close()
 	for i := range 20 {
 		key := string(rune('a'+i%26)) + string(rune('0'+i/26))
-		res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c2.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("key %q lost across compact+restart: %+v %v", key, res, err)
 		}
 	}

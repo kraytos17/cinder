@@ -27,8 +27,7 @@ func (s *Store) nodeIfResident(sh *shard, idx int) (*node, bool) {
 	}
 
 	n := &sh.nodes[idx]
-	cur, ok := sh.index[n.key]
-	if !ok || cur != idx {
+	if cur, ok := sh.index[n.key]; !ok || cur != idx {
 		return nil, false
 	}
 	return n, true

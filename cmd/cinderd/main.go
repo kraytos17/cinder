@@ -78,9 +78,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			})
 		},
 	}
-
-	err := root.Run(context.Background(), append([]string{"cinderd"}, args...))
-	if err != nil {
+	if err := root.Run(context.Background(), append([]string{"cinderd"}, args...)); err != nil {
 		fmt.Fprintln(stderr, err)
 		if ec, ok := errors.AsType[cli.ExitCoder](err); ok {
 			return ec.ExitCode()

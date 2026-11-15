@@ -130,8 +130,7 @@ func TestGrpcAuthSetGetWithBearer(t *testing.T) {
 	if set, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v"}); err != nil || set.Status != OK {
 		t.Fatalf("set: %+v %v", set, err)
 	}
-	got, err := c.Get(ctx, &gen.GetRequest{Key: "k"})
-	if err != nil || got.Status != OK || got.GetValue() != "v" {
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "k"}); err != nil || got.Status != OK || got.GetValue() != "v" {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 }
@@ -143,8 +142,7 @@ func TestGrpcAuthMultiSetAndInfoWithBearer(t *testing.T) {
 	if err != nil || len(ms.Responses) != 1 || ms.Responses[0].Status != OK {
 		t.Fatalf("multiset: %+v %v", ms, err)
 	}
-	info, err := c.Info(ctx, &gen.InfoRequest{})
-	if err != nil || info.GetJson() == "" {
+	if info, err := c.Info(ctx, &gen.InfoRequest{}); err != nil || info.GetJson() == "" {
 		t.Fatalf("info: %+v %v", info, err)
 	}
 }
@@ -163,16 +161,14 @@ func TestGatewaySetAndGet(t *testing.T) {
 	if err != nil || set.Status != OK {
 		t.Fatalf("set: %+v %v", set, err)
 	}
-	got, err := c.Get(ctx, &gen.GetRequest{Key: "k"})
-	if err != nil || got.Status != OK || got.GetValue() != "v" {
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "k"}); err != nil || got.Status != OK || got.GetValue() != "v" {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 }
 
 func TestGatewayGetNotFound(t *testing.T) {
 	c, _ := startGateway(t, "node1")
-	got, err := c.Get(context.Background(), &gen.GetRequest{Key: "missing"})
-	if err != nil || got.Status != NotFound || got.GetValue() != "" {
+	if got, err := c.Get(context.Background(), &gen.GetRequest{Key: "missing"}); err != nil || got.Status != NotFound || got.GetValue() != "" {
 		t.Fatalf("get miss: %+v %v", got, err)
 	}
 }
@@ -188,12 +184,10 @@ func TestGatewayDelete(t *testing.T) {
 		t.Fatalf("delete: %+v %v", del, err)
 	}
 	// Plain read hides the tombstone; versioned read reports NOT_FOUND too.
-	got, err := c.Get(ctx, &gen.GetRequest{Key: "k"})
-	if err != nil || got.Status != NotFound {
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "k"}); err != nil || got.Status != NotFound {
 		t.Fatalf("get after delete: %+v %v", got, err)
 	}
-	ver, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "k"})
-	if err != nil || ver.Status != NotFound {
+	if ver, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "k"}); err != nil || ver.Status != NotFound {
 		t.Fatalf("versioned after delete: %+v %v", ver, err)
 	}
 	// Deletes always succeed, even on missing keys.
@@ -205,8 +199,7 @@ func TestGatewayDelete(t *testing.T) {
 
 func TestGatewayPing(t *testing.T) {
 	c, _ := startGateway(t, "node1")
-	pong, err := c.Ping(context.Background(), &gen.PingRequest{})
-	if err != nil || pong.Status != OK {
+	if pong, err := c.Ping(context.Background(), &gen.PingRequest{}); err != nil || pong.Status != OK {
 		t.Fatalf("ping: %+v %v", pong, err)
 	}
 }
@@ -225,8 +218,7 @@ func TestGatewayInfoClusterRing(t *testing.T) {
 	if err != nil || !strings.Contains(cluster.GetJson(), "node1") {
 		t.Fatalf("cluster: %+v %v", cluster, err)
 	}
-	ring, err := c.RingInfo(ctx, &gen.RingInfoRequest{})
-	if err != nil || !strings.Contains(ring.GetJson(), "vnodes_per_node") {
+	if ring, err := c.RingInfo(ctx, &gen.RingInfoRequest{}); err != nil || !strings.Contains(ring.GetJson(), "vnodes_per_node") {
 		t.Fatalf("ring: %+v %v", ring, err)
 	}
 }
@@ -263,12 +255,10 @@ func TestGatewaySetWithTTL(t *testing.T) {
 	if _, err := c.Set(ctx, &gen.SetRequest{Key: "ttl-key", Value: "ttl-val", TtlMs: 60000}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := c.Get(ctx, &gen.GetRequest{Key: "ttl-key"})
-	if err != nil || got.Status != OK || got.GetValue() != "ttl-val" {
+	if got, err := c.Get(ctx, &gen.GetRequest{Key: "ttl-key"}); err != nil || got.Status != OK || got.GetValue() != "ttl-val" {
 		t.Fatalf("get ttl key: %+v %v", got, err)
 	}
-	ver, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "ttl-key"})
-	if err != nil || ver.Status != OK || ver.GetExpiresAtMs() != 0 {
+	if ver, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "ttl-key"}); err != nil || ver.Status != OK || ver.GetExpiresAtMs() != 0 {
 		t.Fatalf("versioned response should omit expiry: %+v %v", ver, err)
 	}
 }
@@ -286,8 +276,7 @@ func TestGatewayGetVersionedMeta(t *testing.T) {
 	if _, err := c.Set(ctx, &gen.SetRequest{Key: "k", Value: "v2"}); err != nil {
 		t.Fatal(err)
 	}
-	two, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "k"})
-	if err != nil || two.GetValue() != "v2" || two.Version <= one.Version {
+	if two, err := c.GetVersioned(ctx, &gen.GetVersionedRequest{Key: "k"}); err != nil || two.GetValue() != "v2" || two.Version <= one.Version {
 		t.Fatalf("versions not monotonic: %+v %+v %v", one, two, err)
 	}
 }
@@ -458,8 +447,7 @@ func TestInteropGoClientCppGrpcServer(t *testing.T) {
 	if err != nil || del.Status != OK {
 		t.Fatalf("delete: %+v %v", del, err)
 	}
-	miss, err := c.Get(ctx, &gen.GetRequest{Key: "xcpp"})
-	if err != nil || miss.Status != NotFound {
+	if miss, err := c.Get(ctx, &gen.GetRequest{Key: "xcpp"}); err != nil || miss.Status != NotFound {
 		t.Fatalf("get after delete: %+v %v", miss, err)
 	}
 }
@@ -662,8 +650,7 @@ func TestInteropGoClientCppGrpcTLSAuth(t *testing.T) {
 	if set, err := c.Set(bearerCtx("s3cr3t"), &gen.SetRequest{Key: "xcpp", Value: "v"}); err != nil || set.Status != OK {
 		t.Fatalf("set: %+v %v", set, err)
 	}
-	got, err := c.Get(bearerCtx("s3cr3t"), &gen.GetRequest{Key: "xcpp"})
-	if err != nil || got.Status != OK || got.GetValue() != "v" {
+	if got, err := c.Get(bearerCtx("s3cr3t"), &gen.GetRequest{Key: "xcpp"}); err != nil || got.Status != OK || got.GetValue() != "v" {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 }
@@ -674,14 +661,13 @@ func TestGatewayCounterRoundTrip(t *testing.T) {
 	if res, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "c", Delta: 5}); err != nil || res.Status != OK {
 		t.Fatalf("incr: %+v %v", res, err)
 	}
-	got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"})
-	if err != nil || got.Status != OK || got.GetValue() != 5 {
+	if got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"}); err != nil || got.Status != OK || got.GetValue() != 5 {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 	if res, err := c.CounterAdjust(ctx, &gen.CounterAdjustRequest{Key: "c", Delta: 2, Decrement: true}); err != nil || res.Status != OK {
 		t.Fatalf("decr: %+v %v", res, err)
 	}
-	got, err = c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"})
+	got, err := c.CounterGet(ctx, &gen.CounterGetRequest{Key: "c"})
 	if err != nil || got.Status != OK || got.GetValue() != 3 {
 		t.Fatalf("get after decr: %+v %v", got, err)
 	}

@@ -65,8 +65,7 @@ func TestAuthOpenByDefault(t *testing.T) {
 	if res, err := c.Do(protocol.Request{Opcode: protocol.OpPing}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("open server ping: %+v %v", res, err)
 	}
-	res, err := c.Do(protocol.Request{Opcode: protocol.OpAdminInfo})
-	if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpAdminInfo}); err != nil || res.Status != protocol.StatusOK || !res.HasValue {
 		t.Fatalf("open server admin: %+v %v", res, err)
 	}
 }

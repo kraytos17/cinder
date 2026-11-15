@@ -182,8 +182,7 @@ func TestFaultVersionedWriteEndToEnd(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	e, ok := st.Stores["n2"].GetVersioned("k")
-	if !ok || string(e.Value) != "v" || e.Version != 3 || e.WriterNodeHash != 7 {
+	if e, ok := st.Stores["n2"].GetVersioned("k"); !ok || string(e.Value) != "v" || e.Version != 3 || e.WriterNodeHash != 7 {
 		t.Fatalf("peer state = %+v %v", e, ok)
 	}
 }

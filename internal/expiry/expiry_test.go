@@ -39,8 +39,7 @@ func TestRoundTrip(t *testing.T) {
 	if e.Expired(now.Add(-time.Second)) {
 		t.Fatal("must be live before deadline")
 	}
-	got, ok := e.Time()
-	if !ok || !got.Equal(now) {
+	if got, ok := e.Time(); !ok || !got.Equal(now) {
 		t.Fatalf("got %v %v", got, ok)
 	}
 	if ms := e.UnixMilli(); ms != now.UnixMilli() {

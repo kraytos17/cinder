@@ -13,8 +13,7 @@ func TestLRUPutAndGet(t *testing.T) {
 	if err := s.Put("key", []byte("value")); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := s.Get("key")
-	if !ok || string(got) != "value" {
+	if got, ok := s.Get("key"); !ok || string(got) != "value" {
 		t.Fatalf("got %q, %v", got, ok)
 	}
 }
@@ -34,8 +33,7 @@ func TestLRUOverwrite(t *testing.T) {
 	if err := s.Put("key", []byte("value2")); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := s.Get("key")
-	if !ok || string(got) != "value2" {
+	if got, ok := s.Get("key"); !ok || string(got) != "value2" {
 		t.Fatalf("got %q, %v", got, ok)
 	}
 }
@@ -190,8 +188,7 @@ func TestLRUEmptyKey(t *testing.T) {
 	if err := s.Put("", []byte("value")); err != nil {
 		t.Fatal(err)
 	}
-	got, ok := s.Get("")
-	if !ok || string(got) != "value" {
+	if got, ok := s.Get(""); !ok || string(got) != "value" {
 		t.Fatalf("got %q, %v", got, ok)
 	}
 }
@@ -213,8 +210,7 @@ func TestLRUMultipleOverwrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, ok := s.Get("key")
-	if !ok || string(got) != "value99" {
+	if got, ok := s.Get("key"); !ok || string(got) != "value99" {
 		t.Fatalf("got %q, %v", got, ok)
 	}
 }

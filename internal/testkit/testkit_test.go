@@ -37,8 +37,7 @@ func TestStoresTombstoneFallback(t *testing.T) {
 	if res, err := f.Send("n2", req); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("tombstone: %+v %v", res, err)
 	}
-	e, ok := f.Stores["n2"].GetVersioned("k")
-	if !ok || !e.Tombstone {
+	if e, ok := f.Stores["n2"].GetVersioned("k"); !ok || !e.Tombstone {
 		t.Fatalf("want tombstone, got %+v %v", e, ok)
 	}
 	f.Fail["n2"] = true

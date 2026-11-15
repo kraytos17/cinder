@@ -260,16 +260,13 @@ func TestClusterSetGetAcrossNodes(t *testing.T) {
 	owners := map[string]int{}
 	for i := range 50 {
 		key := fmt.Sprintf("cluster-key-%d", i)
-		res, err := cl.Set(key, fmt.Appendf(nil, "v%d", i))
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := cl.Set(key, fmt.Appendf(nil, "v%d", i)); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("set %q: %v %v", key, res.Status, err)
 		}
-		got, err := cl.Get(key)
-		if err != nil || got.Status != protocol.StatusOK || string(got.Value) != fmt.Sprintf("v%d", i) {
+		if got, err := cl.Get(key); err != nil || got.Status != protocol.StatusOK || string(got.Value) != fmt.Sprintf("v%d", i) {
 			t.Fatalf("get %q: %+v %v", key, got, err)
 		}
-		ver, err := cl.GetVersioned(key)
-		if err != nil || ver.Status != protocol.StatusOK || ver.Version == 0 {
+		if ver, err := cl.GetVersioned(key); err != nil || ver.Status != protocol.StatusOK || ver.Version == 0 {
 			t.Fatalf("versioned %q: %+v %v", key, ver, err)
 		}
 		if del, err := cl.Del(key); err != nil || del.Status != protocol.StatusOK {

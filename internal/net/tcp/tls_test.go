@@ -121,8 +121,7 @@ func mustSetGet(t *testing.T, c *client.Client) {
 	if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte("k"), Value: []byte("v")}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("set: %+v %v", res, err)
 	}
-	res, err := c.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte("k")})
-	if err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v" {
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte("k")}); err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v" {
 		t.Fatalf("get: %+v %v", res, err)
 	}
 }
@@ -300,8 +299,7 @@ func TestSecureThreeNodeClusterStartupConverges(t *testing.T) {
 				if i == j {
 					continue
 				}
-				info, ok := srv.Table().Get(fmt.Sprintf("secure-%d", j))
-				if !ok || info.State != cluster.Alive || info.Incarnation == 0 {
+				if info, ok := srv.Table().Get(fmt.Sprintf("secure-%d", j)); !ok || info.State != cluster.Alive || info.Incarnation == 0 {
 					allConverged = false
 					break
 				}

@@ -11,8 +11,7 @@ const lfuEntryBytes = 200
 
 func TestParsePolicy(t *testing.T) {
 	for input, want := range map[string]Policy{"lru": LRUPolicy, "lfu": LFUPolicy} {
-		got, err := ParsePolicy(input)
-		if err != nil || got != want {
+		if got, err := ParsePolicy(input); err != nil || got != want {
 			t.Errorf("ParsePolicy(%q) = %v, %v; want %v", input, got, err, want)
 		}
 	}

@@ -51,8 +51,7 @@ func TestStayingPushesReplicas(t *testing.T) {
 	if _, ok := st.GetVersioned("k"); !ok {
 		t.Fatal("staying member dropped its copy")
 	}
-	got, ok := ft.Stores["b"].GetVersioned("k")
-	if !ok || string(got.Value) != "v" || got.Version != 5 {
+	if got, ok := ft.Stores["b"].GetVersioned("k"); !ok || string(got.Value) != "v" || got.Version != 5 {
 		t.Fatalf("replica missing: %+v %v", got, ok)
 	}
 	if n := ft.Sends["b"]; n != 1 {
@@ -73,8 +72,7 @@ func TestLeavingMigratesAndRemoves(t *testing.T) {
 		t.Fatal("migrated copy not reclaimed")
 	}
 	for _, n := range []string{"b", "c"} {
-		got, ok := ft.Stores[n].GetVersioned("k")
-		if !ok || string(got.Value) != "v" {
+		if got, ok := ft.Stores[n].GetVersioned("k"); !ok || string(got.Value) != "v" {
 			t.Fatalf("%s missing migrated key: %+v %v", n, got, ok)
 		}
 	}
@@ -181,8 +179,7 @@ func TestTombstoneAndTTLMigrate(t *testing.T) {
 	if !ok || !tomb.Tombstone || tomb.Version != 9 {
 		t.Fatalf("tombstone lost: %+v %v", tomb, ok)
 	}
-	got, ok := ft.Stores["c"].GetVersioned("e")
-	if !ok || func() bool { t, ok := got.Expiry.Time(); return !ok || !t.Equal(exp) }() {
+	if got, ok := ft.Stores["c"].GetVersioned("e"); !ok || func() bool { t, ok := got.Expiry.Time(); return !ok || !t.Equal(exp) }() {
 		t.Fatalf("TTL lost: %+v %v", got, ok)
 	}
 }

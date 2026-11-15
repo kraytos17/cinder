@@ -294,24 +294,20 @@ func TestCounterBatchCursorWraps(t *testing.T) {
 	cs1.Increment("c", "n1", 1)
 	// Tiny budget: one record per batch; successive batches advance.
 	first := m1.EncodeCounterBatch(64)
-	dec1, err := counter.DecodeCounterBundle(first)
-	if err != nil || len(dec1) != 1 || dec1[0].Key != "a" {
+	if dec1, err := counter.DecodeCounterBundle(first); err != nil || len(dec1) != 1 || dec1[0].Key != "a" {
 		t.Fatalf("batch1 = %v %v", dec1, err)
 	}
 	second := m1.EncodeCounterBatch(64)
-	dec2, err := counter.DecodeCounterBundle(second)
-	if err != nil || len(dec2) != 1 || dec2[0].Key != "b" {
+	if dec2, err := counter.DecodeCounterBundle(second); err != nil || len(dec2) != 1 || dec2[0].Key != "b" {
 		t.Fatalf("batch2 = %v %v", dec2, err)
 	}
 	third := m1.EncodeCounterBatch(64)
-	dec3, err := counter.DecodeCounterBundle(third)
-	if err != nil || len(dec3) != 1 || dec3[0].Key != "c" {
+	if dec3, err := counter.DecodeCounterBundle(third); err != nil || len(dec3) != 1 || dec3[0].Key != "c" {
 		t.Fatalf("batch3 = %v %v", dec3, err)
 	}
 	// Wrap: fourth batch restarts at the head.
 	fourth := m1.EncodeCounterBatch(64)
-	dec4, err := counter.DecodeCounterBundle(fourth)
-	if err != nil || len(dec4) != 1 || dec4[0].Key != "a" {
+	if dec4, err := counter.DecodeCounterBundle(fourth); err != nil || len(dec4) != 1 || dec4[0].Key != "a" {
 		t.Fatalf("batch4 = %v %v, want wrap to a", dec4, err)
 	}
 }

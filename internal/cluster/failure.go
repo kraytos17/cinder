@@ -208,9 +208,7 @@ func (f *FailureDetector) escalateLocked(now time.Time, timeout time.Duration) [
 		if !st.suspected {
 			continue
 		}
-
-		info, ok := f.table.Get(peer)
-		if !ok || info.State != Suspect {
+		if info, ok := f.table.Get(peer); !ok || info.State != Suspect {
 			continue
 		}
 		if now.Sub(st.since) > timeout {

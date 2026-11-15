@@ -291,8 +291,7 @@ func TestCounterRecoveryMergesRatherThanOverwrites(t *testing.T) {
 	m2.SetCounterStore(recovered)
 	mustRecover(t, m2)
 	defer m2.Close()
-	got, ok := recovered.Get("k")
-	if !ok || got.Pos.Component("node-a") != 2 || got.Pos.Component("node-b") != 5 {
+	if got, ok := recovered.Get("k"); !ok || got.Pos.Component("node-a") != 2 || got.Pos.Component("node-b") != 5 {
 		t.Fatalf("merge recovery lost component: %+v", got)
 	}
 }
@@ -360,8 +359,7 @@ func TestCounterStateRecoversFromSnapshot(t *testing.T) {
 	m2.SetCounterStore(recovered)
 	mustRecover(t, m2)
 	defer m2.Close()
-	got, ok := recovered.Get("snap")
-	if !ok || got.Value() != 12 {
+	if got, ok := recovered.Get("snap"); !ok || got.Value() != 12 {
 		t.Fatalf("snapshot counter = %+v, present=%v", got, ok)
 	}
 }
@@ -438,8 +436,7 @@ func TestCompactRotates(t *testing.T) {
 	if len(snaps) != 1 {
 		t.Fatalf("snapshots = %v", snaps)
 	}
-	raw, err := os.ReadFile(filepath.Join(dir, "CURRENT"))
-	if err != nil || string(raw) != snaps[0] {
+	if raw, err := os.ReadFile(filepath.Join(dir, "CURRENT")); err != nil || string(raw) != snaps[0] {
 		t.Fatalf("CURRENT = %q, err %v", raw, err)
 	}
 	r, _ := OpenReader(filepath.Join(dir, "wal.log"))

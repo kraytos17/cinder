@@ -206,16 +206,14 @@ func TestReplQuorumSurvivesOneFailure(t *testing.T) {
 	}
 	// Losing a second node breaks quorum for good.
 	c.kill("node2")
-	res, err := cl.Set("q-dead", []byte("v"))
-	if err == nil && res.Status == protocol.StatusOK {
+	if res, err := cl.Set("q-dead", []byte("v")); err == nil && res.Status == protocol.StatusOK {
 		t.Fatal("quorum write succeeded with one survivor")
 	}
 }
 
 func mustClusterSet(t *testing.T, cl *client.Cluster, key, value string) {
 	t.Helper()
-	res, err := cl.Set(key, []byte(value))
-	if err != nil || res.Status != protocol.StatusOK {
+	if res, err := cl.Set(key, []byte(value)); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("set %q: %+v %v", key, res, err)
 	}
 }
@@ -244,8 +242,7 @@ func TestReplGracefulLeaveConverges(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	got, err := cl.Get("solo-key")
-	if err != nil || got.Status != protocol.StatusOK || string(got.Value) != "v" {
+	if got, err := cl.Get("solo-key"); err != nil || got.Status != protocol.StatusOK || string(got.Value) != "v" {
 		t.Fatalf("solo get: %+v %v", got, err)
 	}
 }
@@ -274,8 +271,7 @@ func TestReplQuorumReadRepair(t *testing.T) {
 	mustClusterSet(t, cl, key, "v2")
 	c.restart("node3", port3, []string{"node1", "node2", "node3"})
 	// A quorum read sees the winner and repairs the stale replica.
-	got, err := cl.Get(key)
-	if err != nil || got.Status != protocol.StatusOK || string(got.Value) != "v2" {
+	if got, err := cl.Get(key); err != nil || got.Status != protocol.StatusOK || string(got.Value) != "v2" {
 		t.Fatalf("get: %+v %v", got, err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -285,10 +281,11 @@ func TestReplQuorumReadRepair(t *testing.T) {
 			t.Fatal(err)
 		}
 		res, err := direct.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
-		direct.Close()
 		if err == nil && res.Status == protocol.StatusOK && string(res.Value) == "v2" {
+			direct.Close()
 			break
 		}
+		direct.Close()
 		if time.Now().After(deadline) {
 			t.Fatalf("node3 never repaired: %+v %v", res, err)
 		}
@@ -344,8 +341,7 @@ func TestReplAsyncHintAndReplay(t *testing.T) {
 	}
 	defer direct.Close()
 	for _, key := range hinted {
-		res, err := direct.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := direct.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("replayed key %q missing on node3: %+v %v", key, res, err)
 		}
 	}

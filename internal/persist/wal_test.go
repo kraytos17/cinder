@@ -132,8 +132,7 @@ func TestWALV2CounterFreeRecordsRemainReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, ok := r.Next()
-	if !ok || e.Op != OpSet || string(e.Key) != "legacy" || string(e.Value) != "v" || r.Corrupted() {
+	if e, ok := r.Next(); !ok || e.Op != OpSet || string(e.Key) != "legacy" || string(e.Value) != "v" || r.Corrupted() {
 		t.Fatalf("v2 record = %+v, ok=%v corrupt=%v", e, ok, r.Corrupted())
 	}
 	w2, err := OpenWriter(path, false)
@@ -156,12 +155,10 @@ func TestWALV2CounterFreeRecordsRemainReadable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, ok := r2.Next()
-	if !ok || first.Op != OpSet {
+	if first, ok := r2.Next(); !ok || first.Op != OpSet {
 		t.Fatalf("legacy record after upgrade = %+v, ok=%v", first, ok)
 	}
-	second, ok := r2.Next()
-	if !ok || second.Op != OpCounterState || r2.Corrupted() {
+	if second, ok := r2.Next(); !ok || second.Op != OpCounterState || r2.Corrupted() {
 		t.Fatalf("v3 counter record after upgrade = %+v, ok=%v corrupt=%v", second, ok, r2.Corrupted())
 	}
 }
@@ -208,12 +205,10 @@ func TestWALV1UpgradePreservesExistingRecordsBeforeCounterAppend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, ok := r.Next()
-	if !ok || first.Op != OpSet || string(first.Key) != "v1" || string(first.Value) != "old" {
+	if first, ok := r.Next(); !ok || first.Op != OpSet || string(first.Key) != "v1" || string(first.Value) != "old" {
 		t.Fatalf("upgraded v1 record = %+v, ok=%v", first, ok)
 	}
-	second, ok := r.Next()
-	if !ok || second.Op != OpCounterState || r.Corrupted() {
+	if second, ok := r.Next(); !ok || second.Op != OpCounterState || r.Corrupted() {
 		t.Fatalf("appended counter = %+v, ok=%v corrupt=%v", second, ok, r.Corrupted())
 	}
 }
@@ -249,8 +244,7 @@ func TestWALV3CounterStateRoundTrip(t *testing.T) {
 	if !ok || r.Corrupted() || got.Op != OpCounterState || string(got.Key) != "counter-key" {
 		t.Fatalf("decoded record = %+v, ok=%v corrupt=%v", got, ok, r.Corrupted())
 	}
-	decoded, err := counter.DecodePNCounter(got.Counter)
-	if err != nil || !decoded.Equal(state) {
+	if decoded, err := counter.DecodePNCounter(got.Counter); err != nil || !decoded.Equal(state) {
 		t.Fatalf("decoded counter=%+v err=%v", decoded, err)
 	}
 }

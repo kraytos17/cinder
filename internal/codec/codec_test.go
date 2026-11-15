@@ -39,8 +39,7 @@ func TestAppendGetRoundTrip(t *testing.T) {
 		if v, ok := r.U8(); !ok || v != 0xAB {
 			t.Fatalf("u8: %x %v", v, ok)
 		}
-		bb, ok := r.Bytes(2)
-		if !ok || order.Uint16(bb) != 0xCDEF {
+		if bb, ok := r.Bytes(2); !ok || order.Uint16(bb) != 0xCDEF {
 			t.Fatalf("bytes2: %x %v", bb, ok)
 		}
 		if v, ok := r.U32(); !ok || v != 0x12345678 {
@@ -64,8 +63,7 @@ func TestBlobRoundTrip(t *testing.T) {
 		w.Blob([]byte{})
 		r := NewReader(order, w.Out())
 		for _, want := range []string{"hello", "", ""} {
-			got, ok := r.Blob()
-			if !ok || string(got) != want {
+			if got, ok := r.Blob(); !ok || string(got) != want {
 				t.Fatalf("order %v: got %q %v", order, got, ok)
 			}
 		}
@@ -101,8 +99,7 @@ func TestWriterReaderEncoding(t *testing.T) {
 		t.Fatalf("encoding differs: %x vs %x", w.Out(), manual)
 	}
 	r := NewReader(order, w.Out())
-	b, ok := r.Blob()
-	if !ok || string(b) != "target" {
+	if b, ok := r.Blob(); !ok || string(b) != "target" {
 		t.Fatalf("blob: %q %v", b, ok)
 	}
 	if v, ok := r.U64(); !ok || v != 0xDEAD {

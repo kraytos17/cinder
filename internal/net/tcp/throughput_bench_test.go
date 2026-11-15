@@ -66,8 +66,7 @@ func BenchmarkRPCPing(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		res, err := c.Ping()
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Ping(); err != nil || res.Status != protocol.StatusOK {
 			b.Fatalf("ping: %+v %v", res, err)
 		}
 	}
@@ -82,8 +81,7 @@ func BenchmarkRPCSetOnly(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: key, Value: value})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: key, Value: value}); err != nil || res.Status != protocol.StatusOK {
 			b.Fatalf("set: %+v %v", res, err)
 		}
 	}
@@ -100,8 +98,7 @@ func BenchmarkRPCGetOnly(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {
-		res, err := c.Do(protocol.Request{Opcode: protocol.OpGet, Key: key})
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Do(protocol.Request{Opcode: protocol.OpGet, Key: key}); err != nil || res.Status != protocol.StatusOK {
 			b.Fatalf("get: %+v %v", res, err)
 		}
 	}

@@ -38,8 +38,7 @@ func TestApplyRumorAdoptsAlive(t *testing.T) {
 	clk, _ := testClock()
 	tb := NewMembershipTable("n1", clk)
 	tb.ApplyRumor(NodeInfo{ID: "n2", Host: "h", Port: 2, State: Alive, Incarnation: 0})
-	n, ok := tb.Get("n2")
-	if !ok || n.Host != "h" || n.Port != 2 {
+	if n, ok := tb.Get("n2"); !ok || n.Host != "h" || n.Port != 2 {
 		t.Fatalf("got %+v %v", n, ok)
 	}
 }
@@ -184,8 +183,7 @@ func TestApplyRumorsPreservesOrderAndCoalescesCallbacks(t *testing.T) {
 		t.Fatalf("sizes differ: sequential=%d batched=%d", sequential.ExpectedSize(), batched.ExpectedSize())
 	}
 	for _, want := range sequential.Snapshot() {
-		got, ok := batched.Get(want.ID)
-		if !ok || got != want {
+		if got, ok := batched.Get(want.ID); !ok || got != want {
 			t.Errorf("member %q differs: sequential=%+v batched=%+v (present=%v)", want.ID, want, got, ok)
 		}
 	}

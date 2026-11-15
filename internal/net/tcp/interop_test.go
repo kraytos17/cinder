@@ -80,8 +80,7 @@ func cppServer(t *testing.T) (addr string, stop func()) {
 	addr = fmt.Sprintf("127.0.0.1:%d", port)
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		c, err := client.Dial(addr, 500*time.Millisecond)
-		if err == nil {
+		if c, err := client.Dial(addr, 500*time.Millisecond); err == nil {
 			if res, err := c.Ping(); err == nil && res.Status == protocol.StatusOK {
 				c.Close()
 				return addr, func() {}
@@ -152,8 +151,7 @@ func cppCluster(t *testing.T) (addrs map[string]string, stop func()) {
 	for id, port := range ports {
 		addr := fmt.Sprintf("127.0.0.1:%d", port)
 		for {
-			c, err := client.Dial(addr, 500*time.Millisecond)
-			if err == nil {
+			if c, err := client.Dial(addr, 500*time.Millisecond); err == nil {
 				if res, err := c.Ping(); err == nil && res.Status == protocol.StatusOK {
 					c.Close()
 					break
@@ -418,8 +416,7 @@ func TestInteropTwoNodeCppCluster(t *testing.T) {
 	if res.Status != protocol.StatusNotReady {
 		t.Fatalf("write to non-owner = %v, want NotReady", res.Status)
 	}
-	target, ok := client.ParseRedirectTarget(string(res.Value))
-	if !ok || target.ID != "node2" {
+	if target, ok := client.ParseRedirectTarget(string(res.Value)); !ok || target.ID != "node2" {
 		t.Fatalf("redirect = %q", res.Value)
 	}
 	// A missing key on the non-owner redirects the same way.
@@ -486,8 +483,7 @@ func TestInteropCppQuorumSurvivesOneFailure(t *testing.T) {
 	for _, id := range ids {
 		addr := fmt.Sprintf("127.0.0.1:%d", ports[id])
 		for {
-			c, err := client.Dial(addr, 500*time.Millisecond)
-			if err == nil {
+			if c, err := client.Dial(addr, 500*time.Millisecond); err == nil {
 				if res, err := c.Ping(); err == nil && res.Status == protocol.StatusOK {
 					c.Close()
 					break
@@ -623,8 +619,7 @@ func TestInteropGossipWithCpp(t *testing.T) {
 	c := dial(t, cAddr)
 	deadline = time.Now().Add(20 * time.Second)
 	for {
-		res, err := c.Admin(protocol.OpAdminCluster)
-		if err == nil && res.Status == protocol.StatusOK {
+		if res, err := c.Admin(protocol.OpAdminCluster); err == nil && res.Status == protocol.StatusOK {
 			var nodes []map[string]any
 			if err := json.Unmarshal(res.Value, &nodes); err == nil {
 				for _, n := range nodes {
@@ -813,8 +808,7 @@ func TestInteropAEWithCpp(t *testing.T) {
 	})
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		gc, err := client.Dial(gAddr, 2*time.Second)
-		if err == nil {
+		if gc, err := client.Dial(gAddr, 2*time.Second); err == nil {
 			res, err := gc.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(cOnly[0])})
 			gc.Close()
 			if err == nil && res.Status == protocol.StatusOK && res.Tombstone {
@@ -964,8 +958,7 @@ func TestInteropRebalanceGoJoinsCpp(t *testing.T) {
 			// Local-only read: C++ plain Get serves the local copy or
 			// redirects (no healing); Go's OpGet would fan out and
 			// repair, so GetVersioned pins the assertion to migration.
-			d, err := client.Dial(gAddr, 2*time.Second)
-			if err == nil {
+			if d, err := client.Dial(gAddr, 2*time.Second); err == nil {
 				res, err := d.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(k)})
 				d.Close()
 				if err == nil && res.Status == protocol.StatusOK && !res.Tombstone && string(res.Value) == "v-"+k {

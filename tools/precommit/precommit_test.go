@@ -70,8 +70,7 @@ func TestClassifyStagedPath(t *testing.T) {
 		{"README.md", false, false, false},
 	}
 	for _, tc := range cases {
-		goFile, yamlFile, justfile := classifyStagedPath(tc.path)
-		if goFile != tc.goFile || yamlFile != tc.yaml || justfile != tc.just {
+		if goFile, yamlFile, justfile := classifyStagedPath(tc.path); goFile != tc.goFile || yamlFile != tc.yaml || justfile != tc.just {
 			t.Errorf("classifyStagedPath(%q) = (%v, %v, %v), want (%v, %v, %v)",
 				tc.path, goFile, yamlFile, justfile, tc.goFile, tc.yaml, tc.just)
 		}

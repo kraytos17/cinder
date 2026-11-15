@@ -116,8 +116,7 @@ func TestRemoveWithErrorReturnsPersistenceFailure(t *testing.T) {
 	}
 	wantErr := errors.New("remove WAL failed")
 	s.SetPersistence(func(string, PNCounter, bool) error { return wantErr })
-	removed, err := s.RemoveWithError("k")
-	if !removed || !errors.Is(err, wantErr) {
+	if removed, err := s.RemoveWithError("k"); !removed || !errors.Is(err, wantErr) {
 		t.Fatalf("RemoveWithError = %v, %v", removed, err)
 	}
 	if _, ok := s.Get("k"); ok {
@@ -218,8 +217,7 @@ func TestStoreMergePreflightsGrowthBeforeUpdatingExistingComponents(t *testing.T
 	if err := s.Merge("k", remote); !errors.Is(err, ErrCapacityExceeded) {
 		t.Fatalf("Merge error = %v, want ErrCapacityExceeded", err)
 	}
-	got, ok := s.Get("k")
-	if !ok || got.Pos.Component("n") != 1 || got.Neg.Component("n") != 0 {
+	if got, ok := s.Get("k"); !ok || got.Pos.Component("n") != 1 || got.Neg.Component("n") != 0 {
 		t.Fatalf("failed merge partially changed state: %+v, present=%v", got, ok)
 	}
 	if got, want := s.SizeBytes(), uint64(18); got != want {

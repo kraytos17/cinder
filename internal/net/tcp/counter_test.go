@@ -95,8 +95,7 @@ func TestCounterPersistenceAcrossServerRestart(t *testing.T) {
 		{Opcode: protocol.OpCounterAdjust, Key: []byte("count"), CounterDelta: 11},
 		{Opcode: protocol.OpCounterAdjust, Key: []byte("count"), CounterDelta: 4, CounterDecrement: true},
 	} {
-		res, err := c.Do(req)
-		if err != nil || res.Status != protocol.StatusOK {
+		if res, err := c.Do(req); err != nil || res.Status != protocol.StatusOK {
 			t.Fatalf("counter write: %+v %v", res, err)
 		}
 	}
@@ -199,8 +198,7 @@ func TestClusterCounterFollowsRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := counter.DecodePNCounter(res.Value)
-	if err != nil || st.Value() != 4 {
+	if st, err := counter.DecodePNCounter(res.Value); err != nil || st.Value() != 4 {
 		t.Fatalf("cluster get = %v %v, want 4", st.Value(), err)
 	}
 }

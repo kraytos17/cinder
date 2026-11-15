@@ -160,14 +160,12 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 			}
 			defer restarted.Close()
 			for key, want := range expectedKV {
-				got, ok := recoveredCache.GetVersioned(key)
-				if !ok || got.Version != want.Version || got.WriterNodeHash != want.WriterNodeHash || got.Tombstone != want.Tombstone || string(got.Value) != string(want.Value) {
+				if got, ok := recoveredCache.GetVersioned(key); !ok || got.Version != want.Version || got.WriterNodeHash != want.WriterNodeHash || got.Tombstone != want.Tombstone || string(got.Value) != string(want.Value) {
 					t.Fatalf("seed=%d KV %q got=%+v present=%v want=%+v", seed, key, got, ok, want)
 				}
 			}
 			for key, want := range expectedCounters {
-				got, ok := recoveredCounters.Get(key)
-				if !ok || !got.Equal(want) {
+				if got, ok := recoveredCounters.Get(key); !ok || !got.Equal(want) {
 					t.Fatalf("seed=%d counter %q got=%+v present=%v want=%+v", seed, key, got, ok, want)
 				}
 			}
@@ -182,8 +180,7 @@ func TestDurabilityCrashRecoveryMatrix(t *testing.T) {
 				t.Fatalf("seed=%d hints=%d, want %d", seed, len(gotHints), len(expectedHints))
 			}
 			for _, hint := range gotHints {
-				want, ok := expectedHints[string(hint.Req.Key)]
-				if !ok || hint.Target != want.Target || string(hint.Req.Value) != string(want.Req.Value) || hint.Req.Version != want.Req.Version {
+				if want, ok := expectedHints[string(hint.Req.Key)]; !ok || hint.Target != want.Target || string(hint.Req.Value) != string(want.Req.Value) || hint.Req.Version != want.Req.Version {
 					t.Fatalf("seed=%d unexpected recovered hint %+v", seed, hint)
 				}
 			}

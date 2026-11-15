@@ -98,8 +98,7 @@ func (s *service) Set(ctx context.Context, req *gen.SetRequest) (*gen.SetRespons
 }
 
 func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.DeleteResponse, error) {
-	_, err := s.checkAuth(ctx)
-	if err != nil {
+	if _, err := s.checkAuth(ctx); err != nil {
 		return &gen.DeleteResponse{}, err
 	}
 
@@ -108,8 +107,7 @@ func (s *service) Delete(ctx context.Context, req *gen.DeleteRequest) (*gen.Dele
 }
 
 func (s *service) GetVersioned(ctx context.Context, req *gen.GetVersionedRequest) (*gen.GetVersionedResponse, error) {
-	_, err := s.checkAuth(ctx)
-	if err != nil {
+	if _, err := s.checkAuth(ctx); err != nil {
 		return &gen.GetVersionedResponse{}, err
 	}
 
@@ -175,8 +173,7 @@ func (s *service) CounterGet(ctx context.Context, req *gen.CounterGetRequest) (*
 }
 
 func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.MultiGetResponse, error) {
-	_, err := s.checkAuth(ctx)
-	if err != nil {
+	if _, err := s.checkAuth(ctx); err != nil {
 		return &gen.MultiGetResponse{}, err
 	}
 
@@ -195,8 +192,7 @@ func (s *service) MultiGet(ctx context.Context, req *gen.MultiGetRequest) (*gen.
 }
 
 func (s *service) MultiSet(ctx context.Context, req *gen.MultiSetRequest) (*gen.MultiSetResponse, error) {
-	_, err := s.checkAuth(ctx)
-	if err != nil {
+	if _, err := s.checkAuth(ctx); err != nil {
 		return &gen.MultiSetResponse{}, err
 	}
 

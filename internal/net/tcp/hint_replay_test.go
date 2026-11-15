@@ -189,8 +189,7 @@ func writeToHintNode(t *testing.T, addr, key, value string) {
 		t.Fatal(err)
 	}
 	defer c.Close()
-	res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(value)})
-	if err != nil || res.Status != protocol.StatusOK {
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte(value)}); err != nil || res.Status != protocol.StatusOK {
 		t.Fatalf("SET %s: %+v %v", key, res, err)
 	}
 }
@@ -199,8 +198,7 @@ func waitForPeerValue(t *testing.T, addr, key, value string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		c, err := client.Dial(addr, 500*time.Millisecond)
-		if err == nil {
+		if c, err := client.Dial(addr, 500*time.Millisecond); err == nil {
 			res, callErr := c.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)})
 			c.Close()
 			if callErr == nil && res.Status == protocol.StatusOK && string(res.Value) == value {
