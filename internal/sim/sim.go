@@ -30,9 +30,16 @@ import (
 	"github.com/kraytos17/cinder/internal/counter"
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
+	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/shard"
 	"github.com/kraytos17/cinder/internal/store"
+)
+
+// Store and counter byte budgets for sim nodes.
+const (
+	simStoreBytes   = 1 << 20
+	simCounterBytes = 1 << 20
 )
 
 // Options configures a Cluster.
@@ -43,7 +50,8 @@ type Options struct {
 }
 
 // Node is one simulated process: the same managers a Server wires, driven
-// by the shared virtual clock and network.
+// by the shared virtual clock and network. Persist is nil until
+// EnablePersistence wires WAL + snapshots + the hint journal.
 type Node struct {
 	ID        string
 	Store     *store.Store
@@ -51,6 +59,7 @@ type Node struct {
 	Repl      *repl.Manager
 	AE        *ae.Manager
 	Shard     *shard.Manager
+	Persist   *persist.Manager
 	Ring      *hashring.Ring
 	Table     *cluster.MembershipTable
 	Transport *SimTransport
@@ -70,6 +79,10 @@ type Cluster struct {
 	rf    hashring.ReplicaCount
 	mode  repl.Mode
 	alive map[string]bool
+	// dirs holds the disk dir per persistence-enabled node; incar tracks
+	// the latest membership incarnation so restarts rejoin newer.
+	dirs  map[string]string
+	incar map[string]uint64
 }
 
 // NewCluster builds a cluster with ids nodes, converged membership, and
@@ -85,6 +98,8 @@ func NewCluster(t testing.TB, ids []string, opt Options) *Cluster {
 		order: slices.Clone(ids),
 		rf:    rf, mode: opt.Mode,
 		alive: make(map[string]bool, len(ids)),
+		dirs:  make(map[string]string, len(ids)),
+		incar: make(map[string]uint64, len(ids)),
 	}
 	for _, id := range ids {
 		c.alive[id] = true
@@ -92,37 +107,10 @@ func NewCluster(t testing.TB, ids []string, opt Options) *Cluster {
 
 	c.net = newNetwork(c.elapsed, opt.Seed, c.deliver)
 	for _, id := range ids {
-		tn := &SimTransport{net: c.net, from: id}
-		st := store.NewLRUStore(1<<20, clk)
-		ring, err := hashring.New(hashring.DefaultVNodes, 0)
-		if err != nil {
-			t.Fatalf("sim: new ring: %v", err)
-		}
-
-		table := cluster.NewMembershipTable(id, clk.Now)
-		peers := make([]cluster.NodeInfo, 0, len(ids)-1)
-		for _, other := range slices.DeleteFunc(slices.Clone(ids), func(s string) bool { return s == id }) {
-			peers = append(peers, cluster.NodeInfo{ID: other})
-		}
-
-		table.Seed(peers)
-		replMgr := repl.NewManager(repl.Config{Local: st, Self: id, Clock: clk, Transport: tn})
-		aeMgr := ae.NewManager(ae.Config{
-			Store: st, Ring: ring, Self: id, Transport: tn,
-			Clock: clk.Now,
-		})
-
-		counters := counter.NewStore(1 << 20)
-		aeMgr.SetCounterStore(counters)
-		shardMgr := shard.NewManager(shard.Config{
-			Store: st, Ring: ring, Transport: tn, Membership: table,
-			Self: id, ReplicaFactor: rf, Quarantine: 0, Clock: clk.Now,
-		})
-		c.nodes[id] = &Node{
-			ID: id, Store: st, Counters: counters,
-			Repl: replMgr, AE: aeMgr, Shard: shardMgr,
-			Ring: ring, Table: table, Transport: tn,
-		}
+		tn, ring, table := c.newIdentity(id)
+		st := store.NewLRUStore(simStoreBytes, clk)
+		counters := counter.NewStore(simCounterBytes)
+		c.nodes[id] = c.wireNode(id, st, counters, tn, ring, table)
 	}
 	for id := range c.nodes {
 		c.net.known[id] = true
@@ -130,6 +118,48 @@ func NewCluster(t testing.TB, ids []string, opt Options) *Cluster {
 
 	c.rebuildRings()
 	return c
+}
+
+// newIdentity builds the restart-stable parts of a node: its network
+// endpoint (address identity), ring, and seeded membership table.
+func (c *Cluster) newIdentity(id string) (*SimTransport, *hashring.Ring, *cluster.MembershipTable) {
+	c.t.Helper()
+	tn := &SimTransport{net: c.net, from: id}
+	ring, err := hashring.New(hashring.DefaultVNodes, 0)
+	if err != nil {
+		c.t.Fatalf("sim: new ring: %v", err)
+	}
+
+	table := cluster.NewMembershipTable(id, c.clk.Now)
+	peers := make([]cluster.NodeInfo, 0, len(c.order)-1)
+	for _, other := range slices.DeleteFunc(slices.Clone(c.order), func(s string) bool { return s == id }) {
+		peers = append(peers, cluster.NodeInfo{ID: other})
+	}
+
+	table.Seed(peers)
+	return tn, ring, table
+}
+
+// wireNode builds fresh managers around st and counters, preserving the
+// node's network identity, ring, and membership table. NewCluster wires
+// fresh identity; restarts reuse the crashed node's.
+func (c *Cluster) wireNode(id string, st *store.Store, counters *counter.Store, tn *SimTransport, ring *hashring.Ring, table *cluster.MembershipTable) *Node {
+	replMgr := repl.NewManager(repl.Config{Local: st, Self: id, Clock: c.clk, Transport: tn})
+	aeMgr := ae.NewManager(ae.Config{
+		Store: st, Ring: ring, Self: id, Transport: tn,
+		Clock: c.clk.Now,
+	})
+
+	aeMgr.SetCounterStore(counters)
+	shardMgr := shard.NewManager(shard.Config{
+		Store: st, Ring: ring, Transport: tn, Membership: table,
+		Self: id, ReplicaFactor: c.rf, Quarantine: 0, Clock: c.clk.Now,
+	})
+	return &Node{
+		ID: id, Store: st, Counters: counters,
+		Repl: replMgr, AE: aeMgr, Shard: shardMgr,
+		Ring: ring, Table: table, Transport: tn,
+	}
 }
 
 func (c *Cluster) elapsed() time.Duration { return c.clk.Now().Sub(c.base) }
@@ -313,14 +343,29 @@ func (c *Cluster) Advance(d time.Duration) { c.clk.Advance(d) }
 // queue and parked senders: loop while either is nonzero.
 func (c *Cluster) Pump() {
 	c.t.Helper()
+	idleRuns := 0
 	for range 1 << 20 {
 		c.net.mu.Lock()
 		idle := len(c.net.pending) == 0 && c.net.inflight.Load() == 0
 		c.net.mu.Unlock()
-		if idle {
+		if !idle {
+			idleRuns = 0
+			c.pumpWave()
+			continue
+		}
+		// Quorum fan-out returns after W acks while a straggler send
+		// may not have queued yet; the idle check cannot see
+		// not-yet-started goroutines. Yield and require quiescence to
+		// persist across consecutive observations before accepting
+		// it: a runnable straggler gets scheduled during a yield and
+		// its send shows up as queue activity on the next pass.
+		// Without this, a straggler that starts after the final drain
+		// is silently missing from the event log.
+		idleRuns++
+		if idleRuns >= 3 {
 			return
 		}
-		c.pumpWave()
+		runtime.Gosched()
 	}
 	c.t.Fatal("sim: pump did not converge")
 }
@@ -745,15 +790,19 @@ func (c *Cluster) ReplayHints(nodeID string) int {
 
 // WaitForHint spins until nodeID holds at least one queued hint. Async
 // fan-out enqueues hints from a background goroutine after Write returns,
-// so tests must rendezvous with it before replaying; spinning (not
-// sleeping) keeps the wait in virtual time.
+// so tests must rendezvous with it before replaying. Each iteration pumps
+// one wave: a queued send is delivered (a fault completes as an error and
+// the hint is queued), while an empty queue just yields so a starting
+// goroutine can queue its first send. Spinning without pumping would miss
+// hints whose sends are still parked, and parking without yielding would
+// starve the goroutine that queues them.
 func (c *Cluster) WaitForHint(nodeID string) {
 	c.t.Helper()
 	for range 1 << 20 {
 		if c.nodes[nodeID].Repl.HintCount() > 0 {
 			return
 		}
-		runtime.Gosched()
+		c.pumpWave()
 	}
 	c.t.Fatalf("sim: no hint queued on %s", nodeID)
 }

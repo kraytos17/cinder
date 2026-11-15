@@ -336,7 +336,10 @@ func TestSimReorderConverges(t *testing.T) {
 			t.Fatalf("write %s via %s: %+v", k, o, r)
 		}
 	}
-	// Rendezvous: four writes queue four hints across the two nodes.
+	// Rendezvous: four writes queue four hints across the two nodes. Pump
+	// between checks so queued sends complete to hints (a parked send
+	// with no pump would never enqueue); yield so starting goroutines
+	// can queue.
 	hints := func() int {
 		return c.Node("n1").Repl.HintCount() + c.Node("n2").Repl.HintCount()
 	}
@@ -346,6 +349,7 @@ func TestSimReorderConverges(t *testing.T) {
 			queued = true
 			break
 		}
+		c.Pump()
 		runtime.Gosched()
 	}
 	if !queued {
