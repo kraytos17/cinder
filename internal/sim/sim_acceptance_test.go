@@ -260,13 +260,12 @@ func TestSimRejoinConverges(t *testing.T) {
 		}
 	}
 	c.MarkAlive("n3", 1)
-	for range 3 {
-		c.Rebalance()
-		c.RunAE("n1")
-		c.RunAE("n2")
-		c.RunAE("n3")
-		c.ReplayHints("n1")
-		c.ReplayHints("n2")
+	c.Rebalance()
+	for _, id := range c.IDs() {
+		c.RunAE(id)
+	}
+	for _, id := range c.IDs() {
+		c.ReplayHints(id)
 	}
 	for _, k := range keys {
 		var want string

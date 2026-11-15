@@ -757,13 +757,25 @@ func (c *Cluster) Get(nodeID, key string) (store.Entry, protocol.Status) {
 	return entry, st
 }
 
-// Rebalance runs one rebalance pass on every node, pumping migration
-// traffic between passes so multi-hop moves converge.
+// Rebalance runs rebalance passes on every node until no node defers
+// work. Deferred work means a quarantined owner (never in sim: quarantine
+// is zero); the repeated passes are for multi-hop moves, which settle
+// within diameter passes. This absorbs the debounced retry production
+// schedules via SetOnMigrationFailed, so tests never hand-loop Rebalance.
 func (c *Cluster) Rebalance() {
-	for _, id := range c.order {
-		c.do(func() { c.nodes[id].Shard.Rebalance() })
+	c.t.Helper()
+	for range len(c.order) + 1 {
+		var deferred bool
+		for _, id := range c.order {
+			var d bool
+			c.do(func() { d = c.nodes[id].Shard.Rebalance() })
+			deferred = deferred || d
+		}
+		if !deferred {
+			return
+		}
 	}
-	c.Pump()
+	c.t.Fatalf("sim: rebalance did not converge")
 }
 
 // RunAE runs one anti-entropy round from nodeID against its picked

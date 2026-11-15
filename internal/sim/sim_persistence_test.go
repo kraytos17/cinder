@@ -30,19 +30,17 @@ func persistedCluster(t testing.TB, ids []string, opt sim.Options) (*sim.Cluster
 	return c, dirs
 }
 
-// convergeAll runs rebalance, anti-entropy, and hint replay rounds until a
-// rejoined node has caught up, then asserts every key holds the same value
+// convergeAll runs rebalance to completion, then one anti-entropy and
+// hint-replay round per node, and asserts every key holds the same value
 // on every node.
 func convergeAll(t testing.TB, c *sim.Cluster, keys []string, want func(string) string) {
 	t.Helper()
-	for range 3 {
-		c.Rebalance()
-		for _, id := range c.IDs() {
-			c.RunAE(id)
-		}
-		for _, id := range c.IDs() {
-			c.ReplayHints(id)
-		}
+	c.Rebalance()
+	for _, id := range c.IDs() {
+		c.RunAE(id)
+	}
+	for _, id := range c.IDs() {
+		c.ReplayHints(id)
 	}
 	for _, k := range keys {
 		var wantVal string

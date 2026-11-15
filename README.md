@@ -24,7 +24,9 @@ source for the gRPC API.
 - **Test behavior at its boundary.** Protocol, persistence, state-machine,
   and CLI contracts have focused unit, integration, golden-vector, and fuzz
   tests. Preserve documented wire and file-format invariants when changing
-  implementation details.
+  implementation details. Multi-node convergence lives in
+  [`internal/sim`](docs/sim.md): deterministic manager-level clusters over
+  a virtual network, with fault injection and crash-recovery tests.
 
 ## Status
 
