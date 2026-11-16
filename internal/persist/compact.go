@@ -152,9 +152,17 @@ func (m *Manager) compactLocked() error {
 		return err
 	}
 	if m.wal != nil {
-		m.wal.Sync()
-		m.wal.Close()
-		m.wal = nil
+		// CURRENT now points at a durable snapshot containing all mutations
+		// through the persistence barrier above. Do not rotate/delete WALs
+		// unless the old active writer has both synced and closed cleanly:
+		// on failure, leave it attached so subsequent writes still attempt
+		// WAL append instead of silently taking the nil-WAL fast path.
+		if err := m.syncActiveWAL(); err != nil {
+			return fmt.Errorf("persist: sync active WAL before rotation: %w", err)
+		}
+		if err := m.closeActiveWAL(); err != nil {
+			return fmt.Errorf("persist: close active WAL before rotation: %w", err)
+		}
 	}
 
 	w, err := OpenWriter(filepath.Join(m.dir, walFileName), true)

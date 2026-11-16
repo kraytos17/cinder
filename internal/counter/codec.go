@@ -194,6 +194,9 @@ func (g *GCounter) decodeFrom(r *codec.Reader) bool {
 	if uint64(count) > uint64(r.Remaining())/uint64(minComponentBytes) {
 		return false
 	}
+
+	var prev string
+	hasPrev := false
 	for range count {
 		actor, ok := r.Blob()
 		if !ok || len(actor) == 0 {
@@ -204,14 +207,13 @@ func (g *GCounter) decodeFrom(r *codec.Reader) bool {
 		if !ok {
 			return false
 		}
+
 		// Canonical form only: the encoder emits each actor exactly once
-		// from a map that can never hold zero counts (zero-delta
-		// increments are no-ops, merges take maxima), so a zero count or
-		// a repeated actor is corrupt, not a second update. Accepting
-		// either would decode to a state that re-encodes differently,
-		// breaking the fixed point every codec in this repo guarantees.
+		// in strictly increasing order from Actors(), and the map cannot
+		// hold zero counts. Accepting duplicates, zeroes, or unsorted actors
+		// would decode to a state that re-encodes differently.
 		key := string(actor)
-		if val == 0 {
+		if val == 0 || (hasPrev && key <= prev) {
 			return false
 		}
 		if _, dup := g.components[key]; dup {
@@ -222,6 +224,7 @@ func (g *GCounter) decodeFrom(r *codec.Reader) bool {
 		if err := g.Increment(key, val); err != nil {
 			return false
 		}
+		prev, hasPrev = key, true
 	}
 	return true
 }

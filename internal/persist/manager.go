@@ -50,6 +50,7 @@ type Manager struct {
 	fsyncInterval    time.Duration
 	dirty            bool
 	syncWAL          func() error
+	closeWAL         func() error
 }
 
 // FsyncMode selects when WAL appends are synced to stable storage.
@@ -273,6 +274,13 @@ func (m *Manager) syncActiveWAL() error {
 	return m.wal.Sync()
 }
 
+func (m *Manager) closeActiveWAL() error {
+	if m.closeWAL != nil {
+		return m.closeWAL()
+	}
+	return m.wal.Close()
+}
+
 // Close syncs and closes the active WAL.
 func (m *Manager) Close() error {
 	m.mu.Lock()
@@ -285,7 +293,7 @@ func (m *Manager) Close() error {
 	if err == nil {
 		m.dirty = false
 	}
-	if cerr := m.wal.Close(); err == nil {
+	if cerr := m.closeActiveWAL(); err == nil {
 		err = cerr
 	}
 

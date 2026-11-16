@@ -120,6 +120,27 @@ func TestCodecRejects(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsUnsortedCounterActors(t *testing.T) {
+	// A decoder that accepts out-of-order actors normalizes them through the
+	// component map, so re-encoding changes bytes. Require the canonical
+	// strictly-increasing actor order emitted by GCounter.Actors.
+	var data []byte
+	data = binary.BigEndian.AppendUint32(data, MagicCRDC)
+	data = append(data, KindPNCounter)
+	data = binary.BigEndian.AppendUint32(data, 2)
+	data = binary.BigEndian.AppendUint32(data, 1)
+	data = append(data, 'b')
+	data = binary.BigEndian.AppendUint64(data, 1)
+	data = binary.BigEndian.AppendUint32(data, 1)
+	data = append(data, 'a')
+	data = binary.BigEndian.AppendUint64(data, 2)
+	data = binary.BigEndian.AppendUint32(data, 0) // empty negative side
+
+	if _, err := DecodePNCounter(data); !errors.Is(err, ErrDecode) {
+		t.Fatalf("unsorted actors error = %v, want ErrDecode", err)
+	}
+}
+
 func TestBundleRoundTripAndOrder(t *testing.T) {
 	var a, b PNCounter
 	_ = a.Increment("n1", 4)

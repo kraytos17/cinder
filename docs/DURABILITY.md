@@ -36,17 +36,20 @@ manager and does not call `Sync`.
 ## Snapshots and compaction
 
 Automatic compaction is a replay/recovery optimization, not a per-write
-durability policy. The current snapshot writer writes a temporary snapshot and
-renames it into place, but does not fsync the snapshot, the `CURRENT` pointer,
-or their containing directory. Compaction syncs/closes the WAL before opening
-a fresh active WAL and pruning old files. Consequently, the current compaction
-publication sequence is not proven power-loss-safe: an unclean system failure
-around snapshot publication/rotation may leave neither a durable snapshot nor
-the old WAL records. Compaction also currently ignores errors returned by the
-WAL `Sync` and `Close` calls before rotation, so it can proceed to replace the
-active log after a failed sync. Do not treat successful compaction as a stronger
-durability guarantee until the file and directory fsync sequence is fixed,
-errors are propagated, and the sequence is tested.
+durability policy. Snapshot publication fsyncs the temporary snapshot before
+rename, then publishes `CURRENT` with file and directory fsyncs. Compaction
+publishes the snapshot before rotating the WAL; it then syncs and closes the
+old active WAL before opening a fresh one or deleting sealed segments. If the
+old WAL sync or close fails, compaction returns an error and does not rotate or
+delete WAL segments. The already-published snapshot remains available, and the
+old WAL remains attached to the manager so later writes do not silently bypass
+persistence. A retry may publish another snapshot and retry rotation.
+
+This ordering protects against losing recoverable data on a reported sync or
+close failure: the synced snapshot contains the mutations covered by the
+persistence barrier, while the old WAL remains intact for recovery. It does
+not prove physical-device/power-loss behavior on every filesystem or storage
+controller; see the recovery section and follow-up list below.
 
 ## Recovery and torn tails
 
@@ -97,7 +100,7 @@ torn WAL tail to its valid prefix; the verifier never does.
 | `Kill` / process crash | No fsync is performed by the simulated kill path. Unsynced records may or may not survive depending on the OS/filesystem. |
 | Torn WAL tail | Complete prefix is replayed; incomplete suffix is truncated on recovery. |
 | Checksum/structural corruption | Recovery should fail; never regard a checksum mismatch as a clean torn tail. |
-| Snapshot/compaction | Temporary files are renamed into place, but snapshot, `CURRENT`, and directory fsync ordering is absent; power-loss durability is not guaranteed. Compaction ignores pre-rotation WAL sync/close errors. |
+| Snapshot/compaction | Snapshot and `CURRENT` publication are synced before rotation; WAL sync/close failures abort rotation and preserve the old WAL. Hardware power-loss ordering still depends on filesystem/device guarantees and is not emulated by unit tests. |
 
 ## Counter state
 

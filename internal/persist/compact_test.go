@@ -1,12 +1,91 @@
 package persist
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/store"
 )
+
+func TestCompactWALSyncFailurePreservesActiveLog(t *testing.T) {
+	testCompactWALRotationFailure(t, "sync", func(m *Manager, wantErr error) {
+		m.syncWAL = func() error { return wantErr }
+	}, func(m *Manager) { m.syncWAL = nil })
+}
+
+func TestCompactWALCloseFailurePreservesActiveLog(t *testing.T) {
+	testCompactWALRotationFailure(t, "close", func(m *Manager, wantErr error) {
+		m.closeWAL = func() error { return wantErr }
+	}, func(m *Manager) { m.closeWAL = nil })
+}
+
+func testCompactWALRotationFailure(t *testing.T, operation string, inject func(*Manager, error), reset func(*Manager)) {
+	t.Helper()
+	dir := t.TempDir()
+	st := testStore(t)
+	m := NewManager(dir, st, nil)
+	mustRecover(t, m)
+	defer m.Close()
+	wire(t, st, m)
+	if err := st.Put("before", []byte("durable-source")); err != nil {
+		t.Fatal(err)
+	}
+
+	wantErr := errors.New("injected WAL " + operation + " failure")
+	inject(m, wantErr)
+	if err := m.Compact(); !errors.Is(err, wantErr) {
+		t.Fatalf("Compact error = %v, want injected %s failure", err, operation)
+	}
+	if m.wal == nil {
+		t.Fatalf("Compact discarded the active WAL after %s failure", operation)
+	}
+	if err := st.Put("after", []byte("still-writable")); err != nil {
+		t.Fatalf("write after failed compact: %v", err)
+	}
+
+	// The snapshot was published, but the old WAL remains attached; recovery
+	// must see the snapshot state and post-failure WAL append.
+	reset(m)
+	if err := m.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered := testStore(t)
+	r := NewManager(dir, recovered, nil)
+	if err := r.Recover(); err != nil {
+		t.Fatalf("recover after failed compact: %v", err)
+	}
+	defer r.Close()
+	for key, want := range map[string]string{"before": "durable-source", "after": "still-writable"} {
+		if got, ok := recovered.Get(key); !ok || string(got) != want {
+			t.Fatalf("recovered %q = %q, present=%v; want %q", key, got, ok, want)
+		}
+	}
+}
+
+func TestManagerCloseReturnsWALCloseFailureAndDetaches(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir, testStore(t), nil)
+	if err := m.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+
+	wantErr := errors.New("injected WAL close failure")
+	m.closeWAL = func() error { return wantErr }
+	if err := m.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("Close error = %v, want injected close failure", err)
+	}
+	m.closeWAL = nil
+	if m.wal != nil {
+		t.Fatal("Close retained the WAL writer after attempting to close it")
+	}
+	// A detached manager must not append through the closed writer.
+	if err := m.OnWrite("after-close", store.Entry{Value: []byte("v")}, false); err != nil {
+		t.Fatalf("OnWrite with detached WAL: %v", err)
+	}
+}
 
 // TestMaybeCompactInterval fires once the snapshot interval elapses and
 // resets the countdown afterwards.
