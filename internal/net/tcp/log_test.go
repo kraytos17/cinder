@@ -2,7 +2,7 @@ package tcp_test
 
 import (
 	"bytes"
-	"encoding/json"
+	"encoding/json/v2"
 	"testing"
 
 	"github.com/rs/zerolog"

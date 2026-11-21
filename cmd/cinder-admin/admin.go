@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"io"
 	"net"

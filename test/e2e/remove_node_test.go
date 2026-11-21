@@ -1,7 +1,7 @@
 package e2e_test
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"os"
 	"testing"

@@ -2,6 +2,7 @@ package client
 
 import (
 	"crypto/tls"
+	"encoding/json"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -108,6 +109,57 @@ func (c *Cluster) forgetOwner(key string) {
 	delete(c.learned, key)
 }
 
+// refreshTopology asks reachable configured members for their membership
+// view after an RPC transport failure. A stale learned owner may have been
+// gracefully drained and stopped; forgetting only the per-key override is
+// insufficient because the static client ring still includes that node.
+// Replace the ring with the union of Alive IDs reported by healthy peers,
+// and clear learned overrides so subsequent attempts use the refreshed
+// ring. If no peer answers, leave the existing view unchanged.
+func (c *Cluster) refreshTopology(failed string) bool {
+	type member struct {
+		ID    string `json:"id"`
+		State string `json:"state"`
+	}
+	alive := make([]string, 0, len(c.addrs))
+	seen := make(map[string]struct{}, len(c.addrs))
+	for id := range c.addrs {
+		if id == failed {
+			continue
+		}
+		res, err := c.pool.Send(id, protocol.Request{Opcode: protocol.OpAdminCluster})
+		if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
+			continue
+		}
+		var members []member
+		if err := json.Unmarshal(res.Value, &members); err != nil {
+			continue
+		}
+		for _, m := range members {
+			if m.ID == "" || m.State != "alive" {
+				continue
+			}
+			if _, ok := c.addrs[m.ID]; !ok {
+				continue
+			}
+			seen[m.ID] = struct{}{}
+		}
+	}
+	for id := range seen {
+		alive = append(alive, id)
+	}
+	if len(alive) == 0 {
+		return false
+	}
+	if err := c.ring.SetNodes(alive); err != nil {
+		return false
+	}
+	c.mu.Lock()
+	clear(c.learned)
+	c.mu.Unlock()
+	return true
+}
+
 // tryFollowRedirect registers a followable ownership redirect: the target
 // must be fresh (not the node just asked, not already visited) and the
 // hop budget must hold. Learned addresses register first so nodes outside
@@ -194,6 +246,7 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 		}
 
 		lastErr = err
+		c.refreshTopology(node)
 		node = c.preferredNodeAfterForget(key)
 		if attempt == c.maxRetries {
 			break
