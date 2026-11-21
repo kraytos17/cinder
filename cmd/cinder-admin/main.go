@@ -32,6 +32,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 			&cli.StringFlag{Name: "tls-cert", Usage: "Path to TLS certificate chain (PEM)"},
 			&cli.StringFlag{Name: "tls-key", Usage: "Path to TLS private key (PEM)"},
 			&cli.StringFlag{Name: "tls-ca", Usage: "Path to CA certificate for peer verification (PEM)"},
+			&cli.StringFlag{Name: "tls-server-name", Usage: "Override expected TLS hostname (default: --host)"},
+			&cli.BoolFlag{Name: "tls-verify-hostnames", Value: true, Usage: "Verify TLS hostname against SANs (disable only for testing)"},
 			&cli.StringFlag{Name: "client-secret", Usage: "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"},
 			&cli.BoolFlag{Name: "version", Usage: "print version and exit"},
 		},

@@ -152,6 +152,37 @@ func TestAuthClientSecretRequiresTLS(t *testing.T) {
 	}
 }
 
+// TestAuthFailuresCounted pins the abuse-resistance signal: PermissionDenied
+// on client/admin opcodes bumps the client reason, replication denials bump
+// the node reason. Denied responses must still carry no value body.
+func TestAuthFailuresCounted(t *testing.T) {
+	addr, srv := tlsServer(t, "node1", "shared-secret", "client-secret")
+	anon := tlsClient(t, addr, client.Secrets{})
+	res, err := anon.Do(protocol.Request{Opcode: protocol.OpPing})
+	if err != nil || res.Status != protocol.StatusPermissionDenied {
+		t.Fatalf("anon ping: %+v %v", res, err)
+	}
+	if res.HasValue {
+		t.Fatal("denied client response must carry no value")
+	}
+	if got := srv.Metrics().AuthFailClient.Load(); got != 1 {
+		t.Fatalf("client denials = %d, want 1", got)
+	}
+	rep := protocol.Request{Opcode: protocol.OpReplicate, Key: []byte("r"), Value: []byte("v"), Version: 9, WriterNodeHash: 7}
+	if res, err := anon.Do(rep); err != nil || res.Status != protocol.StatusPermissionDenied {
+		t.Fatalf("anon replicate: %+v %v", res, err)
+	}
+	if got := srv.Metrics().AuthFailNode.Load(); got != 1 {
+		t.Fatalf("node denials = %d, want 1", got)
+	}
+	if res, err := anon.Do(protocol.Request{Opcode: protocol.OpAdminInfo}); err != nil || res.Status != protocol.StatusPermissionDenied {
+		t.Fatalf("anon admin: %+v %v", res, err)
+	}
+	if got := srv.Metrics().AuthFailClient.Load(); got != 2 {
+		t.Fatalf("client denials after admin = %d, want 2", got)
+	}
+}
+
 // TestAuthCrossNodeNodeTokens proves the deliberate deviation from a
 // literal C++ port: the receiver accepts tokens minted by any known peer,
 // not just itself. A self-only check would break every write here, since

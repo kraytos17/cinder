@@ -385,6 +385,11 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 				Str("opcode", metrics.OpName(req.Opcode)).
 				Msg("permission denied")
 		}
+		if classifyOpcode(req.Opcode) == classReplication {
+			s.met.AuthFailNode.Add(1)
+		} else {
+			s.met.AuthFailClient.Add(1)
+		}
 		return protocol.Response{Status: protocol.StatusPermissionDenied}
 	}
 	switch req.Opcode {

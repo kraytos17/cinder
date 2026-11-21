@@ -155,6 +155,11 @@ type Collector struct {
 	// write exceeded the write timeout: the peer was not reading.
 	// Distinct from WriteFailures (encode errors, resets).
 	SlowConsumerDrops atomic.Uint64
+	// AuthFailClient counts PermissionDenied on client/admin opcodes
+	// (missing or bad client token); AuthFailNode counts denials on
+	// replication opcodes (missing or bad node token).
+	AuthFailClient atomic.Uint64
+	AuthFailNode   atomic.Uint64
 }
 
 // NewCollector returns an empty collector.

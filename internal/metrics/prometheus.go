@@ -126,6 +126,8 @@ func (c *Collector) AppendPrometheus(b []byte, g StoreGauges) []byte {
 	counter("connections_redirects_total", c.Redirects.Load())
 	counter("connections_write_failures_total", c.WriteFailures.Load())
 	counter("connections_slow_consumer_drops_total", c.SlowConsumerDrops.Load())
+	counterLbl("auth_failures_total", c.AuthFailClient.Load(), "reason", "client")
+	counterLbl("auth_failures_total", c.AuthFailNode.Load(), "reason", "node")
 	return append(b, sb.String()...)
 }
 

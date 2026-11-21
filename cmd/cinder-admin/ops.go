@@ -6,8 +6,10 @@ import (
 
 type connectionOptions struct {
 	host, tlsCert, tlsKey, tlsCA, clientSecret string
+	tlsServerName                              string
 	port                                       int
 	useTLS                                     bool
+	tlsVerifyHostnames                         bool
 }
 
 type adminOperation uint8

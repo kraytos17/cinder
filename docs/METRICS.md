@@ -96,3 +96,4 @@ cumulative counter since process start.
 | `cinder_connections_redirects_total` | counter | — | `moved to` ownership redirects sent |
 | `cinder_connections_write_failures_total` | counter | — | Response write failures |
 | `cinder_connections_slow_consumer_drops_total` | counter | — | Connections dropped for slow reads |
+| `cinder_auth_failures_total` | counter | `reason="client"\|"node"` | `PermissionDenied` responses by opcode class (client/admin vs replication) |

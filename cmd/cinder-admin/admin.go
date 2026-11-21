@@ -26,6 +26,7 @@ func readConnectionOptions(cmd *cli.Command) connectionOptions {
 	return connectionOptions{
 		host: cmd.String("host"), port: cmd.Int("port"), useTLS: cmd.Bool("tls"),
 		tlsCert: cmd.String("tls-cert"), tlsKey: cmd.String("tls-key"), tlsCA: cmd.String("tls-ca"), clientSecret: secret,
+		tlsServerName: cmd.String("tls-server-name"), tlsVerifyHostnames: cmd.Bool("tls-verify-hostnames"),
 	}
 }
 
@@ -33,7 +34,15 @@ func dialAdmin(options connectionOptions, stderr io.Writer) (*client.Client, err
 	var tlsCfg *tls.Config
 	if options.useTLS {
 		var err error
-		tlsCfg, err = tlscfg.Client(options.tlsCert, options.tlsKey, options.tlsCA)
+		if options.tlsVerifyHostnames && options.tlsCA != "" {
+			serverName := options.tlsServerName
+			if serverName == "" {
+				serverName = options.host
+			}
+			tlsCfg, err = tlscfg.ClientForHost(options.tlsCert, options.tlsKey, options.tlsCA, serverName)
+		} else {
+			tlsCfg, err = tlscfg.Client(options.tlsCert, options.tlsKey, options.tlsCA)
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return nil, cli.Exit("", 1)

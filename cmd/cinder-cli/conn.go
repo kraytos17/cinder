@@ -17,8 +17,10 @@ import (
 
 type connectionOptions struct {
 	host, tlsCert, tlsKey, tlsCA, clientSecret string
+	tlsServerName                              string
 	port                                       int
 	useTLS                                     bool
+	tlsVerifyHostnames                         bool
 }
 
 func exitWithCode(code int) error { return cli.Exit("", code) }
@@ -31,6 +33,7 @@ func readConnectionOptions(cmd *cli.Command) connectionOptions {
 	return connectionOptions{
 		host: cmd.String("host"), port: cmd.Int("port"), useTLS: cmd.Bool("tls"),
 		tlsCert: cmd.String("tls-cert"), tlsKey: cmd.String("tls-key"), tlsCA: cmd.String("tls-ca"), clientSecret: secret,
+		tlsServerName: cmd.String("tls-server-name"), tlsVerifyHostnames: cmd.Bool("tls-verify-hostnames"),
 	}
 }
 
@@ -47,7 +50,15 @@ func executeCommand(op operation, conn connectionOptions, args []string, ttlMs i
 	var tlsCfg *tls.Config
 	if conn.useTLS {
 		var err error
-		tlsCfg, err = tlscfg.Client(conn.tlsCert, conn.tlsKey, conn.tlsCA)
+		if conn.tlsVerifyHostnames && conn.tlsCA != "" {
+			serverName := conn.tlsServerName
+			if serverName == "" {
+				serverName = conn.host
+			}
+			tlsCfg, err = tlscfg.ClientForHost(conn.tlsCert, conn.tlsKey, conn.tlsCA, serverName)
+		} else {
+			tlsCfg, err = tlscfg.Client(conn.tlsCert, conn.tlsKey, conn.tlsCA)
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, "error:", err)
 			return exitWithCode(1)
