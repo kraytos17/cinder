@@ -13,50 +13,53 @@ import (
 // daemonConfig is the single exported config representation used by both
 // command-line flags and JSON config files. configFile is process metadata.
 type daemonConfig struct {
-	Port                 int    `json:"port"`
-	GRPCPort             int    `json:"grpc-port"`
-	MetricsPort          int    `json:"metrics-port"`
-	BindHost             string `json:"bind"`
-	AdvertiseHost        string `json:"advertise-host"`
-	GRPCBind             string `json:"grpc-bind"`
-	MetricsBind          string `json:"metrics-bind"`
-	NodeID               string `json:"node-id"`
-	Peers                string `json:"peers"`
-	Consistency          string `json:"consistency"`
-	EvictionPolicy       string `json:"eviction-policy"`
-	LogLevel             string `json:"log-level"`
-	ReplicationFactor    int    `json:"replication-factor"`
-	GossipIntervalMs     int    `json:"gossip-interval-ms"`
-	ProbeIntervalMs      int    `json:"ping-interval-ms"`
-	SuspectMs            int    `json:"suspect-timeout-ms"`
-	GossipRPCTimeoutMs   int    `json:"gossip-rpc-timeout-ms"`
-	AEIntervalMs         int    `json:"anti-entropy-interval-ms"`
-	AEBuckets            int    `json:"anti-entropy-buckets"`
-	QuarantineIntervalMs int    `json:"quarantine-interval-ms"`
-	Capacity             uint64 `json:"capacity"`
-	MaxWALBytes          uint64 `json:"max-wal-bytes"`
-	MaxWALEntries        uint64 `json:"max-wal-entries"`
-	MaxHintBytes         uint64 `json:"max-hint-bytes"`
-	TLS                  bool   `json:"tls"`
-	EnablePersistence    bool   `json:"enable-persistence"`
-	TLSCert              string `json:"tls-cert"`
-	TLSKey               string `json:"tls-key"`
-	TLSCA                string `json:"tls-ca"`
-	TLSClientAuth        string `json:"tls-client-auth"`
-	TLSMinVersion        string `json:"tls-min-version"`
-	SharedSecret         string `json:"shared-secret"`
-	ClientSecret         string `json:"client-shared-secret"`
-	ClientAdminSecret    string `json:"client-secret-admin"`
-	DataDir              string `json:"data-dir"`
-	SnapshotIntervalS    int    `json:"snapshot-interval-s"`
-	RPCTimeoutMs         int    `json:"rpc-timeout-ms"`
-	AEFetchBytes         int    `json:"anti-entropy-fetch-bytes"`
-	TombstoneGCMS        int    `json:"tombstone-gc-ms"`
-	configFile           string
-	ShutdownTimeoutMs    int    `json:"shutdown-timeout-ms"`
-	FsyncPolicy          string `json:"fsync"`
-	nodeIDExplicit       bool   `json:"-"`
-	VerifyDataDir        string `json:"-"`
+	Port                  int    `json:"port"`
+	GRPCPort              int    `json:"grpc-port"`
+	MetricsPort           int    `json:"metrics-port"`
+	BindHost              string `json:"bind"`
+	AdvertiseHost         string `json:"advertise-host"`
+	GRPCBind              string `json:"grpc-bind"`
+	MetricsBind           string `json:"metrics-bind"`
+	NodeID                string `json:"node-id"`
+	Peers                 string `json:"peers"`
+	Consistency           string `json:"consistency"`
+	EvictionPolicy        string `json:"eviction-policy"`
+	LogLevel              string `json:"log-level"`
+	ReplicationFactor     int    `json:"replication-factor"`
+	GossipIntervalMs      int    `json:"gossip-interval-ms"`
+	ProbeIntervalMs       int    `json:"ping-interval-ms"`
+	SuspectMs             int    `json:"suspect-timeout-ms"`
+	GossipRPCTimeoutMs    int    `json:"gossip-rpc-timeout-ms"`
+	AEIntervalMs          int    `json:"anti-entropy-interval-ms"`
+	AEBuckets             int    `json:"anti-entropy-buckets"`
+	QuarantineIntervalMs  int    `json:"quarantine-interval-ms"`
+	Capacity              uint64 `json:"capacity"`
+	MaxWALBytes           uint64 `json:"max-wal-bytes"`
+	MaxWALEntries         uint64 `json:"max-wal-entries"`
+	MaxHintBytes          uint64 `json:"max-hint-bytes"`
+	TLS                   bool   `json:"tls"`
+	EnablePersistence     bool   `json:"enable-persistence"`
+	TLSCert               string `json:"tls-cert"`
+	TLSKey                string `json:"tls-key"`
+	TLSCA                 string `json:"tls-ca"`
+	TLSClientAuth         string `json:"tls-client-auth"`
+	TLSMinVersion         string `json:"tls-min-version"`
+	SharedSecret          string `json:"shared-secret"`
+	ClientSecret          string `json:"client-shared-secret"`
+	ClientAdminSecret     string `json:"client-secret-admin"`
+	SharedSecretPrev      string `json:"shared-secret-previous"`
+	ClientSecretPrev      string `json:"client-secret-previous"`
+	ClientAdminSecretPrev string `json:"client-secret-admin-previous"`
+	DataDir               string `json:"data-dir"`
+	SnapshotIntervalS     int    `json:"snapshot-interval-s"`
+	RPCTimeoutMs          int    `json:"rpc-timeout-ms"`
+	AEFetchBytes          int    `json:"anti-entropy-fetch-bytes"`
+	TombstoneGCMS         int    `json:"tombstone-gc-ms"`
+	configFile            string
+	ShutdownTimeoutMs     int    `json:"shutdown-timeout-ms"`
+	FsyncPolicy           string `json:"fsync"`
+	nodeIDExplicit        bool   `json:"-"`
+	VerifyDataDir         string `json:"-"`
 }
 
 func defaultDaemonConfig() daemonConfig {
@@ -102,6 +105,9 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.StringFlag{Name: "shared-secret", Value: cfg.SharedSecret, Usage: "shared secret for node authentication (or CINDER_SHARED_SECRET)"},
 		&cli.StringFlag{Name: "client-shared-secret", Value: cfg.ClientSecret, Usage: "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)"},
 		&cli.StringFlag{Name: "client-secret-admin", Value: cfg.ClientAdminSecret, Usage: "shared secret for admin operations, requires --tls (or CINDER_CLIENT_SECRET_ADMIN)"},
+		&cli.StringFlag{Name: "shared-secret-previous", Value: cfg.SharedSecretPrev, Usage: "previous shared secret accepted during rotation"},
+		&cli.StringFlag{Name: "client-secret-previous", Value: cfg.ClientSecretPrev, Usage: "previous client secret accepted during rotation, requires --tls"},
+		&cli.StringFlag{Name: "client-secret-admin-previous", Value: cfg.ClientAdminSecretPrev, Usage: "previous admin secret accepted during rotation, requires --tls"},
 		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.EnablePersistence, Usage: "enable WAL + snapshots"},
 		&cli.StringFlag{Name: "data-dir", Value: cfg.DataDir, Usage: "persistence directory (required with --enable-persistence)"},
 		&cli.StringFlag{Name: "verify-data-dir", Value: cfg.VerifyDataDir, Usage: "offline-verify persistence files in a directory and exit (read-only)"},
@@ -216,6 +222,15 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	if cmd.IsSet("client-secret-admin") {
 		cfg.ClientAdminSecret = cmd.String("client-secret-admin")
 	}
+	if cmd.IsSet("shared-secret-previous") {
+		cfg.SharedSecretPrev = cmd.String("shared-secret-previous")
+	}
+	if cmd.IsSet("client-secret-previous") {
+		cfg.ClientSecretPrev = cmd.String("client-secret-previous")
+	}
+	if cmd.IsSet("client-secret-admin-previous") {
+		cfg.ClientAdminSecretPrev = cmd.String("client-secret-admin-previous")
+	}
 	if cmd.IsSet("enable-persistence") {
 		cfg.EnablePersistence = cmd.Bool("enable-persistence")
 	}
@@ -265,6 +280,9 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	cfg.SharedSecret = configuredSecret(cfg.SharedSecret, "CINDER_SHARED_SECRET")
 	cfg.ClientSecret = configuredSecret(cfg.ClientSecret, "CINDER_CLIENT_SECRET")
 	cfg.ClientAdminSecret = configuredSecret(cfg.ClientAdminSecret, "CINDER_CLIENT_SECRET_ADMIN")
+	cfg.SharedSecretPrev = configuredSecret(cfg.SharedSecretPrev, "CINDER_SHARED_SECRET_PREVIOUS")
+	cfg.ClientSecretPrev = configuredSecret(cfg.ClientSecretPrev, "CINDER_CLIENT_SECRET_PREVIOUS")
+	cfg.ClientAdminSecretPrev = configuredSecret(cfg.ClientAdminSecretPrev, "CINDER_CLIENT_SECRET_ADMIN_PREVIOUS")
 	return cfg
 }
 
@@ -305,7 +323,9 @@ func resolveDaemonConfig(cmd *cli.Command, configPath string) (daemonConfig, err
 	return cfg, nil
 }
 
-// ReloadableFromDaemon projects the reloadable subset of a daemon config.
+// ReloadableFromDaemon projects the reloadable subset of a daemon config,
+// including the secret rotation set so SIGHUP/config-reload rotates
+// without a restart.
 func ReloadableFromDaemon(cfg daemonConfig) tcp.ReloadableConfig {
 	return tcp.ReloadableConfig{
 		LogLevel:         cfg.LogLevel,
@@ -318,5 +338,11 @@ func ReloadableFromDaemon(cfg daemonConfig) tcp.ReloadableConfig {
 		Capacity:         cfg.Capacity,
 		TombstoneGCMs:    int64(cfg.TombstoneGCMS),
 		MaxHintBytes:     cfg.MaxHintBytes,
+		SharedSecret:     cfg.SharedSecret,
+		SharedSecretPrev: cfg.SharedSecretPrev,
+		ClientSecret:     cfg.ClientSecret,
+		ClientSecretPrev: cfg.ClientSecretPrev,
+		AdminSecret:      cfg.ClientAdminSecret,
+		AdminSecretPrev:  cfg.ClientAdminSecretPrev,
 	}
 }

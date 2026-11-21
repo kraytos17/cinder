@@ -220,3 +220,18 @@ func TestValidateDaemonConfigWarns(t *testing.T) {
 		t.Errorf("RF=2 config warned unexpectedly: %v", vc.warns)
 	}
 }
+
+func TestReloadableFromDaemonCarriesSecrets(t *testing.T) {
+	cfg := defaultDaemonConfig()
+	cfg.SharedSecret = "s"
+	cfg.SharedSecretPrev = "s-prev"
+	cfg.ClientSecret = "c"
+	cfg.ClientSecretPrev = "c-prev"
+	cfg.ClientAdminSecret = "a"
+	cfg.ClientAdminSecretPrev = "a-prev"
+	rc := ReloadableFromDaemon(cfg)
+	if rc.SharedSecret != "s" || rc.SharedSecretPrev != "s-prev" || rc.ClientSecret != "c" ||
+		rc.ClientSecretPrev != "c-prev" || rc.AdminSecret != "a" || rc.AdminSecretPrev != "a-prev" {
+		t.Fatalf("secrets missing from reload projection: %+v", rc)
+	}
+}

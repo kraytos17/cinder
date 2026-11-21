@@ -51,6 +51,28 @@ rotation requires a coordinated restart.
 - Denials return `PermissionDenied` with no value body and bump
   `cinder_auth_failures_total{reason="client"|"node"}` by opcode class.
 
+## Secret rotation
+
+Each secret class takes a previous value accepted alongside the current
+one: `--shared-secret-previous`, `--client-secret-previous`,
+`--client-secret-admin-previous` (or `CINDER_*_PREVIOUS`, or the matching
+`*_previous` JSON config keys, or `*_previous` config-reload keys).
+Rotate without a restart:
+
+1. Set the new secret as previous everywhere (config file + `SIGHUP`,
+   or `cinder-admin config-reload` with the `*_previous` keys) and wait
+   for every node to report it (no errors in the reload path).
+2. Promote: make the new value current and keep the old as previous,
+   same mechanism. During the window every node accepts both, so mixed
+   versions interoperate and in-flight tokens keep verifying.
+3. Drop the previous value everywhere once all nodes run the new
+   current. Tokens minted under the old secret are denied from then on.
+
+Previous bearers verify exactly like current ones (node windows,
+constant-time client compares); rotation never widens the window, it
+only temporarily accepts two values. Rotating the CA itself still
+requires a restart.
+
 ## Abuse resistance
 
 - Frames are header-first: the 7-byte header is read before any payload

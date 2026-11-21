@@ -191,6 +191,12 @@ type Server struct {
 	// read-only admin accept either the data or the admin token; without
 	// it the single client secret keeps full access.
 	clientAdminSecret string
+	// Previous-rotation secrets: during a rotation each class accepts the
+	// current or the previous bearer (node tokens under either shared
+	// secret). Unset previous values verify nothing.
+	sharedSecretPrev       string
+	clientSharedSecretPrev string
+	clientAdminSecretPrev  string
 
 	// Rebalance on membership change. Every ring rebuild schedules one
 	// debounced scan; quarantine deferrals and migration failures

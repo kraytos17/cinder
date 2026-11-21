@@ -343,3 +343,59 @@ func TestConfigureAdminSecretRequiresTLS(t *testing.T) {
 		t.Fatal("admin secret without TLS must fail closed")
 	}
 }
+
+func TestAuthRotationAcceptsPrevious(t *testing.T) {
+	fx := fixturesDir(t)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureSecrets("shared-new", "client-new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.ConfigureAdminSecret("admin-new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetPreviousSecrets("shared-old", "client-old", "admin-old"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	cases := []struct {
+		name   string
+		op     protocol.Opcode
+		token  []byte
+		wantOK bool
+	}{
+		{"replicate current node token", protocol.OpReplicate, auth.NodeToken("shared-new", "node1", now), true},
+		{"replicate previous node token", protocol.OpReplicate, auth.NodeToken("shared-old", "node1", now), true},
+		{"replicate wrong token", protocol.OpReplicate, auth.NodeToken("shared-bogus", "node1", now), false},
+		{"data current token", protocol.OpPing, auth.ClientToken("client-new"), true},
+		{"data previous token", protocol.OpPing, auth.ClientToken("client-old"), true},
+		{"data admin previous token", protocol.OpPing, auth.ClientToken("admin-old"), true},
+		{"read-only admin previous token", protocol.OpAdminCluster, auth.ClientToken("client-old"), true},
+		{"mutating admin current token", protocol.OpAdminCompact, auth.ClientToken("admin-new"), true},
+		{"mutating admin previous token", protocol.OpAdminCompact, auth.ClientToken("admin-old"), true},
+		{"mutating admin data current token denied", protocol.OpAdminCompact, auth.ClientToken("client-new"), false},
+		{"mutating admin data previous token denied", protocol.OpAdminCompact, auth.ClientToken("client-old"), false},
+	}
+	for _, tc := range cases {
+		req := protocol.Request{Opcode: tc.op}
+		if tc.op == protocol.OpReplicate {
+			req.Key, req.Value, req.Version, req.WriterNodeHash = []byte("r"), []byte("v"), 9, 7
+		}
+		res := srv.DispatchWithAuth(req, tc.token)
+		if ok := res.Status == protocol.StatusOK; ok != tc.wantOK {
+			t.Errorf("%s: status=%v wantOK=%v", tc.name, res.Status, tc.wantOK)
+		}
+	}
+}
+
+func TestSetPreviousSecretsRequiresTLS(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.SetPreviousSecrets("", "client-old", ""); err == nil {
+		t.Fatal("client previous secret without TLS must fail closed")
+	}
+	if err := srv.SetPreviousSecrets("shared-old", "", ""); err != nil {
+		t.Fatalf("node previous secret without TLS must be allowed: %v", err)
+	}
+}

@@ -24,6 +24,12 @@ const (
 	reloadKeyCapacity         = "capacity"
 	reloadKeyTombstoneGCMs    = "tombstone_gc_ms"
 	reloadKeyMaxHintBytes     = "max_hint_bytes"
+	reloadKeySharedSecret     = "shared_secret"
+	reloadKeySharedSecretPrev = "shared_secret_previous"
+	reloadKeyClientSecret     = "client_secret"
+	reloadKeyClientSecretPrev = "client_secret_previous"
+	reloadKeyAdminSecret      = "admin_secret"
+	reloadKeyAdminSecretPrev  = "admin_secret_previous"
 )
 
 // reloadableKeys lists every key Reload applies, in stable order.
@@ -38,6 +44,12 @@ var reloadableKeys = []string{
 	reloadKeyCapacity,
 	reloadKeyTombstoneGCMs,
 	reloadKeyMaxHintBytes,
+	reloadKeySharedSecret,
+	reloadKeySharedSecretPrev,
+	reloadKeyClientSecret,
+	reloadKeyClientSecretPrev,
+	reloadKeyAdminSecret,
+	reloadKeyAdminSecretPrev,
 }
 
 // ReloadableConfig is the set of settings a running node may change
@@ -55,6 +67,12 @@ type ReloadableConfig struct {
 	Capacity         uint64 `json:"capacity"`
 	TombstoneGCMs    int64  `json:"tombstone_gc_ms"`
 	MaxHintBytes     uint64 `json:"max_hint_bytes"`
+	SharedSecret     string `json:"shared_secret"`
+	SharedSecretPrev string `json:"shared_secret_previous"`
+	ClientSecret     string `json:"client_secret"`
+	ClientSecretPrev string `json:"client_secret_previous"`
+	AdminSecret      string `json:"admin_secret"`
+	AdminSecretPrev  string `json:"admin_secret_previous"`
 }
 
 // toDurationMs converts a millisecond count to a duration.
@@ -106,12 +124,29 @@ func (s *Server) Reload(rc ReloadableConfig) ([]string, error) {
 		}
 		newCert = &cert
 	}
+	if rc.ClientSecret != "" || rc.ClientSecretPrev != "" || rc.AdminSecret != "" || rc.AdminSecretPrev != "" {
+		s.tlsMu.RLock()
+		tlsCfg := s.tlsCfg
+		s.tlsMu.RUnlock()
+		if tlsCfg == nil {
+			return nil, errors.New("client/admin secrets require TLS")
+		}
+	}
 
 	ms := toDurationMs(rc.GossipIntervalMs)
 	s.SetGossipInterval(ms)
 	s.SetProbeInterval(toDurationMs(rc.PingIntervalMs))
 	s.SetSuspectTimeout(toDurationMs(rc.SuspectTimeoutMs))
 	s.SetAntiEntropyInterval(toDurationMs(rc.AEIntervalMs))
+	if err := s.ConfigureSecrets(rc.SharedSecret, rc.ClientSecret); err != nil {
+		return nil, err
+	}
+	if err := s.ConfigureAdminSecret(rc.AdminSecret); err != nil {
+		return nil, err
+	}
+	if err := s.SetPreviousSecrets(rc.SharedSecretPrev, rc.ClientSecretPrev, rc.AdminSecretPrev); err != nil {
+		return nil, err
+	}
 	if newCert != nil {
 		if err := s.rotateTLSCertificate(rc.TLSCertFile, rc.TLSKeyFile, *newCert); err != nil {
 			return nil, err

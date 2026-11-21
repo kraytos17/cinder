@@ -61,50 +61,55 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 // checkAuth validates credentials according to opcode class and role.
 // Internal replication requires a node token when node auth is configured.
 // Data opcodes and read-only admin (info, cluster, ring) require a client
-// token when client auth is configured, accepting the admin token as a
-// superset. Mutating admin (compact, config-reload, shutdown, drain)
-// requires the admin token when an admin secret is configured, otherwise
-// the client token, otherwise the node token. Unconfigured auth is open.
-// Node tokens are accepted for this server or any alive member because a
-// sender mints its token using its own node ID.
+// token when client auth is configured, accepting the data or admin bearer
+// (current or previous each). Mutating admin (compact, config-reload,
+// shutdown, drain) requires the admin token when an admin secret is
+// configured, otherwise the client token, otherwise the node token.
+// During a rotation each class accepts the current or the previous secret.
+// Unconfigured auth is open. Node tokens are accepted for this server or
+// any alive member because a sender mints its token using its own node ID.
 func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 	s.authMu.RLock()
-	shared, clientSecret, adminSecret := s.sharedSecret, s.clientSharedSecret, s.clientAdminSecret
+	shared, sharedPrev := s.sharedSecret, s.sharedSecretPrev
+	clientSecret, clientPrev := s.clientSharedSecret, s.clientSharedSecretPrev
+	adminSecret, adminPrev := s.clientAdminSecret, s.clientAdminSecretPrev
 	s.authMu.RUnlock()
-	if shared == "" && clientSecret == "" && adminSecret == "" {
+	if shared == "" && sharedPrev == "" && clientSecret == "" && clientPrev == "" && adminSecret == "" && adminPrev == "" {
 		return true
 	}
 
 	now := s.clock.Now()
 	switch classifyOpcode(op) {
 	case classReplication:
-		if shared == "" {
+		if shared == "" && sharedPrev == "" {
 			return true
 		}
-		return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+		return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAnyOf([]string{shared, sharedPrev}, token, now)
 	case classAdmin:
 		if isMutatingAdmin(op) {
-			if adminSecret != "" {
-				return auth.VerifyClientToken(adminSecret, token)
+			if adminSecret != "" || adminPrev != "" {
+				return auth.VerifyClientToken(adminSecret, token) || auth.VerifyClientToken(adminPrev, token)
 			}
-			if clientSecret != "" {
-				return auth.VerifyClientToken(clientSecret, token)
+			if clientSecret != "" || clientPrev != "" {
+				return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(clientPrev, token)
 			}
-			if shared != "" {
-				return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+			if shared != "" || sharedPrev != "" {
+				return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAnyOf([]string{shared, sharedPrev}, token, now)
 			}
 			return true
 		}
-		if clientSecret != "" || adminSecret != "" {
-			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(adminSecret, token)
+		if clientSecret != "" || clientPrev != "" || adminSecret != "" || adminPrev != "" {
+			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(clientPrev, token) ||
+				auth.VerifyClientToken(adminSecret, token) || auth.VerifyClientToken(adminPrev, token)
 		}
-		if shared != "" {
-			return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+		if shared != "" || sharedPrev != "" {
+			return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAnyOf([]string{shared, sharedPrev}, token, now)
 		}
 		return true
 	default: // classClient
-		if clientSecret != "" || adminSecret != "" {
-			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(adminSecret, token)
+		if clientSecret != "" || clientPrev != "" || adminSecret != "" || adminPrev != "" {
+			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(clientPrev, token) ||
+				auth.VerifyClientToken(adminSecret, token) || auth.VerifyClientToken(adminPrev, token)
 		}
 		return true
 	}
@@ -123,12 +128,16 @@ func isMutatingAdmin(op protocol.Opcode) bool {
 	}
 }
 
-// verifyNodeTokenAny accepts a node token minted by self or any alive peer.
-// Membership iteration is snapshot-free (see MatchAliveID): no per-request
-// allocation on inter-node traffic.
-func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) bool {
-	if auth.VerifyNodeToken(shared, s.nodeID, token, now) {
-		return true
+// verifyNodeTokenAnyOf accepts a token minted under any of the given
+// secrets (current or previous during a rotation), skipping empties.
+func (s *Server) verifyNodeTokenAnyOf(secrets []string, token []byte, now time.Time) bool {
+	for _, shared := range secrets {
+		if shared == "" {
+			continue
+		}
+		if auth.VerifyNodeToken(shared, s.nodeID, token, now) {
+			return true
+		}
 	}
 
 	s.ringMu.RLock()
@@ -138,7 +147,15 @@ func (s *Server) verifyNodeTokenAny(shared string, token []byte, now time.Time) 
 		return false
 	}
 	return table.MatchAliveID(s.nodeID, func(id string) bool {
-		return auth.VerifyNodeToken(shared, id, token, now)
+		for _, shared := range secrets {
+			if shared == "" {
+				continue
+			}
+			if auth.VerifyNodeToken(shared, id, token, now) {
+				return true
+			}
+		}
+		return false
 	})
 }
 

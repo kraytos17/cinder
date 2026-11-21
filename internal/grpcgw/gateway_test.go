@@ -768,6 +768,7 @@ func TestGrpcAuthAdminBearerAcceptedForData(t *testing.T) {
 	gw := grpcgw.New(srv)
 	gw.SetClientSecret("data-secret")
 	gw.SetAdminSecret("admin-secret")
+	gw.SetPreviousSecrets("data-old", "admin-old")
 	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
 		t.Fatal(err)
 	}
@@ -787,6 +788,12 @@ func TestGrpcAuthAdminBearerAcceptedForData(t *testing.T) {
 	}
 	if _, err := c.Ping(bearerCtx("data-secret"), &gen.PingRequest{}); err != nil {
 		t.Fatalf("data RPC with data bearer: %v", err)
+	}
+	if _, err := c.Ping(bearerCtx("data-old"), &gen.PingRequest{}); err != nil {
+		t.Fatalf("previous data bearer: %v", err)
+	}
+	if _, err := c.Ping(bearerCtx("admin-old"), &gen.PingRequest{}); err != nil {
+		t.Fatalf("previous admin bearer: %v", err)
 	}
 	if _, err := c.Ping(bearerCtx("wrong"), &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("wrong bearer: %v", err)

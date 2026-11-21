@@ -70,6 +70,11 @@ func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
 			return fmt.Errorf("secrets: %w", err)
 		}
 	}
+	if cfg.SharedSecretPrev != "" || cfg.ClientSecretPrev != "" || cfg.ClientAdminSecretPrev != "" {
+		if err := srv.SetPreviousSecrets(cfg.SharedSecretPrev, cfg.ClientSecretPrev, cfg.ClientAdminSecretPrev); err != nil {
+			return fmt.Errorf("secrets: %w", err)
+		}
+	}
 	if cfg.EnablePersistence {
 		if cfg.DataDir == "" {
 			return errors.New("--data-dir is required with --enable-persistence")
@@ -236,6 +241,7 @@ func runDaemon(parent context.Context, cfg daemonConfig, stderr io.Writer, onRel
 		gw = grpcgw.New(srv)
 		gw.SetClientSecret(cfg.ClientSecret)
 		gw.SetAdminSecret(cfg.ClientAdminSecret)
+		gw.SetPreviousSecrets(cfg.ClientSecretPrev, cfg.ClientAdminSecretPrev)
 		if cfg.TLS {
 			if err := gw.SetTLS(cfg.TLSCert, cfg.TLSKey); err != nil {
 				return daemonUsageError(fmt.Errorf("grpc tls: %w", err))

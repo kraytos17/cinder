@@ -139,6 +139,8 @@ func TestValidateGRPCTLS(t *testing.T) {
 		tls         bool
 		secret      string
 		adminSecret string
+		clientPrev  string
+		adminPrev   string
 		wantErr     string
 	}{
 		{name: "grpc plaintext without auth allowed", port: 9000},
@@ -146,11 +148,12 @@ func TestValidateGRPCTLS(t *testing.T) {
 		{name: "tls with auth allowed", port: 9000, tls: true, secret: "secret"},
 		{name: "secret without tls rejected", port: 9000, secret: "secret", wantErr: "requires --tls"},
 		{name: "admin secret without tls rejected", port: 9000, adminSecret: "admin", wantErr: "requires --tls"},
+		{name: "previous secret without tls rejected", port: 9000, clientPrev: "old", adminPrev: "", wantErr: "requires --tls"},
 		{name: "tls with admin auth allowed", port: 9000, tls: true, adminSecret: "admin"},
 		{name: "disabled grpc secret does not gate tcp", port: 0, secret: "secret"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateGRPCTLS(tc.port, tc.tls, tc.secret, tc.adminSecret)
+			err := validateGRPCTLS(tc.port, tc.tls, tc.secret, tc.adminSecret, tc.clientPrev, tc.adminPrev)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error = %v, want containing %q", err, tc.wantErr)

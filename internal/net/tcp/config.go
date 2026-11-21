@@ -213,6 +213,29 @@ func (s *Server) ConfigureAdminSecret(adminSecret string) error {
 	return nil
 }
 
+// SetPreviousSecrets installs the previous-rotation bearers: during a
+// rotation each class accepts the current or the previous secret. Client
+// and admin previous bearers are replayable, so any non-empty one
+// requires TLS; the node previous needs none. Empty values verify
+// nothing. Call after ConfigureSecrets/ConfigureAdminSecret.
+func (s *Server) SetPreviousSecrets(sharedPrev, clientPrev, adminPrev string) error {
+	if clientPrev != "" || adminPrev != "" {
+		s.tlsMu.RLock()
+		tlsCfg := s.tlsCfg
+		s.tlsMu.RUnlock()
+		if tlsCfg == nil {
+			return errors.New("tcp: previous client/admin auth requires TLS (replayable bearer token)")
+		}
+	}
+
+	s.authMu.Lock()
+	s.sharedSecretPrev = sharedPrev
+	s.clientSharedSecretPrev = clientPrev
+	s.clientAdminSecretPrev = adminPrev
+	s.authMu.Unlock()
+	return nil
+}
+
 // ConfigurePersistence enables the WAL + snapshots in dir, recovering
 // before serving. The store hook is wired after recovery so replay never
 // logs itself. Call before Serve.

@@ -61,7 +61,7 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 	fail(err)
 
 	out.gossipTimeout = gossipTimeout
-	fail(validateGRPCTLS(cfg.GRPCPort, cfg.TLS, cfg.ClientSecret, cfg.ClientAdminSecret))
+	fail(validateGRPCTLS(cfg.GRPCPort, cfg.TLS, cfg.ClientSecret, cfg.ClientAdminSecret, cfg.ClientSecretPrev, cfg.ClientAdminSecretPrev))
 	errs = append(errs, validateTLSOptions(cfg)...)
 	replicaCount, err := hashring.NewReplicaCount(cfg.ReplicationFactor)
 	if err != nil {

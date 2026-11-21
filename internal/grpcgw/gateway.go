@@ -62,6 +62,9 @@ type service struct {
 	node         *tcp.Server
 	clientSecret atomic.Value // string; set via SetClientSecret before Serve
 	adminSecret  atomic.Value // string; set via SetAdminSecret before Serve
+	// Previous-rotation secrets and their precomputed bearers.
+	clientSecretPrev atomic.Value // string
+	adminSecretPrev  atomic.Value // string
 	// bearer is the precomputed bearer credential, refreshed with the
 	// secret. The header comparison and the raw token forwarded to
 	// DispatchWithAuth both come from here, so the per-RPC HMAC + hex
@@ -69,7 +72,9 @@ type service struct {
 	bearer atomic.Pointer[bearerAuth]
 	// adminBearer is the precomputed admin-role bearer. Data RPCs accept
 	// either bearer; mutating admin is enforced by the TCP layer.
-	adminBearer atomic.Pointer[bearerAuth]
+	adminBearer      atomic.Pointer[bearerAuth]
+	clientPrevBearer atomic.Pointer[bearerAuth]
+	adminPrevBearer  atomic.Pointer[bearerAuth]
 }
 
 func (s *service) Get(ctx context.Context, req *gen.GetRequest) (*gen.GetResponse, error) {
@@ -279,6 +284,12 @@ func (g *Gateway) SetAdminSecret(secret string) {
 	g.svc.setAdminSecret(secret)
 }
 
+// SetPreviousSecrets enables the previous-rotation bearers: data RPCs
+// accept any configured bearer. Call before Serve.
+func (g *Gateway) SetPreviousSecrets(clientPrev, adminPrev string) {
+	g.svc.setPreviousSecrets(clientPrev, adminPrev)
+}
+
 // SetTLS serves gRPC over TLS using the given certificate chain and key.
 // A configured client secret requires TLS because the bearer token is
 // reusable. Call before Serve.
@@ -312,12 +323,14 @@ func (g *Gateway) Serve(lis net.Listener) error {
 	g.mu.Unlock()
 	secret, _ := g.svc.clientSecret.Load().(string)
 	adminSecret, _ := g.svc.adminSecret.Load().(string)
+	clientPrev, _ := g.svc.clientSecretPrev.Load().(string)
+	adminPrev, _ := g.svc.adminSecretPrev.Load().(string)
 
 	var srv *grpc.Server
 	if tlsCfg != nil {
 		srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
 	} else {
-		if secret != "" || adminSecret != "" {
+		if secret != "" || adminSecret != "" || clientPrev != "" || adminPrev != "" {
 			g.mu.Lock()
 			g.serving = false
 			g.mu.Unlock()
