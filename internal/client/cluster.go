@@ -2,7 +2,7 @@ package client
 
 import (
 	"crypto/tls"
-	"encoding/json"
+	"encoding/json/v2"
 	"math"
 	"math/rand/v2"
 	"slices"
@@ -127,10 +127,12 @@ func (c *Cluster) refreshTopology(failed string) bool {
 		if id == failed {
 			continue
 		}
+
 		res, err := c.pool.Send(id, protocol.Request{Opcode: protocol.OpAdminCluster})
 		if err != nil || res.Status != protocol.StatusOK || !res.HasValue {
 			continue
 		}
+
 		var members []member
 		if err := json.Unmarshal(res.Value, &members); err != nil {
 			continue
@@ -154,6 +156,7 @@ func (c *Cluster) refreshTopology(failed string) bool {
 	if err := c.ring.SetNodes(alive); err != nil {
 		return false
 	}
+
 	c.mu.Lock()
 	clear(c.learned)
 	c.mu.Unlock()

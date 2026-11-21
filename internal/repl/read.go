@@ -229,7 +229,7 @@ func voteToEntry(res protocol.Response) store.Entry {
 		Expiry: res.ExpiresAt,
 	}
 	if res.HasValue {
-		e.Value = append([]byte(nil), res.Value...)
+		e.Value = bytes.Clone(res.Value)
 	}
 	return e
 }

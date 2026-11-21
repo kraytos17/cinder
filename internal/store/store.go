@@ -5,6 +5,7 @@
 package store
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -464,7 +465,7 @@ func (s *Store) Get(key string) ([]byte, bool) {
 
 	s.onAccess(sh, idx)
 	s.bumpHits()
-	return append([]byte(nil), n.entry.Value...), true
+	return bytes.Clone(n.entry.Value), true
 }
 
 // GetVersioned returns the resident entry (tombstones included), or false

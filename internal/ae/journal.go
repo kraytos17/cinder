@@ -1,6 +1,7 @@
 package ae
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"os"
@@ -283,7 +284,7 @@ func decodeJournalRecord(payload []byte, nowMs uint64) (decodedJournalRecord, bo
 			return decodedJournalRecord{discard: true}, true // underlying value expired during outage
 		}
 
-		req := protocol.Request{Opcode: protocol.OpReplicate, Key: append([]byte(nil), kb...), Value: append([]byte(nil), vb...), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
+		req := protocol.Request{Opcode: protocol.OpReplicate, Key: bytes.Clone(kb), Value: bytes.Clone(vb), Version: ver, WriterNodeHash: writer, Tombstone: tomb != 0}
 		req.ExpiresAt = expiry.FromUnixMilli(int64(entryExp))
 		return decodedJournalRecord{hint: repl.Hint{Target: string(tb), Req: req, ExpiresAt: expiry.At(time.UnixMilli(int64(nowMs)).Add(hintTTL))}}, true
 	}

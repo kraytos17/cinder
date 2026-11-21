@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"time"
 
 	"github.com/kraytos17/cinder/internal/expiry"
@@ -43,7 +44,7 @@ func (e Entry) Expired(now time.Time) bool {
 func (e Entry) Clone() Entry {
 	out := e
 	if e.Value != nil {
-		out.Value = append([]byte(nil), e.Value...)
+		out.Value = bytes.Clone(e.Value)
 	}
 	return out
 }

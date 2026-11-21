@@ -6,6 +6,7 @@
 package ae
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"slices"
@@ -465,7 +466,7 @@ func DecodeResponse(data []byte, expectedGroups int) (DigestResponse, bool) {
 		}
 
 		seenSketch[b] = true
-		out.Sketches = append(out.Sketches, SketchRef{Bucket: b, Blob: append([]byte(nil), blob...)})
+		out.Sketches = append(out.Sketches, SketchRef{Bucket: b, Blob: bytes.Clone(blob)})
 	}
 	if c.Remaining() != 0 {
 		return out, false
@@ -561,7 +562,7 @@ func DecodeSync(data []byte) (SyncMessage, bool) {
 			return msg, false
 		}
 
-		item.Key = string(append([]byte(nil), kb...))
+		item.Key = string(kb)
 		var e store.Entry
 		ver, ok := c.U64()
 		if !ok {
@@ -598,7 +599,7 @@ func DecodeSync(data []byte) (SyncMessage, bool) {
 			return msg, false
 		}
 
-		e.Value = append([]byte(nil), val...)
+		e.Value = bytes.Clone(val)
 		item.Entry = e
 		msg.Entries = append(msg.Entries, item)
 	}

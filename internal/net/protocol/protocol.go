@@ -10,6 +10,7 @@
 package protocol
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"math"
@@ -486,7 +487,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
-		req.Key = append([]byte(nil), key...)
+		req.Key = bytes.Clone(key)
 	}
 
 	valLen, ok := r.U32()
@@ -498,7 +499,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		if !ok {
 			return out, errInvalid("truncated frame")
 		}
-		req.Value = append([]byte(nil), val...)
+		req.Value = bytes.Clone(val)
 	}
 	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult {
 		delta, ok := r.U64()
@@ -532,7 +533,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	}
 	if flags&FlagHasAuth != 0 && r.Remaining() >= AuthTokenLen {
 		token, _ := r.Bytes(AuthTokenLen)
-		out.AuthToken = append([]byte(nil), token...)
+		out.AuthToken = bytes.Clone(token)
 	}
 	return out, nil
 }
@@ -685,7 +686,7 @@ func DecodeResponse(payload []byte) (Response, error) {
 		}
 
 		res.HasValue = true
-		res.Value = append([]byte(nil), val...)
+		res.Value = bytes.Clone(val)
 	}
 	if flags&RespFlagTrace != 0 && r.Remaining() >= 16 {
 		tid, _ := r.U64()

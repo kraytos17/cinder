@@ -5,6 +5,7 @@
 package testkit
 
 import (
+	"bytes"
 	"errors"
 	"sync"
 
@@ -102,7 +103,7 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 	}
 	switch req.Opcode {
 	case protocol.OpReplicate, protocol.OpHint:
-		e := store.Entry{Value: append([]byte(nil), req.Value...), Version: req.Version, WriterNodeHash: req.WriterNodeHash, Tombstone: req.Tombstone}
+		e := store.Entry{Value: bytes.Clone(req.Value), Version: req.Version, WriterNodeHash: req.WriterNodeHash, Tombstone: req.Tombstone}
 		if !req.ExpiresAt.IsNone() {
 			e.Expiry = req.ExpiresAt
 		}
@@ -124,7 +125,7 @@ func (f *Stores) Send(node string, req protocol.Request) (protocol.Response, err
 
 		res := protocol.Response{Status: protocol.StatusOK, Version: e.Version, WriterNodeHash: e.WriterNodeHash, Tombstone: e.Tombstone}
 		if !e.Tombstone {
-			res.Value = append([]byte(nil), e.Value...)
+			res.Value = bytes.Clone(e.Value)
 			res.HasValue = true
 		}
 		if !e.Expiry.IsNone() {
