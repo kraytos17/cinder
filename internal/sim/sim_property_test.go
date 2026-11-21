@@ -196,6 +196,302 @@ func TestSimQuorumAckSurvivesOneReplicaOutage(t *testing.T) {
 	}
 }
 
+// Randomized membership churn must not erase the latest quorum-acknowledged
+// value. Each transition removes or rejoins one node, settles shard
+// migrations, then checks the current replica set directly (without a read
+// path that could repair a missing copy). The seed and operation index make
+// any failing schedule reproducible.
+func TestSimRebalanceChurnPreservesAckedValues(t *testing.T) {
+	const (
+		seedCount = 50
+		steps     = 32
+		keyCount  = 12
+	)
+	ids := []string{"n1", "n2", "n3", "n4"}
+
+	for seed := range uint64(seedCount) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, 0x9E3779B97F4A7C15))
+			c := sim.NewCluster(t, ids, sim.Options{RF: 3, Mode: repl.Quorum, Seed: seed})
+			keys := make([]string, keyCount)
+			latest := make(map[string]string, keyCount)
+			for i := range keyCount {
+				key := fmt.Sprintf("rebalance-%d", i)
+				keys[i] = key
+				value := fmt.Sprintf("seed-%d-initial-%d", seed, i)
+				owner := c.Node(ids[0]).Ring.GetNode(key)
+				if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d initial write key=%s owner=%s: %+v", seed, key, owner, r)
+				}
+				latest[key] = value
+			}
+
+			var offline string
+			var leaves, rejoins int
+			incarnations := make(map[string]uint64, len(ids))
+			activeRing := func() *sim.Node {
+				for _, id := range ids {
+					if id != offline {
+						return c.Node(id)
+					}
+				}
+				t.Fatal("all nodes are offline")
+				return nil
+			}
+			checkReplicas := func(step int, phase string) {
+				t.Helper()
+				ring := activeRing().Ring
+				for _, key := range keys {
+					replicas, err := ring.GetNodes(key, 3)
+					if err != nil || len(replicas) != 3 {
+						t.Fatalf("seed=%d step=%d %s key=%s replicas=%v err=%v", seed, step, phase, key, replicas, err)
+					}
+					for _, id := range replicas {
+						entry, ok := c.Node(id).Store.GetVersioned(key)
+						if !ok || string(entry.Value) != latest[key] {
+							t.Fatalf("seed=%d step=%d %s lost acked key=%s value=%q on replica=%s; present=%v got=%q", seed, step, phase, key, latest[key], id, ok, entry.Value)
+						}
+					}
+				}
+			}
+
+			for step := range steps {
+				// A single node is out at a time, leaving exactly three live
+				// members when churned. This keeps RF=3 quorum writes possible.
+				action := rng.IntN(4)
+				if offline == "" && action == 0 {
+					key := keys[rng.IntN(len(keys))]
+					owner := activeRing().Ring.GetNode(key)
+					replicas, err := c.Node(owner).Ring.GetNodes(key, 3)
+					if err != nil || len(replicas) != 3 {
+						t.Fatalf("seed=%d step=%d replicas for crash-window write: %v err=%v", seed, step, replicas, err)
+					}
+					targets := make([]string, 0, 2)
+					for _, id := range replicas {
+						if id != owner {
+							targets = append(targets, id)
+						}
+					}
+					offline = targets[rng.IntN(len(targets))]
+					c.Suspend(offline)
+					value := fmt.Sprintf("seed-%d-crash-window-%d", seed, step)
+					if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d quorum write with %s suspended: %+v", seed, step, offline, r)
+					}
+					latest[key] = value
+					c.MarkDead(offline)
+					leaves++
+					c.Rebalance()
+					checkReplicas(step, "after leave/rebalance")
+					continue
+				}
+				if offline != "" && action <= 1 {
+					id := offline
+					incarnations[id]++
+					c.MarkAlive(id, incarnations[id]+1)
+					offline = ""
+					rejoins++
+					c.Rebalance()
+					checkReplicas(step, "after rejoin/rebalance")
+					continue
+				}
+
+				key := keys[rng.IntN(len(keys))]
+				owner := activeRing().Ring.GetNode(key)
+				value := fmt.Sprintf("seed-%d-step-%d", seed, step)
+				if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d step=%d write key=%s owner=%s: %+v", seed, step, key, owner, r)
+				}
+				latest[key] = value
+			}
+
+			if offline != "" {
+				incarnations[offline]++
+				c.MarkAlive(offline, incarnations[offline]+1)
+				rejoins++
+			}
+			c.Rebalance()
+			checkReplicas(steps, "final rebalance")
+			if leaves == 0 || rejoins == 0 {
+				t.Fatalf("seed=%d did not exercise both leave and rejoin: leaves=%d rejoins=%d", seed, leaves, rejoins)
+			}
+		})
+	}
+}
+
+// Quorum deletes must survive the same churn: a tombstone that wins LWW must
+// not lose to a stale live copy carried by a rejoining replica. The test
+// mixes writes and deletes under leave/rejoin, then checks replica stores
+// directly so read repair cannot hide a resurrection. Tombstone GC stays at
+// its 24h default and the virtual clock never advances past it, so a missing
+// marker is a real loss, not collection.
+func TestSimChurnDeletesStayDeleted(t *testing.T) {
+	const (
+		seedCount = 50
+		steps     = 32
+		keyCount  = 10
+	)
+	ids := []string{"n1", "n2", "n3", "n4"}
+
+	type expectation struct {
+		value   string
+		deleted bool
+	}
+
+	for seed := range uint64(seedCount) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, 0x51AB3F2D4C7E9A01))
+			c := sim.NewCluster(t, ids, sim.Options{RF: 3, Mode: repl.Quorum, Seed: seed})
+			keys := make([]string, keyCount)
+			latest := make(map[string]expectation, keyCount)
+			for i := range keyCount {
+				key := fmt.Sprintf("churn-del-%d", i)
+				keys[i] = key
+				value := fmt.Sprintf("seed-%d-initial-%d", seed, i)
+				owner := c.Node(ids[0]).Ring.GetNode(key)
+				if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d initial write key=%s owner=%s: %+v", seed, key, owner, r)
+				}
+				latest[key] = expectation{value: value}
+			}
+
+			var offline string
+			var leaves, rejoins, deleteOps int
+			incarnations := make(map[string]uint64, len(ids))
+			activeRing := func() *sim.Node {
+				for _, id := range ids {
+					if id != offline {
+						return c.Node(id)
+					}
+				}
+				t.Fatal("all nodes are offline")
+				return nil
+			}
+			checkReplicas := func(step int, phase string) {
+				t.Helper()
+				ring := activeRing().Ring
+				for _, key := range keys {
+					exp := latest[key]
+					replicas, err := ring.GetNodes(key, 3)
+					if err != nil || len(replicas) != 3 {
+						t.Fatalf("seed=%d step=%d %s key=%s replicas=%v err=%v", seed, step, phase, key, replicas, err)
+					}
+					for _, id := range replicas {
+						entry, ok := c.Node(id).Store.GetVersioned(key)
+						if exp.deleted {
+							if !ok {
+								t.Fatalf("seed=%d step=%d %s key=%s replica=%s lost tombstone", seed, step, phase, key, id)
+							}
+							if !entry.Tombstone {
+								t.Fatalf("seed=%d step=%d %s resurrected key=%s value=%q on replica=%s", seed, step, phase, key, entry.Value, id)
+							}
+							if _, live := c.Node(id).Store.Get(key); live {
+								t.Fatalf("seed=%d step=%d %s deleted key=%s still live on replica=%s", seed, step, phase, key, id)
+							}
+						} else if !ok || entry.Tombstone || string(entry.Value) != exp.value {
+							t.Fatalf("seed=%d step=%d %s lost acked key=%s value=%q on replica=%s; present=%v tombstone=%v got=%q", seed, step, phase, key, exp.value, id, ok, entry.Tombstone, entry.Value)
+						}
+					}
+				}
+			}
+
+			for step := range steps {
+				action := rng.IntN(4)
+				if offline == "" && action == 0 {
+					key := keys[rng.IntN(len(keys))]
+					owner := activeRing().Ring.GetNode(key)
+					replicas, err := c.Node(owner).Ring.GetNodes(key, 3)
+					if err != nil || len(replicas) != 3 {
+						t.Fatalf("seed=%d step=%d replicas for crash-window op: %v err=%v", seed, step, replicas, err)
+					}
+					targets := make([]string, 0, 2)
+					for _, id := range replicas {
+						if id != owner {
+							targets = append(targets, id)
+						}
+					}
+					offline = targets[rng.IntN(len(targets))]
+					c.Suspend(offline)
+					if rng.IntN(2) == 0 {
+						if r := c.Delete(owner, key); r.Status != protocol.StatusOK {
+							t.Fatalf("seed=%d step=%d quorum delete with %s suspended: %+v", seed, step, offline, r)
+						}
+						latest[key] = expectation{deleted: true}
+						deleteOps++
+					} else {
+						value := fmt.Sprintf("seed-%d-crash-window-%d", seed, step)
+						if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+							t.Fatalf("seed=%d step=%d quorum write with %s suspended: %+v", seed, step, offline, r)
+						}
+						latest[key] = expectation{value: value}
+					}
+					c.MarkDead(offline)
+					leaves++
+					c.Rebalance()
+					checkReplicas(step, "after leave/rebalance")
+					continue
+				}
+				if offline != "" && action <= 1 {
+					id := offline
+					incarnations[id]++
+					c.MarkAlive(id, incarnations[id]+1)
+					offline = ""
+					rejoins++
+					c.Rebalance()
+					for _, nid := range ids {
+						c.ReplayHints(nid)
+					}
+					for range 4 {
+						for _, nid := range ids {
+							c.RunAE(nid)
+						}
+					}
+					checkReplicas(step, "after rejoin/rebalance")
+					continue
+				}
+
+				key := keys[rng.IntN(len(keys))]
+				owner := activeRing().Ring.GetNode(key)
+				if rng.IntN(3) == 2 {
+					if r := c.Delete(owner, key); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d delete key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{deleted: true}
+					deleteOps++
+				} else {
+					value := fmt.Sprintf("seed-%d-step-%d", seed, step)
+					if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d write key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{value: value}
+				}
+			}
+
+			if offline != "" {
+				incarnations[offline]++
+				c.MarkAlive(offline, incarnations[offline]+1)
+				rejoins++
+			}
+			c.Rebalance()
+			for _, nid := range ids {
+				c.ReplayHints(nid)
+			}
+			for range 4 {
+				for _, nid := range ids {
+					c.RunAE(nid)
+				}
+			}
+			checkReplicas(steps, "final rebalance")
+			if leaves == 0 || rejoins == 0 {
+				t.Fatalf("seed=%d did not exercise both leave and rejoin: leaves=%d rejoins=%d", seed, leaves, rejoins)
+			}
+			if deleteOps == 0 {
+				t.Fatalf("seed=%d exercised no deletes", seed)
+			}
+		})
+	}
+}
+
 // A TTL-bearing write queued as a hint must not resurrect after it expires
 // during an outage. Replay and AE both run after recovery; direct local-store
 // checks ensure read repair cannot conceal a resurrection.
