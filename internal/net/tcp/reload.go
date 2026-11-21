@@ -24,6 +24,7 @@ const (
 	reloadKeyCapacity         = "capacity"
 	reloadKeyTombstoneGCMs    = "tombstone_gc_ms"
 	reloadKeyMaxHintBytes     = "max_hint_bytes"
+	reloadKeyMaxConnections   = "max_connections"
 	reloadKeySharedSecret     = "shared_secret"
 	reloadKeySharedSecretPrev = "shared_secret_previous"
 	reloadKeyClientSecret     = "client_secret"
@@ -44,6 +45,7 @@ var reloadableKeys = []string{
 	reloadKeyCapacity,
 	reloadKeyTombstoneGCMs,
 	reloadKeyMaxHintBytes,
+	reloadKeyMaxConnections,
 	reloadKeySharedSecret,
 	reloadKeySharedSecretPrev,
 	reloadKeyClientSecret,
@@ -65,6 +67,7 @@ type ReloadableConfig struct {
 	TLSCertFile      string `json:"tls_cert"`
 	TLSKeyFile       string `json:"tls_key"`
 	Capacity         uint64 `json:"capacity"`
+	MaxConnections   int    `json:"max_connections"`
 	TombstoneGCMs    int64  `json:"tombstone_gc_ms"`
 	MaxHintBytes     uint64 `json:"max_hint_bytes"`
 	SharedSecret     string `json:"shared_secret"`
@@ -109,6 +112,10 @@ func (s *Server) Reload(rc ReloadableConfig) ([]string, error) {
 	if rc.Capacity == 0 {
 		return nil, errors.New("capacity must be positive")
 	}
+
+	if rc.MaxConnections < 1 {
+		return nil, errors.New("max_connections must be positive")
+	}
 	if rc.PingIntervalMs > 0 && rc.SuspectTimeoutMs > 0 && rc.SuspectTimeoutMs <= rc.PingIntervalMs {
 		return nil, errors.New("suspect_timeout_ms must be greater than ping_interval_ms")
 	}
@@ -151,6 +158,9 @@ func (s *Server) Reload(rc ReloadableConfig) ([]string, error) {
 		if err := s.rotateTLSCertificate(rc.TLSCertFile, rc.TLSKeyFile, *newCert); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.SetMaxConnections(rc.MaxConnections); err != nil {
+		return nil, err
 	}
 
 	s.store.SetCapacity(rc.Capacity)

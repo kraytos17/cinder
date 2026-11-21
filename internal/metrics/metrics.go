@@ -151,6 +151,9 @@ type Collector struct {
 	DecodeFailures atomic.Uint64
 	Redirects      atomic.Uint64
 	WriteFailures  atomic.Uint64
+	// RejectedConns counts sockets closed at accept because the connection
+	// budget (SetMaxConnections) was full.
+	RejectedConns atomic.Uint64
 	// SlowConsumerDrops counts connections closed because a response
 	// write exceeded the write timeout: the peer was not reading.
 	// Distinct from WriteFailures (encode errors, resets).

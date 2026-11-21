@@ -424,8 +424,15 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 	if !s.checkAuth(req.Opcode, authToken) {
 		// Denials carry no value (so a Get cannot surface data) and retain
 		// trace IDs for correlation.
-		// Warn, opcode only: keys are user data, debug-only.
-		if e := s.log().Warn(); e != nil {
+		// Warn, opcode only: keys are user data, debug-only. Sampled: the
+		// first and every 64th denial warn, the rest debug identically, so
+		// a burst cannot spam the log while one line always shows up.
+		n := s.deniedLog.Add(1)
+		if e := s.log().Warn(); e != nil && n%64 == 1 {
+			log.Fields(e, req.TraceID, req.SpanID).
+				Str("opcode", metrics.OpName(req.Opcode)).
+				Msg("permission denied")
+		} else if e := s.log().Debug(); e != nil {
 			log.Fields(e, req.TraceID, req.SpanID).
 				Str("opcode", metrics.OpName(req.Opcode)).
 				Msg("permission denied")

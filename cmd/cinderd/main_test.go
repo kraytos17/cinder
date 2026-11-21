@@ -99,6 +99,7 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "negative rpc timeout", args: []string{"--rpc-timeout-ms", "-1"}, want: "--rpc-timeout-ms must be >= 0"},
 		{name: "negative fetch budget", args: []string{"--anti-entropy-fetch-bytes", "-1"}, want: "--anti-entropy-fetch-bytes must be >= 0"},
 		{name: "negative shutdown timeout", args: []string{"--shutdown-timeout-ms", "-1"}, want: "--shutdown-timeout-ms must be >= 0"},
+		{name: "non-positive max connections", args: []string{"--max-connections", "0"}, want: "--max-connections must be positive"},
 		{name: "negative ae interval", args: []string{"--anti-entropy-interval-ms", "-1"}, want: "--anti-entropy-interval-ms must be >= 0"},
 		{name: "invalid fsync policy", args: []string{"--enable-persistence", "--data-dir", "/tmp/cinder", "--fsync", "sometimes"}, want: "--fsync must be none, always, or interval:<ms>"},
 		{name: "bad tls client auth", args: []string{"--tls", "--tls-cert", "c", "--tls-key", "k", "--tls-ca", "ca", "--tls-client-auth", "sometimes"}, want: "--tls-client-auth must be none|request|require"},

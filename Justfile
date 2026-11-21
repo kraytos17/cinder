@@ -23,9 +23,10 @@
 help:
     @just --list --unsorted
 
-# Build all packages.
+# Build all packages with -trimpath so local paths never leak into
+# binaries (reproducible-build hygiene).
 build:
-    go build ./...
+    go build -trimpath ./...
 
 # Run the full test suite, including Go fuzz seed corpora and goleak checks.
 [positional-arguments]

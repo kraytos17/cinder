@@ -29,6 +29,7 @@ func TestReloadAppliesAllFields(t *testing.T) {
 		Capacity:         1 << 21,
 		TombstoneGCMs:    60000,
 		MaxHintBytes:     1024,
+		MaxConnections:   10000,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,13 +56,31 @@ func TestReloadValidationLeavesStateUntouched(t *testing.T) {
 	srv := testReloadServer(t)
 	before := srv.gossipInterval
 	for _, rc := range []ReloadableConfig{
-		{LogLevel: "nope", Capacity: 1 << 20},
-		{LogLevel: "info", GossipIntervalMs: -1, Capacity: 1 << 20},
-		{LogLevel: "info", Capacity: 0},
-		{LogLevel: "info", Capacity: 1 << 20, TLSCertFile: "/nonexistent/cert.pem"},
-		{LogLevel: "info", Capacity: 1 << 20, TLSCertFile: "only-cert-no-key"},
-		{LogLevel: "info", Capacity: 1 << 20, PingIntervalMs: 500, SuspectTimeoutMs: 500},
-		{LogLevel: "info", Capacity: 1 << 20, PingIntervalMs: 500, SuspectTimeoutMs: 200},
+		{
+			LogLevel: "nope", Capacity: 1 << 20,
+			MaxConnections: 10000,
+		},
+		{
+			LogLevel: "info", GossipIntervalMs: -1, Capacity: 1 << 20,
+			MaxConnections: 10000,
+		},
+		{LogLevel: "info", Capacity: 0, MaxConnections: 10000},
+		{
+			LogLevel: "info", Capacity: 1 << 20,
+			MaxConnections: 10000, TLSCertFile: "/nonexistent/cert.pem",
+		},
+		{
+			LogLevel: "info", Capacity: 1 << 20,
+			MaxConnections: 10000, TLSCertFile: "only-cert-no-key",
+		},
+		{
+			LogLevel: "info", Capacity: 1 << 20,
+			MaxConnections: 10000, PingIntervalMs: 500, SuspectTimeoutMs: 500,
+		},
+		{
+			LogLevel: "info", Capacity: 1 << 20,
+			MaxConnections: 10000, PingIntervalMs: 500, SuspectTimeoutMs: 200,
+		},
 	} {
 		if _, err := srv.Reload(rc); err == nil {
 			t.Fatalf("Reload(%+v) succeeded, want error", rc)
@@ -87,7 +106,8 @@ func TestReloadRotatesSecrets(t *testing.T) {
 		return ReloadableConfig{
 			LogLevel: "info", GossipIntervalMs: 1000, PingIntervalMs: 1000,
 			SuspectTimeoutMs: 3000, AEIntervalMs: 30000, Capacity: 1 << 20,
-			TombstoneGCMs: 60000, MaxHintBytes: 1024,
+			MaxConnections: 10000,
+			TombstoneGCMs:  60000, MaxHintBytes: 1024,
 		}
 	}
 	// Secrets require TLS: enabling them on a plaintext server must fail

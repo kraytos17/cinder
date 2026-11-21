@@ -57,6 +57,7 @@ type daemonConfig struct {
 	TombstoneGCMS         int    `json:"tombstone-gc-ms"`
 	configFile            string
 	ShutdownTimeoutMs     int    `json:"shutdown-timeout-ms"`
+	MaxConnections        int    `json:"max-connections"`
 	FsyncPolicy           string `json:"fsync"`
 	nodeIDExplicit        bool   `json:"-"`
 	VerifyDataDir         string `json:"-"`
@@ -71,7 +72,7 @@ func defaultDaemonConfig() daemonConfig {
 		MetricsBind: "127.0.0.1", SnapshotIntervalS: 60, MaxWALBytes: 64 << 20,
 		MaxWALEntries: 10000, RPCTimeoutMs: 5000, AEFetchBytes: 1 << 20,
 		EvictionPolicy: "lru", LogLevel: "info", ShutdownTimeoutMs: 10000, FsyncPolicy: "none",
-		TLSMinVersion: "1.2",
+		TLSMinVersion: "1.2", MaxConnections: 10000,
 	}
 }
 
@@ -120,6 +121,7 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.Uint64Flag{Name: "max-hint-bytes", Value: cfg.MaxHintBytes, Usage: "hinted-handoff byte budget (0 = default 64MiB)"},
 		&cli.IntFlag{Name: "tombstone-gc-ms", Value: cfg.TombstoneGCMS, Usage: "delete-marker GC grace in milliseconds (0 = default 24h)"},
 		&cli.IntFlag{Name: "shutdown-timeout-ms", Value: 10000, Usage: "graceful shutdown deadline in milliseconds"},
+		&cli.IntFlag{Name: "max-connections", Value: cfg.MaxConnections, Usage: "maximum concurrent client connections"},
 		&cli.StringFlag{Name: "eviction-policy", Value: cfg.EvictionPolicy, Usage: "eviction policy: lru|lfu"},
 		&cli.StringFlag{Name: "log-level", Value: cfg.LogLevel, Usage: "log level: trace|debug|info|warn|error"},
 		&cli.StringFlag{Name: "config", Value: cfg.configFile, Usage: "JSON config file (flags override file values)"},
@@ -266,6 +268,9 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	}
 	if cmd.IsSet("shutdown-timeout-ms") {
 		cfg.ShutdownTimeoutMs = cmd.Int("shutdown-timeout-ms")
+	}
+	if cmd.IsSet("max-connections") {
+		cfg.MaxConnections = cmd.Int("max-connections")
 	}
 	if cmd.IsSet("eviction-policy") {
 		cfg.EvictionPolicy = cmd.String("eviction-policy")

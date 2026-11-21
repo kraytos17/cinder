@@ -6,6 +6,7 @@ package tcp
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -109,9 +110,14 @@ type Server struct {
 	listener net.Listener
 	mu       sync.Mutex
 	conns    map[net.Conn]struct{}
-	sem      chan struct{}
-	shut     atomic.Bool
-	wg       sync.WaitGroup
+	// maxConns bounds concurrent connections (default maxConnections);
+	// activeConns tracks live ones. The single accept loop checks the
+	// budget before registering, so the check-then-add is exact. Over-limit
+	// sockets are closed immediately and counted.
+	maxConns    atomic.Int64
+	activeConns atomic.Int64
+	shut        atomic.Bool
+	wg          sync.WaitGroup
 	// active counts frames received but not yet answered. Shutdown drains
 	// these (real work) but never waits out idle connections blocked in
 	// read, which are closed outright.
@@ -121,6 +127,10 @@ type Server struct {
 	bgOnce sync.Once
 	bgStop chan struct{}
 	trace  atomic.Uint64
+	// deniedLog counts permission denials for log sampling: the first and
+	// every 64th denial log at warn, the rest at debug with identical
+	// fields. The auth-failures metric counts every denial regardless.
+	deniedLog atomic.Uint64
 
 	ringMu sync.RWMutex
 	ring   *hashring.Ring
@@ -267,7 +277,6 @@ func NewServer(cfg ServerConfig) *Server {
 		clock:          clock,
 		clockNow:       clockNow,
 		conns:          make(map[net.Conn]struct{}),
-		sem:            make(chan struct{}, maxConnections),
 		gossipInterval: time.Second,
 		probeInterval:  time.Second,
 		suspectTimeout: 3 * time.Second,
@@ -284,6 +293,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 
 	srv.gossipRPCTimeoutNs.Store(int64(time.Second))
+	srv.maxConns.Store(maxConnections)
 	return srv
 }
 
@@ -383,13 +393,13 @@ func (s *Server) Serve(l net.Listener) error {
 			time.Sleep(5 * time.Millisecond)
 			continue
 		}
-		select {
-		case s.sem <- struct{}{}:
-		default:
+		if s.activeConns.Load() >= s.maxConns.Load() {
 			c.Close()
+			s.met.RejectedConns.Add(1)
 			continue
 		}
 
+		s.activeConns.Add(1)
 		s.mu.Lock()
 		s.conns[c] = struct{}{}
 		s.wg.Add(1)
@@ -562,8 +572,20 @@ func (s *Server) done(c net.Conn) {
 	delete(s.conns, c)
 	s.mu.Unlock()
 	s.met.ConnsClosed.Add(1)
-	<-s.sem
+	s.activeConns.Add(-1)
 	s.wg.Done()
+}
+
+// SetMaxConnections caps concurrent connections (default maxConnections).
+// It is safe to call before Serve and while serving: lowering the budget
+// only refuses new sockets until the count drains. Values below 1 fail.
+func (s *Server) SetMaxConnections(n int) error {
+	if n < 1 {
+		return errors.New("tcp: max connections must be positive")
+	}
+
+	s.maxConns.Store(int64(n))
+	return nil
 }
 
 func (s *Server) Addr() string {

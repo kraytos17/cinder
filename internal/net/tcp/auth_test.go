@@ -399,3 +399,54 @@ func TestSetPreviousSecretsRequiresTLS(t *testing.T) {
 		t.Fatalf("node previous secret without TLS must be allowed: %v", err)
 	}
 }
+
+func TestMaxConnectionsRefusesBeyondLimit(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.SetMaxConnections(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetMaxConnections(0); err == nil {
+		t.Fatal("zero max connections must fail")
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go srv.Serve(l)
+	t.Cleanup(srv.Shutdown)
+	addr := l.Addr().String()
+	held, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	// Give the acceptor a moment to register the held connection.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatalf("second dial: %v", err)
+		}
+		c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+		buf := make([]byte, 1)
+		_, err = c.Read(buf)
+		c.Close()
+		if err != nil {
+			break // refused: server closed the over-limit socket
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("over-limit connection was served")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	held.Close()
+	// A freed slot serves again.
+	c, err := client.Dial(addr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if res, err := c.Ping(); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("ping after release: %+v %v", res, err)
+	}
+}

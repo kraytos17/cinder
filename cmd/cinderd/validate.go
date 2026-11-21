@@ -90,6 +90,12 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 	if cfg.ShutdownTimeoutMs < 0 {
 		errs = append(errs, errors.New("--shutdown-timeout-ms must be >= 0"))
 	}
+	if cfg.MaxConnections < 1 {
+		errs = append(errs, errors.New("--max-connections must be positive"))
+	}
+	if cfg.MaxConnections < 1 {
+		errs = append(errs, errors.New("--max-connections must be positive"))
+	}
 	if _, _, err := persist.ParseFsyncPolicy(cfg.FsyncPolicy); err != nil {
 		errs = append(errs, err)
 	}

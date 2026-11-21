@@ -68,3 +68,43 @@ func TestDispatchNopLoggerSilent(t *testing.T) {
 		t.Fatalf("ping = %v", res.Status)
 	}
 }
+
+// A burst of denials must not spam warn: only sampled lines warn while the
+// metric counts every denial.
+func TestDenialLogSampling(t *testing.T) {
+	var buf bytes.Buffer
+	l := log.New(&buf, zerolog.WarnLevel)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
+	srv.SetLogger(&l)
+	if err := srv.ConfigureSecrets("s3cret", ""); err != nil {
+		t.Fatal(err)
+	}
+	const burst = 200
+	for range burst {
+		if denied := srv.Dispatch(protocol.Request{Opcode: protocol.OpGossip}); denied.Status != protocol.StatusPermissionDenied {
+			t.Fatalf("status = %v", denied.Status)
+		}
+	}
+	if got := srv.Metrics().AuthFailNode.Load(); got != burst {
+		t.Fatalf("metric = %d, want %d", got, burst)
+	}
+	warns := 0
+	for line := range bytes.SplitSeq(buf.Bytes(), []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal(line, &m); err != nil {
+			t.Fatalf("not JSON: %v", err)
+		}
+		if m["message"] == "permission denied" {
+			warns++
+		}
+	}
+	if warns == 0 {
+		t.Fatal("no denial line logged")
+	}
+	if warns >= burst {
+		t.Fatalf("warns = %d for %d denials, want sampled", warns, burst)
+	}
+}

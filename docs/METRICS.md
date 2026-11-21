@@ -92,6 +92,7 @@ cumulative counter since process start.
 |---|---|---|---|
 | `cinder_connections_opened_total` | counter | — | Accepted TCP connections |
 | `cinder_connections_closed_total` | counter | — | Closed TCP connections |
+| `cinder_connections_rejected_total` | counter | — | Sockets refused at accept by the connection budget |
 | `cinder_connections_decode_failures_total` | counter | — | Frames failing to decode |
 | `cinder_connections_redirects_total` | counter | — | `moved to` ownership redirects sent |
 | `cinder_connections_write_failures_total` | counter | — | Response write failures |

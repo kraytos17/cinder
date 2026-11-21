@@ -193,6 +193,9 @@ func runDaemon(parent context.Context, cfg daemonConfig, stderr io.Writer, onRel
 	if err := srv.ConfigureRebalance(replicaCount, time.Duration(cfg.QuarantineIntervalMs)*time.Millisecond); err != nil {
 		return daemonUsageError(fmt.Errorf("rebalance configuration: %w", err))
 	}
+	if err := srv.SetMaxConnections(cfg.MaxConnections); err != nil {
+		return daemonUsageError(err)
+	}
 	if err := configureSecurityAndPersistence(srv, cfg); err != nil {
 		return err
 	}

@@ -83,3 +83,21 @@ requires a restart.
   `make`, so garbage frames cannot amplify allocation.
 - Connection writes have a short deadline; slow readers are dropped and
   counted separately from generic write failures.
+- Connection budget: `--max-connections` (default 10000, reloadable)
+  caps concurrent sockets. Over-limit sockets are closed at accept and
+  counted as `cinder_connections_rejected_total`; the accept loop never
+  blocks, and lowering the budget only refuses new sockets until the
+  count drains.
+- Denial logging is sampled: the first and every 64th `PermissionDenied`
+  logs at warn with trace IDs and opcode, the rest at debug with
+  identical fields. The metric counts every denial regardless of level,
+  so a burst cannot spam the log while remaining fully observable.
+
+## Supply chain
+
+- `just vuln` (govulncheck, pinned via `go tool`) runs in CI on every
+  push; `go.mod`/`go.sum` exactness is enforced (`go mod tidy` + diff
+  gate) and all linters/generators run via pinned `go tool` directives.
+- `just build` uses `-trimpath` so local paths never leak into binaries.
+- Minimal images, non-root users, and SBOMs belong to the packaging
+  step and are explicitly out of scope here.

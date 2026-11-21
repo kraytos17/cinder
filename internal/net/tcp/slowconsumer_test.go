@@ -20,7 +20,7 @@ func TestSlowConsumerDropsOnWriteTimeout(t *testing.T) {
 	srv.SetWriteTimeout(100 * time.Millisecond)
 
 	cc, sc := net.Pipe()
-	srv.sem <- struct{}{}
+	srv.activeConns.Add(1)
 	srv.wg.Add(1)
 	done := make(chan struct{})
 	go func() { defer close(done); srv.handle(sc) }()
@@ -69,7 +69,7 @@ func TestHealthyConnectionUnaffectedByWriteTimeout(t *testing.T) {
 	srv.SetWriteTimeout(100 * time.Millisecond)
 
 	cc, sc := net.Pipe()
-	srv.sem <- struct{}{}
+	srv.activeConns.Add(1)
 	srv.wg.Add(1)
 	done := make(chan struct{})
 	go func() { defer close(done); srv.handle(sc) }()
