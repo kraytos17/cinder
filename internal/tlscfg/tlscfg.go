@@ -18,6 +18,45 @@ import (
 // a certificate chaining to that CA. Without a CA, client certificates are
 // not requested, though the TLS connection is still encrypted.
 func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
+	auth := tls.NoClientCert
+	if caFile != "" {
+		auth = tls.RequireAndVerifyClientCert
+	}
+	return ServerWithOptions(certFile, keyFile, caFile, auth, tls.VersionTLS12)
+}
+
+// ParseClientAuth parses --tls-client-auth: none disables client-cert
+// verification, request verifies when a certificate is presented,
+// require rejects handshakes without a valid chained certificate.
+func ParseClientAuth(s string) (tls.ClientAuthType, error) {
+	switch s {
+	case "none":
+		return tls.NoClientCert, nil
+	case "request":
+		return tls.VerifyClientCertIfGiven, nil
+	case "require":
+		return tls.RequireAndVerifyClientCert, nil
+	default:
+		return tls.NoClientCert, errors.New("tlscfg: --tls-client-auth must be none|request|require")
+	}
+}
+
+// ParseMinVersion parses --tls-min-version ("1.2" or "1.3").
+func ParseMinVersion(s string) (uint16, error) {
+	switch s {
+	case "1.2":
+		return tls.VersionTLS12, nil
+	case "1.3":
+		return tls.VersionTLS13, nil
+	default:
+		return 0, errors.New("tlscfg: --tls-min-version must be 1.2|1.3")
+	}
+}
+
+// ServerWithOptions returns a server-side config with explicit client-cert
+// policy and minimum TLS version. Modes that verify peer certificates
+// require a CA file; MinVersion is applied verbatim to the config.
+func ServerWithOptions(certFile, keyFile, caFile string, auth tls.ClientAuthType, minVersion uint16) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return nil, err
@@ -25,16 +64,25 @@ func Server(certFile, keyFile, caFile string) (*tls.Config, error) {
 
 	cfg := &tls.Config{
 		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
+		MinVersion:   minVersion,
 	}
-	if caFile != "" {
+	switch auth {
+	case tls.NoClientCert:
+		// No peer verification even when a CA is configured.
+	case tls.RequestClientCert, tls.RequireAnyClientCert, tls.VerifyClientCertIfGiven, tls.RequireAndVerifyClientCert:
+		if caFile == "" {
+			return nil, errors.New("tlscfg: client-cert verification requires a CA file")
+		}
+
 		pool, err := loadRoots(caFile)
 		if err != nil {
 			return nil, err
 		}
 
-		cfg.ClientAuth = tls.RequireAndVerifyClientCert
+		cfg.ClientAuth = auth
 		cfg.ClientCAs = pool
+	default:
+		return nil, errors.New("tlscfg: unknown client auth mode")
 	}
 	return cfg, nil
 }

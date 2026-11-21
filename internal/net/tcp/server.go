@@ -176,6 +176,12 @@ type Server struct {
 	// TLS file paths for handshake-time certificate loading. The chain is
 	// re-read on every handshake so Reload rotates without restarts.
 	tlsCertFile, tlsKeyFile, tlsCAFile string
+	// tlsClientAuth is the effective client-cert policy (auto: require iff
+	// a CA is configured) and tlsMinVersion the minimum TLS version.
+	// Both are set by ConfigureTLS defaults and overridden by setters;
+	// rotation rebuilds preserve them (CA rotation needs a restart).
+	tlsClientAuth tls.ClientAuthType
+	tlsMinVersion uint16
 
 	authMu             sync.RWMutex
 	sharedSecret       string

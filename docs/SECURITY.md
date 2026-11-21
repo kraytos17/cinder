@@ -6,9 +6,18 @@ rotation requires a coordinated restart.
 
 ## TLS
 
-- Minimum version is TLS 1.2 on all listeners (`tlscfg`).
-- Servers present a chain from `--tls-cert`/`--tls-key`; `--tls-ca`
-  optionally requires verifying client certificates (mTLS).
+- Minimum version is TLS 1.2 by default, TLS 1.3 via `--tls-min-version 1.3`
+  (applies to the TCP server, the inter-node pool, and the replication
+  pool). Handshakes below the floor fail; rotation of the floor is restart-
+  free at startup time only (changing it at runtime redials pooled
+  connections, existing connections are unaffected).
+- Servers present a chain from `--tls-cert`/`--tls-key`. Client-certificate
+  policy is `--tls-client-auth`: `none` (never request), `request` (verify
+  when a certificate is presented, allow without), `require` (reject
+  handshakes without a valid chained certificate). Default is `require`
+  when `--tls-ca` is set, else `none`; `request`/`require` need `--tls-ca`
+  (exit 2 otherwise). Rotating the CA still requires a restart; the serving
+  chain hot-reloads from disk on every handshake and survives rotation.
 - External clients (`cinder-cli`, `cinder-admin`) verify both the chain
   and the hostname by default when `--tls-ca` is set: the expected name is
   `--tls-server-name` or falls back to `--host` (DNS SAN or IP SAN via

@@ -42,6 +42,8 @@ type daemonConfig struct {
 	TLSCert              string `json:"tls-cert"`
 	TLSKey               string `json:"tls-key"`
 	TLSCA                string `json:"tls-ca"`
+	TLSClientAuth        string `json:"tls-client-auth"`
+	TLSMinVersion        string `json:"tls-min-version"`
 	SharedSecret         string `json:"shared-secret"`
 	ClientSecret         string `json:"client-shared-secret"`
 	DataDir              string `json:"data-dir"`
@@ -65,6 +67,7 @@ func defaultDaemonConfig() daemonConfig {
 		MetricsBind: "127.0.0.1", SnapshotIntervalS: 60, MaxWALBytes: 64 << 20,
 		MaxWALEntries: 10000, RPCTimeoutMs: 5000, AEFetchBytes: 1 << 20,
 		EvictionPolicy: "lru", LogLevel: "info", ShutdownTimeoutMs: 10000, FsyncPolicy: "none",
+		TLSMinVersion: "1.2",
 	}
 }
 
@@ -93,6 +96,8 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.StringFlag{Name: "tls-cert", Value: cfg.TLSCert, Usage: "path to TLS certificate chain (PEM)"},
 		&cli.StringFlag{Name: "tls-key", Value: cfg.TLSKey, Usage: "path to TLS private key (PEM)"},
 		&cli.StringFlag{Name: "tls-ca", Value: cfg.TLSCA, Usage: "path to CA certificate for peer verification (PEM)"},
+		&cli.StringFlag{Name: "tls-client-auth", Value: cfg.TLSClientAuth, Usage: "client-cert policy: none|request|require (default: require when --tls-ca is set, else none)"},
+		&cli.StringFlag{Name: "tls-min-version", Value: cfg.TLSMinVersion, Usage: "minimum TLS version: 1.2|1.3"},
 		&cli.StringFlag{Name: "shared-secret", Value: cfg.SharedSecret, Usage: "shared secret for node authentication (or CINDER_SHARED_SECRET)"},
 		&cli.StringFlag{Name: "client-shared-secret", Value: cfg.ClientSecret, Usage: "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)"},
 		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.EnablePersistence, Usage: "enable WAL + snapshots"},
@@ -193,6 +198,12 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	}
 	if cmd.IsSet("tls-ca") {
 		cfg.TLSCA = cmd.String("tls-ca")
+	}
+	if cmd.IsSet("tls-client-auth") {
+		cfg.TLSClientAuth = cmd.String("tls-client-auth")
+	}
+	if cmd.IsSet("tls-min-version") {
+		cfg.TLSMinVersion = cmd.String("tls-min-version")
 	}
 	if cmd.IsSet("shared-secret") {
 		cfg.SharedSecret = cmd.String("shared-secret")

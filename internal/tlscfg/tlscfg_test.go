@@ -140,3 +140,49 @@ func TestClientForHostVerifiesHostname(t *testing.T) {
 		t.Fatalf("IP SAN must verify: %v", err)
 	}
 }
+
+func TestParseClientAuth(t *testing.T) {
+	for in, want := range map[string]tls.ClientAuthType{
+		"none":    tls.NoClientCert,
+		"request": tls.VerifyClientCertIfGiven,
+		"require": tls.RequireAndVerifyClientCert,
+	} {
+		got, err := ParseClientAuth(in)
+		if err != nil || got != want {
+			t.Fatalf("ParseClientAuth(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseClientAuth("sometimes"); err == nil {
+		t.Fatal("invalid client auth must fail")
+	}
+}
+
+func TestParseMinVersion(t *testing.T) {
+	if v, err := ParseMinVersion("1.2"); err != nil || v != tls.VersionTLS12 {
+		t.Fatalf("1.2 = %v, %v", v, err)
+	}
+	if v, err := ParseMinVersion("1.3"); err != nil || v != tls.VersionTLS13 {
+		t.Fatalf("1.3 = %v, %v", v, err)
+	}
+	if _, err := ParseMinVersion("1.1"); err == nil {
+		t.Fatal("1.1 must fail")
+	}
+}
+
+func TestServerWithOptionsModes(t *testing.T) {
+	caPath, certPath, keyPath := mintCAAndServer(t, []string{"cinder.test"}, nil)
+	cfg, err := ServerWithOptions(certPath, keyPath, caPath, tls.RequireAndVerifyClientCert, tls.VersionTLS13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ClientAuth != tls.RequireAndVerifyClientCert || cfg.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("options not applied: %+v", cfg)
+	}
+	if _, err := ServerWithOptions(certPath, keyPath, "", tls.RequireAndVerifyClientCert, tls.VersionTLS12); err == nil {
+		t.Fatal("require without CA must fail")
+	}
+	cfg, err = ServerWithOptions(certPath, keyPath, "", tls.NoClientCert, tls.VersionTLS12)
+	if err != nil || cfg.ClientAuth != tls.NoClientCert {
+		t.Fatalf("none without CA: %+v %v", cfg, err)
+	}
+}

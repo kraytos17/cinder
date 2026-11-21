@@ -56,9 +56,15 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 	}
 
 	cfg.GetCertificate = s.certReloader()
+	auth := tls.NoClientCert
+	if caFile != "" {
+		auth = tls.RequireAndVerifyClientCert
+	}
+
 	s.tlsMu.Lock()
 	s.tlsCfg = cfg
 	s.tlsCertFile, s.tlsKeyFile, s.tlsCAFile = certFile, keyFile, caFile
+	s.tlsClientAuth, s.tlsMinVersion = auth, tls.VersionTLS12
 	s.tlsMu.Unlock()
 	s.ringMu.RLock()
 	pool := s.pool
@@ -71,6 +77,49 @@ func (s *Server) ConfigureTLS(certFile, keyFile, caFile string) error {
 		}
 		pool.SetTLS(ccfg)
 	}
+	return nil
+}
+
+// SetTLSClientAuth overrides the client-certificate policy after
+// ConfigureTLS. require and request need a configured CA; none disables
+// peer verification. The mode persists across certificate rotations.
+func (s *Server) SetTLSClientAuth(mode tls.ClientAuthType) error {
+	switch mode {
+	case tls.NoClientCert, tls.RequestClientCert, tls.RequireAnyClientCert,
+		tls.VerifyClientCertIfGiven, tls.RequireAndVerifyClientCert:
+	default:
+		return errors.New("tcp: unknown TLS client auth mode")
+	}
+
+	s.tlsMu.Lock()
+	defer s.tlsMu.Unlock()
+	if s.tlsCfg == nil {
+		return errors.New("tcp: configure TLS before setting client auth")
+	}
+	if mode != tls.NoClientCert && s.tlsCAFile == "" {
+		return errors.New("tcp: client-cert verification requires a CA file")
+	}
+
+	s.tlsClientAuth = mode
+	s.tlsCfg.ClientAuth = mode
+	return nil
+}
+
+// SetTLSMinVersion overrides the minimum TLS version after ConfigureTLS
+// (TLS 1.2 or 1.3). The version persists across certificate rotations.
+func (s *Server) SetTLSMinVersion(v uint16) error {
+	if v != tls.VersionTLS12 && v != tls.VersionTLS13 {
+		return errors.New("tcp: TLS minimum version must be 1.2 or 1.3")
+	}
+
+	s.tlsMu.Lock()
+	defer s.tlsMu.Unlock()
+	if s.tlsCfg == nil {
+		return errors.New("tcp: configure TLS before setting minimum version")
+	}
+
+	s.tlsMinVersion = v
+	s.tlsCfg.MinVersion = v
 	return nil
 }
 
@@ -95,9 +144,9 @@ func (s *Server) certReloader() func(*tls.ClientHelloInfo) (*tls.Certificate, er
 // requires a restart) and established connections are unaffected.
 func (s *Server) rotateTLSCertificate(certFile, keyFile string, cert tls.Certificate) error {
 	s.tlsMu.RLock()
-	caFile := s.tlsCAFile
+	caFile, auth, minVersion := s.tlsCAFile, s.tlsClientAuth, s.tlsMinVersion
 	s.tlsMu.RUnlock()
-	cfg, err := tlscfg.Server(certFile, keyFile, caFile)
+	cfg, err := tlscfg.ServerWithOptions(certFile, keyFile, caFile, auth, minVersion)
 	if err != nil {
 		return err
 	}

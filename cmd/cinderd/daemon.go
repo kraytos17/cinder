@@ -39,6 +39,26 @@ func configureSecurityAndPersistence(srv *tcp.Server, cfg daemonConfig) error {
 		if err := srv.ConfigureTLS(cfg.TLSCert, cfg.TLSKey, cfg.TLSCA); err != nil {
 			return fmt.Errorf("tls: %w", err)
 		}
+		if cfg.TLSMinVersion != "" {
+			v, err := tlscfg.ParseMinVersion(cfg.TLSMinVersion)
+			if err != nil {
+				return fmt.Errorf("tls min version: %w", err)
+			}
+			if err := srv.SetTLSMinVersion(v); err != nil {
+				return fmt.Errorf("tls min version: %w", err)
+			}
+		}
+		if cfg.TLSClientAuth != "" {
+			mode, err := tlscfg.ParseClientAuth(cfg.TLSClientAuth)
+			if err != nil {
+				return fmt.Errorf("tls client auth: %w", err)
+			}
+			if err := srv.SetTLSClientAuth(mode); err != nil {
+				return fmt.Errorf("tls client auth: %w", err)
+			}
+		}
+	} else if cfg.TLSClientAuth != "" || (cfg.TLSMinVersion != "" && cfg.TLSMinVersion != "1.2") {
+		return errors.New("--tls-client-auth/--tls-min-version require --tls")
 	}
 	if cfg.SharedSecret != "" || cfg.ClientSecret != "" {
 		if err := srv.ConfigureSecrets(cfg.SharedSecret, cfg.ClientSecret); err != nil {
@@ -83,6 +103,11 @@ func configureReplication(srv *tcp.Server, st *store.Store, cfg daemonConfig, pe
 		ccfg, err := tlscfg.Client(cfg.TLSCert, cfg.TLSKey, cfg.TLSCA)
 		if err != nil {
 			return daemonUsageError(fmt.Errorf("pool tls: %w", err))
+		}
+		if cfg.TLSMinVersion != "" {
+			if v, err := tlscfg.ParseMinVersion(cfg.TLSMinVersion); err == nil {
+				ccfg.MinVersion = v
+			}
 		}
 		pool.SetTLS(ccfg)
 	}

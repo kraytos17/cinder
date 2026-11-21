@@ -4,6 +4,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
@@ -568,4 +569,61 @@ func TestInteropCppClientGoAuthServer(t *testing.T) {
 			t.Fatalf("%v: got %q want %q", tc.args, out, tc.want)
 		}
 	}
+}
+
+func TestSetTLSClientAuthModes(t *testing.T) {
+	caPath, certPath, keyPath := genCerts(t)
+	newSrv := func() *tcp.Server {
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+		if err := srv.ConfigureTLS(certPath, keyPath, caPath); err != nil {
+			t.Fatal(err)
+		}
+		return srv
+	}
+	// Requiring without a CA must fail.
+	plain := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := plain.ConfigureTLS(certPath, keyPath, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := plain.SetTLSClientAuth(tls.RequireAndVerifyClientCert); err == nil {
+		t.Fatal("require without CA must fail")
+	}
+	// Request mode accepts a missing client cert; require rejects RPCs.
+	reqSrv := newSrv()
+	if err := reqSrv.SetTLSClientAuth(tls.VerifyClientCertIfGiven); err != nil {
+		t.Fatal(err)
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go reqSrv.Serve(l)
+	defer reqSrv.Shutdown()
+	bad, err := tlscfg.Client("", "", caPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := client.DialTLS(l.Addr().String(), 5*time.Second, bad)
+	if err != nil {
+		t.Fatalf("request mode should complete handshake without client cert: %v", err)
+	}
+	defer c.Close()
+	if res, err := c.Do(protocol.Request{Opcode: protocol.OpPing}); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("request mode RPC: %+v %v", res, err)
+	}
+}
+
+func TestSetTLSMinVersion(t *testing.T) {
+	caPath, certPath, keyPath := genCerts(t)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.ConfigureTLS(certPath, keyPath, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetTLSMinVersion(tls.VersionTLS13); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.SetTLSMinVersion(tls.VersionTLS10); err == nil {
+		t.Fatal("TLS 1.0 must be rejected")
+	}
+	_ = caPath
 }

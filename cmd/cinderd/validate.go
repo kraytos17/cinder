@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/kraytos17/cinder/internal/persist"
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
+	"github.com/kraytos17/cinder/internal/tlscfg"
 )
 
 func daemonUsageError(err error) error   { return cli.Exit("cinderd: "+err.Error(), 2) }
@@ -60,7 +62,7 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 
 	out.gossipTimeout = gossipTimeout
 	fail(validateGRPCTLS(cfg.GRPCPort, cfg.TLS, cfg.ClientSecret))
-
+	errs = append(errs, validateTLSOptions(cfg)...)
 	replicaCount, err := hashring.NewReplicaCount(cfg.ReplicationFactor)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("--replication-factor must be between 1 and 32: %w", err))
@@ -98,4 +100,31 @@ func validateDaemonConfig(cfg daemonConfig) (validatedConfig, []error) {
 		errs = append(errs, errors.New("--node-id must be explicitly set when persistence or peers are enabled"))
 	}
 	return out, errs
+}
+
+// validateTLSOptions checks --tls-client-auth/--tls-min-version. An
+// explicit client-auth mode requires TLS; verifying modes require a CA.
+func validateTLSOptions(cfg daemonConfig) []error {
+	var errs []error
+	if cfg.TLSMinVersion != "" {
+		if _, err := tlscfg.ParseMinVersion(cfg.TLSMinVersion); err != nil {
+			errs = append(errs, fmt.Errorf("--tls-min-version must be 1.2|1.3: %w", err))
+		}
+	}
+	if cfg.TLSClientAuth == "" {
+		return errs
+	}
+
+	mode, err := tlscfg.ParseClientAuth(cfg.TLSClientAuth)
+	if err != nil {
+		return append(errs, fmt.Errorf("--tls-client-auth must be none|request|require: %w", err))
+	}
+	if !cfg.TLS {
+		errs = append(errs, errors.New("--tls-client-auth requires --tls"))
+		return errs
+	}
+	if mode != tls.NoClientCert && cfg.TLSCA == "" {
+		errs = append(errs, errors.New("--tls-client-auth require|request needs --tls-ca"))
+	}
+	return errs
 }
