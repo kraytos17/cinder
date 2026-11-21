@@ -18,6 +18,7 @@ package sim
 import (
 	"bytes"
 	"cmp"
+	"encoding/binary"
 	"errors"
 	"runtime"
 	"slices"
@@ -524,11 +525,26 @@ func (c *Cluster) deliver(to string, req protocol.Request) (protocol.Response, b
 			return protocol.Response{Status: protocol.StatusInternalError}, true
 		}
 		return protocol.Response{Status: protocol.StatusOK}, true
+	case protocol.OpCounterAdjustResult:
+		if req.CounterDelta == 0 {
+			v, _ := n.Counters.Value(string(req.Key))
+			var body [8]byte
+			binary.BigEndian.PutUint64(body[:], uint64(v))
+			return protocol.Response{Status: protocol.StatusOK, Value: body[:], HasValue: true}, true
+		}
+
+		v, err := n.Counters.AdjustValue(string(req.Key), to, req.CounterDelta, req.CounterDecrement)
+		if err != nil {
+			return protocol.Response{Status: counterStatusOf(err)}, true
+		}
+
+		var body [8]byte
+		binary.BigEndian.PutUint64(body[:], uint64(v))
+		return protocol.Response{Status: protocol.StatusOK, Value: body[:], HasValue: true}, true
 	case protocol.OpCounterAntiEntropy:
 		st, val := n.AE.OnCounterAntiEntropy(req.Value)
 		return protocol.Response{Status: st, Value: val, HasValue: val != nil}, true
 	case protocol.OpGossip:
-		// Membership is test-driven converged gossip; nothing to do.
 		return protocol.Response{Status: protocol.StatusOK}, true
 	default:
 		return protocol.Response{Status: protocol.StatusNotSupported}, true
@@ -741,6 +757,38 @@ func (c *Cluster) CounterAdjust(nodeID, key string, delta uint64, decrement bool
 		st = protocol.StatusOK
 	})
 	return st
+}
+
+// CounterAdjustResult applies a PN-counter delta through nodeID and returns
+// the exact post-state value captured atomically with the local mutation.
+// RF fan-out remains best-effort just like CounterAdjust.
+func (c *Cluster) CounterAdjustResult(nodeID, key string, delta uint64, decrement bool) (int64, protocol.Status) {
+	var value int64
+	var st protocol.Status
+	c.do(func() {
+		n := c.nodes[nodeID]
+		if owner := c.ownerOf(n, key); owner != nodeID {
+			st = protocol.StatusNotReady
+			return
+		}
+
+		var err error
+		value, err = n.Counters.AdjustValue(key, nodeID, delta, decrement)
+		if err != nil {
+			st = counterStatusOf(err)
+			return
+		}
+		if delta > 0 && c.rf > 1 {
+			ctr, ok := n.Counters.Get(key)
+			if !ok {
+				st = protocol.StatusInternalError
+				return
+			}
+			n.Repl.ReplicateCounter(key, ctr.Encode(), c.replicaNodes(n, key), 0, 0)
+		}
+		st = protocol.StatusOK
+	})
+	return value, st
 }
 
 // CounterGet serves the local counter copy when present, mirroring

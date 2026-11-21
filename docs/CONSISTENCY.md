@@ -75,6 +75,12 @@ does not guarantee a repair attempt. Thus this read path must not be described a
 read or as a guarantee that every successful write is returned during a
 concurrent failure or membership change.
 
+For callers that need the value produced by a counter mutation, use the
+additive `COUNTER_ADJUST_RESULT` opcode (22). Its owner returns the signed
+post-adjust int64 from the same shard-locked mutation; a subsequent
+`COUNTER_GET` after the legacy bodyless `COUNTER_ADJUST` is not equivalent
+under concurrent writers. Opcode 17 remains byte-compatible and bodyless.
+
 Even when all expected copies answer, quorum reads select the greatest stamp
 among those responses; they do not serialize concurrent operations or prove
 real-time order. Membership changes can also change the ring-selected replica

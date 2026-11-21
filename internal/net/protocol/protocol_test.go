@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"bytes"
+	"encoding/binary"
 	"math"
 	"testing"
 	"time"
@@ -284,6 +285,31 @@ func TestDecodeAdminDrainOpcode(t *testing.T) {
 	}
 	if OpAdminDrain.String() != "ADMIN_DRAIN" {
 		t.Fatalf("String() = %q", OpAdminDrain.String())
+	}
+}
+
+func TestDecodeCounterAdjustResultOpcode(t *testing.T) {
+	frame, err := EncodeRequest(Request{Opcode: OpCounterAdjustResult, Key: []byte("k"), CounterDelta: 7}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRequest(splitTestFrame(frame))
+	if err != nil {
+		t.Fatalf("opcode %d must decode: %v", OpCounterAdjustResult, err)
+	}
+	if got.Req.Opcode != OpCounterAdjustResult || got.Req.CounterDelta != 7 {
+		t.Fatalf("decoded request = %+v", got.Req)
+	}
+	for _, value := range []int64{-9, 0, 17, math.MinInt64, math.MaxInt64} {
+		res := Response{Status: StatusOK, Value: make([]byte, 8), HasValue: true}
+		binary.BigEndian.PutUint64(res.Value, uint64(value))
+		got, err := DecodeCounterAdjustResult(res)
+		if err != nil || got != value {
+			t.Fatalf("decode result %d = %d, %v", value, got, err)
+		}
+	}
+	if _, err := DecodeCounterAdjustResult(Response{Status: StatusOK}); err == nil {
+		t.Fatal("bodyless legacy response accepted as result-bearing response")
 	}
 }
 

@@ -1,8 +1,10 @@
 package tcp_test
 
 import (
+	"encoding/binary"
 	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,6 +52,97 @@ func TestCounterAdjustGetRoundTrip(t *testing.T) {
 	}
 	if res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte("fresh")}); res.Status != protocol.StatusNotFound {
 		t.Fatalf("fresh get = %v, want NotFound", res.Status)
+	}
+}
+
+func TestCounterAdjustResultReturnsAtomicPostState(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
+	for _, tc := range []struct {
+		delta     uint64
+		decrement bool
+		want      int64
+	}{
+		{delta: 5, want: 5},
+		{delta: 2, decrement: true, want: 3},
+		{delta: 0, want: 3},
+	} {
+		res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte("atomic"), CounterDelta: tc.delta, CounterDecrement: tc.decrement})
+		if res.Status != protocol.StatusOK || !res.HasValue || len(res.Value) != 8 {
+			t.Fatalf("adjust-result = %+v, want OK + int64 value", res)
+		}
+		got := int64(binary.BigEndian.Uint64(res.Value))
+		if got != tc.want {
+			t.Fatalf("post-state = %d, want %d", got, tc.want)
+		}
+	}
+}
+
+func TestCounterAdjustResultConcurrentReturnsUniquePostStates(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
+	const n = 32
+	values := make(chan int64, n)
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			res := srv.Dispatch(protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte("race"), CounterDelta: 1})
+			if res.Status != protocol.StatusOK || !res.HasValue || len(res.Value) != 8 {
+				t.Errorf("adjust-result = %+v", res)
+				return
+			}
+			values <- int64(binary.BigEndian.Uint64(res.Value))
+		})
+	}
+	wg.Wait()
+	close(values)
+	seen := make(map[int64]bool, n)
+	for v := range values {
+		if seen[v] {
+			t.Fatalf("duplicate post-state %d: response was not atomic", v)
+		}
+		seen[v] = true
+	}
+	if len(seen) != n || !seen[n] {
+		t.Fatalf("unique post-states = %v, want 1..%d", seen, n)
+	}
+}
+
+func TestCounterAdjustResultClientTCPRoundTrip(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "n1", Store: store.NewLRUStore(1<<20, nil)})
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(l) }()
+	t.Cleanup(func() {
+		srv.Shutdown()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Errorf("Serve: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not stop")
+		}
+	})
+	addr := l.Addr().String()
+	c, err := client.Dial(addr, 2*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	res, err := c.CounterAdjustResult("wire-result", 11, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := protocol.DecodeCounterAdjustResult(res)
+	if err != nil || value != 11 {
+		t.Fatalf("TCP adjust-result = %d, %v; want 11", value, err)
+	}
+	// Legacy opcode 17 remains bodyless and byte/behavior compatible.
+	legacy, err := c.CounterAdjust("wire-result", 1, false)
+	if err != nil || legacy.Status != protocol.StatusOK || legacy.HasValue {
+		t.Fatalf("legacy adjust response changed: %+v %v", legacy, err)
 	}
 }
 

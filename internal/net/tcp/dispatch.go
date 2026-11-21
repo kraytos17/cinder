@@ -404,7 +404,7 @@ func (s *Server) dispatchInner(req protocol.Request, authToken []byte) protocol.
 		return s.handleGossip(req)
 	case protocol.OpAntiEntropyDigest, protocol.OpAntiEntropySync:
 		return s.handleAntiEntropy(req)
-	case protocol.OpCounterAdjust:
+	case protocol.OpCounterAdjust, protocol.OpCounterAdjustResult:
 		return s.handleCounterAdjust(req)
 	case protocol.OpCounterMerge:
 		return s.handleCounterMerge(req)

@@ -10,7 +10,9 @@ import (
 )
 
 // runCounterAdjust applies one increment or decrement and prints the
-// operation status.
+// operation status plus the exact post-state value returned atomically by
+// COUNTER_ADJUST_RESULT. It deliberately does not follow with COUNTER_GET:
+// that second read could include another writer's intervening adjustment.
 func runCounterAdjust(
 	dial func() (*client.Client, error),
 	key string, delta uint64, decrement bool,
@@ -23,7 +25,7 @@ func runCounterAdjust(
 	}
 
 	defer c.Close()
-	res, err := c.CounterAdjust(key, delta, decrement)
+	res, err := c.CounterAdjustResult(key, delta, decrement)
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
 		return 1
@@ -31,6 +33,16 @@ func runCounterAdjust(
 	if res.Status == protocol.StatusPermissionDenied {
 		fmt.Fprintln(stderr, "error: permission denied")
 		return 1
+	}
+	if res.Status == protocol.StatusOK {
+		value, err := protocol.DecodeCounterAdjustResult(res)
+		if err != nil {
+			fmt.Fprintln(stderr, "error: invalid counter-adjust result")
+			return 1
+		}
+
+		fmt.Fprintln(stdout, value)
+		return 0
 	}
 
 	fmt.Fprintln(stdout, statusString(res.Status))

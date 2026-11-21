@@ -65,13 +65,15 @@ func OpName(op protocol.Opcode) string {
 		return "counter_get"
 	case protocol.OpCounterAntiEntropy:
 		return "counter_anti_entropy"
+	case protocol.OpCounterAdjustResult:
+		return "counter_adjust_result"
 	default:
 		return "unknown"
 	}
 }
 
 // maxOpcode is the highest assigned wire opcode; index 0 is unused.
-const maxOpcode = 21
+const maxOpcode = 22
 
 func opIndex(op protocol.Opcode) (int, bool) {
 	if op >= 1 && op <= maxOpcode {

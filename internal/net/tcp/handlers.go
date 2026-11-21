@@ -4,6 +4,7 @@
 package tcp
 
 import (
+	"encoding/binary"
 	"errors"
 
 	"github.com/kraytos17/cinder/internal/ae"
@@ -184,20 +185,19 @@ func (s *Server) handleCounterAntiEntropy(req protocol.Request) protocol.Respons
 }
 
 func (s *Server) handleCounterAdjust(req protocol.Request) protocol.Response {
+	resultingValue := req.Opcode == protocol.OpCounterAdjustResult
 	if owner := s.ownerOf(string(req.Key)); owner != s.nodeID {
 		return s.notReady(owner)
 	}
 	if req.CounterDelta == 0 {
+		if resultingValue {
+			value, _ := s.counters.Value(string(req.Key))
+			return counterAdjustResult(value)
+		}
 		return protocol.Response{Status: protocol.StatusOK}
 	}
 
-	var err error
-	if req.CounterDecrement {
-		err = s.counters.Decrement(string(req.Key), s.nodeID, req.CounterDelta)
-	} else {
-		err = s.counters.Increment(string(req.Key), s.nodeID, req.CounterDelta)
-	}
-
+	value, err := s.counters.AdjustValue(string(req.Key), s.nodeID, req.CounterDelta, req.CounterDecrement)
 	if err != nil {
 		return protocol.Response{Status: counterStatusOf(err)}
 	}
@@ -209,7 +209,20 @@ func (s *Server) handleCounterAdjust(req protocol.Request) protocol.Response {
 	if m, rf, _ := s.replication(); m != nil && rf > 1 {
 		m.ReplicateCounter(string(req.Key), st.Encode(), s.replicaNodes(string(req.Key)), req.TraceID, req.SpanID)
 	}
+	if resultingValue {
+		return counterAdjustResult(value)
+	}
 	return protocol.Response{Status: protocol.StatusOK}
+}
+
+// counterAdjustResult carries a signed two's-complement int64 in the
+// response value as eight big-endian bytes. It belongs to the additive
+// OpCounterAdjustResult opcode; the frozen OpCounterAdjust response stays
+// bodyless for v6 callers.
+func counterAdjustResult(value int64) protocol.Response {
+	var body [8]byte
+	binary.BigEndian.PutUint64(body[:], uint64(value))
+	return protocol.Response{Status: protocol.StatusOK, Value: body[:], HasValue: true}
 }
 
 // handleCounterMerge folds replicated state in. No ownership check: any

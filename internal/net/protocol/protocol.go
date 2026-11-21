@@ -19,6 +19,17 @@ import (
 	"github.com/kraytos17/cinder/internal/expiry"
 )
 
+// DecodeCounterAdjustResult decodes the signed post-adjust value carried by
+// OpCounterAdjustResult. It requires an OK response with exactly eight value
+// bytes; the legacy OpCounterAdjust response remains empty and must not be
+// passed here.
+func DecodeCounterAdjustResult(res Response) (int64, error) {
+	if res.Status != StatusOK || !res.HasValue || len(res.Value) != 8 {
+		return 0, errInvalid("invalid counter-adjust-result response")
+	}
+	return int64(binary.BigEndian.Uint64(res.Value)), nil
+}
+
 // Wire constants for frame encoding and size limits. The opcode and field
 // layout is exercised by protocol_test.go and the codec fuzz tests.
 const (
@@ -60,7 +71,7 @@ const (
 	RespFlagTombstone   ResponseFlags = 1 << 4
 )
 
-// Opcode is a v6 request opcode (1-21). Response frames always carry 0x00.
+// Opcode is a v6 request opcode (1-22). Response frames always carry 0x00.
 type Opcode uint8
 
 // Request opcodes for the v6 protocol. The wire numbers are stable; opcode
@@ -90,6 +101,10 @@ const (
 	// itself Leaving, migrates all local data to the new owners, and
 	// reports progress.
 	OpAdminDrain Opcode = 21
+	// OpCounterAdjustResult is the result-bearing counterpart of legacy
+	// OpCounterAdjust. It returns the exact post-adjust value in the response
+	// body and is additive, preserving opcode 17's frozen response semantics.
+	OpCounterAdjustResult Opcode = 22
 )
 
 // String returns the stable uppercase name used in logs and diagnostics.
@@ -129,6 +144,8 @@ func (o Opcode) String() string {
 		return "ADMIN_SHUTDOWN"
 	case OpAdminDrain:
 		return "ADMIN_DRAIN"
+	case OpCounterAdjustResult:
+		return "COUNTER_ADJUST_RESULT"
 	case OpCounterAdjust:
 		return "COUNTER_ADJUST"
 	case OpCounterMerge:
@@ -323,7 +340,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	if !req.ExpiresAt.IsNone() {
 		acc.add(8)
 	}
-	if req.Opcode == OpCounterAdjust {
+	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult {
 		acc.add(8)
 		acc.add(1)
 	}
@@ -348,7 +365,6 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	}
 
 	w := codec.NewWriter(binary.BigEndian, buf[:0:cap(buf)])
-	// Reserve header + payload up front so the frame is one allocation.
 	need := FrameHeaderSize + int(acc.size)
 	if cap(w.Out()) < need {
 		w.Reset(make([]byte, 0, need))
@@ -390,7 +406,7 @@ func EncodeRequestInto(req Request, authToken []byte, buf []byte) ([]byte, error
 	w.Bytes(req.Key)
 	w.U32(uint32(len(req.Value)))
 	w.Bytes(req.Value)
-	if req.Opcode == OpCounterAdjust {
+	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult {
 		w.U64(req.CounterDelta)
 		if req.CounterDecrement {
 			w.U8(1)
@@ -417,7 +433,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	if err != nil {
 		return out, err
 	}
-	if rawOpcode < OpGet || rawOpcode > OpAdminDrain {
+	if rawOpcode < OpGet || rawOpcode > OpCounterAdjustResult {
 		return out, errInvalid("unknown opcode")
 	}
 
@@ -484,7 +500,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		}
 		req.Value = append([]byte(nil), val...)
 	}
-	if req.Opcode == OpCounterAdjust {
+	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult {
 		delta, ok := r.U64()
 		if !ok {
 			return out, errInvalid("invalid counter adjust")
@@ -498,7 +514,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		req.CounterDelta = delta
 		req.CounterDecrement = decr != 0
 	}
-	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterMerge || req.Opcode == OpCounterGet {
+	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult || req.Opcode == OpCounterMerge || req.Opcode == OpCounterGet {
 		if req.TTL > 0 || !req.ExpiresAt.IsNone() || req.Tombstone || req.Version != 0 || req.WriterNodeHash != 0 {
 			return out, errInvalid("counter opcode has LWW metadata")
 		}

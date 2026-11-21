@@ -132,13 +132,17 @@ func (s *Store) shardCapacity() uint64 {
 	return s.capacity.Load() / uint64(len(s.shards))
 }
 
-// adjust is the shared increment/decrement body; positive selects P.
-func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
+// adjustValue is the shared increment/decrement body; positive selects P.
+// It returns the resulting value while the shard lock is still held, so
+// CounterAdjustResult can return the exact post-state atomically with the
+// mutation.
+func (s *Store) adjustValue(key, actor string, delta uint64, positive bool) (int64, error) {
 	if delta == 0 {
-		return nil
+		value, _ := s.Value(key)
+		return value, nil
 	}
 	if actor == "" {
-		return ErrInvalidActor
+		return 0, ErrInvalidActor
 	}
 
 	s.persistGate.RLock()
@@ -169,27 +173,27 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 
 		sliceCap := s.shardCapacity()
 		if growth > 0 && (growth > sliceCap || sh.current > sliceCap-growth) {
-			return ErrCapacityExceeded
+			return 0, ErrCapacityExceeded
 		}
 		if positive {
 			if err := it.Pos.Increment(actor, delta); err != nil {
 				if errors.Is(err, ErrOverflow) {
-					return ErrCapacityExceeded
+					return 0, ErrCapacityExceeded
 				}
-				return err
+				return 0, err
 			}
 		} else {
 			if err := it.Neg.Increment(actor, delta); err != nil {
 				if errors.Is(err, ErrOverflow) {
-					return ErrCapacityExceeded
+					return 0, ErrCapacityExceeded
 				}
-				return err
+				return 0, err
 			}
 		}
 
 		sh.current += growth
 		sh.index[key] = it
-		return s.persist(key, it, false)
+		return it.Value(), s.persist(key, it, false)
 	}
 
 	var fresh PNCounter
@@ -202,30 +206,39 @@ func (s *Store) adjust(key, actor string, delta uint64, positive bool) error {
 
 	if err != nil {
 		if errors.Is(err, ErrOverflow) {
-			return ErrCapacityExceeded
+			return 0, ErrCapacityExceeded
 		}
-		return err
+		return 0, err
 	}
 
 	need := fresh.BillableSize(key)
 	sliceCap := s.shardCapacity()
 	if need > sliceCap || sh.current > sliceCap-need {
-		return ErrCapacityExceeded
+		return 0, ErrCapacityExceeded
 	}
 
 	sh.current += need
 	sh.index[key] = fresh
-	return s.persist(key, fresh, false)
+	return fresh.Value(), s.persist(key, fresh, false)
+}
+
+// AdjustValue adds delta to key's local counter and returns the post-state
+// value atomically. A zero delta is a read-only no-op; an absent key has
+// value 0 and is not created.
+func (s *Store) AdjustValue(key, actor string, delta uint64, decrement bool) (int64, error) {
+	return s.adjustValue(key, actor, delta, !decrement)
 }
 
 // Increment adds delta to key's counter, attributed to actor.
 func (s *Store) Increment(key, actor string, delta uint64) error {
-	return s.adjust(key, actor, delta, true)
+	_, err := s.adjustValue(key, actor, delta, true)
+	return err
 }
 
 // Decrement adds delta on the N side.
 func (s *Store) Decrement(key, actor string, delta uint64) error {
-	return s.adjust(key, actor, delta, false)
+	_, err := s.adjustValue(key, actor, delta, false)
+	return err
 }
 
 // Merge folds replicated state into the resident counter (idempotent).

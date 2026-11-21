@@ -28,7 +28,7 @@ cumulative counter since process start.
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `cinder_operations_total` | counter | `opcode="<name>"` | Requests handled per opcode (all 21 opcodes, always emitted). Opcode names: `get`, `set`, `del`, `ping`, `gossip`, `replicate`, `hint`, `get_versioned`, `anti_entropy_digest`, `anti_entropy_sync`, `admin_info`, `admin_cluster`, `admin_ring`, `admin_compact`, `admin_config_reload`, `admin_shutdown`, `admin_drain`, `counter_adjust`, `counter_merge`, `counter_get`, `counter_anti_entropy` |
+| `cinder_operations_total` | counter | `opcode="<name>"` | Requests handled per opcode (all 22 opcodes, always emitted). Opcode names: `get`, `set`, `del`, `ping`, `gossip`, `replicate`, `hint`, `get_versioned`, `anti_entropy_digest`, `anti_entropy_sync`, `admin_info`, `admin_cluster`, `admin_ring`, `admin_compact`, `admin_config_reload`, `admin_shutdown`, `admin_drain`, `counter_adjust`, `counter_merge`, `counter_get`, `counter_anti_entropy`, `counter_adjust_result` |
 | `cinder_request_latency_seconds` | summary | `opcode`, `quantile` | Request handling latency quantiles per opcode (emitted per opcode with at least one sample) |
 | `cinder_request_latency_seconds_sum` | summary | `opcode` | Total latency per opcode |
 | `cinder_request_latency_seconds_count` | summary | `opcode` | Sample count per opcode |

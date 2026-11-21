@@ -119,6 +119,8 @@ the former on writes, replication uses the latter.
 | 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
 | 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
 | 21 | `ADMIN_DRAIN` | request: empty (progress query) or JSON `{"timeout_ms": N}` to start; response: JSON `{"state": "idle|draining|drained|timed-out", "remaining_keys": N}`. Added after the v6 freeze; servers that predate it reject the frame at parse time. See [Graceful Drain](#graceful-drain) |
+| 22 | `COUNTER_ADJUST_RESULT` | same request body as opcode 17; on success response `value` is the signed post-adjust `int64` encoded as 8 big-endian bytes. Opcode 17 remains bodyless. |
+| 22 | `COUNTER_ADJUST_RESULT` | same request body as opcode 17; on success response `value` is the signed post-adjust `int64` encoded as 8 big-endian bytes. Opcode 17 remains bodyless. |
 
 Admin opcodes (11-16, 21) bypass ring ownership checks. Authentication follows
 the admin rule above.

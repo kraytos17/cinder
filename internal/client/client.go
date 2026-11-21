@@ -315,6 +315,14 @@ func (c *Client) CounterAdjust(key string, delta uint64, decrement bool) (protoc
 	return c.Do(protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
 }
 
+// CounterAdjustResult is the additive, result-bearing form of CounterAdjust:
+// on success Value contains the signed post-adjust int64 in big-endian form.
+// Unlike CounterAdjust followed by CounterGet, the returned value is atomic
+// with this mutation at the owner.
+func (c *Client) CounterAdjustResult(key string, delta uint64, decrement bool) (protocol.Response, error) {
+	return c.Do(protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+}
+
 // CounterGet fetches key's serialized PN-counter state (decode with
 // internal/counter.DecodePNCounter); NotFound when absent.
 func (c *Client) CounterGet(key string) (protocol.Response, error) {

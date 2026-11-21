@@ -293,6 +293,13 @@ func (c *Cluster) CounterAdjust(key string, delta uint64, decrement bool) (proto
 	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
 }
 
+// CounterAdjustResult is the owner-routed atomic-result form of
+// CounterAdjust. On success Value contains the signed post-adjust int64 in
+// big-endian form; see protocol.DecodeCounterAdjustResult.
+func (c *Cluster) CounterAdjustResult(key string, delta uint64, decrement bool) (protocol.Response, error) {
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+}
+
 // CounterGet fetches key's PN-counter state via the owner (served from any
 // local copy when present, redirected on miss, like reads).
 func (c *Cluster) CounterGet(key string) (protocol.Response, error) {

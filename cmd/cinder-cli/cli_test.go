@@ -315,20 +315,20 @@ func TestCliCounterRoundTrip(t *testing.T) {
 	if out, errOut, code := runCLI(t, addr, "counter-get", "c"); !strings.Contains(out, "not found") || errOut != "" || code != 0 {
 		t.Fatalf("cget miss: out=%q err=%q code=%d", out, errOut, code)
 	}
-	if out, errOut, code := runCLI(t, addr, "counter-incr", "c", "5"); out != "OK\n" || errOut != "" || code != 0 {
+	if out, errOut, code := runCLI(t, addr, "counter-incr", "c", "5"); out != "5\n" || errOut != "" || code != 0 {
 		t.Fatalf("incr: out=%q err=%q code=%d", out, errOut, code)
 	}
 	if out, _, _ := runCLI(t, addr, "counter-get", "c"); out != "5\n" {
 		t.Fatalf("cget: %q, want 5", out)
 	}
-	if out, _, code := runCLI(t, addr, "counter-decr", "c", "2"); out != "OK\n" || code != 0 {
+	if out, _, code := runCLI(t, addr, "counter-decr", "c", "2"); out != "3\n" || code != 0 {
 		t.Fatalf("decr: out=%q code=%d", out, code)
 	}
 	if out, _, _ := runCLI(t, addr, "counter-get", "c"); out != "3\n" {
 		t.Fatalf("cget after decr: %q, want 3", out)
 	}
 	// Default delta is 1.
-	if out, _, code := runCLI(t, addr, "counter-incr", "d"); out != "OK\n" || code != 0 {
+	if out, _, code := runCLI(t, addr, "counter-incr", "d"); out != "1\n" || code != 0 {
 		t.Fatalf("incr default: out=%q code=%d", out, code)
 	}
 	if out, _, _ := runCLI(t, addr, "counter-get", "d"); out != "1\n" {
