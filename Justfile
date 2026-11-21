@@ -37,6 +37,12 @@ test *args:
 test-race:
     go test -race ./...
 
+# Real-process e2e chaos (skipped unless CINDER_E2E=1; excluded from unit runs
+# by a runtime gate, not a build tag, so editors and vet always see the files).
+# Builds cinderd from the working tree and drives kill/restart scenarios.
+test-e2e:
+    CINDER_E2E=1 go test ./test/e2e/ -count=1 -timeout 10m
+
 # Run exactly one fuzz target (for parallel CI matrix legs).
 [positional-arguments]
 fuzz-one target package time="20s":

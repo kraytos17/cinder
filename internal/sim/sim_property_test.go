@@ -492,6 +492,281 @@ func TestSimChurnDeletesStayDeleted(t *testing.T) {
 	}
 }
 
+// A brand-new node joining via AddNode must observe every acknowledged value
+// (or tombstone) after migration settles. Unlike leave/rejoin, the joiner
+// starts empty: Rebalance must push current state to it, and hint replay plus
+// AE must close any race between in-flight writes and the ring change. Checks
+// read replica stores directly.
+func TestSimJoinPreservesAckedValues(t *testing.T) {
+	const (
+		seedCount = 30
+		steps     = 16
+		keyCount  = 10
+	)
+	base := []string{"n1", "n2", "n3"}
+
+	type expectation struct {
+		value   string
+		deleted bool
+	}
+
+	for seed := range uint64(seedCount) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, 0x6A09E667F3BCC909))
+			c := sim.NewCluster(t, base, sim.Options{RF: 3, Mode: repl.Quorum, Seed: seed})
+			keys := make([]string, keyCount)
+			latest := make(map[string]expectation, keyCount)
+			for i := range keyCount {
+				key := fmt.Sprintf("join-%d", i)
+				keys[i] = key
+				value := fmt.Sprintf("seed-%d-initial-%d", seed, i)
+				owner := c.Node(c.IDs()[0]).Ring.GetNode(key)
+				if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d initial write key=%s owner=%s: %+v", seed, key, owner, r)
+				}
+				latest[key] = expectation{value: value}
+			}
+
+			checkReplicas := func(step int, phase string) {
+				t.Helper()
+				ring := c.Node(c.IDs()[0]).Ring
+				for _, key := range keys {
+					exp := latest[key]
+					replicas, err := ring.GetNodes(key, 3)
+					if err != nil || len(replicas) != 3 {
+						t.Fatalf("seed=%d step=%d %s key=%s replicas=%v err=%v", seed, step, phase, key, replicas, err)
+					}
+					for _, id := range replicas {
+						entry, ok := c.Node(id).Store.GetVersioned(key)
+						if exp.deleted {
+							if !ok || !entry.Tombstone {
+								t.Fatalf("seed=%d step=%d %s key=%s replica=%s lost tombstone; present=%v", seed, step, phase, key, id, ok)
+							}
+						} else if !ok || entry.Tombstone || string(entry.Value) != exp.value {
+							t.Fatalf("seed=%d step=%d %s lost acked key=%s value=%q on replica=%s", seed, step, phase, key, exp.value, id)
+						}
+					}
+				}
+			}
+
+			settle := func() {
+				t.Helper()
+				c.Rebalance()
+				for _, nid := range c.IDs() {
+					c.ReplayHints(nid)
+				}
+				for range 4 {
+					for _, nid := range c.IDs() {
+						c.RunAE(nid)
+					}
+				}
+			}
+
+			c.AddNode("n4")
+			settle()
+			checkReplicas(0, "after n4 join")
+
+			for step := range steps {
+				key := keys[rng.IntN(len(keys))]
+				owner := c.Node(c.IDs()[0]).Ring.GetNode(key)
+				if step == 0 || rng.IntN(3) == 2 {
+					if r := c.Delete(owner, key); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d delete key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{deleted: true}
+				} else {
+					value := fmt.Sprintf("seed-%d-step-%d", seed, step)
+					if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d write key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{value: value}
+				}
+			}
+
+			c.AddNode("n5")
+			settle()
+			checkReplicas(steps, "after n5 join")
+		})
+	}
+}
+
+// Clock jumps must not resurrect expired keys through any path: hints
+// queued before the jump, anti-entropy afterwards, or read repair. Each seed
+// suspends one replica, writes TTL keys against the outage, jumps past every
+// deadline, then heals with hint replay and AE; a randomized phase mixes
+// live writes, TTL writes, deletes, and further jumps. Checks read replica
+// stores directly (plus NotFound on the coordinator path) so repair cannot
+// hide a resurrection. No delay/jitter/loss is enabled, so pump waves never
+// advance the clock behind the test's back; elapsed tracks every Advance.
+func TestSimTTLClockJumpNeverResurrects(t *testing.T) {
+	const (
+		seedCount = 30
+		steps     = 16
+		keyCount  = 8
+	)
+	ids := []string{"n1", "n2", "n3"}
+
+	type expectation struct {
+		value    string
+		deadline time.Duration
+		hasTTL   bool
+		deleted  bool
+	}
+
+	for seed := range uint64(seedCount) {
+		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
+			rng := rand.New(rand.NewPCG(seed, 0x165667B19E3779F9))
+			c := sim.NewCluster(t, ids, sim.Options{RF: 3, Mode: repl.Quorum, Seed: seed})
+			var elapsed time.Duration
+			advance := func(d time.Duration) {
+				c.Advance(d)
+				elapsed += d
+			}
+			keys := make([]string, keyCount)
+			latest := make(map[string]expectation, keyCount)
+			for i := range keyCount {
+				key := fmt.Sprintf("ttl-jump-%d", i)
+				keys[i] = key
+				value := fmt.Sprintf("seed-%d-initial-%d", seed, i)
+				owner := c.Node(ids[0]).Ring.GetNode(key)
+				if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d initial write key=%s owner=%s: %+v", seed, key, owner, r)
+				}
+				latest[key] = expectation{value: value}
+			}
+
+			checkAll := func(step int, phase string) {
+				t.Helper()
+				for _, key := range keys {
+					exp := latest[key]
+					expired := exp.hasTTL && !exp.deleted && elapsed >= exp.deadline
+					for _, id := range c.IDs() {
+						entry, ok := c.Node(id).Store.GetVersioned(key)
+						if exp.deleted {
+							if !ok || !entry.Tombstone {
+								t.Fatalf("seed=%d step=%d %s key=%s replica=%s lost tombstone; present=%v", seed, step, phase, key, id, ok)
+							}
+							continue
+						}
+						if expired {
+							if ok {
+								t.Fatalf("seed=%d step=%d %s resurrected expired key=%s value=%q on replica=%s", seed, step, phase, key, entry.Value, id)
+							}
+							continue
+						}
+						if !ok || entry.Tombstone || string(entry.Value) != exp.value {
+							t.Fatalf("seed=%d step=%d %s lost live key=%s value=%q on replica=%s", seed, step, phase, key, exp.value, id)
+						}
+					}
+					if exp.deleted || expired {
+						if _, st := c.Get(c.IDs()[0], key); st != protocol.StatusNotFound {
+							t.Fatalf("seed=%d step=%d %s key=%s coordinator read status=%d, want NotFound", seed, step, phase, key, uint8(st))
+						}
+					}
+				}
+			}
+
+			// Targeted outage: TTL writes while one replica is suspended,
+			// then a jump past every deadline before healing.
+			suspended := ids[rng.IntN(len(ids))]
+			c.Suspend(suspended)
+			alive0 := ids[0]
+			if alive0 == suspended {
+				alive0 = ids[1]
+			}
+			var ttlKeys []string
+			var maxTTL time.Duration
+			ownersWritten := map[string]bool{}
+			for _, key := range keys {
+				if len(ttlKeys) >= 4 {
+					break
+				}
+				owner := c.Node(alive0).Ring.GetNode(key)
+				if owner == suspended {
+					continue
+				}
+				ttl := time.Duration(300+rng.IntN(2700)) * time.Millisecond
+				if ttl > maxTTL {
+					maxTTL = ttl
+				}
+				value := fmt.Sprintf("seed-%d-ttl-%s", seed, key)
+				if r := c.Write(owner, key, []byte(value), ttl); r.Status != protocol.StatusOK {
+					t.Fatalf("seed=%d TTL write key=%s owner=%s ttl=%v: %+v", seed, key, owner, ttl, r)
+				}
+				latest[key] = expectation{value: value, deadline: elapsed + ttl, hasTTL: true}
+				ttlKeys = append(ttlKeys, key)
+				ownersWritten[owner] = true
+			}
+			if len(ttlKeys) == 0 {
+				t.Fatalf("seed=%d: no key owned outside suspended %s", seed, suspended)
+			}
+			for owner := range ownersWritten {
+				c.WaitForHint(owner)
+			}
+			advance(maxTTL + 100*time.Millisecond)
+			for _, key := range ttlKeys {
+				owner := c.Node(alive0).Ring.GetNode(key)
+				if _, ok := c.Node(owner).Store.GetVersioned(key); ok {
+					t.Fatalf("seed=%d owner retained expired key=%s", seed, key)
+				}
+			}
+			c.Resume(suspended)
+			for _, nid := range c.IDs() {
+				c.ReplayHints(nid)
+			}
+			for range 4 {
+				for _, nid := range c.IDs() {
+					c.RunAE(nid)
+				}
+			}
+			checkAll(0, "after outage jump and heal")
+
+			for step := range steps {
+				key := keys[rng.IntN(len(keys))]
+				owner := c.Node(c.IDs()[0]).Ring.GetNode(key)
+				switch {
+				case step == 0:
+					if r := c.Delete(owner, key); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d delete key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{deleted: true}
+				case step == 1 || rng.IntN(10) < 3:
+					ttl := time.Duration(300+rng.IntN(2700)) * time.Millisecond
+					value := fmt.Sprintf("seed-%d-ttl-step-%d", seed, step)
+					if r := c.Write(owner, key, []byte(value), ttl); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d TTL write key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{value: value, deadline: elapsed + ttl, hasTTL: true}
+				case rng.IntN(4) == 3:
+					if r := c.Delete(owner, key); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d delete key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{deleted: true}
+				default:
+					value := fmt.Sprintf("seed-%d-step-%d", seed, step)
+					if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+						t.Fatalf("seed=%d step=%d write key=%s owner=%s: %+v", seed, step, key, owner, r)
+					}
+					latest[key] = expectation{value: value}
+				}
+				if rng.IntN(4) == 0 {
+					advance(time.Duration(100+rng.IntN(700)) * time.Millisecond)
+				}
+			}
+
+			for _, nid := range c.IDs() {
+				c.ReplayHints(nid)
+			}
+			for range 4 {
+				for _, nid := range c.IDs() {
+					c.RunAE(nid)
+				}
+			}
+			checkAll(steps, "final")
+		})
+	}
+}
+
 // A TTL-bearing write queued as a hint must not resurrect after it expires
 // during an outage. Replay and AE both run after recovery; direct local-store
 // checks ensure read repair cannot conceal a resurrection.

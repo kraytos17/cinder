@@ -264,6 +264,46 @@ func (c *Cluster) MarkDead(id string) {
 	c.rebuildRings()
 }
 
+// AddNode introduces a brand-new empty node: fresh stores and managers,
+// network identity, and a membership table seeded from the current members.
+// Existing tables adopt the joiner via an Alive rumor, then rings rebuild.
+// The joiner holds nothing yet; callers settle with Rebalance (plus hint
+// replay and AE) to migrate current state to it. Duplicate ids fail.
+func (c *Cluster) AddNode(id string) {
+	c.t.Helper()
+	if _, exists := c.nodes[id]; exists {
+		c.t.Fatalf("sim: duplicate node %s", id)
+	}
+
+	tn, ring, table := c.newIdentity(id)
+	st := store.NewLRUStore(simStoreBytes, c.clk)
+	counters := counter.NewStore(simCounterBytes)
+	c.nodes[id] = c.wireNode(id, st, counters, tn, ring, table)
+	c.order = append(c.order, id)
+	c.alive[id] = true
+	c.incar[id] = 1
+	c.net.mu.Lock()
+	c.net.known[id] = true
+	c.net.mu.Unlock()
+	for _, nid := range c.order {
+		if nid == id {
+			continue
+		}
+		c.nodes[nid].Table.ApplyRumor(cluster.NodeInfo{ID: id, State: cluster.Alive, Incarnation: 1})
+	}
+	// Converge the joiner's view from a current member so its table does not
+	// lag members that already advanced past the seed incarnations.
+	if len(c.order) > 1 {
+		for _, info := range c.nodes[c.order[0]].Table.Snapshot() {
+			if info.ID == id {
+				continue
+			}
+			table.ApplyRumor(info)
+		}
+	}
+	c.rebuildRings()
+}
+
 // MarkAlive recovers id with a fresh incarnation on every node's table
 // and rebuilds rings. Quarantine is zero in sim, so the node is
 // immediately eligible.

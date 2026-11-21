@@ -15,10 +15,12 @@ is reproducible from its seed.
 - **Test-driven membership.** `MarkDead`/`MarkAlive` apply converged gossip
   to every node's table and rebuild rings (mirroring
   `Server.rebuildRingFromTable`, including "always append self").
-  `Suspend`/`Resume` cut traffic without touching membership (crashed but
-  not yet convicted: the peer stays a replica target, so failed sends
-  become hints). `MarkDeadOn` convicts on one node only, for split-brain
-  setups where both sides self-own.
+  `AddNode` introduces a brand-new empty node: existing tables adopt it via
+  an Alive rumor and rings rebuild; callers settle with `Rebalance` plus
+  hint replay and AE to migrate state to it. `Suspend`/`Resume` cut traffic
+  without touching membership (crashed but not yet convicted: the peer stays
+  a replica target, so failed sends become hints). `MarkDeadOn` convicts on
+  one node only, for split-brain setups where both sides self-own.
 - **Faithful receive path.** `deliver` routes each opcode to the same
   manager entry point the TCP dispatch calls; the coordinator facade
   (`Write`/`Delete`/`Get`, `CounterAdjust`/`CounterGet`) mirrors the
@@ -50,6 +52,7 @@ seed is part of the fixture — a test that stops exercising its fault
 | Fault | API | Recovers via |
 |---|---|---|
 | Crash (convicted) | `MarkDead` / `MarkAlive` | ring rebuild, rebalance, AE |
+| Join | `AddNode` | rebalance, hint replay, AE |
 | Crash (unconvicted) | `Suspend` / `Resume` | hint replay, AE |
 | Process restart | `RestartNode` | disk recovery, rejoin |
 | Partition | `Partition` / `HealAll` | heal, retry, AE |
