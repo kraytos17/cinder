@@ -355,10 +355,18 @@ func TestDecodeCounterValidation(t *testing.T) {
 	if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 		t.Fatal("expected counter LWW metadata error")
 	}
-	for _, op := range []Opcode{OpCounterAdjust, OpCounterMerge, OpCounterGet} {
+	// Every counter opcode rejects TTL and LWW metadata: adjusts carry
+	// only delta/decrement, merges/gets carry only key/value state, and
+	// anti-entropy carries only a CAE1 bundle. TTL/expiry would silently
+	// discard increments; version/writer/tombstone would confuse CRDT
+	// merge with LWW ordering.
+	for _, op := range []Opcode{OpCounterAdjust, OpCounterAdjustResult, OpCounterMerge, OpCounterGet, OpCounterAntiEntropy} {
 		withTTL := Request{Opcode: op, Key: []byte("c"), TTL: time.Second}
-		if op == OpCounterAdjust {
+		if op == OpCounterAdjust || op == OpCounterAdjustResult {
 			withTTL.CounterDelta = 1
+		}
+		if op == OpCounterMerge || op == OpCounterGet || op == OpCounterAntiEntropy {
+			withTTL.Value = []byte("s")
 		}
 		frame, err = EncodeRequest(withTTL, nil)
 		if err != nil {
@@ -366,6 +374,19 @@ func TestDecodeCounterValidation(t *testing.T) {
 		}
 		if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
 			t.Fatalf("%v with TTL: expected error", op)
+		}
+		// Version/writer/tombstone/expiry are also rejected on all
+		// counter opcodes.
+		withMeta := Request{Opcode: op, Key: []byte("c"), Value: []byte("s"), Version: 1}
+		if op == OpCounterAdjust || op == OpCounterAdjustResult {
+			withMeta.CounterDelta = 1
+		}
+		frame, err = EncodeRequest(withMeta, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := DecodeRequest(splitTestFrame(frame)); err == nil {
+			t.Fatalf("%v with version: expected error", op)
 		}
 	}
 }

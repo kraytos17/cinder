@@ -20,8 +20,10 @@ codec; covered by byte-level tests).
 - Max total message size: `K_MAX_MESSAGE_SIZE = 67,108,864` (64 MiB), enforced on
   both encode and decode. On decode, `payload_len` is checked against this
   bound before the body is read.
-- `opcode` must fall in `1..20`; any other value is rejected as unknown.
-  The range is contiguous with no gaps (asserted by test).
+- `opcode` must fall in `1..22`; any other value is rejected as unknown.
+  The range is contiguous with no gaps (asserted by test). Opcodes 21
+  (`ADMIN_DRAIN`) and 22 (`COUNTER_ADJUST_RESULT`) were added after the v6
+  freeze; servers that predate them reject those frames at parse time.
 
 ## Request Payload
 
@@ -120,7 +122,13 @@ the former on writes, replication uses the latter.
 | 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
 | 21 | `ADMIN_DRAIN` | request: empty (progress query) or JSON `{"timeout_ms": N}` to start; response: JSON `{"state": "idle|draining|drained|timed-out", "remaining_keys": N}`. Added after the v6 freeze; servers that predate it reject the frame at parse time. See [Graceful Drain](#graceful-drain) |
 | 22 | `COUNTER_ADJUST_RESULT` | same request body as opcode 17; on success response `value` is the signed post-adjust `int64` encoded as 8 big-endian bytes. Opcode 17 remains bodyless. |
-| 22 | `COUNTER_ADJUST_RESULT` | same request body as opcode 17; on success response `value` is the signed post-adjust `int64` encoded as 8 big-endian bytes. Opcode 17 remains bodyless. |
+
+Counter opcodes (17–20, 22) reject `ttl_ms`, `expires_at_ms`, `tombstone`,
+`version`, and `writer_node_hash` at parse time with `InvalidArgument`:
+counters are CRDT state, not cache entries, so TTL would silently discard
+increments and LWW metadata would confuse merge with version ordering.
+There is no counter delete or TTL opcode; see `CONSISTENCY.md` deletes
+section for the local-only remove and quiesced-reset procedure.
 
 Admin opcodes (11-16, 21) bypass ring ownership checks. Authentication follows
 the admin rule above.

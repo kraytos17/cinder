@@ -50,7 +50,10 @@ report ready before moving on: poll `cinder-admin info` until it shows
 cleared its rejoin warming window (`--quarantine-interval-ms`, default
 10 s), and is not draining. A node inside its warming window still serves
 traffic but may read-repair from an incompletely refilled store; waiting
-for ready keeps quorum reads on fully warmed replicas.
+for ready keeps quorum reads on fully warmed replicas. The cluster-aware
+client also avoids bare-`NotReady` owners for idempotent reads during this
+window, retrying the next replica instead of hammering the warming node;
+writes stay owner-routed.
 
 Order of operations per node:
 

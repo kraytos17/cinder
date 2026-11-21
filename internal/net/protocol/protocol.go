@@ -515,7 +515,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 		req.CounterDelta = delta
 		req.CounterDecrement = decr != 0
 	}
-	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult || req.Opcode == OpCounterMerge || req.Opcode == OpCounterGet {
+	if req.Opcode == OpCounterAdjust || req.Opcode == OpCounterAdjustResult || req.Opcode == OpCounterMerge || req.Opcode == OpCounterGet || req.Opcode == OpCounterAntiEntropy {
 		if req.TTL > 0 || !req.ExpiresAt.IsNone() || req.Tombstone || req.Version != 0 || req.WriterNodeHash != 0 {
 			return out, errInvalid("counter opcode has LWW metadata")
 		}

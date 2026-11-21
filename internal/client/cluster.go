@@ -32,10 +32,13 @@ type ClusterConfig struct {
 }
 
 // Cluster routes requests to ring owners, follows ownership redirects,
-// and retries Timeout/NotReady responses with backoff. It is safe for
-// concurrent use. Redirects share the retry budget and are bounded by a
-// hop limit and visited-node set. Transport failures discard the learned
-// owner so the next attempt resolves through the ring.
+// and retries Timeout/NotReady responses with backoff. Reads route around
+// bare-NotReady owners (warming/quorum-blocked with no redirect) via the
+// next ring-ordered replica within the hop budget; writes stay
+// owner-routed. It is safe for concurrent use. Redirects and read
+// alternates share the retry budget and are bounded by a hop limit and
+// visited-node set. Transport failures discard the learned owner so the
+// next attempt resolves through the ring.
 type Cluster struct {
 	ring        *hashring.Ring
 	pool        *Pool
@@ -45,6 +48,11 @@ type Cluster struct {
 
 	mu      sync.Mutex
 	learned map[string]string
+	// unready tracks owners that recently answered bare NotReady (warming
+	// miss or quorum failure with no redirect) or transport errors. Reads
+	// route around them until the cooldown expires; writes stay
+	// owner-routed and ignore this cache.
+	unready map[string]time.Time
 }
 
 // NewCluster builds a client over nodes. The ring contains every supplied
@@ -77,6 +85,7 @@ func NewCluster(cfg ClusterConfig) (*Cluster, error) {
 		maxRetries:  cfg.MaxRetries,
 		baseBackoff: cfg.BaseBackoff,
 		learned:     make(map[string]string),
+		unready:     make(map[string]time.Time),
 	}, nil
 }
 
@@ -107,6 +116,79 @@ func (c *Cluster) forgetOwner(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.learned, key)
+}
+
+// unreadyTTL bounds how long a bare-NotReady owner is avoided by reads.
+// It reuses the retry backoff so orchestrated restarts
+// avoid the warming owner across attempts, while a zero
+// backoff still yields a short cooldown instead of hammering.
+func (c *Cluster) unreadyTTL() time.Duration {
+	if c.baseBackoff <= 0 {
+		return 200 * time.Millisecond
+	}
+	return c.baseBackoff
+}
+
+func (c *Cluster) markUnready(node string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.unready[node] = time.Now().Add(c.unreadyTTL())
+}
+
+func (c *Cluster) isUnready(node string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	until, ok := c.unready[node]
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		delete(c.unready, node)
+		return false
+	}
+	return true
+}
+
+// replicaCandidates returns the ring-ordered replica set for key, capped
+// to the known nodes. Without an explicit replica factor the client tries
+// every known node in ring order; visited/unready filtering bounds the
+// actual fan-out per operation.
+func (c *Cluster) replicaCandidates(key string) []string {
+	n := min(len(c.addrs), int(hashring.MaxReplicas))
+	if n < 1 {
+		return nil
+	}
+
+	nodes, err := c.ring.GetNodes(key, hashring.ReplicaCount(n))
+	if err != nil || len(nodes) == 0 {
+		if owner := c.ring.GetNode(key); owner != "" {
+			return []string{owner}
+		}
+		return nil
+	}
+	return nodes
+}
+
+// pickAlternate returns the first replica candidate not yet visited,
+// preferring nodes not in unready cooldown. The second pass accepts an
+// unready-but-unvisited candidate so a fully warming set still makes
+// progress instead of stalling.
+func (c *Cluster) pickAlternate(key string, visited []string) (string, bool) {
+	cands := c.replicaCandidates(key)
+	for _, cand := range cands {
+		if slices.Contains(visited, cand) {
+			continue
+		}
+		if !c.isUnready(cand) {
+			return cand, true
+		}
+	}
+	for _, cand := range cands {
+		if !slices.Contains(visited, cand) {
+			return cand, true
+		}
+	}
+	return "", false
 }
 
 // refreshTopology asks reachable configured members for their membership
@@ -220,9 +302,17 @@ func jitterBackoff(delay time.Duration) time.Duration {
 // sendToOwner routes one request, following redirects within the hop
 // budget and retrying Timeout/NotReady/transport errors with backoff.
 // Transport errors forget the learned owner so the next attempt
-// re-resolves via the ring.
-func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Response, error) {
+// re-resolves via the ring. When allowAlternate is set (idempotent reads),
+// a bare NotReady with no redirect target marks the owner unready and the
+// operation tries the next ring-ordered replica within the hop budget
+// instead of hammering the same warming owner; writes stay owner-routed.
+func (c *Cluster) sendToOwner(key string, req protocol.Request, allowAlternate bool) (protocol.Response, error) {
 	node := c.preferredNode(key)
+	if allowAlternate && c.isUnready(node) {
+		if alt, ok := c.pickAlternate(key, []string{node}); ok {
+			node = alt
+		}
+	}
 
 	var visited []string
 	hops := 0
@@ -238,6 +328,16 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 				continue
 			}
 			if res.Status == protocol.StatusTimeout || res.Status == protocol.StatusNotReady {
+				if allowAlternate && res.Status == protocol.StatusNotReady && hops < maxRedirectHops {
+					c.markUnready(node)
+					visited = append(visited, node)
+					if alt, ok := c.pickAlternate(key, visited); ok {
+						node = alt
+						hops++
+						attempt-- // alternates reuse this attempt's budget
+						continue
+					}
+				}
 				if attempt == c.maxRetries {
 					return res, nil
 				}
@@ -249,7 +349,24 @@ func (c *Cluster) sendToOwner(key string, req protocol.Request) (protocol.Respon
 		}
 
 		lastErr = err
+		if allowAlternate {
+			c.markUnready(node)
+		}
+
 		c.refreshTopology(node)
+		if allowAlternate && hops < maxRedirectHops {
+			visited = append(visited, node)
+			if alt, ok := c.pickAlternate(key, visited); ok {
+				node = alt
+				// Forget the stale override so a later redirect can
+				// re-teach the owner; the alternate is tried now.
+				c.forgetOwner(key)
+				hops++
+				attempt-- // alternates reuse this attempt's budget
+				continue
+			}
+		}
+
 		node = c.preferredNodeAfterForget(key)
 		if attempt == c.maxRetries {
 			break
@@ -266,47 +383,47 @@ func (c *Cluster) preferredNodeAfterForget(key string) string {
 
 // Set stores value under key at its ring owner.
 func (c *Cluster) Set(key string, value []byte) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value}, false)
 }
 
 // SetWithTTL stores value with a relative TTL at its ring owner.
 func (c *Cluster) SetWithTTL(key string, value []byte, ttl time.Duration) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, TTL: ttl})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: value, TTL: ttl}, false)
 }
 
 // Get fetches the live value from its ring owner.
 func (c *Cluster) Get(key string) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpGet, Key: []byte(key)}, true)
 }
 
 // Del deletes key at its ring owner via a versioned tombstone.
 func (c *Cluster) Del(key string) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpDel, Key: []byte(key)})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpDel, Key: []byte(key)}, false)
 }
 
 // GetVersioned fetches the entry with LWW metadata.
 func (c *Cluster) GetVersioned(key string) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)}, true)
 }
 
 // CounterAdjust increments/decrements key's PN-counter at its ring owner
 // (redirect-following comes free: adjusts are owner-routed NotReady
 // redirects, exactly like writes).
 func (c *Cluster) CounterAdjust(key string, delta uint64, decrement bool) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjust, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement}, false)
 }
 
 // CounterAdjustResult is the owner-routed atomic-result form of
 // CounterAdjust. On success Value contains the signed post-adjust int64 in
 // big-endian form; see protocol.DecodeCounterAdjustResult.
 func (c *Cluster) CounterAdjustResult(key string, delta uint64, decrement bool) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterAdjustResult, Key: []byte(key), CounterDelta: delta, CounterDecrement: decrement}, false)
 }
 
 // CounterGet fetches key's PN-counter state via the owner (served from any
 // local copy when present, redirected on miss, like reads).
 func (c *Cluster) CounterGet(key string) (protocol.Response, error) {
-	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(key)})
+	return c.sendToOwner(key, protocol.Request{Opcode: protocol.OpCounterGet, Key: []byte(key)}, true)
 }
 
 // Ping pings a specific node by id (no routing).

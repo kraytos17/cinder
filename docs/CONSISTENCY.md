@@ -93,6 +93,13 @@ exist on the other replicas, and a miss must not masquerade as deletion.
 Replicated reads ignore such votes and converge through the available
 voters; single-node stores keep plain miss semantics.
 
+The cluster-aware client (`internal/client.Cluster`) routes around such
+bare-`NotReady` owners for idempotent reads (`Get`, `GetVersioned`,
+`CounterGet`): it marks the owner unready for a short cooldown and retries
+the next ring-ordered replica within the redirect hop budget. Writes
+(`Set`, `Del`, `CounterAdjust*`) stay owner-routed and retry the owner with
+backoff, since only the owner can accept them.
+
 ## Deletes and expiry
 
 Deletes are versioned tombstones, not immediate erasures. A tombstone wins over
@@ -102,6 +109,16 @@ the marker; a replica that returns with older data after that point can
 reintroduce it unless the node is fenced and bootstrapped safely. Follow
 [`OPERATIONS.md`](OPERATIONS.md) for the stale-replica procedure and its
 limitations.
+
+Counters have no replicated delete and no TTL. The wire rejects `ttl_ms`,
+`expires_at_ms`, `tombstone`, `version`, and `writer_node_hash` on every
+counter opcode (17–20, 22) at parse time; there is no counter-delete opcode
+by design, since a tombstone-free CRDT delete would resurrect on the next
+merge or anti-entropy round. `counter.Store.Remove` is an operator-local
+escape hatch only: removing on one replica while another still holds the key
+resurrects via merge and via `CAE1` bundles. The only safe reset is quiesced
+— stop adjusts, remove the key on every replica, verify absent everywhere
+(`CounterGet` → `NotFound`), then resume. See `TestStoreQuiescedRemoveStaysAbsent`.
 
 TTL is carried as an absolute expiry time through replication and repair.
 Expiry is checked locally; an expired entry is not made live merely because it

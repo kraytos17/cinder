@@ -77,6 +77,75 @@ func TestStoreRemoveLocalOnly(t *testing.T) {
 	}
 }
 
+// TestStoreQuiescedRemoveStaysAbsent pins the only safe counter-reset
+// procedure: with no concurrent adjusts, removing on every replica keeps
+// the key absent through merges and anti-entropy bundles. Removing on one
+// replica while another still holds it resurrects via the same paths.
+func TestStoreQuiescedRemoveStaysAbsent(t *testing.T) {
+	a := NewStore(1 << 20)
+	b := NewStore(1 << 20)
+	_ = a.Increment("k", "n1", 5)
+	_ = b.Increment("k", "n1", 5)
+
+	// Single-replica removal resurrects through merge and through a CAE1
+	// bundle from the holder.
+	if !a.Remove("k") {
+		t.Fatal("remove failed")
+	}
+	state, ok := b.Get("k")
+	if !ok {
+		t.Fatal("holder missing key")
+	}
+	if err := a.Merge("k", state); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := a.Value("k"); !ok || v != 5 {
+		t.Fatalf("merge resurrect = %d %v, want 5", v, ok)
+	}
+
+	bundle := EncodeCounterBundle(b.SortedLiveCounters())
+	entries, err := DecodeCounterBundle(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Remove("k") {
+		t.Fatal("second remove failed")
+	}
+	for _, e := range entries {
+		if err := a.Merge(e.Key, e.Counter); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if v, ok := a.Value("k"); !ok || v != 5 {
+		t.Fatalf("bundle resurrect = %d %v, want 5", v, ok)
+	}
+
+	// Quiesced: remove everywhere, then merges and bundles stay absent.
+	if !a.Remove("k") {
+		t.Fatal("quiesced remove a failed")
+	}
+	if !b.Remove("k") {
+		t.Fatal("quiesced remove b failed")
+	}
+	if err := a.Merge("k", PNCounter{}); err != nil {
+		t.Fatal(err)
+	}
+	empty := EncodeCounterBundle(a.SortedLiveCounters())
+	got, err := DecodeCounterBundle(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("empty bundle decoded %d entries, want 0", len(got))
+	}
+	if _, ok := a.Value("k"); ok {
+		t.Fatal("quiesced key still present on a")
+	}
+	if _, ok := b.Value("k"); ok {
+		t.Fatal("quiesced key still present on b")
+	}
+}
+
 func TestStorePersistenceHooksPersistFullMergedStateAndRemoval(t *testing.T) {
 	s := NewStore(1 << 20)
 	var lastKey string
