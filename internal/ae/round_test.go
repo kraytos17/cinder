@@ -2,6 +2,7 @@ package ae_test
 
 import (
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -132,6 +133,49 @@ func TestRoundConvergesDivergentStores(t *testing.T) {
 		t.Fatal("tombstone reads live")
 	}
 	// Converged rounds repair nothing.
+	if n := ma.RunRound(2); n != 0 {
+		t.Fatalf("converged round repaired %d", n)
+	}
+	if n := mb.RunRound(2); n != 0 {
+		t.Fatalf("converged round repaired %d", n)
+	}
+}
+
+// A value larger than the per-round fetch budget still converges: the
+// first over-budget entry rides instead of stalling, and later rounds
+// re-diff the remainder (cursor-free geometric convergence). With a 64-byte
+// budget even the metadata phase covers one bucket at a time, so this also
+// exercises deferred-bucket progress end to end.
+func TestRoundRepairsValueLargerThanFetchBudget(t *testing.T) {
+	dt := newDirectTransport()
+	ring := testRing(t, "a", "b")
+	sa, sb := store.NewLRUStore(1<<20, nil), store.NewLRUStore(1<<20, nil)
+	const budget = 64
+	ma := ae.NewManager(ae.Config{Store: sa, Ring: ring, Self: "a", Transport: dt, Buckets: 256, FetchBytes: budget})
+	mb := ae.NewManager(ae.Config{Store: sb, Ring: ring, Self: "b", Transport: dt, Buckets: 256, FetchBytes: budget})
+	dt.add("a", ma)
+	dt.add("b", mb)
+	big := strings.Repeat("v", 4096)
+	putAE(t, sa, "big", big, 1, 1)
+	putAE(t, sa, "small", "s", 1, 1)
+	for range 4 {
+		ma.RunRound(2)
+		mb.RunRound(2)
+	}
+	for _, key := range []string{"big", "small"} {
+		ea, oka := sa.GetVersioned(key)
+		eb, okb := sb.GetVersioned(key)
+		if !oka || !okb {
+			t.Fatalf("%q missing: a=%v b=%v", key, oka, okb)
+		}
+		if string(ea.Value) != string(eb.Value) {
+			t.Fatalf("%q diverged in value", key)
+		}
+	}
+	if e, _ := sb.GetVersioned("big"); string(e.Value) != big {
+		t.Fatal("over-budget value did not converge byte-identical")
+	}
+	// Converged rounds repair nothing further.
 	if n := ma.RunRound(2); n != 0 {
 		t.Fatalf("converged round repaired %d", n)
 	}

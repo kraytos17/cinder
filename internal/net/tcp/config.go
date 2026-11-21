@@ -27,6 +27,15 @@ func (s *Server) ConfigureReplication(rf hashring.ReplicaCount, mode repl.Mode, 
 	s.repl = m
 	s.rf = rf
 	s.mode = mode
+	// Remember a pool-backed replication transport so peer addresses
+	// learned after startup (joins, restarts on new ports) reach quorum
+	// fan-out too.
+	if m != nil {
+		if p, ok := m.Transport().(*client.Pool); ok {
+			s.replPool.Store(p)
+		}
+	}
+
 	s.replMu.Unlock()
 	if m != nil {
 		m.SetMetrics(s.met)

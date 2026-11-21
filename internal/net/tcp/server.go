@@ -159,6 +159,11 @@ type Server struct {
 	repl   *repl.Manager
 	rf     hashring.ReplicaCount
 	mode   repl.Mode
+	// replPool mirrors peer addresses into a pool-backed replication
+	// transport so quorum fan-out can dial members that joined
+	// after startup. Atomic: set under replMu, read under ringMu, and
+	// neither may nest inside the other (see ConfigureReplication).
+	replPool atomic.Pointer[client.Pool]
 
 	tlsMu  sync.RWMutex
 	tlsCfg *tls.Config

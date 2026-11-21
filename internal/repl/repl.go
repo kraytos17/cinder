@@ -129,6 +129,10 @@ func (m *Manager) Local() *store.Store { return m.local }
 // HintQueue exposes the hint queue for journal recovery wiring.
 func (m *Manager) HintQueue() *HintQueue { return m.hints }
 
+// Transport exposes the inter-node sender so the server can keep a
+// pool-backed transport's peer addresses in sync with membership.
+func (m *Manager) Transport() Transport { return m.transport }
+
 // WriterHash is the stable per-node LWW tiebreaker, computed as FNV-1a of
 // the node ID.
 func (m *Manager) WriterHash() uint64 { return m.writer }

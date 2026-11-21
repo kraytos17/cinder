@@ -361,10 +361,18 @@ func (s *Server) rebuildRingFromTable() {
 	snap := table.Snapshot()
 	ids := make([]string, 0, len(snap)+1)
 	for _, m := range snap {
-		if m.ID != s.nodeID && m.Host != "" && pool != nil {
+		if m.ID != s.nodeID && m.Host != "" {
 			// Learn addresses for newly joined peers so replication, AE, and
 			// rebalance can dial them as soon as gossip delivers their address.
-			pool.AddAddr(m.ID, m.Host, m.Port)
+			// The replication transport gets the same update: the daemon
+			// builds it once from the static peer list, so without this it
+			// could never dial a joiner.
+			if pool != nil {
+				pool.AddAddr(m.ID, m.Host, m.Port)
+			}
+			if rp := s.replPool.Load(); rp != nil {
+				rp.AddAddr(m.ID, m.Host, m.Port)
+			}
 		}
 		if m.State != cluster.Alive {
 			continue
