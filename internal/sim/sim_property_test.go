@@ -20,10 +20,10 @@ import (
 // could repair divergence and hide a missing background repair path.
 func TestSimSeededMixedOperationsConverge(t *testing.T) {
 	const (
-		seedCount         = 50
 		operationsPerSeed = 24
 		keyCount          = 8
 	)
+	seedCount := simSeeds(50)
 	ids := []string{"n1", "n2", "n3"}
 
 	for seed := range uint64(seedCount) {
@@ -139,7 +139,7 @@ func TestSimHintQueueStaysWithinBudget(t *testing.T) {
 // the acknowledged winner to the missing copy. Direct-store checks make the
 // W/R property observable without best-effort reads repairing it for us.
 func TestSimQuorumAckSurvivesOneReplicaOutage(t *testing.T) {
-	const seedCount = 20
+	seedCount := simSeeds(20)
 	ids := []string{"n1", "n2", "n3"}
 	for seed := range uint64(seedCount) {
 		t.Run(fmt.Sprintf("seed=%d", seed), func(t *testing.T) {
@@ -203,10 +203,10 @@ func TestSimQuorumAckSurvivesOneReplicaOutage(t *testing.T) {
 // any failing schedule reproducible.
 func TestSimRebalanceChurnPreservesAckedValues(t *testing.T) {
 	const (
-		seedCount = 50
-		steps     = 32
-		keyCount  = 12
+		steps    = 32
+		keyCount = 12
 	)
+	seedCount := simSeeds(50)
 	ids := []string{"n1", "n2", "n3", "n4"}
 
 	for seed := range uint64(seedCount) {
@@ -327,10 +327,10 @@ func TestSimRebalanceChurnPreservesAckedValues(t *testing.T) {
 // marker is a real loss, not collection.
 func TestSimChurnDeletesStayDeleted(t *testing.T) {
 	const (
-		seedCount = 50
-		steps     = 32
-		keyCount  = 10
+		steps    = 32
+		keyCount = 10
 	)
+	seedCount := simSeeds(50)
 	ids := []string{"n1", "n2", "n3", "n4"}
 
 	type expectation struct {
@@ -499,10 +499,10 @@ func TestSimChurnDeletesStayDeleted(t *testing.T) {
 // read replica stores directly.
 func TestSimJoinPreservesAckedValues(t *testing.T) {
 	const (
-		seedCount = 30
-		steps     = 16
-		keyCount  = 10
+		steps    = 16
+		keyCount = 10
 	)
+	seedCount := simSeeds(30)
 	base := []string{"n1", "n2", "n3"}
 
 	type expectation struct {
@@ -600,10 +600,10 @@ func TestSimJoinPreservesAckedValues(t *testing.T) {
 // advance the clock behind the test's back; elapsed tracks every Advance.
 func TestSimTTLClockJumpNeverResurrects(t *testing.T) {
 	const (
-		seedCount = 30
-		steps     = 16
-		keyCount  = 8
+		steps    = 16
+		keyCount = 8
 	)
+	seedCount := simSeeds(30)
 	ids := []string{"n1", "n2", "n3"}
 
 	type expectation struct {

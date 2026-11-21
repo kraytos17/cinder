@@ -287,6 +287,7 @@ func (s *Server) startCluster() error {
 	}
 
 	s.clusterStarted = true
+	s.joinedAtUnix.Store(s.clockNow().UnixNano())
 	gossip, fd := s.gossip, s.fd
 	s.ringMu.Unlock()
 	if gossip != nil {

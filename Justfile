@@ -40,8 +40,11 @@ test-race:
 # Real-process e2e chaos (skipped unless CINDER_E2E=1; excluded from unit runs
 # by a runtime gate, not a build tag, so editors and vet always see the files).
 # Builds cinderd from the working tree and drives kill/restart scenarios.
-test-e2e:
-    CINDER_E2E=1 go test ./test/e2e/ -count=1 -timeout 10m
+# CINDER_SOAK_SECONDS scales the soak test; raise the go-test timeout to
+# match.
+[positional-arguments]
+test-e2e timeout="10m":
+    CINDER_E2E=1 go test ./test/e2e/ -count=1 -timeout {{ timeout }}
 
 # Run exactly one fuzz target (for parallel CI matrix legs).
 [positional-arguments]
@@ -89,10 +92,8 @@ cover:
 cover-html: cover
     go tool cover -html=cover.out
 
-# Run all fuzz targets sequentially for local use. Add new targets to the
-# list below AND to the fuzz job matrix in .github/workflows/go.yml, which
-# fans out over the same set so each target keeps the same time budget
-# with less wall time.
+# Run all fuzz targets sequentially for local use. FUZZ_TIME overrides the
+# per-target budget (default 20s).
 [positional-arguments]
 fuzz *args:
     #!/bin/sh
@@ -118,7 +119,7 @@ fuzz *args:
       ; do
       target="${entry%%:*}"
       pkg="${entry##*:}"
-      go test -run=NONE -fuzz="$target" -fuzztime=20s "./$pkg/" "$@"
+      go test -run=NONE -fuzz="$target" -fuzztime="${FUZZ_TIME:-20s}" "./$pkg/" "$@"
     done
 
 # Benchmarks (quick smoke by default; pass -benchtime for publishable
@@ -129,7 +130,7 @@ bench *args:
     go test -run=NONE -bench=. -benchmem "$@"
 
 # CPU profile of the benchmarks, with a text top10. Profiles land in
-# ./profiles/ (gitignored scratch); open the interactive explorer with
+# ./profiles/; open the interactive explorer with
 # `go tool pprof profiles/cpu.out`. See docs/profiling.md for the workflow
 # (pin the CPU, compare with -base, GOGC/GOMEMLIMIT knobs).
 [positional-arguments]

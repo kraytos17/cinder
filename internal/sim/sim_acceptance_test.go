@@ -1,8 +1,10 @@
 package sim_test
 
 import (
+	"os"
 	"runtime"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -11,6 +13,18 @@ import (
 	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/sim"
 )
+
+// simSeeds returns the seed count for a randomized property: the default
+// unless CINDER_SIM_SEEDS overrides it (nightly CI runs 10000). An unset
+// or invalid value keeps the default, so local runs stay fast.
+func simSeeds(def int) int {
+	if v, ok := os.LookupEnv("CINDER_SIM_SEEDS"); ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // peerOf returns the single non-owner id. All peer-based tests use
 // two-node clusters, so exactly one such id exists.

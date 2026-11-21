@@ -140,6 +140,12 @@ type Server struct {
 	pool              *client.Pool
 	clusterConfigured bool
 	clusterStarted    bool
+	// joinedAtUnix records when this process joined the cluster (wall
+	// time, same basis as membership JoinedAt). A restart is a new
+	// process, so this doubles as the rejoin-warming start for Ready.
+	// Zero means unknown past: Ready treats it as warmed (fail-open
+	// toward the pre-readiness behavior of serving immediately).
+	joinedAtUnix atomic.Int64
 
 	gossipInterval     time.Duration
 	probeInterval      time.Duration

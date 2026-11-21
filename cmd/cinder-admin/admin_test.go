@@ -49,6 +49,10 @@ func TestAdminInfo(t *testing.T) {
 	if !strings.Contains(out, `"node_id":"node1"`) || errOut != "" || code != 0 {
 		t.Fatalf("info: out=%q err=%q code=%d", out, errOut, code)
 	}
+	// A standalone server with no cluster to join reports ready.
+	if !strings.Contains(out, `"ready":true`) {
+		t.Fatalf("info missing ready:true: out=%q", out)
+	}
 }
 
 func TestAdminCluster(t *testing.T) {

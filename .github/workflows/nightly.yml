@@ -1,0 +1,73 @@
+name: Nightly
+
+on:
+  schedule:
+    # 02:00 UTC daily.
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sim-nightly:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Simulator properties (10000 seeds)
+        run: CINDER_SIM_SEEDS=10000 go test ./internal/sim/ -count=1 -timeout 110m
+
+  e2e-nightly:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+        with:
+          just-version: "1"
+
+      - name: Real-process e2e and soak
+        run: CINDER_SOAK_SECONDS=3600 just test-e2e 2h
+
+  fuzz-nightly:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Set up just
+        uses: extractions/setup-just@v4
+        with:
+          just-version: "1"
+
+      - name: Extended fuzz sweep
+        run: FUZZ_TIME=300s just fuzz

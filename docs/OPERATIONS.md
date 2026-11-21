@@ -41,3 +41,24 @@ that every other service path or client request from an old disk is harmless.
 Verification evidence: `internal/net/tcp/tombstone_resurrection_test.go`
 reproduces resurrection after tombstone GC and checks the anti-entropy fence;
 `TestTombstoneGraceDefaultIsTwentyFourHours` pins the default.
+
+## Rolling restarts
+
+Restart nodes one at a time. After each restart, wait for the node to
+report ready before moving on: poll `cinder-admin info` until it shows
+`"ready":true`. Ready means the node recovered its data, rejoined gossip,
+cleared its rejoin warming window (`--quarantine-interval-ms`, default
+10 s), and is not draining. A node inside its warming window still serves
+traffic but may read-repair from an incompletely refilled store; waiting
+for ready keeps quorum reads on fully warmed replicas.
+
+Order of operations per node:
+
+1. If the node holds data the cluster cannot afford to lose, drain it
+   first (`cinder-admin drain`, then `shutdown` once drained).
+2. Otherwise stop the process (`SIGTERM` or `cinder-admin shutdown`).
+3. Start it again with the same stable `--node-id` (and the same data
+   directory for crash recovery, or a fresh one to force bootstrap).
+4. Poll `cinder-admin info` until `"ready":true`.
+5. Confirm the cluster is healthy (`cinder-admin cluster` shows all
+   members alive) before restarting the next node.

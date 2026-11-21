@@ -12,6 +12,7 @@ import (
 type adminInfo struct {
 	NodeID                  string                `json:"node_id"`
 	Port                    int                   `json:"port"`
+	Ready                   bool                  `json:"ready"`
 	CapacityBytes           uint64                `json:"capacity_bytes"`
 	CurrentBytes            uint64                `json:"current_bytes"`
 	CurrentEntries          uint64                `json:"current_entries"`
@@ -106,7 +107,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 			aeRehashMs = aeMgr.RehashInterval().Milliseconds()
 		}
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminInfo{
-			NodeID: s.nodeID, Port: int(port), CapacityBytes: s.store.Capacity(),
+			NodeID: s.nodeID, Port: int(port), Ready: s.Ready(), CapacityBytes: s.store.Capacity(),
 			CurrentBytes: curBytes, CurrentEntries: curEntries,
 			EvictionPolicy: s.store.Policy().String(), ReplicaFactor: rf, Consistency: mode.String(),
 			PersistenceEnabled:      persistEnabled,
