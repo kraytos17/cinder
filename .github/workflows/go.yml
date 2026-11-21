@@ -52,6 +52,25 @@ jobs:
       - name: Race tests (including fuzz seed corpus)
         run: just test-race
 
+  perf:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.mod
+
+      - name: Allocation guards (deterministic merge gate)
+        run: go test -run TestAllocs -count=1 ./...
+
+      - name: Benchmark smoke (advisory; ns/op is same-host only)
+        run: go test ./... -run='^$' -bench=. -benchmem -benchtime=1x -count=1
+
   fuzz:
     runs-on: ubuntu-26.04
     timeout-minutes: 10

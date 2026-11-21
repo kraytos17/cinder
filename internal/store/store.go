@@ -94,7 +94,7 @@ type node struct {
 }
 
 type shard struct {
-	mu       sync.Mutex
+	mu       sync.RWMutex
 	nodes    []node
 	free     []int
 	head     int // MRU
@@ -362,13 +362,13 @@ func (s *Store) PutVersioned(key string, e Entry) error {
 
 func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.persistGate.RLock()
-	defer s.persistGate.RUnlock()
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	if idx, ok := sh.index[key]; ok {
 		resident := &sh.nodes[idx]
 		if CompareLWW(e.Stamp(), resident.entry.Stamp()) == LWWLess {
+			sh.mu.Unlock()
+			s.persistGate.RUnlock()
 			return nil // stale replay: reject, no-op success
 		}
 
@@ -389,6 +389,8 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 		fresh, ok := sh.index[key]
 		if !ok {
 			s.emit(key, oldPacked, oldWriter)
+			sh.mu.Unlock()
+			s.persistGate.RUnlock()
 			return nil
 		}
 
@@ -397,15 +399,21 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 		s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 		s.updateWheel(sh, fresh, at)
 		if err := s.persistPut(key, r.entry); err != nil {
+			sh.mu.Unlock()
+			s.persistGate.RUnlock()
 			return err
 		}
 
 		s.bumpWrite(e.Tombstone, true)
+		sh.mu.Unlock()
+		s.persistGate.RUnlock()
 		return nil
 	}
 
 	size := s.entrySize(key, e)
 	if size > s.shardCap() {
+		sh.mu.Unlock()
+		s.persistGate.RUnlock()
 		return ErrCapacityExceeded
 	}
 
@@ -426,6 +434,8 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.totalNum.Add(1)
 	s.evictIfNeeded(sh)
 	if _, ok := sh.index[key]; !ok {
+		sh.mu.Unlock()
+		s.persistGate.RUnlock()
 		return nil // self-evicted under pressure: nothing to report
 	}
 
@@ -433,62 +443,98 @@ func (s *Store) putVersionedAt(key string, e Entry, at time.Time) error {
 	s.emit(key, r.entry.VersionAndTTL(), r.entry.WriterNodeHash)
 	s.updateWheel(sh, sh.index[key], at)
 	if err := s.persistPut(key, r.entry); err != nil {
+		sh.mu.Unlock()
+		s.persistGate.RUnlock()
 		return err
 	}
 
 	s.bumpWrite(e.Tombstone, false)
+	sh.mu.Unlock()
+	s.persistGate.RUnlock()
 	return nil
 }
 
 // Get returns a copy of the live value, or false on miss, expiry, or
 // tombstone. Expired entries are reaped eagerly; tombstones stay hidden.
+// Entries without an expiry skip the clock entirely (the common case).
 func (s *Store) Get(key string) ([]byte, bool) {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
 	sh.mu.Lock()
-	defer sh.mu.Unlock()
 	idx, ok := sh.index[key]
 	if !ok {
+		sh.mu.Unlock()
 		s.bumpMisses()
 		return nil, false
 	}
 
 	n := &sh.nodes[idx]
-	if n.entry.Expired(s.clock.Now()) {
-		s.eraseNode(sh, idx)
-		s.bumpExpiredOnRead()
+	if n.entry.Tombstone {
+		sh.mu.Unlock()
+		s.bumpMisses()
 		return nil, false
 	}
-	if n.entry.Tombstone {
-		s.bumpMisses()
+	if !n.entry.Expiry.IsNone() && n.entry.Expired(s.clock.Now()) {
+		s.eraseNode(sh, idx)
+		s.bumpExpiredOnRead()
+		sh.mu.Unlock()
 		return nil, false
 	}
 
 	s.onAccess(sh, idx)
 	s.bumpHits()
-	return bytes.Clone(n.entry.Value), true
+	out := bytes.Clone(n.entry.Value)
+	sh.mu.Unlock()
+	return out, true
 }
 
 // GetVersioned returns the resident entry (tombstones included), or false
-// on miss or expiry. Unlike Get it never touches LRU order.
+// on miss or expiry. Unlike Get it never touches LRU order, so the fast
+// path holds only a read lock; expiry reaps upgrade to a write lock.
 func (s *Store) GetVersioned(key string) (Entry, bool) {
 	sh := &s.shards[sharding.ForKey(key, len(s.shards), shardSeed)]
-	sh.mu.Lock()
-	defer sh.mu.Unlock()
+	sh.mu.RLock()
 	idx, ok := sh.index[key]
 	if !ok {
+		sh.mu.RUnlock()
 		s.bumpMisses()
 		return Entry{}, false
 	}
 
 	n := &sh.nodes[idx]
-	if n.entry.Expired(s.clock.Now()) {
+	if n.entry.Expiry.IsNone() {
+		out := n.entry.Clone()
+		sh.mu.RUnlock()
+		s.bumpHits()
+		return out, true
+	}
+	if !n.entry.Expired(s.clock.Now()) {
+		out := n.entry.Clone()
+		sh.mu.RUnlock()
+		s.bumpHits()
+		return out, true
+	}
+
+	sh.mu.RUnlock()
+	sh.mu.Lock()
+	idx, ok = sh.index[key]
+	if !ok {
+		sh.mu.Unlock()
+		s.bumpMisses()
+		return Entry{}, false
+	}
+
+	n = &sh.nodes[idx]
+	if !n.entry.Expiry.IsNone() && n.entry.Expired(s.clock.Now()) {
 		s.eraseNode(sh, idx)
 		s.bumpExpiredOnRead()
+		sh.mu.Unlock()
 		return Entry{}, false
 	}
 
 	s.bumpHits()
-	return n.entry.Clone(), true
+	out := n.entry.Clone()
+	sh.mu.Unlock()
+	return out, true
 }
 
 // Remove hard-erases key, returning false when absent. Unlike
@@ -530,9 +576,9 @@ func (s *Store) Size() int {
 	total := 0
 	for i := range s.shards {
 		sh := &s.shards[i]
-		sh.mu.Lock()
+		sh.mu.RLock()
 		total += len(sh.index)
-		sh.mu.Unlock()
+		sh.mu.RUnlock()
 	}
 	return total
 }
@@ -595,7 +641,7 @@ func (s *Store) LiveEntries() []EntryPair {
 	parts := make([][]EntryPair, 0, len(s.shards))
 	for i := range s.shards {
 		sh := &s.shards[i]
-		sh.mu.Lock()
+		sh.mu.RLock()
 		part := make([]EntryPair, 0, len(sh.index))
 		if s.policy == LFUPolicy {
 			// Map order is fine: digests XOR-fold (order-independent)
@@ -617,7 +663,7 @@ func (s *Store) LiveEntries() []EntryPair {
 			}
 		}
 
-		sh.mu.Unlock()
+		sh.mu.RUnlock()
 		parts = append(parts, part)
 	}
 	return slices.Concat(parts...)
@@ -646,7 +692,7 @@ func (s *Store) MetadataSnapshot() []EntryMeta {
 	parts := make([][]EntryMeta, 0, len(s.shards))
 	for i := range s.shards {
 		sh := &s.shards[i]
-		sh.mu.Lock()
+		sh.mu.RLock()
 		part := make([]EntryMeta, 0, len(sh.index))
 		for key, idx := range sh.index {
 			e := sh.nodes[idx].entry
@@ -659,7 +705,7 @@ func (s *Store) MetadataSnapshot() []EntryMeta {
 			}})
 		}
 
-		sh.mu.Unlock()
+		sh.mu.RUnlock()
 		parts = append(parts, part)
 	}
 	return slices.Concat(parts...)
@@ -672,7 +718,7 @@ func (s *Store) ForEachMetadata(fn func(key string, entry Entry)) {
 	now := s.clock.Now()
 	for i := range s.shards {
 		sh := &s.shards[i]
-		sh.mu.Lock()
+		sh.mu.RLock()
 		for key, idx := range sh.index {
 			e := sh.nodes[idx].entry
 			if e.Expired(now) {
@@ -680,6 +726,6 @@ func (s *Store) ForEachMetadata(fn func(key string, entry Entry)) {
 			}
 			fn(key, Entry{Version: e.Version, WriterNodeHash: e.WriterNodeHash, Expiry: e.Expiry, Tombstone: e.Tombstone})
 		}
-		sh.mu.Unlock()
+		sh.mu.RUnlock()
 	}
 }

@@ -129,6 +129,14 @@ fuzz *args:
 bench *args:
     go test -run=NONE -bench=. -benchmem "$@"
 
+# Compare current benchmarks against bench/baseline.txt with benchstat.
+# Same-host only; ns/op is advisory (CI is noisy). The merge-blocking
+# guard is the deterministic alloc tests (see docs/PERFORMANCE.md).
+[positional-arguments]
+bench-compare *args:
+    go test ./... -run='^$' -bench=. -benchmem -count=5 > bench/current.txt
+    go tool benchstat bench/baseline.txt bench/current.txt "$@"
+
 # CPU profile of the benchmarks, with a text top10. Profiles land in
 # ./profiles/; open the interactive explorer with
 # `go tool pprof profiles/cpu.out`. See docs/profiling.md for the workflow
