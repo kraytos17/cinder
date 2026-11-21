@@ -186,6 +186,11 @@ type Server struct {
 	authMu             sync.RWMutex
 	sharedSecret       string
 	clientSharedSecret string
+	// clientAdminSecret, when set, gates mutating admin opcodes
+	// (compact, config-reload, shutdown, drain). Data opcodes and
+	// read-only admin accept either the data or the admin token; without
+	// it the single client secret keeps full access.
+	clientAdminSecret string
 
 	// Rebalance on membership change. Every ring rebuild schedules one
 	// debounced scan; quarantine deferrals and migration failures

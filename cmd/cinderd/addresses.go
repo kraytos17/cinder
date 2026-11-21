@@ -134,9 +134,9 @@ func clusterRPCTimeout(probeMs, suspectMs, gossipMs, rpcTimeoutMs int) (time.Dur
 	return time.Duration(rpcTimeoutMs) * time.Millisecond, nil
 }
 
-func validateGRPCTLS(grpcPort int, tlsEnabled bool, clientSecret string) error {
-	if grpcPort > 0 && clientSecret != "" && !tlsEnabled {
-		return errors.New("--client-shared-secret requires --tls when --grpc-port is enabled")
+func validateGRPCTLS(grpcPort int, tlsEnabled bool, clientSecret, adminSecret string) error {
+	if grpcPort > 0 && (clientSecret != "" || adminSecret != "") && !tlsEnabled {
+		return errors.New("--client-shared-secret/--client-secret-admin requires --tls when --grpc-port is enabled")
 	}
 	return nil
 }

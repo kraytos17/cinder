@@ -35,6 +35,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			&cli.StringFlag{Name: "tls-server-name", Usage: "Override expected TLS hostname (default: --host)"},
 			&cli.BoolFlag{Name: "tls-verify-hostnames", Value: true, Usage: "Verify TLS hostname against SANs (disable only for testing)"},
 			&cli.StringFlag{Name: "client-secret", Usage: "Shared secret for client authentication (or CINDER_CLIENT_SECRET)"},
+			&cli.StringFlag{Name: "client-secret-admin", Usage: "Shared secret for admin operations (or CINDER_CLIENT_SECRET_ADMIN)"},
 			&cli.BoolFlag{Name: "version", Usage: "print version and exit"},
 		},
 		Commands: []*cli.Command{

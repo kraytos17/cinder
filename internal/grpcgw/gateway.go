@@ -61,11 +61,15 @@ type service struct {
 
 	node         *tcp.Server
 	clientSecret atomic.Value // string; set via SetClientSecret before Serve
+	adminSecret  atomic.Value // string; set via SetAdminSecret before Serve
 	// bearer is the precomputed bearer credential, refreshed with the
 	// secret. The header comparison and the raw token forwarded to
 	// DispatchWithAuth both come from here, so the per-RPC HMAC + hex
 	// encoding happens once per secret, not once per request.
 	bearer atomic.Pointer[bearerAuth]
+	// adminBearer is the precomputed admin-role bearer. Data RPCs accept
+	// either bearer; mutating admin is enforced by the TCP layer.
+	adminBearer atomic.Pointer[bearerAuth]
 }
 
 func (s *service) Get(ctx context.Context, req *gen.GetRequest) (*gen.GetResponse, error) {
@@ -269,6 +273,12 @@ func (g *Gateway) SetClientSecret(secret string) {
 	g.svc.setClientSecret(secret)
 }
 
+// SetAdminSecret enables the admin-role bearer: data and read-only admin
+// RPCs accept either bearer. Call before Serve.
+func (g *Gateway) SetAdminSecret(secret string) {
+	g.svc.setAdminSecret(secret)
+}
+
 // SetTLS serves gRPC over TLS using the given certificate chain and key.
 // A configured client secret requires TLS because the bearer token is
 // reusable. Call before Serve.
@@ -301,12 +311,13 @@ func (g *Gateway) Serve(lis net.Listener) error {
 	tlsCfg := g.tlsConfig
 	g.mu.Unlock()
 	secret, _ := g.svc.clientSecret.Load().(string)
+	adminSecret, _ := g.svc.adminSecret.Load().(string)
 
 	var srv *grpc.Server
 	if tlsCfg != nil {
 		srv = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
 	} else {
-		if secret != "" {
+		if secret != "" || adminSecret != "" {
 			g.mu.Lock()
 			g.serving = false
 			g.mu.Unlock()

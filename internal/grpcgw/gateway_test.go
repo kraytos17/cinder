@@ -751,3 +751,44 @@ func TestGatewayWithServerSecretsEnforced(t *testing.T) {
 		t.Fatalf("authed info with server secrets: %+v %v", info, err)
 	}
 }
+
+func TestGrpcAuthAdminBearerAcceptedForData(t *testing.T) {
+	fx := fixturesDir(t)
+	tl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := store.NewLRUStore(1<<20, nil)
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(tl.Addr().(*net.TCPAddr).Port), Store: st})
+	go srv.Serve(tl)
+	gl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := grpcgw.New(srv)
+	gw.SetClientSecret("data-secret")
+	gw.SetAdminSecret("admin-secret")
+	if err := gw.SetTLS(filepath.Join(fx, "server.pem"), filepath.Join(fx, "server-key.pem")); err != nil {
+		t.Fatal(err)
+	}
+	go gw.Serve(gl)
+	conn, err := grpc.NewClient(gl.Addr().String(), grpc.WithTransportCredentials(tlsClientConfig(t, filepath.Join(fx, "ca.pem"))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		conn.Close()
+		gw.Stop()
+		srv.Shutdown()
+	})
+	c := gen.NewCinderCacheServiceClient(conn)
+	if _, err := c.Ping(bearerCtx("admin-secret"), &gen.PingRequest{}); err != nil {
+		t.Fatalf("data RPC with admin bearer: %v", err)
+	}
+	if _, err := c.Ping(bearerCtx("data-secret"), &gen.PingRequest{}); err != nil {
+		t.Fatalf("data RPC with data bearer: %v", err)
+	}
+	if _, err := c.Ping(bearerCtx("wrong"), &gen.PingRequest{}); status.Code(err) != codes.Unauthenticated {
+		t.Fatalf("wrong bearer: %v", err)
+	}
+}

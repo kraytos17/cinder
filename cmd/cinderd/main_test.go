@@ -85,6 +85,7 @@ func TestCinderdFlagValidation(t *testing.T) {
 		{name: "probe interval positive", args: []string{"--ping-interval-ms", "0"}, want: "--ping-interval-ms must be positive"},
 		{name: "suspect exceeds probe", args: []string{"--suspect-timeout-ms", "1000"}, want: "greater than --ping-interval-ms"},
 		{name: "secret requires TLS for grpc", args: []string{"--grpc-port", "9000", "--client-shared-secret", "s"}, want: "requires --tls"},
+		{name: "admin secret requires TLS for grpc", args: []string{"--grpc-port", "9000", "--client-secret-admin", "a"}, want: "requires --tls"},
 		{name: "invalid replica count", args: []string{"--replication-factor", "33"}, want: "replication-factor"},
 		{name: "persistence needs directory", args: []string{"--enable-persistence"}, want: "--data-dir is required"},
 		{name: "verify cannot combine with normal flags", args: []string{"--verify-data-dir", "/tmp/cinder", "--enable-persistence"}, want: "--verify-data-dir cannot be combined"},

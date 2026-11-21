@@ -35,10 +35,19 @@ rotation requires a coordinated restart.
   accepted for the current bucket plus prior buckets covering 30s and one
   boundary bucket. Receivers accept tokens minted by any alive peer, not
   just themselves.
-- Client/admin traffic (`GET`, `SET`, `DEL`, `PING`, `COUNTER_*`,
-  `ADMIN_*`) requires the static client token
-  `HMAC-SHA256(client_secret, "cinder-client-v1")` when a client secret is
-  configured. One secret grants full access, including admin opcodes.
+- Client traffic (`GET`, `SET`, `DEL`, `PING`, `GET_VERSIONED`,
+  `COUNTER_*`) and read-only admin (`ADMIN_INFO`, `ADMIN_CLUSTER`,
+  `ADMIN_RING`) require the static client token
+  `HMAC-SHA256(secret, "cinder-client-v1")` when any client secret is
+  configured, accepting the data or the admin bearer. Mutating admin
+  (`ADMIN_COMPACT`, `ADMIN_CONFIG_RELOAD`, `ADMIN_SHUTDOWN`,
+  `ADMIN_DRAIN`) requires the admin token when `--client-secret-admin`
+  is set, else the client token, else the node token. Without an admin
+  secret the single client secret keeps full access (backward
+  compatible). Set the admin secret with `--client-secret-admin` (or
+  `CINDER_CLIENT_SECRET_ADMIN`); like the data bearer it is replayable
+  and requires TLS. `cinder-admin` sends the admin bearer when
+  configured, falling back to the data bearer.
 - Denials return `PermissionDenied` with no value body and bump
   `cinder_auth_failures_total{reason="client"|"node"}` by opcode class.
 

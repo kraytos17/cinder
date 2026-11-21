@@ -33,29 +33,55 @@ func (s *service) setClientSecret(secret string) {
 	s.bearer.Store(&bearerAuth{header: "Bearer " + hex.EncodeToString(raw), raw: raw})
 }
 
-// checkAuth requires exactly one matching authorization value when a
-// client secret is configured. Missing or invalid credentials return
-// UNAUTHENTICATED. On success it returns the raw token for
-// DispatchWithAuth; when auth is unconfigured it returns nil and no error.
-func (s *service) checkAuth(ctx context.Context) ([]byte, error) {
-	b := s.bearer.Load()
-	if b == nil {
-		return nil, nil
+// setAdminSecret installs the admin-role bearer. Data and read-only admin
+// RPCs accept either bearer; the TCP layer enforces the admin role for
+// mutating admin opcodes.
+func (s *service) setAdminSecret(secret string) {
+	s.adminSecret.Store(secret)
+	if secret == "" {
+		s.adminBearer.Store(nil)
+		return
 	}
 
+	raw := auth.ClientToken(secret)
+	s.adminBearer.Store(&bearerAuth{header: "Bearer " + hex.EncodeToString(raw), raw: raw})
+}
+
+// checkAuth requires exactly one matching authorization value when any
+// secret is configured, accepting the data or the admin bearer. Missing
+// or invalid credentials return UNAUTHENTICATED. On success it returns
+// the raw token for DispatchWithAuth; when auth is unconfigured it
+// returns nil and no error.
+func (s *service) checkAuth(ctx context.Context) ([]byte, error) {
+	if tok, ok := s.matchAnyBearer(ctx); ok {
+		return tok, nil
+	}
+	if s.bearer.Load() == nil && s.adminBearer.Load() == nil {
+		return nil, nil
+	}
+	return nil, status.Error(codes.Unauthenticated, "invalid credentials")
+}
+
+// matchAnyBearer compares the inbound header against each configured
+// bearer in constant time on equal lengths, returning the matching raw
+// token. Missing metadata or a malformed value matches nothing.
+func (s *service) matchAnyBearer(ctx context.Context) ([]byte, bool) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
-		return nil, status.Error(codes.Unauthenticated, "missing credentials")
+		return nil, false
 	}
 
 	vals := md.Get("authorization")
-	// Length gate first: the constant-time compare below only ever runs
-	// on equal-length inputs.
-	if len(vals) != 1 || len(vals[0]) != len(b.header) || !strings.HasPrefix(vals[0], "Bearer ") {
-		return nil, status.Error(codes.Unauthenticated, "invalid credentials")
+	if len(vals) != 1 || !strings.HasPrefix(vals[0], "Bearer ") {
+		return nil, false
 	}
-	if subtle.ConstantTimeCompare([]byte(vals[0]), []byte(b.header)) != 1 {
-		return nil, status.Error(codes.Unauthenticated, "invalid credentials")
+	for _, b := range []*bearerAuth{s.bearer.Load(), s.adminBearer.Load()} {
+		if b == nil || len(vals[0]) != len(b.header) {
+			continue
+		}
+		if subtle.ConstantTimeCompare([]byte(vals[0]), []byte(b.header)) == 1 {
+			return b.raw, true
+		}
 	}
-	return b.raw, nil
+	return nil, false
 }

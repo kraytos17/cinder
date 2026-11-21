@@ -58,17 +58,20 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 	}
 }
 
-// checkAuth validates credentials according to opcode class. Internal
-// replication requires a node token when node auth is configured; client
-// operations require a client token when client auth is configured. Admin
-// operations prefer client auth, then node auth. Unconfigured auth is open.
+// checkAuth validates credentials according to opcode class and role.
+// Internal replication requires a node token when node auth is configured.
+// Data opcodes and read-only admin (info, cluster, ring) require a client
+// token when client auth is configured, accepting the admin token as a
+// superset. Mutating admin (compact, config-reload, shutdown, drain)
+// requires the admin token when an admin secret is configured, otherwise
+// the client token, otherwise the node token. Unconfigured auth is open.
 // Node tokens are accepted for this server or any alive member because a
 // sender mints its token using its own node ID.
 func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 	s.authMu.RLock()
-	shared, clientSecret := s.sharedSecret, s.clientSharedSecret
+	shared, clientSecret, adminSecret := s.sharedSecret, s.clientSharedSecret, s.clientAdminSecret
 	s.authMu.RUnlock()
-	if shared == "" && clientSecret == "" {
+	if shared == "" && clientSecret == "" && adminSecret == "" {
 		return true
 	}
 
@@ -80,18 +83,43 @@ func (s *Server) checkAuth(op protocol.Opcode, token []byte) bool {
 		}
 		return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
 	case classAdmin:
-		if clientSecret != "" {
-			return auth.VerifyClientToken(clientSecret, token)
+		if isMutatingAdmin(op) {
+			if adminSecret != "" {
+				return auth.VerifyClientToken(adminSecret, token)
+			}
+			if clientSecret != "" {
+				return auth.VerifyClientToken(clientSecret, token)
+			}
+			if shared != "" {
+				return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
+			}
+			return true
+		}
+		if clientSecret != "" || adminSecret != "" {
+			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(adminSecret, token)
 		}
 		if shared != "" {
 			return len(token) == protocol.AuthTokenLen && s.verifyNodeTokenAny(shared, token, now)
 		}
 		return true
 	default: // classClient
-		if clientSecret != "" {
-			return auth.VerifyClientToken(clientSecret, token)
+		if clientSecret != "" || adminSecret != "" {
+			return auth.VerifyClientToken(clientSecret, token) || auth.VerifyClientToken(adminSecret, token)
 		}
 		return true
+	}
+}
+
+// isMutatingAdmin reports whether op changes server state. Read-only admin
+// (info, cluster, ring) stays data-readable so monitoring keeps working on
+// a data credential; the mutating set requires the admin role.
+func isMutatingAdmin(op protocol.Opcode) bool {
+	switch op {
+	case protocol.OpAdminCompact, protocol.OpAdminConfigReload,
+		protocol.OpAdminShutdown, protocol.OpAdminDrain:
+		return true
+	default:
+		return false
 	}
 }
 

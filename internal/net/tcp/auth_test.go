@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/auth"
 	"github.com/kraytos17/cinder/internal/client"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
@@ -264,5 +265,81 @@ func TestAuthCrossNodeNodeTokens(t *testing.T) {
 			t.Fatal("cross-node replication with node auth never converged")
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// TestAuthRoleSplit pins the data/admin role separation. With an admin
+// secret configured, mutating admin opcodes require the admin token while
+// data opcodes and read-only admin accept either the data or the admin
+// token. Replication still requires the node token; without an admin
+// secret the single client secret keeps full access (backward compat).
+func TestAuthRoleSplit(t *testing.T) {
+	newSplitServer := func(t *testing.T) *tcp.Server {
+		t.Helper()
+		fx := fixturesDir(t)
+		srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+		if err := srv.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.ConfigureSecrets("shared-secret", "client-secret"); err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.ConfigureAdminSecret("admin-secret"); err != nil {
+			t.Fatal(err)
+		}
+		return srv
+	}
+	srv := newSplitServer(t)
+	dataTok := auth.ClientToken("client-secret")
+	adminTok := auth.ClientToken("admin-secret")
+	nodeTok := auth.NodeToken("shared-secret", "node1", time.Now())
+
+	cases := []struct {
+		name   string
+		op     protocol.Opcode
+		token  []byte
+		wantOK bool
+	}{
+		{"data with data token", protocol.OpPing, dataTok, true},
+		{"data with admin token", protocol.OpPing, adminTok, true},
+		{"data with node token", protocol.OpPing, nil, false},
+		{"data anon", protocol.OpPing, nil, false},
+		{"read-only admin with data token", protocol.OpAdminCluster, dataTok, true},
+		{"read-only admin with admin token", protocol.OpAdminCluster, adminTok, true},
+		{"read-only admin anon", protocol.OpAdminCluster, nil, false},
+		{"mutating admin with admin token", protocol.OpAdminCompact, adminTok, true},
+		{"mutating admin with data token", protocol.OpAdminCompact, dataTok, false},
+		{"mutating admin with node token", protocol.OpAdminCompact, nodeTok, false},
+		{"mutating admin anon", protocol.OpAdminCompact, nil, false},
+	}
+	for _, tc := range cases {
+		res := srv.DispatchWithAuth(protocol.Request{Opcode: tc.op}, tc.token)
+		if ok := res.Status == protocol.StatusOK; ok != tc.wantOK {
+			t.Errorf("%s: status=%v wantOK=%v", tc.name, res.Status, tc.wantOK)
+		}
+		if res.Status == protocol.StatusPermissionDenied && res.HasValue {
+			t.Errorf("%s: denial must carry no value", tc.name)
+		}
+	}
+
+	// Backward compat: single client secret (no admin) keeps full access,
+	// including mutating admin.
+	fx := fixturesDir(t)
+	legacy := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Store: store.NewLRUStore(1<<20, nil)})
+	if err := legacy.ConfigureTLS(fx+"/server.pem", fx+"/server-key.pem", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.ConfigureSecrets("", "client-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if res := legacy.DispatchWithAuth(protocol.Request{Opcode: protocol.OpAdminCompact}, dataTok); res.Status != protocol.StatusOK {
+		t.Fatalf("legacy single-secret compact: %+v", res)
+	}
+}
+
+func TestConfigureAdminSecretRequiresTLS(t *testing.T) {
+	srv := tcp.NewServer(tcp.ServerConfig{NodeID: "node1", Port: netport.Port(0), Store: store.NewLRUStore(1<<20, nil)})
+	if err := srv.ConfigureAdminSecret("admin-secret"); err == nil {
+		t.Fatal("admin secret without TLS must fail closed")
 	}
 }

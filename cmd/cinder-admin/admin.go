@@ -23,9 +23,15 @@ func readConnectionOptions(cmd *cli.Command) connectionOptions {
 	if secret == "" {
 		secret = os.Getenv("CINDER_CLIENT_SECRET")
 	}
+
+	adminSecret := cmd.String("client-secret-admin")
+	if adminSecret == "" {
+		adminSecret = os.Getenv("CINDER_CLIENT_SECRET_ADMIN")
+	}
 	return connectionOptions{
 		host: cmd.String("host"), port: cmd.Int("port"), useTLS: cmd.Bool("tls"),
 		tlsCert: cmd.String("tls-cert"), tlsKey: cmd.String("tls-key"), tlsCA: cmd.String("tls-ca"), clientSecret: secret,
+		adminSecret:   adminSecret,
 		tlsServerName: cmd.String("tls-server-name"), tlsVerifyHostnames: cmd.Bool("tls-verify-hostnames"),
 	}
 }
@@ -86,7 +92,7 @@ func executeAdmin(op adminOperation, options connectionOptions, stdout, stderr i
 	}
 
 	defer c.Close()
-	c.SetSecrets(client.Secrets{Client: options.clientSecret})
+	c.SetSecrets(client.Secrets{Client: options.bearerSecret()})
 	res, err := c.Do(protocol.Request{Opcode: op.wireOpcode()})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -128,7 +134,7 @@ func executeDrain(options connectionOptions, timeoutMs int64, stdout, stderr io.
 	}
 
 	defer c.Close()
-	c.SetSecrets(client.Secrets{Client: options.clientSecret})
+	c.SetSecrets(client.Secrets{Client: options.bearerSecret()})
 	body, err := json.Marshal(drainRequest{TimeoutMs: timeoutMs})
 	if err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -233,7 +239,7 @@ func pingable(options connectionOptions) bool {
 	}
 
 	defer c.Close()
-	c.SetSecrets(client.Secrets{Client: options.clientSecret})
+	c.SetSecrets(client.Secrets{Client: options.bearerSecret()})
 	res, err := c.Do(protocol.Request{Opcode: protocol.OpPing})
 	return err == nil && res.Status == protocol.StatusOK
 }

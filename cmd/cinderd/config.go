@@ -46,6 +46,7 @@ type daemonConfig struct {
 	TLSMinVersion        string `json:"tls-min-version"`
 	SharedSecret         string `json:"shared-secret"`
 	ClientSecret         string `json:"client-shared-secret"`
+	ClientAdminSecret    string `json:"client-secret-admin"`
 	DataDir              string `json:"data-dir"`
 	SnapshotIntervalS    int    `json:"snapshot-interval-s"`
 	RPCTimeoutMs         int    `json:"rpc-timeout-ms"`
@@ -100,6 +101,7 @@ func (cfg daemonConfig) flags() []cli.Flag {
 		&cli.StringFlag{Name: "tls-min-version", Value: cfg.TLSMinVersion, Usage: "minimum TLS version: 1.2|1.3"},
 		&cli.StringFlag{Name: "shared-secret", Value: cfg.SharedSecret, Usage: "shared secret for node authentication (or CINDER_SHARED_SECRET)"},
 		&cli.StringFlag{Name: "client-shared-secret", Value: cfg.ClientSecret, Usage: "shared secret for client authentication, requires --tls (or CINDER_CLIENT_SECRET)"},
+		&cli.StringFlag{Name: "client-secret-admin", Value: cfg.ClientAdminSecret, Usage: "shared secret for admin operations, requires --tls (or CINDER_CLIENT_SECRET_ADMIN)"},
 		&cli.BoolFlag{Name: "enable-persistence", Value: cfg.EnablePersistence, Usage: "enable WAL + snapshots"},
 		&cli.StringFlag{Name: "data-dir", Value: cfg.DataDir, Usage: "persistence directory (required with --enable-persistence)"},
 		&cli.StringFlag{Name: "verify-data-dir", Value: cfg.VerifyDataDir, Usage: "offline-verify persistence files in a directory and exit (read-only)"},
@@ -211,6 +213,9 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 	if cmd.IsSet("client-shared-secret") {
 		cfg.ClientSecret = cmd.String("client-shared-secret")
 	}
+	if cmd.IsSet("client-secret-admin") {
+		cfg.ClientAdminSecret = cmd.String("client-secret-admin")
+	}
 	if cmd.IsSet("enable-persistence") {
 		cfg.EnablePersistence = cmd.Bool("enable-persistence")
 	}
@@ -259,6 +264,7 @@ func readDaemonConfigWithBase(cmd *cli.Command, base daemonConfig) daemonConfig 
 
 	cfg.SharedSecret = configuredSecret(cfg.SharedSecret, "CINDER_SHARED_SECRET")
 	cfg.ClientSecret = configuredSecret(cfg.ClientSecret, "CINDER_CLIENT_SECRET")
+	cfg.ClientAdminSecret = configuredSecret(cfg.ClientAdminSecret, "CINDER_CLIENT_SECRET_ADMIN")
 	return cfg
 }
 

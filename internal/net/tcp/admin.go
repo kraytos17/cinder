@@ -88,7 +88,7 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		s.tlsMu.RUnlock()
 		s.authMu.RLock()
 
-		shared, clientSecret := s.sharedSecret, s.clientSharedSecret
+		shared, clientSecret, adminSecret := s.sharedSecret, s.clientSharedSecret, s.clientAdminSecret
 		s.authMu.RUnlock()
 		s.ringMu.RLock()
 
@@ -116,8 +116,8 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 			AntiEntropyFetchBytes:   aeFetchBytes,
 			AntiEntropyFullRehashMs: aeRehashMs,
 			TLSEnabled:              tlsEnabled,
-			AuthEnabled:             shared != "" || clientSecret != "",
-			ClientAuthEnabled:       clientSecret != "",
+			AuthEnabled:             shared != "" || clientSecret != "" || adminSecret != "",
+			ClientAuthEnabled:       clientSecret != "" || adminSecret != "",
 			LogLevel:                s.log().GetLevel().String(),
 			Peers:                   peers,
 		})}

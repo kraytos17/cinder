@@ -162,8 +162,10 @@ func (s *Server) rotateTLSCertificate(certFile, keyFile string, cert tls.Certifi
 
 // ConfigureSecrets enables authentication: sharedSecret guards internal
 // replication opcodes with time-windowed node tokens, clientSharedSecret
-// guards client/admin opcodes (and the gRPC bearer) with the static client
-// token. Empty secrets leave their corresponding traffic class
+// guards data opcodes and read-only admin (info, cluster, ring) with the
+// static client token. Mutating admin opcodes additionally accept the
+// admin secret when one is configured (see ConfigureAdminSecret).
+// Empty secrets leave their corresponding traffic class
 // unauthenticated. A static client bearer requires TLS; configure TLS
 // before setting clientSecret. Node tokens can be used without TLS.
 func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
@@ -187,6 +189,27 @@ func (s *Server) ConfigureSecrets(shared, clientSecret string) error {
 	if pool != nil {
 		pool.SetSecrets(client.Secrets{NodeID: s.nodeID, Shared: shared})
 	}
+	return nil
+}
+
+// ConfigureAdminSecret installs the admin-role bearer for mutating admin
+// opcodes (compact, config-reload, shutdown, drain). Data opcodes and
+// read-only admin accept either the data or the admin token. Like the
+// data bearer it is replayable, so it requires TLS. Empty unsets the
+// role and restores single-secret full access.
+func (s *Server) ConfigureAdminSecret(adminSecret string) error {
+	if adminSecret != "" {
+		s.tlsMu.RLock()
+		tlsCfg := s.tlsCfg
+		s.tlsMu.RUnlock()
+		if tlsCfg == nil {
+			return errors.New("tcp: admin auth requires TLS (replayable bearer token)")
+		}
+	}
+
+	s.authMu.Lock()
+	s.clientAdminSecret = adminSecret
+	s.authMu.Unlock()
 	return nil
 }
 

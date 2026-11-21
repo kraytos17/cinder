@@ -6,10 +6,20 @@ import (
 
 type connectionOptions struct {
 	host, tlsCert, tlsKey, tlsCA, clientSecret string
+	adminSecret                                string
 	tlsServerName                              string
 	port                                       int
 	useTLS                                     bool
 	tlsVerifyHostnames                         bool
+}
+
+// bearerSecret prefers the admin bearer: it authorizes every admin
+// operation, while the data bearer only covers read-only admin.
+func (o connectionOptions) bearerSecret() string {
+	if o.adminSecret != "" {
+		return o.adminSecret
+	}
+	return o.clientSecret
 }
 
 type adminOperation uint8
