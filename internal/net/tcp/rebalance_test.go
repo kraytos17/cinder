@@ -11,6 +11,7 @@ import (
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/repl"
 )
 
 // addNode joins a fresh empty node to a running test cluster. Gossip
@@ -70,6 +71,63 @@ func waitForAlive(t *testing.T, srv *tcp.Server, id string) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("server never saw %s alive", id)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A Leaving member drops out of every ring, including its own: the
+// draining node stops accepting writes (ownership gate redirects) while
+// still serving reads from its local copy. Peers converge via gossip.
+func TestLeavingExcludedFromRingsAndWrites(t *testing.T) {
+	c := newTestCluster(t, []string{"node1", "node2"}, 2, repl.Async)
+	defer c.shutdown()
+	fastGossip(c)
+
+	var key string
+	for i := range 100 {
+		k := fmt.Sprintf("leave-%d", i)
+		if ringOwner(t, k) == "node2" {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		t.Fatal("no key hashes to node2")
+	}
+	writeToOwner(t, c, key, "v")
+	d := dial(t, c.nodes["node2"].addr)
+	if res, err := d.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("node2 must serve its key before leaving: %+v %v", res, err)
+	}
+	d.Close()
+
+	// Drain starts: node2 marks itself Leaving. Its own rebuild is
+	// synchronous, so the ownership gate flips immediately.
+	c.nodes["node2"].srv.Table().MarkLeaving("node2")
+	if got := c.nodes["node2"].srv.OwnerOf(key); got != "node1" {
+		t.Fatalf("draining node still owns %q: %s", key, got)
+	}
+	d2 := dial(t, c.nodes["node2"].addr)
+	res, err := d2.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(key), Value: []byte("v2")})
+	d2.Close()
+	if err != nil || res.Status != protocol.StatusNotReady {
+		t.Fatalf("write to draining node = %+v %v, want NotReady redirect", res, err)
+	}
+	d3 := dial(t, c.nodes["node2"].addr)
+	if res, err := d3.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(key)}); err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v" {
+		t.Fatalf("draining node must keep serving reads: %+v %v", res, err)
+	}
+	d3.Close()
+
+	// The peer converges via gossip and routes around the drainer.
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if got := c.nodes["node1"].srv.OwnerOf(key); got == "node1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("node1 never dropped node2 from its ring")
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

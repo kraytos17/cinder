@@ -208,6 +208,11 @@ func ParseNodeInfo(entry string) (NodeInfo, bool) {
 		out.State = Suspect
 	case "dead":
 		out.State = Dead
+	case "leaving":
+		// A leaving token decodes like any other: members that predate
+		// drain support skip the whole entry (see DecodeView), which
+		// routes around the drainer — the safe direction.
+		out.State = Leaving
 	default:
 		return out, false
 	}

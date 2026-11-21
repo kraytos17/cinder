@@ -26,16 +26,23 @@ const (
 	Alive NodeState = iota
 	Suspect
 	Dead
+	// Leaving marks a member that is draining: still reachable and
+	// serving reads, but excluded from rings for new placement. The
+	// intent is sticky: suspicion never overwrites it, and self-refute
+	// preserves it while bumping the incarnation.
+	Leaving
 )
 
-// String renders the wire state token; values other than Alive and Suspect
-// render as "dead".
+// String renders the wire state token; values other than Alive, Suspect,
+// and Leaving render as "dead".
 func (s NodeState) String() string {
 	switch s {
 	case Alive:
 		return "alive"
 	case Suspect:
 		return "suspect"
+	case Leaving:
+		return "leaving"
 	default:
 		return "dead"
 	}
@@ -199,10 +206,13 @@ func (t *MembershipTable) applyRumorLocked(rumor NodeInfo) bool {
 			// A peer may still know an incarnation newer than this process
 			// learned at startup. Refute it by moving strictly past that
 			// incarnation; never copy the peer's potentially stale address.
+			// Draining nodes refute the same way but keep Leaving.
 			inc := nextIncarnation(rumor.Incarnation)
-			if local.Incarnation != inc || local.State != Alive {
+			if local.Incarnation != inc || (local.State != Alive && local.State != Leaving) {
 				local.Incarnation = inc
-				local.State = Alive
+				if local.State != Leaving {
+					local.State = Alive
+				}
 				changed = true
 			}
 		}
@@ -251,6 +261,8 @@ func (t *MembershipTable) InitializeSelfIncarnation() {
 }
 
 // refuteLocked answers a non-alive rumor about self. Caller holds mu.
+// A draining node refutes by bumping its incarnation while keeping the
+// Leaving intent: forcing Alive would silently cancel the drain.
 func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 	self, ok := t.nodes[t.self]
 	if !ok {
@@ -265,7 +277,7 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 			changed = true
 		}
 	}
-	if self.State != Alive {
+	if self.State != Alive && self.State != Leaving {
 		self.State = Alive
 		changed = true
 	}
@@ -278,11 +290,13 @@ func (t *MembershipTable) refuteLocked(rumor NodeInfo) bool {
 	return changed
 }
 
-// MarkSuspect flags id suspect (never from Dead; idempotent).
+// MarkSuspect flags id suspect (never from Dead or Leaving; idempotent).
+// Leaving is sticky: the failure detector skips draining members, and a
+// suspicion must not erase the operator's drain intent.
 func (t *MembershipTable) MarkSuspect(id string) {
 	t.mu.Lock()
 	n, ok := t.nodes[id]
-	if !ok || n.State == Dead || n.State == Suspect {
+	if !ok || n.State == Dead || n.State == Suspect || n.State == Leaving {
 		t.mu.Unlock()
 		return
 	}
@@ -307,6 +321,22 @@ func (t *MembershipTable) MarkDead(id string) {
 	obs.IfPresent(&t.met, func(m *metrics.Collector) { m.DeadMarked.Add(1) })
 	// A node death is ops-relevant at info; id only, no user data.
 	t.log().Info().Str("node", id).Msg("marked dead")
+	t.fire()
+}
+
+// MarkLeaving flags id draining (idempotent). The member stays reachable
+// and keeps serving reads; rings exclude it from new placement. Unknown ids
+// are ignored: leaving invents no members.
+func (t *MembershipTable) MarkLeaving(id string) {
+	t.mu.Lock()
+	n, ok := t.nodes[id]
+	if !ok || n.State == Leaving {
+		t.mu.Unlock()
+		return
+	}
+
+	n.State = Leaving
+	t.mu.Unlock()
 	t.fire()
 }
 
@@ -344,16 +374,19 @@ func (t *MembershipTable) Get(id string) (NodeInfo, bool) {
 	return NodeInfo{}, false
 }
 
-// MatchAliveID reports whether any alive member other than self satisfies
-// match, without building a snapshot. The auth path uses it to verify
-// node tokens with zero allocation; the HMAC loop runs under the table
-// lock like every other accessor, so membership updates wait
+// MatchAliveID reports whether any alive or draining member other than
+// self satisfies match, without building a snapshot. The auth path uses it
+// to verify node tokens with zero allocation; the HMAC loop runs under the
+// table lock like every other accessor, so membership updates wait
 // microseconds, not milliseconds.
 func (t *MembershipTable) MatchAliveID(self string, match func(id string) bool) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for id, n := range t.nodes {
-		if id == self || n.State != Alive {
+		// Leaving members still authenticate: their migration pushes
+		// carry node tokens, and rejecting them would stall a drain
+		// under shared-secret auth.
+		if id == self || (n.State != Alive && n.State != Leaving) {
 			continue
 		}
 		if match(id) {

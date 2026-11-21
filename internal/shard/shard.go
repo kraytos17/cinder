@@ -212,7 +212,21 @@ func makeReplicateRequest(key string, e store.Entry) protocol.Request {
 
 func (m *Manager) alive(id string) bool {
 	info, ok := m.table.Get(id)
-	return !ok || info.State == cluster.Alive
+	if !ok {
+		return true
+	}
+	// Never push to a draining member, even when a stale ring still
+	// lists it: the copy would only migrate away again.
+	return info.State == cluster.Alive
+}
+
+// Drained reports whether no local data remains. After the ring excludes
+// this node, Rebalance migrates every key to its new set and drops the
+// local copy on full acknowledgement; the drain loop polls this after
+// each pass until it holds or the deadline expires. An empty store
+// reports drained.
+func (m *Manager) Drained() bool {
+	return m.store.Size() == 0
 }
 
 // migrateKey sends the entry to the whole new set and drops the local copy

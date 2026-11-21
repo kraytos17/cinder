@@ -160,6 +160,50 @@ func TestDeadTargetSkipped(t *testing.T) {
 	}
 }
 
+// Copies are not pushed to a Leaving member: feeding a drainer new
+// replicas is churn it would only migrate away again. The local copy stays.
+func TestCopiesSkipLeavingMember(t *testing.T) {
+	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)
+	putVer(t, st, "k", "v", 5, 1)
+	table.MarkLeaving("b")
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
+	if deferred := m.Rebalance(); deferred {
+		t.Fatal("leaving-target skip is not a deferral")
+	}
+	if n := ft.Sends["b"]; n != 0 {
+		t.Fatalf("sent %d pushes to a draining node", n)
+	}
+	if _, ok := st.GetVersioned("k"); !ok {
+		t.Fatal("local copy must stay while the replica is draining")
+	}
+}
+
+// A node whose ring excludes itself migrates everything away; Drained
+// reports when nothing local remains. That is the drain loop's exit.
+func TestDrainedAfterMigrateAway(t *testing.T) {
+	st, ring, table, ft := testSetup(t, []string{"a", "b"}, "a", 2, 0)
+	putVer(t, st, "k", "v", 5, 1)
+	m := NewManager(Config{Store: st, Ring: ring, Transport: ft, Membership: table, Self: "a", ReplicaFactor: 2, Quarantine: 0, Clock: nil})
+	if m.Drained() {
+		t.Fatal("node holding data reports drained")
+	}
+	if err := ring.SetNodes([]string{"b"}); err != nil {
+		t.Fatal(err)
+	}
+	if deferred := m.Rebalance(); deferred {
+		t.Fatal("nothing quarantined")
+	}
+	if got, ok := ft.Stores["b"].GetVersioned("k"); !ok || string(got.Value) != "v" {
+		t.Fatalf("migrated copy missing: %+v %v", got, ok)
+	}
+	if _, ok := st.GetVersioned("k"); ok {
+		t.Fatal("source kept its copy after every new holder acked")
+	}
+	if !m.Drained() {
+		t.Fatal("migrated node still reports undrained")
+	}
+}
+
 // Tombstones migrate with their identity; TTLs ride along absolutely.
 func TestTombstoneAndTTLMigrate(t *testing.T) {
 	st, ring, table, ft := testSetup(t, []string{"b", "c"}, "a", 2, 0)

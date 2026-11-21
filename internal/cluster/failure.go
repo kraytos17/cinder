@@ -232,7 +232,10 @@ func (f *FailureDetector) rebuildLocked() {
 		// Dead peers are never probed (MarkSuspect is a no-op on Dead and
 		// revival arrives via gossip, which rebuilds this list), so keep
 		// them out of the rotation instead of skipping them per tick.
-		if m.ID != f.self && m.State != Dead {
+		// Leaving peers are skipped the same way: drain intent is sticky,
+		// the ring already excludes them, and their data is covered by
+		// replicas, so there is nothing for the detector to decide.
+		if m.ID != f.self && m.State != Dead && m.State != Leaving {
 			f.peers = append(f.peers, m.ID)
 		}
 	}

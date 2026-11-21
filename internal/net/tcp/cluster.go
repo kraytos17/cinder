@@ -358,6 +358,7 @@ func (s *Server) rebuildRingFromTable() {
 	}
 
 	selfSeen := false
+	selfLeaving := false
 	snap := table.Snapshot()
 	ids := make([]string, 0, len(snap)+1)
 	for _, m := range snap {
@@ -374,6 +375,13 @@ func (s *Server) rebuildRingFromTable() {
 				rp.AddAddr(m.ID, m.Host, m.Port)
 			}
 		}
+		if m.ID == s.nodeID && m.State == cluster.Leaving {
+			// A draining node drops itself from its own ring so the
+			// ownership gate redirects new writes away immediately,
+			// before peers converge via gossip.
+			selfLeaving = true
+			continue
+		}
 		if m.State != cluster.Alive {
 			continue
 		}
@@ -383,7 +391,7 @@ func (s *Server) rebuildRingFromTable() {
 			selfSeen = true
 		}
 	}
-	if !selfSeen {
+	if !selfSeen && !selfLeaving {
 		ids = append(ids, s.nodeID)
 	}
 
