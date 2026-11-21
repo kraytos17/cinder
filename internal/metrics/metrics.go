@@ -55,6 +55,8 @@ func OpName(op protocol.Opcode) string {
 		return "admin_config_reload"
 	case protocol.OpAdminShutdown:
 		return "admin_shutdown"
+	case protocol.OpAdminDrain:
+		return "admin_drain"
 	case protocol.OpCounterAdjust:
 		return "counter_adjust"
 	case protocol.OpCounterMerge:
@@ -69,7 +71,7 @@ func OpName(op protocol.Opcode) string {
 }
 
 // maxOpcode is the highest assigned wire opcode; index 0 is unused.
-const maxOpcode = 20
+const maxOpcode = 21
 
 func opIndex(op protocol.Opcode) (int, bool) {
 	if op >= 1 && op <= maxOpcode {

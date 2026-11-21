@@ -42,6 +42,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 			{Name: "compact", Usage: "compact persistent data", Action: adminAction(adminCompact, stdout, stderr)},
 			{Name: "config-reload", Usage: "reload node configuration", Action: adminAction(adminConfigReload, stdout, stderr)},
 			{Name: "shutdown", Usage: "shut down the node", Action: adminAction(adminShutdown, stdout, stderr)},
+			{Name: "drain", Usage: "drain the node, then report progress until done", Flags: []cli.Flag{
+				&cli.IntFlag{Name: "timeout-ms", Value: 300000, Usage: "drain deadline in milliseconds"},
+			}, Action: drainAction(stdout, stderr)},
 		},
 		Action: func(_ context.Context, cmd *cli.Command) error {
 			if cmd.Bool("version") {
@@ -50,11 +53,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			}
 			if cmd.Args().Len() > 0 {
 				fmt.Fprintf(stderr, "unknown command: %s\n", cmd.Args().First())
-				fmt.Fprintln(stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown")
+				fmt.Fprintln(stderr, "available commands: info, cluster, ring, compact, config-reload, shutdown, drain")
 				return cli.Exit("", 1)
 			}
 
-			fmt.Fprintln(stderr, "error: command required: info|cluster|ring|compact|config-reload|shutdown")
+			fmt.Fprintln(stderr, "error: command required: info|cluster|ring|compact|config-reload|shutdown|drain")
 			return cli.Exit("", 2)
 		},
 	}

@@ -50,7 +50,8 @@ func classifyOpcode(op protocol.Opcode) opcodeClass {
 		// accept the merge.
 		return classReplication
 	case protocol.OpAdminInfo, protocol.OpAdminCluster, protocol.OpAdminRing,
-		protocol.OpAdminCompact, protocol.OpAdminConfigReload, protocol.OpAdminShutdown:
+		protocol.OpAdminCompact, protocol.OpAdminConfigReload, protocol.OpAdminShutdown,
+		protocol.OpAdminDrain:
 		return classAdmin
 	default:
 		return classClient

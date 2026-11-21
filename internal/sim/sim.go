@@ -79,6 +79,11 @@ type Cluster struct {
 	rf    hashring.ReplicaCount
 	mode  repl.Mode
 	alive map[string]bool
+	// leaving marks draining members: still alive and reachable, but
+	// excluded from every ring (including their own) so new writes route
+	// elsewhere while the node migrates its data away and keeps serving
+	// reads. Unlike MarkDead, traffic to and from the node is untouched.
+	leaving map[string]bool
 	// dirs holds the disk dir per persistence-enabled node; incar tracks
 	// the latest membership incarnation so restarts rejoin newer.
 	dirs  map[string]string
@@ -97,9 +102,10 @@ func NewCluster(t testing.TB, ids []string, opt Options) *Cluster {
 		nodes: make(map[string]*Node, len(ids)),
 		order: slices.Clone(ids),
 		rf:    rf, mode: opt.Mode,
-		alive: make(map[string]bool, len(ids)),
-		dirs:  make(map[string]string, len(ids)),
-		incar: make(map[string]uint64, len(ids)),
+		alive:   make(map[string]bool, len(ids)),
+		leaving: make(map[string]bool, len(ids)),
+		dirs:    make(map[string]string, len(ids)),
+		incar:   make(map[string]uint64, len(ids)),
 	}
 	for _, id := range ids {
 		c.alive[id] = true
@@ -205,12 +211,14 @@ func (c *Cluster) SortedEvents() []event {
 
 // rebuildRings publishes the current alive set as every node's ring,
 // mirroring Server.rebuildRingFromTable: every alive member is included
-// and self is always appended (a lone node owns everything).
+// and self is always appended (a lone node owns everything). Draining
+// members are excluded everywhere including their own ring, so the
+// ownership gate redirects new writes away immediately.
 func (c *Cluster) rebuildRings() {
 	c.t.Helper()
 	ids := make([]string, 0, len(c.order))
 	for _, id := range c.order {
-		if c.alive[id] {
+		if c.alive[id] && !c.leaving[id] {
 			ids = append(ids, id)
 		}
 	}
@@ -218,7 +226,7 @@ func (c *Cluster) rebuildRings() {
 		n := c.nodes[id]
 		present := slices.Contains(ids, id)
 		ringIDs := ids
-		if !present {
+		if !present && !c.leaving[id] {
 			ringIDs = append(slices.Clone(ids), id)
 		}
 		if err := n.Ring.SetNodes(ringIDs); err != nil {
@@ -261,6 +269,21 @@ func (c *Cluster) MarkDead(id string) {
 	c.net.mu.Lock()
 	c.net.down[id] = true
 	c.net.mu.Unlock()
+	c.rebuildRings()
+}
+
+// MarkLeaving flags id draining on every node's table (converged gossip)
+// and rebuilds rings excluding it, mirroring a graceful-drain start.
+// Traffic is untouched: the node still serves reads and its migration
+// pushes still land. Writes addressed to it redirect via the ownership
+// gate on its own (self-excluding) ring.
+func (c *Cluster) MarkLeaving(id string) {
+	c.Node(id)
+	for _, nid := range c.order {
+		c.nodes[nid].Table.MarkLeaving(id)
+	}
+
+	c.leaving[id] = true
 	c.rebuildRings()
 }
 

@@ -187,6 +187,14 @@ type Server struct {
 	migrationPending   bool
 	migrationTimer     *time.Timer
 
+	// Drain state machine. MarkLeaving (via StartDrain) excludes this
+	// node from new placement; the background loop migrates local data
+	// until Drained holds or the deadline passes. Guarded by drainMu,
+	// which never nests inside other server locks.
+	drainMu       sync.Mutex
+	drainState    string
+	drainDeadline time.Time
+
 	persistMu sync.RWMutex
 	persist   *persist.Manager
 }

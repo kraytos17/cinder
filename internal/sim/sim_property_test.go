@@ -767,6 +767,92 @@ func TestSimTTLClockJumpNeverResurrects(t *testing.T) {
 	}
 }
 
+// Draining a member migrates everything away: after MarkLeaving plus
+// rebalance/hint/AE convergence the drainer holds nothing, every key is
+// present on its new replica set, and new writes route away from the
+// drainer while reads still serve from it until it empties.
+func TestSimDrainEmptiesAndPreserves(t *testing.T) {
+	ids := []string{"n1", "n2", "n3", "n4"}
+	c := sim.NewCluster(t, ids, sim.Options{RF: 3, Mode: repl.Quorum, Seed: 9})
+	keys := make([]string, 10)
+	latest := make(map[string]string, 10)
+	for i := range keys {
+		key := fmt.Sprintf("drain-%d", i)
+		keys[i] = key
+		value := fmt.Sprintf("v-%d", i)
+		owner := c.Node(ids[0]).Ring.GetNode(key)
+		if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+			t.Fatalf("initial write key=%s owner=%s: %+v", key, owner, r)
+		}
+		latest[key] = value
+	}
+
+	var held []string
+	for _, key := range keys {
+		if _, ok := c.Node("n4").Store.Get(key); ok {
+			held = append(held, key)
+		}
+	}
+	if len(held) == 0 {
+		t.Fatal("n4 holds nothing to drain")
+	}
+
+	c.MarkLeaving("n4")
+
+	// Writes addressed to the drainer redirect; the same keys succeed
+	// through their new owners, so the cluster stays available mid-drain.
+	for _, key := range keys[:3] {
+		if r := c.Write("n4", key, []byte("x"), 0); r.Status != protocol.StatusNotReady {
+			t.Fatalf("write via drainer: %+v, want NotReady redirect", r)
+		}
+		owner := c.Node(ids[0]).Ring.GetNode(key)
+		value := "during-drain-" + key
+		if r := c.Write(owner, key, []byte(value), 0); r.Status != protocol.StatusOK {
+			t.Fatalf("write during drain key=%s owner=%s: %+v", key, owner, r)
+		}
+		latest[key] = value
+	}
+	// Reads still serve from the drainer's copy until it migrates away.
+	if _, ok := c.Node("n4").Store.Get(held[0]); !ok {
+		t.Fatal("drainer stopped serving reads")
+	}
+
+	settled := false
+	for range 10 {
+		c.Rebalance()
+		for _, id := range ids {
+			c.ReplayHints(id)
+		}
+		for range 4 {
+			for _, id := range ids {
+				c.RunAE(id)
+			}
+		}
+		if c.Node("n4").Store.Size() == 0 {
+			settled = true
+			break
+		}
+	}
+	if !settled {
+		t.Fatal("drainer never emptied")
+	}
+	for _, key := range keys {
+		replicas, err := c.Node(ids[0]).Ring.GetNodes(key, 3)
+		if err != nil || len(replicas) != 3 {
+			t.Fatalf("replicas for %q: %v %v", key, replicas, err)
+		}
+		for _, id := range replicas {
+			if id == "n4" {
+				t.Fatalf("drained node still in replica set for %q", key)
+			}
+			entry, ok := c.Node(id).Store.GetVersioned(key)
+			if !ok || string(entry.Value) != latest[key] {
+				t.Fatalf("key %q missing/wrong on %s after drain", key, id)
+			}
+		}
+	}
+}
+
 // A TTL-bearing write queued as a hint must not resurrect after it expires
 // during an outage. Replay and AE both run after recovery; direct local-store
 // checks ensure read repair cannot conceal a resurrection.

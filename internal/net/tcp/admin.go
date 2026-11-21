@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"encoding/json/v2"
+	"time"
 
 	"github.com/kraytos17/cinder/internal/hashring"
 	"github.com/kraytos17/cinder/internal/net/protocol"
@@ -52,6 +53,14 @@ type adminRing struct {
 type adminReloadResult struct {
 	Applied []string `json:"applied"`
 }
+
+type adminDrainRequest struct {
+	TimeoutMs int64 `json:"timeout_ms"`
+}
+
+// maxDrainTimeoutMs caps one drain deadline (30 days); larger values are
+// rejected rather than allowed to overflow time.Duration arithmetic.
+const maxDrainTimeoutMs = int64(30 * 24 * time.Hour / time.Millisecond)
 
 func (s *Server) admin(req protocol.Request) protocol.Response {
 	mustJSON := func(v any) []byte {
@@ -200,7 +209,32 @@ func (s *Server) admin(req protocol.Request) protocol.Response {
 		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(adminReloadResult{Applied: present})}
 	case protocol.OpAdminShutdown:
 		return protocol.Response{Status: protocol.StatusOK}
+	case protocol.OpAdminDrain:
+		return s.handleAdminDrain(req, mustJSON)
 	default:
 		return protocol.Response{Status: protocol.StatusInvalidArgument}
 	}
+}
+
+// handleAdminDrain starts a graceful drain with {"timeout_ms": N} or
+// reports progress for an empty payload. It never shuts the server down:
+// when the status turns drained, finish via the regular admin shutdown.
+func (s *Server) handleAdminDrain(req protocol.Request, mustJSON func(v any) []byte) protocol.Response {
+	drainStatus := func() protocol.Response {
+		return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(s.DrainStatus())}
+	}
+	if len(req.Value) == 0 {
+		return drainStatus()
+	}
+
+	var dr adminDrainRequest
+	if err := json.Unmarshal(req.Value, &dr); err != nil || dr.TimeoutMs <= 0 || dr.TimeoutMs > maxDrainTimeoutMs {
+		return protocol.Response{Status: protocol.StatusInvalidArgument}
+	}
+
+	st, err := s.StartDrain(time.Duration(dr.TimeoutMs) * time.Millisecond)
+	if err != nil {
+		return protocol.Response{Status: protocol.StatusInvalidArgument, HasValue: true, Value: mustJSON(map[string]string{"error": err.Error()})}
+	}
+	return protocol.Response{Status: protocol.StatusOK, HasValue: true, Value: mustJSON(st)}
 }

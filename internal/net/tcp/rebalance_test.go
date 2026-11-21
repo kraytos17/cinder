@@ -133,6 +133,137 @@ func TestLeavingExcludedFromRingsAndWrites(t *testing.T) {
 	}
 }
 
+// Draining migrates everything to the survivors: the drain loop exits
+// once the local store is empty, and every key stays available.
+func TestDrainMigratesAndEmpties(t *testing.T) {
+	c := newTestCluster(t, []string{"node1", "node2", "node3"}, 2, repl.Async)
+	defer c.shutdown()
+	fastGossip(c)
+	ring := func() *hashring.Ring {
+		r, err := hashring.New(hashring.DefaultVNodes, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := r.SetNodes([]string{"node1", "node2", "node3"}); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}()
+	keys := make([]string, 0, 20)
+	for i := range 20 {
+		k := fmt.Sprintf("drain-%d", i)
+		keys = append(keys, k)
+		owner := ring.GetNode(k)
+		n, ok := c.nodes[owner]
+		if !ok {
+			t.Fatalf("owner %s not in cluster", owner)
+		}
+		d := dial(t, n.addr)
+		res, err := d.Do(protocol.Request{Opcode: protocol.OpSet, Key: []byte(k), Value: []byte("v-" + k)})
+		d.Close()
+		if err != nil || res.Status != protocol.StatusOK {
+			t.Fatalf("set %q via %s: %+v %v", k, owner, res, err)
+		}
+	}
+
+	if _, err := c.nodes["node3"].srv.StartDrain(30 * time.Second); err != nil {
+		t.Fatalf("StartDrain: %v", err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if st := c.nodes["node3"].srv.DrainStatus(); st.State == "drained" {
+			break
+		}
+		if time.Now().After(deadline) {
+			st := c.nodes["node3"].srv.DrainStatus()
+			t.Fatalf("drain stuck: %+v", st)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := c.nodes["node3"].srv.Store().Size(); n != 0 {
+		t.Fatalf("drained node still holds %d entries", n)
+	}
+	for _, k := range keys {
+		for _, id := range []string{"node1", "node2"} {
+			d := dial(t, c.nodes[id].addr)
+			res, err := d.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(k)})
+			d.Close()
+			if err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v-"+k {
+				t.Fatalf("key %q missing on survivor %s: %+v %v", k, id, res, err)
+			}
+		}
+	}
+}
+
+// Draining a lone replica is refused: RF=1 data has nowhere safe to go.
+func TestDrainRefusedWithoutReplicas(t *testing.T) {
+	c := newTestCluster(t, []string{"node1"}, 1, repl.Async)
+	defer c.shutdown()
+	if _, err := c.nodes["node1"].srv.StartDrain(5 * time.Second); err == nil {
+		t.Fatal("expected drain refusal at RF=1")
+	}
+	if got := c.nodes["node1"].srv.DrainStatus().State; got != "idle" {
+		t.Fatalf("state = %q, want idle", got)
+	}
+}
+
+// The admin drain endpoint starts a drain with a timeout payload, reports
+// progress on empty payloads, and rejects bad input and lone replicas.
+func TestAdminDrainLifecycle(t *testing.T) {
+	c := newTestCluster(t, []string{"node1", "node2", "node3"}, 2, repl.Async)
+	defer c.shutdown()
+	fastGossip(c)
+
+	d := dial(t, c.nodes["node3"].addr)
+	res, err := d.Do(protocol.Request{Opcode: protocol.OpAdminDrain})
+	d.Close()
+	if err != nil || res.Status != protocol.StatusOK || string(res.Value) != `{"state":"idle","remaining_keys":0}` {
+		t.Fatalf("idle status: %+v %v", res, err)
+	}
+
+	d2 := dial(t, c.nodes["node3"].addr)
+	res, err = d2.Do(protocol.Request{Opcode: protocol.OpAdminDrain, Value: []byte("{bad json")})
+	d2.Close()
+	if err != nil || res.Status != protocol.StatusInvalidArgument {
+		t.Fatalf("bad payload: %+v %v", res, err)
+	}
+
+	d3 := dial(t, c.nodes["node3"].addr)
+	res, err = d3.Do(protocol.Request{Opcode: protocol.OpAdminDrain, Value: []byte(`{"timeout_ms":30000}`)})
+	d3.Close()
+	if err != nil || res.Status != protocol.StatusOK {
+		t.Fatalf("start drain: %+v %v", res, err)
+	}
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		d4 := dial(t, c.nodes["node3"].addr)
+		res, err = d4.Do(protocol.Request{Opcode: protocol.OpAdminDrain})
+		d4.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(res.Value) == `{"state":"drained","remaining_keys":0}` {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("drain stuck: %s", res.Value)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// Draining a lone replica is refused through the admin endpoint too.
+func TestAdminDrainRefusedWithoutReplicas(t *testing.T) {
+	c := newTestCluster(t, []string{"node1"}, 1, repl.Async)
+	defer c.shutdown()
+	d := dial(t, c.nodes["node1"].addr)
+	res, err := d.Do(protocol.Request{Opcode: protocol.OpAdminDrain, Value: []byte(`{"timeout_ms":5000}`)})
+	d.Close()
+	if err != nil || res.Status != protocol.StatusInvalidArgument || !res.HasValue {
+		t.Fatalf("RF=1 drain: %+v %v", res, err)
+	}
+}
+
 // RF=2 join: every key must end up on BOTH members of its 3-node replica
 // set after node3 joins — replicas rebalance just like primaries.
 func TestRebalanceJoinRF2(t *testing.T) {

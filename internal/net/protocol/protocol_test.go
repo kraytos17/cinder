@@ -245,7 +245,7 @@ func TestDecodeErrors(t *testing.T) {
 		{"bad magic", mutate(valid, func(b []byte) { b[0] = 0x00 })},
 		{"bad version", mutate(valid, func(b []byte) { b[1] = 0x05 })},
 		{"opcode zero", mutate(valid, func(b []byte) { b[2] = 0x00 })},
-		{"opcode 21", mutate(valid, func(b []byte) { b[2] = 21 })},
+		{"opcode 22", mutate(valid, func(b []byte) { b[2] = 22 })},
 		{"opcode 255", mutate(valid, func(b []byte) { b[2] = 0xFF })},
 		{"truncated payload", valid[:len(valid)-2]},
 		{"huge payload", []byte{Magic, Version, 0x01, 0xFF, 0xFF, 0xFF, 0xFF}},
@@ -267,6 +267,23 @@ func TestDecodeErrors(t *testing.T) {
 		if _, err := DecodeResponse(testPayload(resFrame)); err != nil {
 			t.Errorf("opcode byte %#02x: response decode should ignore opcode, got %v", op, err)
 		}
+	}
+}
+
+func TestDecodeAdminDrainOpcode(t *testing.T) {
+	frame, err := EncodeRequest(Request{Opcode: OpAdminDrain}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeRequest(splitTestFrame(frame))
+	if err != nil {
+		t.Fatalf("opcode 21 must decode: %v", err)
+	}
+	if got.Req.Opcode != OpAdminDrain {
+		t.Fatalf("opcode = %v, want OpAdminDrain", got.Req.Opcode)
+	}
+	if OpAdminDrain.String() != "ADMIN_DRAIN" {
+		t.Fatalf("String() = %q", OpAdminDrain.String())
 	}
 }
 

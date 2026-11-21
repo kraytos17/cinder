@@ -52,7 +52,9 @@ func (s *Server) runProbeLoop(wg *sync.WaitGroup, fd *cluster.FailureDetector, s
 }
 
 // runAELoop runs anti-entropy and counter repair on the same interval.
-// Managers with no eligible partner treat a round as a no-op.
+// Managers with no eligible partner treat a round as a no-op. A draining
+// node skips rounds: it must not pull data back after migrating it away,
+// and its un-migrated remainder is pushed out by rebalance instead.
 func (s *Server) runAELoop(mgr *ae.Manager, stop <-chan struct{}) {
 	t := time.NewTimer(s.currentAEInterval())
 	defer t.Stop()
@@ -63,8 +65,10 @@ func (s *Server) runAELoop(mgr *ae.Manager, stop <-chan struct{}) {
 		case <-t.C:
 		}
 
-		mgr.RunRound(s.replicaFactor())
-		mgr.RunCounterRound(s.replicaFactor())
+		if !s.isLeaving() {
+			mgr.RunRound(s.replicaFactor())
+			mgr.RunCounterRound(s.replicaFactor())
+		}
 		t.Reset(s.currentAEInterval())
 	}
 }

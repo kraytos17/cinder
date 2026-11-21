@@ -19,6 +19,7 @@ const (
 	adminCompact
 	adminConfigReload
 	adminShutdown
+	adminDrain
 )
 
 func (op adminOperation) wireOpcode() protocol.Opcode {
@@ -35,6 +36,8 @@ func (op adminOperation) wireOpcode() protocol.Opcode {
 		return protocol.OpAdminConfigReload
 	case adminShutdown:
 		return protocol.OpAdminShutdown
+	case adminDrain:
+		return protocol.OpAdminDrain
 	default:
 		return 0
 	}

@@ -60,7 +60,7 @@ const (
 	RespFlagTombstone   ResponseFlags = 1 << 4
 )
 
-// Opcode is a v6 request opcode (1-20). Response frames always carry 0x00.
+// Opcode is a v6 request opcode (1-21). Response frames always carry 0x00.
 type Opcode uint8
 
 // Request opcodes for the v6 protocol. The wire numbers are stable; opcode
@@ -86,6 +86,10 @@ const (
 	OpCounterMerge       Opcode = 18
 	OpCounterGet         Opcode = 19
 	OpCounterAntiEntropy Opcode = 20
+	// OpAdminDrain starts (or queries) a graceful drain: the node marks
+	// itself Leaving, migrates all local data to the new owners, and
+	// reports progress.
+	OpAdminDrain Opcode = 21
 )
 
 // String returns the stable uppercase name used in logs and diagnostics.
@@ -123,6 +127,8 @@ func (o Opcode) String() string {
 		return "ADMIN_CONFIG_RELOAD"
 	case OpAdminShutdown:
 		return "ADMIN_SHUTDOWN"
+	case OpAdminDrain:
+		return "ADMIN_DRAIN"
 	case OpCounterAdjust:
 		return "COUNTER_ADJUST"
 	case OpCounterMerge:
@@ -411,7 +417,7 @@ func DecodeRequest(header, payload []byte) (DecodedRequest, error) {
 	if err != nil {
 		return out, err
 	}
-	if rawOpcode < OpGet || rawOpcode > OpCounterAntiEntropy {
+	if rawOpcode < OpGet || rawOpcode > OpAdminDrain {
 		return out, errInvalid("unknown opcode")
 	}
 

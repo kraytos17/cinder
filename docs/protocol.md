@@ -118,8 +118,9 @@ the former on writes, replication uses the latter.
 | 18 | `COUNTER_MERGE` | internal-only; `key` + serialized PN-Counter state in `value`; receiver merges, never LWW-replaces |
 | 19 | `COUNTER_GET` | client read; response `value` is serialized PN-Counter state, `NotFound` if absent |
 | 20 | `COUNTER_ANTI_ENTROPY` | internal counter repair; request/response `value` uses a bounded `CAE1` bundle of `[key, PN-Counter state]` entries |
+| 21 | `ADMIN_DRAIN` | request: empty (progress query) or JSON `{"timeout_ms": N}` to start; response: JSON `{"state": "idle|draining|drained|timed-out", "remaining_keys": N}`. Added after the v6 freeze; servers that predate it reject the frame at parse time. See [Graceful Drain](#graceful-drain) |
 
-Admin opcodes (11-16) bypass ring ownership checks. Authentication follows
+Admin opcodes (11-16, 21) bypass ring ownership checks. Authentication follows
 the admin rule above.
 `COUNTER_MERGE` and `COUNTER_ANTI_ENTROPY` are internal/authenticated like
 replication; counter adjust/get are client-authenticated and owner-routed.
@@ -360,6 +361,27 @@ Protocol v6 adds counter opcodes 17–20 and the `COUNTER_ADJUST` suffix fields.
 The frame version is checked for exact equality, so v6 nodes reject v5 frames
 and v5 nodes reject v6 frames. Upgrade cluster nodes together; mixed protocol
 versions cannot exchange frames.
+
+Opcode 21 (`ADMIN_DRAIN`) was added after the v6 freeze without bumping the
+frame version byte. Decoders accept opcodes 1–21; a server that predates the
+addition rejects an opcode-21 frame at parse time (`unknown opcode`), so a
+drain against it fails loudly instead of degrading. Clients should treat a
+transport-level failure on `ADMIN_DRAIN` against a reachable node as "server
+predates drain support".
+
+## Graceful Drain
+
+A draining node advertises the `leaving` membership state: rings exclude it
+from new placement while it keeps serving reads from its local copy. The
+node migrates every local key to the new replica sets (same idempotent
+version-gated pushes as rebalance) and reports progress until its store is
+empty. Draining requires RF>1 — a lone replica has nowhere safe to hand
+off to, so the request is refused. Draining does not shut the node down;
+when the status turns `drained`, finish with the regular admin shutdown.
+A node that crashes mid-drain is covered like any crash (replicas hold the
+copies); recommissioning with its old data directory requires the same
+wipe-and-bootstrap procedure as any over-age replica (see
+[OPERATIONS.md](OPERATIONS.md)).
 
 ## Anti-Entropy Payloads
 

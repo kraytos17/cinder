@@ -104,12 +104,25 @@ func TestAdminUnknownCommand(t *testing.T) {
 	}
 }
 
+// Draining a lone replica is refused: the CLI surfaces the server's
+// error body and exits non-zero instead of hanging on progress.
+func TestAdminDrainRefused(t *testing.T) {
+	addr, _ := testServer(t)
+	out, errOut, code := runAdmin(t, addr, "drain", "--timeout-ms", "1000")
+	if code == 0 {
+		t.Fatalf("drain on RF=1: out=%q err=%q code=%d", out, errOut, code)
+	}
+	if !strings.Contains(errOut, "drain requires replication") {
+		t.Fatalf("drain refusal: out=%q err=%q code=%d", out, errOut, code)
+	}
+}
+
 func TestAdminHelpAndVersion(t *testing.T) {
 	var out, errOut strings.Builder
 	if code := run([]string{"--help"}, &out, &errOut); code != 0 {
 		t.Fatalf("help exit=%d stderr=%q", code, errOut.String())
 	}
-	for _, want := range []string{"info", "cluster", "compact", "shutdown", "--client-secret"} {
+	for _, want := range []string{"info", "cluster", "compact", "shutdown", "drain", "--client-secret"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("help missing %q", want)
 		}
