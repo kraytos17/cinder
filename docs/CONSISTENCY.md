@@ -81,6 +81,12 @@ real-time order. Membership changes can also change the ring-selected replica
 set between a write and a later read. See `internal/repl/write.go` and
 `internal/repl/read.go` for the decision paths.
 
+A node inside its rejoin warming window answers versioned reads for keys it
+has not yet replicated with `NotReady` instead of `NotFound`: the copy may
+exist on the other replicas, and a miss must not masquerade as deletion.
+Replicated reads ignore such votes and converge through the available
+voters; single-node stores keep plain miss semantics.
+
 ## Deletes and expiry
 
 Deletes are versioned tombstones, not immediate erasures. A tombstone wins over

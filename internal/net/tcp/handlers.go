@@ -42,12 +42,18 @@ func (s *Server) handleGet(req protocol.Request) protocol.Response {
 }
 
 // handleGetVersioned serves a versioned read for quorum voters and
-// anti-entropy, redirecting to the ring owner only on a miss.
+// anti-entropy, redirecting to the ring owner only on a miss. A warming
+// member with no local copy answers NotReady instead of NotFound: the key
+// may exist on the other replicas and a miss vote must not masquerade as
+// deletion. Single-node stores keep the old miss semantics.
 func (s *Server) handleGetVersioned(req protocol.Request) protocol.Response {
 	e, ok := s.store.GetVersioned(string(req.Key))
 	if !ok {
 		if owner := s.ownerOf(string(req.Key)); owner != s.nodeID {
 			return s.notReady(owner)
+		}
+		if s.replicaFactor() > 1 && s.isQuarantinedSelf() {
+			return protocol.Response{Status: protocol.StatusNotReady}
 		}
 		return protocol.Response{Status: protocol.StatusNotFound}
 	}

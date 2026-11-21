@@ -3,6 +3,9 @@ package metrics
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +21,12 @@ func TestOpNames(t *testing.T) {
 		protocol.OpAntiEntropyDigest:  "anti_entropy_digest",
 		protocol.OpAntiEntropySync:    "anti_entropy_sync",
 		protocol.OpAdminInfo:          "admin_info",
+		protocol.OpAdminCluster:       "admin_cluster",
+		protocol.OpAdminRing:          "admin_ring",
+		protocol.OpAdminCompact:       "admin_compact",
+		protocol.OpAdminConfigReload:  "admin_config_reload",
+		protocol.OpAdminShutdown:      "admin_shutdown",
+		protocol.OpAdminDrain:         "admin_drain",
 		protocol.OpCounterAdjust:      "counter_adjust",
 		protocol.OpCounterMerge:       "counter_merge",
 		protocol.OpCounterGet:         "counter_get",
@@ -27,6 +36,60 @@ func TestOpNames(t *testing.T) {
 		if got := OpName(op); got != want {
 			t.Fatalf("op %d = %q, want %q", op, got, want)
 		}
+	}
+}
+
+// TestMetricsDocumented binds the exposition registry to docs/METRICS.md.
+// The generated names are the schema surface: adding, renaming, or removing
+// a counter/gauge/summary without updating the catalog (or deleting a
+// documented metric without removing it from the exporter) fails this test.
+func TestMetricsDocumented(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/METRICS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	nameRE := regexp.MustCompile("`(cinder_[a-zA-Z0-9_]+)`")
+	docNames := map[string]bool{}
+	for _, match := range nameRE.FindAllSubmatch(doc, -1) {
+		docNames[string(match[1])] = true
+	}
+
+	c := NewCollector()
+	// The summary family is lazy; record every opcode so all documented
+	// latency series appear in the rendered exposition.
+	for op := protocol.Opcode(1); op <= maxOpcode; op++ {
+		c.Record(op, 1000)
+	}
+	exposition := string(c.FormatPrometheus(StoreGauges{}))
+	actualNames := map[string]bool{}
+	for line := range strings.SplitSeq(exposition, "\n") {
+		if !strings.HasPrefix(line, "cinder_") {
+			continue
+		}
+		field := strings.Fields(line)
+		if len(field) == 0 {
+			continue
+		}
+		name, _, _ := strings.Cut(field[0], "{")
+		actualNames[name] = true
+	}
+
+	var undocumented, stale []string
+	for name := range actualNames {
+		if !docNames[name] {
+			undocumented = append(undocumented, name)
+		}
+	}
+	for name := range docNames {
+		if !actualNames[name] {
+			stale = append(stale, name)
+		}
+	}
+	slices.Sort(undocumented)
+	slices.Sort(stale)
+	if len(undocumented) != 0 || len(stale) != 0 {
+		t.Fatalf("metrics catalog drift: undocumented=%v stale=%v", undocumented, stale)
 	}
 }
 

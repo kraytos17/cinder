@@ -1,10 +1,13 @@
 package tcp_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	"github.com/kraytos17/cinder/internal/net/protocol"
 	"github.com/kraytos17/cinder/internal/net/tcp"
+	"github.com/kraytos17/cinder/internal/repl"
 	"github.com/kraytos17/cinder/internal/store"
 )
 
@@ -71,5 +74,72 @@ func TestReadyDrainingIsNotReady(t *testing.T) {
 	}
 	if srv.Ready() {
 		t.Fatal("draining node must not report ready")
+	}
+}
+
+// A warming member answers versioned reads for keys it has not (yet)
+// replicated with NotReady instead of NotFound: the copy may exist on the
+// other replicas, and a miss vote must not masquerade as deletion. Once
+// warmed, the same miss is a genuine NotFound, and quorum reads converge
+// through the available voters either way.
+func TestWarmingNodeDeflectsVersionedReads(t *testing.T) {
+	c := newTestCluster(t, []string{"node1", "node2"}, 2, repl.Quorum)
+	defer c.shutdown()
+	warming, steady := c.nodes["node1"].srv, c.nodes["node2"].srv
+	waitServerReady(t, warming)
+	waitServerReady(t, steady)
+
+	warming.SetQuarantineInterval(time.Hour)
+
+	// Absent key owned by the warming node: NotReady while warming.
+	var missing string
+	for i := range 100 {
+		k := fmt.Sprintf("warming-miss-%d", i)
+		if ringOwner(t, k) == "node1" {
+			missing = k
+			break
+		}
+	}
+	if missing == "" {
+		t.Fatal("no key owned by node1")
+	}
+	d := dial(t, c.nodes["node1"].addr)
+	res, err := d.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(missing)})
+	d.Close()
+	if err != nil || res.Status != protocol.StatusNotReady {
+		t.Fatalf("warming miss = %+v %v, want NotReady", res, err)
+	}
+
+	// Warmed up, the same miss is a genuine NotFound.
+	warming.SetQuarantineInterval(0)
+	d2 := dial(t, c.nodes["node1"].addr)
+	res, err = d2.Do(protocol.Request{Opcode: protocol.OpGetVersioned, Key: []byte(missing)})
+	d2.Close()
+	if err != nil || res.Status != protocol.StatusNotFound {
+		t.Fatalf("warmed miss = %+v %v, want NotFound", res, err)
+	}
+
+	// Quorum reads converge through the available voter either way.
+	var present string
+	for i := range 100 {
+		k := fmt.Sprintf("warming-present-%d", i)
+		if ringOwner(t, k) == "node2" {
+			present = k
+			break
+		}
+	}
+	writeToOwner(t, c, present, "v")
+	warming.SetQuarantineInterval(time.Hour)
+	d3 := dial(t, c.nodes["node2"].addr)
+	res, err = d3.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte(present)})
+	d3.Close()
+	if err != nil || res.Status != protocol.StatusOK || string(res.Value) != "v" {
+		t.Fatalf("quorum read with warming voter: %+v %v", res, err)
+	}
+	d4 := dial(t, c.nodes["node2"].addr)
+	res, err = d4.Do(protocol.Request{Opcode: protocol.OpGet, Key: []byte("warming-absent-everywhere")})
+	d4.Close()
+	if err != nil || res.Status != protocol.StatusNotFound {
+		t.Fatalf("quorum miss with warming voter: %+v %v", res, err)
 	}
 }
